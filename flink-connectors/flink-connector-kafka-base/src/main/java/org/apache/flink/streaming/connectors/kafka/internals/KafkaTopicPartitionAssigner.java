@@ -28,6 +28,7 @@ public class KafkaTopicPartitionAssigner {
 	/**
 	 * Returns the index of the target subtask that a specific Kafka partition should be
 	 * assigned to.
+	 * todo 输入 topic 、 partition 及 subtask 的总并行度，输出该 topic 、 partition 应该分配给哪个 subtask 去执行
 	 *
 	 * <p>The resulting distribution of partitions of a single topic has the following contract:
 	 * <ul>
@@ -53,6 +54,7 @@ public class KafkaTopicPartitionAssigner {
 
 		// here, the assumption is that the id of Kafka partitions are always ascending
 		// starting from 0, and therefore can be used directly as the offset clockwise from the start index
+		// todo 分配比较均匀，0 号 partition 如果分配给 给 1号 subtask，那么 1号partition 2号subtask 。。。
 		return (startIndex + partition.getPartition()) % numParallelSubtasks;
 	}
 

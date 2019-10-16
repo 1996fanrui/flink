@@ -498,6 +498,7 @@ public abstract class FlinkKafkaConsumerBase<T> extends RichParallelSourceFuncti
 				((StreamingRuntimeContext) getRuntimeContext()).isCheckpointingEnabled());
 
 		// create the partition discoverer
+		// todo 创建 Kafka partition 的发现器，用于检测该 subtask 应该去消费的 partition
 		this.partitionDiscoverer = createPartitionDiscoverer(
 				topicsDescriptor,
 				getRuntimeContext().getIndexOfThisSubtask(),
@@ -505,9 +506,12 @@ public abstract class FlinkKafkaConsumerBase<T> extends RichParallelSourceFuncti
 		this.partitionDiscoverer.open();
 
 		subscribedPartitionsToStartOffsets = new HashMap<>();
+		// todo 用 partition 发现器获取该 subtask 应该消费且新发现的 partition
 		final List<KafkaTopicPartition> allPartitions = partitionDiscoverer.discoverPartitions();
 		if (restoredState != null) {
 			for (KafkaTopicPartition partition : allPartitions) {
+				// todo  若分配给该 subtask 的partition 在 restoredState 中不包含
+				// 说明该 partition 是新创建的 partition，默认从 earliest 开始消费
 				if (!restoredState.containsKey(partition)) {
 					restoredState.put(partition, KafkaTopicPartitionStateSentinel.EARLIEST_OFFSET);
 				}
@@ -517,6 +521,7 @@ public abstract class FlinkKafkaConsumerBase<T> extends RichParallelSourceFuncti
 				if (!restoredFromOldState) {
 					// seed the partition discoverer with the union state while filtering out
 					// restored partitions that should not be subscribed by this subtask
+					// todo 分配器，把 kafka 的partition 分配给 一些 subtask
 					if (KafkaTopicPartitionAssigner.assign(
 						restoredStateEntry.getKey(), getRuntimeContext().getNumberOfParallelSubtasks())
 							== getRuntimeContext().getIndexOfThisSubtask()){
@@ -714,6 +719,7 @@ public abstract class FlinkKafkaConsumerBase<T> extends RichParallelSourceFuncti
 		if (discoveryIntervalMillis == PARTITION_DISCOVERY_DISABLED) {
 			kafkaFetcher.runFetchLoop();
 		} else {
+			// todo discoveryIntervalMillis 被设置了，则 开启 PartitionDiscovery
 			runWithPartitionDiscovery();
 		}
 	}
@@ -744,6 +750,7 @@ public abstract class FlinkKafkaConsumerBase<T> extends RichParallelSourceFuncti
 	}
 
 	private void createAndStartDiscoveryLoop(AtomicReference<Exception> discoveryLoopErrorRef) {
+		// todo 创建一个线程去循环检测发现新分区
 		discoveryLoopThread = new Thread(() -> {
 			try {
 				// --------------------- partition discovery loop ---------------------
@@ -758,6 +765,7 @@ public abstract class FlinkKafkaConsumerBase<T> extends RichParallelSourceFuncti
 
 					final List<KafkaTopicPartition> discoveredPartitions;
 					try {
+						// todo 用 partition 发现器获取该 subtask 应该消费且新发现的 partition
 						discoveredPartitions = partitionDiscoverer.discoverPartitions();
 					} catch (AbstractPartitionDiscoverer.WakeupException | AbstractPartitionDiscoverer.ClosedException e) {
 						// the partition discoverer may have been closed or woken up before or during the discovery;
@@ -767,12 +775,14 @@ public abstract class FlinkKafkaConsumerBase<T> extends RichParallelSourceFuncti
 
 					// no need to add the discovered partitions if we were closed during the meantime
 					if (running && !discoveredPartitions.isEmpty()) {
+						// todo kafkaFetcher 添加 新发现的 partition
 						kafkaFetcher.addDiscoveredPartitions(discoveredPartitions);
 					}
 
 					// do not waste any time sleeping if we're not running anymore
 					if (running && discoveryIntervalMillis != 0) {
 						try {
+							// todo sleep 设置的间隔时间
 							Thread.sleep(discoveryIntervalMillis);
 						} catch (InterruptedException iex) {
 							// may be interrupted if the consumer was canceled midway; simply escape the loop
@@ -857,6 +867,7 @@ public abstract class FlinkKafkaConsumerBase<T> extends RichParallelSourceFuncti
 		ListState<Tuple2<KafkaTopicPartition, Long>> oldRoundRobinListState =
 			stateStore.getSerializableListState(DefaultOperatorStateBackend.DEFAULT_OPERATOR_STATE_NAME);
 
+		// todo 此处使用的 getUnionListState ，而不是 getListState。因为重启后，可能 并行度被改变了
 		this.unionOffsetStates = stateStore.getUnionListState(new ListStateDescriptor<>(
 				OFFSETS_STATE_NAME,
 				TypeInformation.of(new TypeHint<Tuple2<KafkaTopicPartition, Long>>() {})));
@@ -877,6 +888,7 @@ public abstract class FlinkKafkaConsumerBase<T> extends RichParallelSourceFuncti
 			}
 
 			// populate actual holder for restored state
+			// todo 将恢复的 offset 信息 put 到 restoredState TreeMap  中
 			for (Tuple2<KafkaTopicPartition, Long> kafkaOffset : unionOffsetStates.get()) {
 				restoredState.put(kafkaOffset.f0, kafkaOffset.f1);
 			}
@@ -892,19 +904,25 @@ public abstract class FlinkKafkaConsumerBase<T> extends RichParallelSourceFuncti
 		if (!running) {
 			LOG.debug("snapshotState() called on closed source");
 		} else {
+			// todo 把旧的 offset 信息从 unionOffsetStates 清除掉
 			unionOffsetStates.clear();
 
 			final AbstractFetcher<?, ?> fetcher = this.kafkaFetcher;
+			// todo 通过提取器从 kafka 读取数据，若 fetcher == null 表示提取器还未初始化
 			if (fetcher == null) {
 				// the fetcher has not yet been initialized, which means we need to return the
 				// originally restored offsets or the assigned partitions
+				// todo Kafka 提取器还未初始化，说明还未从 kafka 中读取数据
+				// 所以 遍历 subscribedPartitionsToStartOffsets，将 offset 的初始信息写入到状态中
 				for (Map.Entry<KafkaTopicPartition, Long> subscribedPartition : subscribedPartitionsToStartOffsets.entrySet()) {
+					// todo 遍历 subscribedPartitionsToStartOffsets
 					unionOffsetStates.add(Tuple2.of(subscribedPartition.getKey(), subscribedPartition.getValue()));
 				}
 
 				if (offsetCommitMode == OffsetCommitMode.ON_CHECKPOINTS) {
 					// the map cannot be asynchronously updated, because only one checkpoint call can happen
 					// on this function at a time: either snapshotState() or notifyCheckpointComplete()
+					// todo 将 offset put 到 pendingOffsetsToCommit，后续 commit 到 kafka
 					pendingOffsetsToCommit.put(context.getCheckpointId(), restoredState);
 				}
 			} else {
@@ -913,10 +931,12 @@ public abstract class FlinkKafkaConsumerBase<T> extends RichParallelSourceFuncti
 				if (offsetCommitMode == OffsetCommitMode.ON_CHECKPOINTS) {
 					// the map cannot be asynchronously updated, because only one checkpoint call can happen
 					// on this function at a time: either snapshotState() or notifyCheckpointComplete()
+					// todo 将 offset put 到 pendingOffsetsToCommit，后续 commit 到 kafka
 					pendingOffsetsToCommit.put(context.getCheckpointId(), currentOffsets);
 				}
 
 				for (Map.Entry<KafkaTopicPartition, Long> kafkaTopicPartitionLongEntry : currentOffsets.entrySet()) {
+					// todo 将该 subtask 订阅的 partition 以及当前 partition 消费到的 offset 写入到状态中
 					unionOffsetStates.add(
 							Tuple2.of(kafkaTopicPartitionLongEntry.getKey(), kafkaTopicPartitionLongEntry.getValue()));
 				}
@@ -973,6 +993,7 @@ public abstract class FlinkKafkaConsumerBase<T> extends RichParallelSourceFuncti
 					return;
 				}
 
+				// todo checkpoint 完成时，会把 offset commit 到 kafka 端
 				fetcher.commitInternalOffsetsToKafka(offsets, offsetCommitCallback);
 			} catch (Exception e) {
 				if (running) {

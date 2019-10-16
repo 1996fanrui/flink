@@ -128,6 +128,7 @@ public abstract class AbstractPartitionDiscoverer {
 
 				// (1) get all possible partitions, based on whether we are subscribed to fixed topics or a topic pattern
 				if (topicsDescriptor.isFixedTopics()) {
+					// todo 获取 指定 Topic 的所有 partition
 					newDiscoveredPartitions = getAllPartitionsForTopics(topicsDescriptor.getFixedTopics());
 				} else {
 					List<String> matchedTopics = getAllTopics();
@@ -156,6 +157,10 @@ public abstract class AbstractPartitionDiscoverer {
 					KafkaTopicPartition nextPartition;
 					while (iter.hasNext()) {
 						nextPartition = iter.next();
+						/* todo setAndCheckDiscoveredPartition 方法设计比较巧妙，
+						 * 将旧的 partition 和 不应该被该 subtask 消费的 partition，则返回 false
+        				 * 将这些partition 剔除，就是新发现的 partition
+ 						 */
 						if (!setAndCheckDiscoveredPartition(nextPartition)) {
 							iter.remove();
 						}
@@ -187,6 +192,7 @@ public abstract class AbstractPartitionDiscoverer {
 	 *
 	 * <p>If the partition is indeed newly discovered, this method also returns
 	 * whether the new partition should be subscribed by this subtask.
+	 * todo 如果新发现了 partition，且这个 partition 应该被该 subtask 订阅消费，则 返回 true
 	 *
 	 * @param partition the partition to set and check
 	 *
@@ -194,9 +200,12 @@ public abstract class AbstractPartitionDiscoverer {
 	 *         be subscribed by this subtask; {@code false} otherwise
 	 */
 	public boolean setAndCheckDiscoveredPartition(KafkaTopicPartition partition) {
-		if (isUndiscoveredPartition(partition)) {
+		// todo discoveredPartitions 中存放着所有发现的 partition
+		if (!discoveredPartitions.contains(partition)) {
+			// todo discoveredPartitions 中不存在，表示发现了新的 partition，将其加入到 discoveredPartitions
 			discoveredPartitions.add(partition);
 
+			// todo 再通过分配器来判断该 partition 是否应该被当前 subtask 去消费
 			return KafkaTopicPartitionAssigner.assign(partition, numParallelSubtasks) == indexOfThisSubtask;
 		}
 

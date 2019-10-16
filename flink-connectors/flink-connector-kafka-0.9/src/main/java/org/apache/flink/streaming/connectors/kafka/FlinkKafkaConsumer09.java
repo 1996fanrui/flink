@@ -214,6 +214,8 @@ public class FlinkKafkaConsumer09<T> extends FlinkKafkaConsumerBase<T> {
 				topics,
 				subscriptionPattern,
 				deserializer,
+				// todo 自动发现新 partition 的间隔时间，从配置中尝试获取 KEY_PARTITION_DISCOVERY_INTERVAL_MILLIS
+			// 获取不到则赋默认值
 				getLong(
 					checkNotNull(props, "props"),
 					KEY_PARTITION_DISCOVERY_INTERVAL_MILLIS, PARTITION_DISCOVERY_DISABLED),
