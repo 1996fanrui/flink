@@ -154,6 +154,7 @@ public final class MathUtils {
 	}
 
 	/**
+	 * 将 给定数据 向上取整到 2 的 次幂
 	 * Round the given number to the next power of two.
 	 * @param x number to round
 	 * @return x rounded up to the next power of two

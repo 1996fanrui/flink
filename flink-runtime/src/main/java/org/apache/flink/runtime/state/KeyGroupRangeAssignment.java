@@ -55,6 +55,7 @@ public final class KeyGroupRangeAssignment {
 	 * @param key the key to assign
 	 * @param maxParallelism the maximum supported parallelism, aka the number of key-groups.
 	 * @return the key-group to which the given key is assigned
+	 * 给定 Key 根据 maxParallelism 计算其对应的 KeyGroup 的 index
 	 */
 	public static int assignToKeyGroup(Object key, int maxParallelism) {
 		return computeKeyGroupForKeyHash(key.hashCode(), maxParallelism);
@@ -66,6 +67,7 @@ public final class KeyGroupRangeAssignment {
 	 * @param keyHash the hash of the key to assign
 	 * @param maxParallelism the maximum supported parallelism, aka the number of key-groups.
 	 * @return the key-group to which the given key is assigned
+	 * 根据 Key 的 hash 值来计算其对应的 KeyGroup 的 index
 	 */
 	public static int computeKeyGroupForKeyHash(int keyHash, int maxParallelism) {
 		return MathUtils.murmurHash(keyHash) % maxParallelism;
@@ -82,6 +84,7 @@ public final class KeyGroupRangeAssignment {
 	 * @param parallelism    The current parallelism under which the job runs. Must be <= maxParallelism.
 	 * @param operatorIndex  Id of a key-group. 0 <= keyGroupID < maxParallelism.
 	 * @return the computed key-group range for the operator.
+	 * 根据 maxParallelism, parallelism 计算 operatorIndex 对应的 subtask 负责哪个范围的 KeyGroup
 	 */
 	public static KeyGroupRange computeKeyGroupRangeForOperatorIndex(
 		int maxParallelism,
@@ -112,6 +115,7 @@ public final class KeyGroupRangeAssignment {
 	 * @param keyGroupId     Id of a key-group. 0 <= keyGroupID < maxParallelism.
 	 * @return The index of the operator to which elements from the given key-group should be routed under the given
 	 * parallelism and maxParallelism.
+	 * 根据 keyGroupId、parallelism 和 maxParallelism，计算 keyGroupId 对应的 subtask 的 index
 	 */
 	public static int computeOperatorIndexForKeyGroup(int maxParallelism, int parallelism, int keyGroupId) {
 		return keyGroupId * parallelism / maxParallelism;
@@ -123,6 +127,11 @@ public final class KeyGroupRangeAssignment {
 	 *
 	 * @param operatorParallelism the operator parallelism as basis for computation.
 	 * @return the computed default maximum parallelism.
+	 * 根据算子的并行度计算 maxParallelism
+	 * 计算规则：
+	 * 1. 将算子并行度 * 1.5 后，向上取整到 2 的 n 次幂
+	 * 2. 跟 DEFAULT_LOWER_BOUND_MAX_PARALLELISM 相比，取 max
+	 * 3. 跟 UPPER_BOUND_MAX_PARALLELISM 相比，取 min
 	 */
 	public static int computeDefaultMaxParallelism(int operatorParallelism) {
 

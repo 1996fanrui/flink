@@ -179,10 +179,12 @@ public class ExecutionJobVertex implements AccessExecutionJobVertex, Archiveable
 		this.maxParallelismConfigured = (VALUE_NOT_SET != configuredMaxParallelism);
 
 		// if no max parallelism was configured by the user, we calculate and set a default
+		// 如果设置了 maxParallelism，就用设置的值，如果没有设置，则默认生成。并且这里会检测参数的合法性
 		setMaxParallelismInternal(maxParallelismConfigured ?
 				configuredMaxParallelism : KeyGroupRangeAssignment.computeDefaultMaxParallelism(numTaskVertices));
 
 		// verify that our parallelism is not higher than the maximum parallelism
+		// Flink 任务的并行度大于 maxParallelism，则任务直接报错
 		if (numTaskVertices > maxParallelism) {
 			throw new JobException(
 				String.format("Vertex %s's parallelism (%s) is higher than the max parallelism (%s). Please lower the parallelism or increase the max parallelism.",
@@ -302,7 +304,7 @@ public class ExecutionJobVertex implements AccessExecutionJobVertex, Archiveable
 		if (maxParallelism == ExecutionConfig.PARALLELISM_AUTO_MAX) {
 			maxParallelism = KeyGroupRangeAssignment.UPPER_BOUND_MAX_PARALLELISM;
 		}
-
+		// 必须大于 0 小于 UPPER_BOUND_MAX_PARALLELISM
 		Preconditions.checkArgument(maxParallelism > 0
 						&& maxParallelism <= KeyGroupRangeAssignment.UPPER_BOUND_MAX_PARALLELISM,
 				"Overriding max parallelism is not in valid bounds (1..%s), found: %s",

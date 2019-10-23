@@ -35,6 +35,7 @@ public class KeyGroupStreamPartitioner<T, K> extends StreamPartitioner<T> implem
 
 	private final KeySelector<T, K> keySelector;
 
+	// maxParallelism 就是 KeyGroup 的个数
 	private int maxParallelism;
 
 	public KeyGroupStreamPartitioner(KeySelector<T, K> keySelector, int maxParallelism) {

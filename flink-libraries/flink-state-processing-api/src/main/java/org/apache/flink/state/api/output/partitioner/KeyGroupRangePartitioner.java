@@ -24,6 +24,7 @@ import org.apache.flink.runtime.state.KeyGroupRangeAssignment;
 
 /**
  * A partitioner that selects the target channel based on the key group index.
+ * KeyGroup 的 Range 分区器
  */
 @Internal
 public class KeyGroupRangePartitioner implements Partitioner<Integer> {
