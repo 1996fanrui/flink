@@ -431,6 +431,7 @@ public class RocksDBStateBackend extends AbstractStateBackend implements Configu
 			}
 		}
 
+		// 这里选择的使用哪个 dir，如果该并行度有多个有状态算子，则依次使用后续的 dir
 		nextDirectory = new Random().nextInt(initializedDbBasePaths.length);
 
 		isInitialized = true;
@@ -618,6 +619,7 @@ public class RocksDBStateBackend extends AbstractStateBackend implements Configu
 	 * temp directories will be used.
 	 *
 	 * @param paths The paths across which the local RocksDB database files will be spread.
+	 *         这里具体如何分配 localDir 的？
 	 */
 	public void setDbStoragePaths(String... paths) {
 		if (paths == null) {
