@@ -22,7 +22,7 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.blob.BlobServer;
 import org.apache.flink.runtime.dispatcher.DispatcherGateway;
 import org.apache.flink.runtime.dispatcher.MemoryArchivedExecutionGraphStore;
-import org.apache.flink.runtime.dispatcher.runner.DispatcherRunnerFactoryImpl;
+import org.apache.flink.runtime.dispatcher.runner.DefaultDispatcherRunnerFactory;
 import org.apache.flink.runtime.entrypoint.component.DispatcherResourceManagerComponent;
 import org.apache.flink.runtime.entrypoint.component.DispatcherResourceManagerComponentFactory;
 import org.apache.flink.runtime.entrypoint.component.TestingDefaultDispatcherResourceManagerComponentFactory;
@@ -69,12 +69,6 @@ public class TestingMiniCluster extends MiniCluster {
 
 	@Nonnull
 	@Override
-	public Collection<DispatcherResourceManagerComponent> getDispatcherResourceManagerComponents() {
-		return super.getDispatcherResourceManagerComponents();
-	}
-
-	@Nonnull
-	@Override
 	public CompletableFuture<Void> terminateTaskExecutor(int index) {
 		return super.terminateTaskExecutor(index);
 	}
@@ -116,6 +110,7 @@ public class TestingMiniCluster extends MiniCluster {
 			result.add(
 				dispatcherResourceManagerComponentFactory.create(
 					configuration,
+					getIOExecutor(),
 					rpcServiceFactory.createRpcService(),
 					haServices,
 					blobServer,
@@ -136,7 +131,7 @@ public class TestingMiniCluster extends MiniCluster {
 
 	private DispatcherResourceManagerComponentFactory createTestingDispatcherResourceManagerComponentFactory() {
 		return TestingDefaultDispatcherResourceManagerComponentFactory.createSessionComponentFactory(
-			new DispatcherRunnerFactoryImpl(SessionDispatcherWithUUIDFactory.INSTANCE),
+			DefaultDispatcherRunnerFactory.createSessionRunner(SessionDispatcherWithUUIDFactory.INSTANCE),
 			StandaloneResourceManagerWithUUIDFactory.INSTANCE);
 	}
 }

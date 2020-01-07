@@ -20,7 +20,6 @@ package org.apache.flink.runtime.taskexecutor;
 
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.CoreOptions;
-import org.apache.flink.configuration.IllegalConfigurationException;
 import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.configuration.NettyShuffleEnvironmentOptions;
 import org.apache.flink.configuration.TaskManagerOptions;
@@ -47,7 +46,6 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 
-import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -58,6 +56,8 @@ import static org.mockito.Mockito.when;
 public class TaskManagerRunnerStartupTest extends TestLogger {
 
 	private static final String LOCAL_HOST = "localhost";
+
+	private static final int TOTAL_FLINK_MEMORY_MB = 1024;
 
 	@Rule
 	public final TemporaryFolder tempFolder = new TemporaryFolder();
@@ -89,7 +89,7 @@ public class TaskManagerRunnerStartupTest extends TestLogger {
 			nonWritable.setWritable(false, false));
 
 		try {
-			Configuration cfg = new Configuration();
+			Configuration cfg = createFlinkConfiguration();
 			cfg.setString(CoreOptions.TMP_DIRS, nonWritable.getAbsolutePath());
 
 			try {
@@ -119,11 +119,11 @@ public class TaskManagerRunnerStartupTest extends TestLogger {
 	 */
 	@Test
 	public void testMemoryConfigWrong() throws Exception {
-		Configuration cfg = new Configuration();
-		cfg.setBoolean(TaskManagerOptions.MANAGED_MEMORY_PRE_ALLOCATE, true);
+		Configuration cfg = createFlinkConfiguration();
 
 		// something invalid
-		cfg.setString(TaskManagerOptions.MANAGED_MEMORY_SIZE, "-42m");
+		cfg.set(TaskManagerOptions.SHUFFLE_MEMORY_MIN, MemorySize.parse("100m"));
+		cfg.set(TaskManagerOptions.SHUFFLE_MEMORY_MAX, MemorySize.parse("10m"));
 		try {
 
 			startTaskManager(
@@ -132,25 +132,8 @@ public class TaskManagerRunnerStartupTest extends TestLogger {
 				highAvailabilityServices);
 
 			fail("Should fail synchronously with an exception");
-		} catch (IllegalConfigurationException e) {
+		} catch (IllegalArgumentException e) {
 			// splendid!
-		}
-
-		// something ridiculously high
-		final long memSize = (((long) Integer.MAX_VALUE - 1) *
-			MemorySize.parse(TaskManagerOptions.MEMORY_SEGMENT_SIZE.defaultValue()).getBytes()) >> 20;
-		cfg.setString(TaskManagerOptions.MANAGED_MEMORY_SIZE, memSize + "m");
-		try {
-
-			startTaskManager(
-				cfg,
-				rpcService,
-				highAvailabilityServices);
-
-			fail("Should fail synchronously with an exception");
-		} catch (Exception e) {
-			// splendid!
-			assertTrue(e.getCause() instanceof OutOfMemoryError);
 		}
 	}
 
@@ -162,7 +145,7 @@ public class TaskManagerRunnerStartupTest extends TestLogger {
 		final ServerSocket blocker = new ServerSocket(0, 50, InetAddress.getByName(LOCAL_HOST));
 
 		try {
-			final Configuration cfg = new Configuration();
+			final Configuration cfg = createFlinkConfiguration();
 			cfg.setInteger(NettyShuffleEnvironmentOptions.DATA_PORT, blocker.getLocalPort());
 
 			startTaskManager(
@@ -179,6 +162,13 @@ public class TaskManagerRunnerStartupTest extends TestLogger {
 	}
 
 	//-----------------------------------------------------------------------------------------------
+
+	private static Configuration createFlinkConfiguration() {
+		final Configuration config = new Configuration();
+		config.set(TaskManagerOptions.TOTAL_FLINK_MEMORY, MemorySize.parse(TOTAL_FLINK_MEMORY_MB + "m"));
+
+		return config;
+	}
 
 	private static RpcService createRpcService() {
 		final RpcService rpcService = mock(RpcService.class);

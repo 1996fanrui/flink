@@ -194,7 +194,7 @@ public abstract class ClusterEntrypoint implements AutoCloseableAsync, FatalErro
 		FileSystem.initialize(configuration, PluginUtils.createPluginManagerFromRootFolder(configuration));
 	}
 
-	protected SecurityContext installSecurityContext(Configuration configuration) throws Exception {
+	private SecurityContext installSecurityContext(Configuration configuration) throws Exception {
 		LOG.info("Install security context.");
 
 		SecurityUtils.install(new SecurityConfiguration(configuration));
@@ -214,6 +214,7 @@ public abstract class ClusterEntrypoint implements AutoCloseableAsync, FatalErro
 
 			clusterComponent = dispatcherResourceManagerComponentFactory.create(
 				configuration,
+				ioExecutor,
 				commonRpcService,
 				haServices,
 				blobServer,
@@ -475,7 +476,7 @@ public abstract class ClusterEntrypoint implements AutoCloseableAsync, FatalErro
 	// Abstract methods
 	// --------------------------------------------------
 
-	protected abstract DispatcherResourceManagerComponentFactory createDispatcherResourceManagerComponentFactory(Configuration configuration);
+	protected abstract DispatcherResourceManagerComponentFactory createDispatcherResourceManagerComponentFactory(Configuration configuration) throws IOException;
 
 	protected abstract ArchivedExecutionGraphStore createSerializableExecutionGraphStore(
 		Configuration configuration,

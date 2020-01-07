@@ -26,6 +26,7 @@ import org.apache.flink.api.java.operators.DeltaIteration;
 import org.apache.flink.api.java.operators.IterativeDataSet;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.configuration.NettyShuffleEnvironmentOptions;
 import org.apache.flink.configuration.TaskManagerOptions;
 import org.apache.flink.examples.java.clustering.KMeans;
@@ -35,11 +36,14 @@ import org.apache.flink.examples.java.graph.util.ConnectedComponentsData;
 import org.apache.flink.runtime.client.JobExecutionException;
 import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
 import org.apache.flink.test.util.MiniClusterWithClientResource;
+import org.apache.flink.testutils.junit.category.AlsoRunWithLegacyScheduler;
 import org.apache.flink.util.TestLogger;
 
 import org.junit.ClassRule;
 import org.junit.Test;
+import org.junit.experimental.categories.Category;
 
+import static org.apache.flink.util.ExceptionUtils.findThrowableWithMessage;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -48,6 +52,7 @@ import static org.junit.Assert.fail;
  * This test validates that task slots in co-location constraints are properly
  * freed in the presence of failures.
  */
+@Category(AlsoRunWithLegacyScheduler.class)
 public class SuccessAfterNetworkBuffersFailureITCase extends TestLogger {
 
 	private static final int PARALLELISM = 16;
@@ -62,7 +67,7 @@ public class SuccessAfterNetworkBuffersFailureITCase extends TestLogger {
 
 	private static Configuration getConfiguration() {
 		Configuration config = new Configuration();
-		config.setString(TaskManagerOptions.MANAGED_MEMORY_SIZE, "80m");
+		config.set(TaskManagerOptions.MANAGED_MEMORY_SIZE, MemorySize.parse("80m"));
 		config.setInteger(NettyShuffleEnvironmentOptions.NETWORK_NUM_BUFFERS, 800);
 		return config;
 	}
@@ -78,7 +83,7 @@ public class SuccessAfterNetworkBuffersFailureITCase extends TestLogger {
 			fail("This program execution should have failed.");
 		}
 		catch (JobExecutionException e) {
-			assertTrue(e.getCause().getMessage().contains("Insufficient number of network buffers"));
+			assertTrue(findThrowableWithMessage(e, "Insufficient number of network buffers").isPresent());
 		}
 
 		runConnectedComponents(env);

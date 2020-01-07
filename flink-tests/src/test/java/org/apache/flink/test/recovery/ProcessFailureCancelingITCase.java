@@ -32,6 +32,7 @@ import org.apache.flink.configuration.AkkaOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.HighAvailabilityOptions;
 import org.apache.flink.configuration.JobManagerOptions;
+import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.configuration.NettyShuffleEnvironmentOptions;
 import org.apache.flink.configuration.RestOptions;
 import org.apache.flink.configuration.TaskManagerOptions;
@@ -75,6 +76,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.stream.Collectors;
 
 import static org.apache.flink.runtime.testutils.CommonTestUtils.getJavaCommandPath;
@@ -115,7 +117,8 @@ public class ProcessFailureCancelingITCase extends TestLogger {
 		config.setString(HighAvailabilityOptions.HA_ZOOKEEPER_QUORUM, zooKeeperResource.getConnectString());
 		config.setString(HighAvailabilityOptions.HA_STORAGE_PATH, temporaryFolder.newFolder().getAbsolutePath());
 		config.setInteger(TaskManagerOptions.NUM_TASK_SLOTS, 2);
-		config.setString(TaskManagerOptions.MANAGED_MEMORY_SIZE, "4m");
+		config.set(TaskManagerOptions.TOTAL_FLINK_MEMORY, MemorySize.parse("1g"));
+		config.set(TaskManagerOptions.MANAGED_MEMORY_SIZE, MemorySize.parse("4m"));
 		config.setInteger(NettyShuffleEnvironmentOptions.NETWORK_NUM_BUFFERS, 100);
 		config.setInteger(RestOptions.PORT, 0);
 
@@ -127,9 +130,10 @@ public class ProcessFailureCancelingITCase extends TestLogger {
 			StandaloneResourceManagerFactory.INSTANCE);
 		DispatcherResourceManagerComponent dispatcherResourceManagerComponent = null;
 
+		final ScheduledExecutorService ioExecutor = TestingUtils.defaultExecutor();
 		final HighAvailabilityServices haServices = HighAvailabilityServicesUtils.createHighAvailabilityServices(
 			config,
-			TestingUtils.defaultExecutor(),
+			ioExecutor,
 			HighAvailabilityServicesUtils.AddressResolution.NO_ADDRESS_RESOLUTION);
 
 		try {
@@ -143,6 +147,7 @@ public class ProcessFailureCancelingITCase extends TestLogger {
 
 			dispatcherResourceManagerComponent = resourceManagerComponentFactory.create(
 				config,
+				ioExecutor,
 				rpcService,
 				haServices,
 				blobServerResource.getBlobServer(),
@@ -214,7 +219,7 @@ public class ProcessFailureCancelingITCase extends TestLogger {
 			taskManagerProcess = null;
 
 			// try to cancel the job
-			clusterClient.cancel(jobId);
+			clusterClient.cancel(jobId).get();
 
 			// we should see a failure within reasonable time (10s is the ask timeout).
 			// since the CI environment is often slow, we conservatively give it up to 2 minutes,
@@ -227,7 +232,7 @@ public class ProcessFailureCancelingITCase extends TestLogger {
 			Throwable error = errorRef[0];
 			assertNotNull("The program did not fail properly", error);
 
-			assertTrue(error instanceof ProgramInvocationException);
+			assertTrue(error.getCause() instanceof ProgramInvocationException);
 			// all seems well :-)
 		}
 		catch (Exception e) {

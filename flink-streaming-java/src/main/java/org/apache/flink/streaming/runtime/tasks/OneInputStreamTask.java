@@ -29,6 +29,7 @@ import org.apache.flink.runtime.metrics.groups.TaskIOMetricGroup;
 import org.apache.flink.streaming.api.graph.StreamConfig;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.watermark.Watermark;
+import org.apache.flink.streaming.runtime.io.AbstractDataOutput;
 import org.apache.flink.streaming.runtime.io.CheckpointedInputGate;
 import org.apache.flink.streaming.runtime.io.InputGateUtil;
 import org.apache.flink.streaming.runtime.io.InputProcessorUtil;
@@ -40,12 +41,9 @@ import org.apache.flink.streaming.runtime.metrics.WatermarkGauge;
 import org.apache.flink.streaming.runtime.streamrecord.LatencyMarker;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.streaming.runtime.streamstatus.StatusWatermarkValve;
-import org.apache.flink.streaming.runtime.streamstatus.StreamStatus;
 import org.apache.flink.streaming.runtime.streamstatus.StreamStatusMaintainer;
 
 import javax.annotation.Nullable;
-
-import java.io.IOException;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
@@ -69,7 +67,7 @@ public class OneInputStreamTask<IN, OUT> extends StreamTask<OUT, OneInputStreamO
 	/**
 	 * Constructor for initialization, possibly with initial state (recovery / savepoint / etc).
 	 *
-	 * <p>This constructor accepts a special {@link ProcessingTimeService}. By default (and if
+	 * <p>This constructor accepts a special {@link TimerService}. By default (and if
 	 * null is passes for the time provider) a {@link SystemProcessingTimeService DefaultTimerService}
 	 * will be used.
 	 *
@@ -79,7 +77,7 @@ public class OneInputStreamTask<IN, OUT> extends StreamTask<OUT, OneInputStreamO
 	@VisibleForTesting
 	public OneInputStreamTask(
 			Environment env,
-			@Nullable ProcessingTimeService timeProvider) {
+			@Nullable TimerService timeProvider) {
 		super(env, timeProvider);
 	}
 
@@ -106,14 +104,13 @@ public class OneInputStreamTask<IN, OUT> extends StreamTask<OUT, OneInputStreamO
 		getEnvironment().getMetricGroup().gauge(MetricNames.IO_CURRENT_INPUT_WATERMARK, this.inputWatermarkGauge::getValue);
 	}
 
-	private CheckpointedInputGate createCheckpointedInputGate() throws IOException {
+	private CheckpointedInputGate createCheckpointedInputGate() {
 		InputGate[] inputGates = getEnvironment().getAllInputGates();
 		InputGate inputGate = InputGateUtil.createInputGate(inputGates);
 
 		return InputProcessorUtil.createCheckpointedInputGate(
 			this,
 			configuration.getCheckpointMode(),
-			getEnvironment().getIOManager(),
 			inputGate,
 			getEnvironment().getTaskManagerInfo().getConfiguration(),
 			getTaskNameWithSubtaskAndId());
@@ -145,14 +142,9 @@ public class OneInputStreamTask<IN, OUT> extends StreamTask<OUT, OneInputStreamO
 	 * The network data output implementation used for processing stream elements
 	 * from {@link StreamTaskNetworkInput} in one input processor.
 	 */
-	private static class StreamTaskNetworkOutput<IN> implements DataOutput<IN> {
+	private static class StreamTaskNetworkOutput<IN> extends AbstractDataOutput<IN> {
 
 		private final OneInputStreamOperator<IN, ?> operator;
-
-		/** The maintainer toggles the current stream status. */
-		private final StreamStatusMaintainer streamStatusMaintainer;
-
-		private final Object lock;
 
 		private final WatermarkGauge watermarkGauge;
 		private final Counter numRecordsIn;
@@ -163,10 +155,9 @@ public class OneInputStreamTask<IN, OUT> extends StreamTask<OUT, OneInputStreamO
 				Object lock,
 				WatermarkGauge watermarkGauge,
 				Counter numRecordsIn) {
+			super(streamStatusMaintainer, lock);
 
 			this.operator = checkNotNull(operator);
-			this.streamStatusMaintainer = checkNotNull(streamStatusMaintainer);
-			this.lock = checkNotNull(lock);
 			this.watermarkGauge = checkNotNull(watermarkGauge);
 			this.numRecordsIn = checkNotNull(numRecordsIn);
 		}
@@ -192,13 +183,6 @@ public class OneInputStreamTask<IN, OUT> extends StreamTask<OUT, OneInputStreamO
 		public void emitLatencyMarker(LatencyMarker latencyMarker) throws Exception {
 			synchronized (lock) {
 				operator.processLatencyMarker(latencyMarker);
-			}
-		}
-
-		@Override
-		public void emitStreamStatus(StreamStatus streamStatus) {
-			synchronized (lock) {
-				streamStatusMaintainer.toggleStreamStatus(streamStatus);
 			}
 		}
 	}

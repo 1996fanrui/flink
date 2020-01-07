@@ -55,6 +55,30 @@ public class NettyShuffleEnvironmentOptions {
 				" global flag for internal SSL (" + SecurityOptions.SSL_INTERNAL_ENABLED.key() + ") is set to true");
 
 	/**
+	 * Boolean flag indicating whether the shuffle data will be compressed for blocking shuffle mode.
+	 *
+	 * <p>Note: Data is compressed per buffer and compression can incur extra CPU overhead so it is more effective for
+	 * IO bounded scenario when data compression ratio is high. Currently, shuffle data compression is an experimental
+	 * feature and the config option can be changed in the future.
+	 */
+	public static final ConfigOption<Boolean> BLOCKING_SHUFFLE_COMPRESSION_ENABLED =
+		key("taskmanager.network.blocking-shuffle.compression.enabled")
+			.defaultValue(false)
+			.withDescription("Boolean flag indicating whether the shuffle data will be compressed for blocking shuffle" +
+				" mode. Note that data is compressed per buffer and compression can incur extra CPU overhead, so it is" +
+				" more effective for IO bounded scenario when data compression ratio is high. Currently, shuffle data " +
+				"compression is an experimental feature and the config option can be changed in the future.");
+
+	/**
+	 * The codec to be used when compressing shuffle data.
+	 */
+	@Documentation.ExcludeFromDocumentation("Currently, LZ4 is the only legal option.")
+	public static final ConfigOption<String> SHUFFLE_COMPRESSION_CODEC =
+		key("taskmanager.network.compression.codec")
+			.defaultValue("LZ4")
+			.withDescription("The codec to be used when compressing shuffle data.");
+
+	/**
 	 * Boolean flag to enable/disable more detailed metrics about inbound/outbound network queue
 	 * lengths.
 	 */
@@ -64,24 +88,11 @@ public class NettyShuffleEnvironmentOptions {
 			.withDescription("Boolean flag to enable/disable more detailed metrics about inbound/outbound network queue lengths.");
 
 	/**
-	 * Boolean flag to enable/disable network credit-based flow control.
-	 *
-	 * @deprecated Will be removed for Flink 1.6 when the old code will be dropped in favour of
-	 * credit-based flow control.
-	 */
-	@Deprecated
-	public static final ConfigOption<Boolean> NETWORK_CREDIT_MODEL =
-		key("taskmanager.network.credit-model")
-			.defaultValue(true)
-			.withDeprecatedKeys("taskmanager.network.credit-based-flow-control.enabled")
-			.withDescription("Boolean flag to enable/disable network credit-based flow control.");
-
-	/**
 	 * Number of buffers used in the network stack. This defines the number of possible tasks and
 	 * shuffles.
 	 *
-	 * @deprecated use {@link #NETWORK_BUFFERS_MEMORY_FRACTION}, {@link #NETWORK_BUFFERS_MEMORY_MIN},
-	 * and {@link #NETWORK_BUFFERS_MEMORY_MAX} instead
+	 * @deprecated use {@link TaskManagerOptions#SHUFFLE_MEMORY_FRACTION}, {@link TaskManagerOptions#SHUFFLE_MEMORY_MIN},
+	 * and {@link TaskManagerOptions#SHUFFLE_MEMORY_MAX} instead
 	 */
 	@Deprecated
 	public static final ConfigOption<Integer> NETWORK_NUM_BUFFERS =
@@ -90,7 +101,10 @@ public class NettyShuffleEnvironmentOptions {
 
 	/**
 	 * Fraction of JVM memory to use for network buffers.
+	 *
+	 * @deprecated use {@link TaskManagerOptions#SHUFFLE_MEMORY_FRACTION} instead
 	 */
+	@Deprecated
 	public static final ConfigOption<Float> NETWORK_BUFFERS_MEMORY_FRACTION =
 		key("taskmanager.network.memory.fraction")
 			.defaultValue(0.1f)
@@ -102,7 +116,10 @@ public class NettyShuffleEnvironmentOptions {
 
 	/**
 	 * Minimum memory size for network buffers.
+	 *
+	 * @deprecated use {@link TaskManagerOptions#SHUFFLE_MEMORY_MIN} instead
 	 */
+	@Deprecated
 	public static final ConfigOption<String> NETWORK_BUFFERS_MEMORY_MIN =
 		key("taskmanager.network.memory.min")
 			.defaultValue("64mb")
@@ -110,7 +127,10 @@ public class NettyShuffleEnvironmentOptions {
 
 	/**
 	 * Maximum memory size for network buffers.
+	 *
+	 * @deprecated use {@link TaskManagerOptions#SHUFFLE_MEMORY_MAX} instead
 	 */
+	@Deprecated
 	public static final ConfigOption<String> NETWORK_BUFFERS_MEMORY_MAX =
 		key("taskmanager.network.memory.max")
 			.defaultValue("1gb")
@@ -153,12 +173,13 @@ public class NettyShuffleEnvironmentOptions {
 					"tasks have occupied all the buffers and the downstream tasks are waiting for the exclusive buffers. The timeout breaks" +
 					"the tie by failing the request of exclusive buffers and ask users to increase the number of total buffers.");
 
-	@Documentation.ExcludeFromDocumentation("This option is only used for testing at the moment.")
-	public static final ConfigOption<String> NETWORK_BOUNDED_BLOCKING_SUBPARTITION_TYPE =
-		key("taskmanager.network.bounded-blocking-subpartition-type")
-			.defaultValue("auto")
-			.withDescription("The bounded blocking subpartition type, either \"mmap\" or \"file\". The default \"auto\" means selecting the" +
-					"property type automatically based on system memory architecture.");
+	public static final ConfigOption<String> NETWORK_BLOCKING_SHUFFLE_TYPE =
+		key("taskmanager.network.blocking-shuffle.type")
+			.defaultValue("file")
+			.withDescription("The blocking shuffle type, either \"mmap\" or \"file\". The \"auto\" means selecting the property type automatically" +
+					" based on system memory architecture (64 bit for mmap and 32 bit for file). Note that the memory usage of mmap is not accounted" +
+					" by configured memory limits, but some resource frameworks like yarn would track this memory usage and kill the container once" +
+					" memory exceeding some threshold. Also note that this option is experimental and might be changed future.");
 
 	// ------------------------------------------------------------------------
 	//  Netty Options

@@ -26,6 +26,7 @@ if [ -z "${HERE}" ] ; then
 fi
 
 SCRIPT=$1
+CMD=${@:2}
 
 source ${HERE}/setup_docker.sh
 source ${HERE}/setup_kubernetes.sh
@@ -38,7 +39,7 @@ LOG4J_PROPERTIES=${HERE}/../log4j-travis.properties
 
 MVN_LOGGING_OPTIONS="-Dlog.dir=${ARTIFACTS_DIR} -Dlog4j.configuration=file://$LOG4J_PROPERTIES -Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=warn"
 MVN_COMMON_OPTIONS="-nsu -B -Dflink.forkCount=2 -Dflink.forkCountTestPackage=2 -Dfast -Pskip-webui-build"
-MVN_COMPILE_OPTIONS="-T1C -DskipTests"
+MVN_COMPILE_OPTIONS="-DskipTests"
 
 cp tools/travis/splits/* flink-end-to-end-tests
 
@@ -71,7 +72,7 @@ if [ $EXIT_CODE == 0 ]; then
 	printf "Running end-to-end tests\n"
 	printf "==============================================================================\n"
 
-	FLINK_DIR=build-target flink-end-to-end-tests/${SCRIPT}
+	FLINK_DIR=build-target flink-end-to-end-tests/${SCRIPT} ${CMD}
 
 	EXIT_CODE=$?
 else

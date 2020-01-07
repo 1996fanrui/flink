@@ -202,7 +202,7 @@ class WindowAggregateITCase(mode: StateBackendMode)
 
     val sink = new TestingUpsertTableSink(Array(0, 1)).configure(fieldNames, fieldTypes)
     tEnv.registerTableSink("MySink", sink)
-    tEnv.insertInto(result, "MySink")
+    tEnv.insertInto("MySink", result)
     tEnv.execute("test")
 
     val expected = Seq(
@@ -249,6 +249,46 @@ class WindowAggregateITCase(mode: StateBackendMode)
       //   merged with [8L,10L], by [4L], till {15L}
     )
     assertEquals(expected.sorted, sink.getAppendResults.sorted)
+  }
+
+  @Test
+  def testMinMaxWithTumblingWindow(): Unit = {
+    val stream = failingDataSource(data)
+      .assignTimestampsAndWatermarks(
+        new TimestampAndWatermarkWithOffset[(
+          Long, Int, Double, Float, BigDecimal, String, String)](10L))
+    val table =
+      stream.toTable(tEnv, 'rowtime.rowtime, 'int, 'double, 'float, 'bigdec, 'string, 'name)
+    tEnv.registerTable("T1", table)
+    tEnv.getConfig.getConfiguration.setBoolean("table.exec.emit.early-fire.enabled", true)
+    tEnv.getConfig.getConfiguration.setString("table.exec.emit.early-fire.delay", "1000 ms")
+
+    val sql =
+      """
+        |SELECT
+        | MAX(max_ts),
+        | MIN(min_ts),
+        | `string`
+        |FROM(
+        | SELECT
+        | `string`,
+        | `int`,
+        | MAX(rowtime) as max_ts,
+        | MIN(rowtime) as min_ts
+        | FROM T1
+        | GROUP BY `string`, `int`, TUMBLE(rowtime, INTERVAL '10' SECOND))
+        |GROUP BY `string`
+      """.stripMargin
+    val sink = new TestingRetractSink
+    tEnv.sqlQuery(sql).toRetractStream[Row].addSink(sink)
+    env.execute()
+    val expected = Seq(
+      "1970-01-01T00:00:00.001,1970-01-01T00:00:00.001,Hi",
+      "1970-01-01T00:00:00.002,1970-01-01T00:00:00.002,Hallo",
+      "1970-01-01T00:00:00.007,1970-01-01T00:00:00.003,Hello",
+      "1970-01-01T00:00:00.016,1970-01-01T00:00:00.008,Hello world",
+      "1970-01-01T00:00:00.032,1970-01-01T00:00:00.032,null")
+    assertEquals(expected.sorted, sink.getRetractResults.sorted)
   }
 
   private def withLateFireDelay(tableConfig: TableConfig, interval: Time): Unit = {

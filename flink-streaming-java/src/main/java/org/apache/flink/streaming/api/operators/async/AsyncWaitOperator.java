@@ -30,8 +30,8 @@ import org.apache.flink.streaming.api.functions.async.AsyncFunction;
 import org.apache.flink.streaming.api.functions.async.ResultFuture;
 import org.apache.flink.streaming.api.graph.StreamConfig;
 import org.apache.flink.streaming.api.operators.AbstractUdfStreamOperator;
-import org.apache.flink.streaming.api.operators.BoundedOneInput;
 import org.apache.flink.streaming.api.operators.ChainingStrategy;
+import org.apache.flink.streaming.api.operators.MailboxExecutor;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.operators.Output;
 import org.apache.flink.streaming.api.operators.TimestampedCollector;
@@ -43,7 +43,6 @@ import org.apache.flink.streaming.runtime.streamrecord.StreamElement;
 import org.apache.flink.streaming.runtime.streamrecord.StreamElementSerializer;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.streaming.runtime.tasks.StreamTask;
-import org.apache.flink.streaming.runtime.tasks.mailbox.execution.MailboxExecutor;
 import org.apache.flink.util.Preconditions;
 
 import javax.annotation.Nonnull;
@@ -76,7 +75,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @Internal
 public class AsyncWaitOperator<IN, OUT>
 		extends AbstractUdfStreamOperator<OUT, AsyncFunction<IN, OUT>>
-		implements OneInputStreamOperator<IN, OUT>, BoundedOneInput {
+		implements OneInputStreamOperator<IN, OUT> {
 	private static final long serialVersionUID = 1L;
 
 	private static final String STATE_NAME = "_async_wait_operator_state_";
@@ -89,8 +88,6 @@ public class AsyncWaitOperator<IN, OUT>
 
 	/** Timeout for the async collectors. */
 	private final long timeout;
-
-	private transient Object checkpointingLock;
 
 	/** {@link TypeSerializer} for inputs while making snapshots. */
 	private transient StreamElementSerializer<IN> inStreamElementSerializer;
@@ -131,8 +128,6 @@ public class AsyncWaitOperator<IN, OUT>
 	@Override
 	public void setup(StreamTask<?, ?> containingTask, StreamConfig config, Output<StreamRecord<OUT>> output) {
 		super.setup(containingTask, config, output);
-
-		this.checkpointingLock = getContainingTask().getCheckpointLock();
 
 		this.inStreamElementSerializer = new StreamElementSerializer<>(
 			getOperatorConfig().<IN>getTypeSerializerIn1(getUserCodeClassloader()));
@@ -235,11 +230,6 @@ public class AsyncWaitOperator<IN, OUT>
 	}
 
 	@Override
-	public void endInput() throws Exception {
-		waitInFlightInputsFinished();
-	}
-
-	@Override
 	public void close() throws Exception {
 		try {
 			waitInFlightInputsFinished();
@@ -261,7 +251,6 @@ public class AsyncWaitOperator<IN, OUT>
 	 * @return a handle that allows to set the result of the async computation for the given element.
 	 */
 	private ResultFuture<OUT> addToWorkQueue(StreamElement streamElement) throws InterruptedException {
-		assert(Thread.holdsLock(checkpointingLock));
 
 		Optional<ResultFuture<OUT>> queueEntry;
 		while (!(queueEntry = queue.tryPut(streamElement)).isPresent()) {
@@ -272,7 +261,6 @@ public class AsyncWaitOperator<IN, OUT>
 	}
 
 	private void waitInFlightInputsFinished() throws InterruptedException {
-		assert(Thread.holdsLock(checkpointingLock));
 
 		while (!queue.isEmpty()) {
 			mailboxExecutor.yield();
@@ -288,12 +276,10 @@ public class AsyncWaitOperator<IN, OUT>
 	private void outputCompletedElement() {
 		if (queue.hasCompletedElements()) {
 			// emit only one element to not block the mailbox thread unnecessarily
-			synchronized (checkpointingLock) {
-				queue.emitCompletedElement(timestampedCollector);
-			}
+			queue.emitCompletedElement(timestampedCollector);
 			// if there are more completed elements, emit them with subsequent mails
 			if (queue.hasCompletedElements()) {
-				mailboxExecutor.execute(this::outputCompletedElement);
+				mailboxExecutor.execute(this::outputCompletedElement, "AsyncWaitOperator#outputCompletedElement");
 			}
 		}
 	}
@@ -346,19 +332,23 @@ public class AsyncWaitOperator<IN, OUT>
 
 		private void processInMailbox(Collection<OUT> results) {
 			// move further processing into the mailbox thread
-			mailboxExecutor.execute(() -> {
-				// Cancel the timer once we've completed the stream record buffer entry. This will remove the registered
-				// timer task
-				if (timeoutTimer != null) {
-					// canceling in mailbox thread avoids https://issues.apache.org/jira/browse/FLINK-13635
-					timeoutTimer.cancel(true);
-				}
+			mailboxExecutor.execute(
+				() -> processResults(results),
+				"Result in AsyncWaitOperator of input %s", results);
+		}
 
-				// update the queue entry with the result
-				resultFuture.complete(results);
-				// now output all elements from the queue that have been completed (in the correct order)
-				outputCompletedElement();
-			});
+		private void processResults(Collection<OUT> results) {
+			// Cancel the timer once we've completed the stream record buffer entry. This will remove the registered
+			// timer task
+			if (timeoutTimer != null) {
+				// canceling in mailbox thread avoids https://issues.apache.org/jira/browse/FLINK-13635
+				timeoutTimer.cancel(true);
+			}
+
+			// update the queue entry with the result
+			resultFuture.complete(results);
+			// now output all elements from the queue that have been completed (in the correct order)
+			outputCompletedElement();
 		}
 
 		@Override

@@ -18,7 +18,8 @@
 package org.apache.flink.table.plan.nodes
 
 import org.apache.calcite.rex.{RexCall, RexInputRef, RexLiteral, RexNode}
-import org.apache.flink.table.functions.FunctionLanguage
+import org.apache.calcite.sql.`type`.SqlTypeName
+import org.apache.flink.table.api.TableException
 import org.apache.flink.table.functions.python.{PythonFunction, PythonFunctionInfo, SimplePythonFunction}
 import org.apache.flink.table.functions.utils.ScalarSqlFunction
 
@@ -27,49 +28,65 @@ import scala.collection.mutable
 
 trait CommonPythonCalc {
 
+  protected def loadClass(className: String): Class[_] = {
+    try {
+      Class.forName(className, false, Thread.currentThread.getContextClassLoader)
+    } catch {
+      case ex: ClassNotFoundException => throw new TableException(
+        "The dependency of 'flink-python' is not present on the classpath.", ex)
+    }
+  }
+
+  private lazy val convertLiteralToPython = {
+    val clazz = loadClass("org.apache.flink.api.common.python.PythonBridgeUtils")
+    clazz.getMethod("convertLiteralToPython", classOf[RexLiteral], classOf[SqlTypeName])
+  }
+
   private[flink] def extractPythonScalarFunctionInfos(
-      rexCalls: Array[RexCall]): (Array[Int], Array[PythonFunctionInfo]) = {
+      pythonRexCalls: Array[RexCall]): (Array[Int], Array[PythonFunctionInfo]) = {
     // using LinkedHashMap to keep the insert order
     val inputNodes = new mutable.LinkedHashMap[RexNode, Integer]()
-    val pythonFunctionInfos = rexCalls.map(createPythonScalarFunctionInfo(_, inputNodes))
+    val pythonFunctionInfos = pythonRexCalls.map(createPythonScalarFunctionInfo(_, inputNodes))
 
-    val udfInputOffsets = inputNodes.toArray.map(_._1).map {
-      case inputRef: RexInputRef => inputRef.getIndex
-      case _: RexLiteral => throw new Exception(
-        "Constants cannot be used as parameters of Python UDF for now. " +
-        "It will be supported in FLINK-14208")
-    }
+    val udfInputOffsets = inputNodes.toArray
+      .map(_._1)
+      .collect { case inputRef: RexInputRef => inputRef.getIndex }
     (udfInputOffsets, pythonFunctionInfos)
   }
 
   private[flink] def createPythonScalarFunctionInfo(
-      rexCall: RexCall,
-      inputNodes: mutable.Map[RexNode, Integer]): PythonFunctionInfo = rexCall.getOperator match {
-    case sfc: ScalarSqlFunction if sfc.getScalarFunction.getLanguage == FunctionLanguage.PYTHON =>
-      val inputs = new mutable.ArrayBuffer[AnyRef]()
-      rexCall.getOperands.foreach {
-        case pythonRexCall: RexCall if pythonRexCall.getOperator.asInstanceOf[ScalarSqlFunction]
-          .getScalarFunction.getLanguage == FunctionLanguage.PYTHON =>
-          // Continuous Python UDFs can be chained together
-          val argPythonInfo = createPythonScalarFunctionInfo(pythonRexCall, inputNodes)
-          inputs.append(argPythonInfo)
+      pythonRexCall: RexCall,
+      inputNodes: mutable.Map[RexNode, Integer]): PythonFunctionInfo = {
+    pythonRexCall.getOperator match {
+      case sfc: ScalarSqlFunction =>
+        val inputs = new mutable.ArrayBuffer[AnyRef]()
+        pythonRexCall.getOperands.foreach {
+          case pythonRexCall: RexCall =>
+            // Continuous Python UDFs can be chained together
+            val argPythonInfo = createPythonScalarFunctionInfo(pythonRexCall, inputNodes)
+            inputs.append(argPythonInfo)
 
-        case argNode: RexNode =>
-          // For input arguments of RexInputRef, it's replaced with an offset into the input row
-          inputNodes.get(argNode) match {
-            case Some(existing) => inputs.append(existing)
-            case None =>
-              val inputOffset = Integer.valueOf(inputNodes.size)
-              inputs.append(inputOffset)
-              inputNodes.put(argNode, inputOffset)
-          }
-      }
+          case literal: RexLiteral =>
+            inputs.append(
+              convertLiteralToPython.invoke(null, literal, literal.getType.getSqlTypeName))
 
-      // Extracts the necessary information for Python function execution, such as
-      // the serialized Python function, the Python env, etc
-      val pythonFunction = new SimplePythonFunction(
-        sfc.getScalarFunction.asInstanceOf[PythonFunction].getSerializedPythonFunction,
-        sfc.getScalarFunction.asInstanceOf[PythonFunction].getPythonEnv)
-      new PythonFunctionInfo(pythonFunction, inputs.toArray)
+          case argNode: RexNode =>
+            // For input arguments of RexInputRef, it's replaced with an offset into the input row
+            inputNodes.get(argNode) match {
+              case Some(existing) => inputs.append(existing)
+              case None =>
+                val inputOffset = Integer.valueOf(inputNodes.size)
+                inputs.append(inputOffset)
+                inputNodes.put(argNode, inputOffset)
+            }
+        }
+
+        // Extracts the necessary information for Python function execution, such as
+        // the serialized Python function, the Python env, etc
+        val pythonFunction = new SimplePythonFunction(
+          sfc.getScalarFunction.asInstanceOf[PythonFunction].getSerializedPythonFunction,
+          sfc.getScalarFunction.asInstanceOf[PythonFunction].getPythonEnv)
+        new PythonFunctionInfo(pythonFunction, inputs.toArray)
+    }
   }
 }

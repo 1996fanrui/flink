@@ -60,8 +60,8 @@ public final class StreamOneInputProcessor<IN> implements StreamInputProcessor {
 	}
 
 	@Override
-	public CompletableFuture<?> isAvailable() {
-		return input.isAvailable();
+	public CompletableFuture<?> getAvailableFuture() {
+		return input.getAvailableFuture();
 	}
 
 	@Override
@@ -70,7 +70,7 @@ public final class StreamOneInputProcessor<IN> implements StreamInputProcessor {
 
 		if (status == InputStatus.END_OF_INPUT) {
 			synchronized (lock) {
-				operatorChain.endInput(1);
+				operatorChain.endHeadOperatorInput(1);
 			}
 		}
 
