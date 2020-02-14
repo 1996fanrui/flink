@@ -71,9 +71,11 @@ import java.util.List;
 import java.util.Random;
 import java.util.UUID;
 
+import static org.apache.flink.contrib.streaming.state.RocksDBConfigurableOptions.WRITE_BATCH_SIZE;
 import static org.apache.flink.contrib.streaming.state.RocksDBOptions.CHECKPOINT_TRANSFER_THREAD_NUM;
 import static org.apache.flink.contrib.streaming.state.RocksDBOptions.TIMER_SERVICE_FACTORY;
 import static org.apache.flink.contrib.streaming.state.RocksDBOptions.TTL_COMPACT_FILTER_ENABLED;
+import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
@@ -110,6 +112,7 @@ public class RocksDBStateBackend extends AbstractStateBackend implements Configu
 	private static boolean rocksDbInitialized = false;
 
 	private static final int UNDEFINED_NUMBER_OF_TRANSFER_THREADS = -1;
+	private static final long UNDEFINED_WRITE_BATCH_SIZE = -1;
 
 	// ------------------------------------------------------------------------
 
@@ -168,6 +171,11 @@ public class RocksDBStateBackend extends AbstractStateBackend implements Configu
 
 	/** Whether we already lazily initialized our local storage directories. */
 	private transient boolean isInitialized;
+
+	/**
+	 * Max consumed memory size for one batch in {@link RocksDBWriteBatchWrapper}, default value 2mb.
+	 */
+	private long writeBatchSize;
 
 	// ------------------------------------------------------------------------
 
@@ -266,11 +274,12 @@ public class RocksDBStateBackend extends AbstractStateBackend implements Configu
 		this.checkpointStreamBackend = checkNotNull(checkpointStreamBackend);
 		this.enableIncrementalCheckpointing = enableIncrementalCheckpointing;
 		this.numberOfTransferThreads = UNDEFINED_NUMBER_OF_TRANSFER_THREADS;
-		// for now, we use still the heap-based implementation as default
-		this.priorityQueueStateType = PriorityQueueStateType.HEAP;
+		// use RocksDB-based implementation as default from FLINK-15637
+		this.priorityQueueStateType = PriorityQueueStateType.ROCKSDB;
 		this.defaultMetricOptions = new RocksDBNativeMetricOptions();
 		this.enableTtlCompactionFilter = TernaryBoolean.UNDEFINED;
 		this.memoryConfiguration = new RocksDBMemoryConfiguration();
+		this.writeBatchSize = UNDEFINED_WRITE_BATCH_SIZE;
 	}
 
 	/**
@@ -313,6 +322,11 @@ public class RocksDBStateBackend extends AbstractStateBackend implements Configu
 			this.numberOfTransferThreads = original.numberOfTransferThreads;
 		}
 
+		if (original.writeBatchSize == UNDEFINED_WRITE_BATCH_SIZE) {
+			this.writeBatchSize = config.get(WRITE_BATCH_SIZE).getBytes();
+		} else {
+			this.writeBatchSize = original.writeBatchSize;
+		}
 		this.enableTtlCompactionFilter = original.enableTtlCompactionFilter
 			.resolveUndefined(config.getBoolean(TTL_COMPACT_FILTER_ENABLED));
 
@@ -529,7 +543,8 @@ public class RocksDBStateBackend extends AbstractStateBackend implements Configu
 			.setEnableIncrementalCheckpointing(isIncrementalCheckpointsEnabled())
 			.setEnableTtlCompactionFilter(isTtlCompactionFilterEnabled())
 			.setNumberOfTransferingThreads(getNumberOfTransferThreads())
-			.setNativeMetricOptions(resourceContainer.getMemoryWatcherOptions(defaultMetricOptions));
+			.setNativeMetricOptions(resourceContainer.getMemoryWatcherOptions(defaultMetricOptions))
+			.setWriteBatchSize(getWriteBatchSize());
 		return builder.build();
 	}
 
@@ -721,19 +736,38 @@ public class RocksDBStateBackend extends AbstractStateBackend implements Configu
 
 	/**
 	 * Gets whether incremental checkpoints are enabled for this state backend.
+	 *
+	 * @deprecated enabled by default and will be removed in the future.
 	 */
+	@Deprecated
 	public boolean isTtlCompactionFilterEnabled() {
 		return enableTtlCompactionFilter.getOrDefault(TTL_COMPACT_FILTER_ENABLED.defaultValue());
 	}
 
 	/**
-	 * Enable compaction filter to cleanup state with TTL is enabled.
+	 * Enable compaction filter to cleanup state with TTL.
 	 *
 	 * <p>Note: User can still decide in state TTL configuration in state descriptor
 	 * whether the filter is active for particular state or not.
+	 *
+	 * @deprecated enabled by default and will be removed in the future.
 	 */
+	@Deprecated
 	public void enableTtlCompactionFilter() {
 		enableTtlCompactionFilter = TernaryBoolean.TRUE;
+	}
+
+	/**
+	 * Disable compaction filter to cleanup state with TTL.
+	 *
+	 * <p>Note: This is an advanced option and the method should only be used
+	 * when experiencing serious performance degradations during compaction in RocksDB.
+	 *
+	 * @deprecated enabled by default and will be removed in the future.
+	 */
+	@Deprecated
+	public void disableTtlCompactionFilter() {
+		enableTtlCompactionFilter = TernaryBoolean.FALSE;
 	}
 
 	// ------------------------------------------------------------------------
@@ -862,6 +896,24 @@ public class RocksDBStateBackend extends AbstractStateBackend implements Configu
 		setNumberOfTransferThreads(numberOfTransferingThreads);
 	}
 
+	/**
+	 * Gets the max batch size will be used in {@link RocksDBWriteBatchWrapper}.
+	 */
+	public long getWriteBatchSize() {
+		return writeBatchSize == UNDEFINED_WRITE_BATCH_SIZE ?
+			WRITE_BATCH_SIZE.defaultValue().getBytes() : writeBatchSize;
+	}
+
+	/**
+	 * Sets the max batch size will be used in {@link RocksDBWriteBatchWrapper},
+	 * no positive value will disable memory size controller, just use item count controller.
+	 * @param writeBatchSize The size will used to be used in {@link RocksDBWriteBatchWrapper}.
+	 */
+	public void setWriteBatchSize(long writeBatchSize) {
+		checkArgument(writeBatchSize >= 0, "Write batch size have to be no negative.");
+		this.writeBatchSize = writeBatchSize;
+	}
+
 	// ------------------------------------------------------------------------
 	//  utilities
 	// ------------------------------------------------------------------------
@@ -888,6 +940,7 @@ public class RocksDBStateBackend extends AbstractStateBackend implements Configu
 				", localRocksDbDirectories=" + Arrays.toString(localRocksDbDirectories) +
 				", enableIncrementalCheckpointing=" + enableIncrementalCheckpointing +
 				", numberOfTransferThreads=" + numberOfTransferThreads +
+				", writeBatchSize=" + writeBatchSize +
 				'}';
 	}
 

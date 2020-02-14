@@ -44,6 +44,8 @@ import org.apache.flink.runtime.io.network.api.writer.SingleRecordWriter;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.jobgraph.tasks.AbstractInvokable;
 import org.apache.flink.runtime.metrics.groups.OperatorMetricGroup;
+import org.apache.flink.runtime.operators.coordination.OperatorEvent;
+import org.apache.flink.runtime.operators.coordination.OperatorEventDispatcher;
 import org.apache.flink.runtime.plugable.SerializationDelegate;
 import org.apache.flink.runtime.state.CheckpointStorageWorkerView;
 import org.apache.flink.runtime.state.CheckpointStreamFactory;
@@ -75,8 +77,9 @@ import org.apache.flink.streaming.runtime.tasks.mailbox.MailboxProcessor;
 import org.apache.flink.streaming.runtime.tasks.mailbox.TaskMailbox;
 import org.apache.flink.streaming.runtime.tasks.mailbox.TaskMailboxImpl;
 import org.apache.flink.util.ExceptionUtils;
+import org.apache.flink.util.FlinkException;
 import org.apache.flink.util.Preconditions;
-import org.apache.flink.util.WrappingRuntimeException;
+import org.apache.flink.util.SerializedValue;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -93,6 +96,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -154,11 +158,9 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 	 * to ensure that we don't have concurrent method calls that void consistent checkpoints.
 	 * <p>CheckpointLock is superseded by {@link MailboxExecutor}, with
 	 * {@link StreamTaskActionExecutor.SynchronizedStreamTaskActionExecutor SynchronizedStreamTaskActionExecutor}
-	 * to provide lock to {@link SourceStreamTask} (will be pushed down later). </p>
-	 * {@link StreamTaskActionExecutor.SynchronizedStreamTaskActionExecutor SynchronizedStreamTaskActionExecutor}
-	 * will be replaced <b>here</b> with {@link StreamTaskActionExecutor} once {@link #getCheckpointLock()} pushed down to {@link SourceStreamTask}.
+	 * to provide lock to {@link SourceStreamTask}. </p>
 	 */
-	private final StreamTaskActionExecutor.SynchronizedStreamTaskActionExecutor actionExecutor;
+	private final StreamTaskActionExecutor actionExecutor;
 
 	/**
 	 * The input processor. Initialized in {@link #init()} method.
@@ -243,7 +245,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 			Environment environment,
 			@Nullable TimerService timerService,
 			Thread.UncaughtExceptionHandler uncaughtExceptionHandler) {
-		this(environment, timerService, uncaughtExceptionHandler, StreamTaskActionExecutor.synchronizedExecutor());
+		this(environment, timerService, uncaughtExceptionHandler, StreamTaskActionExecutor.IMMEDIATE);
 	}
 
 	/**
@@ -262,7 +264,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 			Environment environment,
 			@Nullable TimerService timerService,
 			Thread.UncaughtExceptionHandler uncaughtExceptionHandler,
-			StreamTaskActionExecutor.SynchronizedStreamTaskActionExecutor actionExecutor) {
+			StreamTaskActionExecutor actionExecutor) {
 		this(environment, timerService, uncaughtExceptionHandler, actionExecutor, new TaskMailboxImpl(Thread.currentThread()));
 	}
 
@@ -270,7 +272,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 			Environment environment,
 			@Nullable TimerService timerService,
 			Thread.UncaughtExceptionHandler uncaughtExceptionHandler,
-			StreamTaskActionExecutor.SynchronizedStreamTaskActionExecutor actionExecutor,
+			StreamTaskActionExecutor actionExecutor,
 			TaskMailbox mailbox) {
 
 		super(environment);
@@ -483,34 +485,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 	}
 
 	private void runMailboxLoop() throws Exception {
-		try {
-			try {
-				mailboxProcessor.runMailboxLoop();
-			}
-			catch (WrappingRuntimeException wrappingException) {
-				Throwable unwrapped = wrappingException.unwrap();
-				if (unwrapped instanceof Exception) {
-					throw (Exception) unwrapped;
-				}
-				else {
-					throw wrappingException;
-				}
-			}
-		}
-		catch (InterruptedException e) {
-			if (!canceled) {
-				Thread.currentThread().interrupt();
-				throw e;
-			}
-		}
-		catch (Exception e) {
-			if (canceled) {
-				LOG.warn("Error while canceling task.", e);
-			}
-			else {
-				throw e;
-			}
-		}
+		mailboxProcessor.runMailboxLoop();
 	}
 
 	private void afterInvoke() throws Exception {
@@ -734,26 +709,6 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 			" (" + getEnvironment().getExecutionId() + ')';
 	}
 
-	/**
-	 * Gets the lock object on which all operations that involve data and state mutation have to lock.
-	 * @return The checkpoint lock object.
-	 * @deprecated This method will be removed in future releases. Use {@linkplain MailboxExecutor mailbox executor}
-	 * to run {@link StreamTask} actions that require synchronization (e.g. checkpointing, collecting output).
-	 * <p>
-	 * For other (non-{@link StreamTask}) actions other synchronization means can be used.
-	 * </p>
-	 * MailboxExecutor {@link MailboxExecutor#yield() yield} or {@link MailboxExecutor#tryYield() tryYield} methods can
-	 * be used for actions that should give control to other actions temporarily.
-	 * <p>
-	 * MailboxExecutor can be accessed by using {@link org.apache.flink.streaming.api.operators.YieldingOperatorFactory YieldingOperatorFactory}.
-	 * Example usage can be found in {@link org.apache.flink.streaming.api.operators.async.AsyncWaitOperator AsyncWaitOperator}.
-	 * </p>
-	 */
-	@Deprecated
-	public Object getCheckpointLock() {
-		return actionExecutor.getMutex();
-	}
-
 	public CheckpointStorageWorkerView getCheckpointStorage() {
 		return checkpointStorage;
 	}
@@ -768,6 +723,10 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 
 	public StreamStatusMaintainer getStreamStatusMaintainer() {
 		return operatorChain;
+	}
+
+	public OperatorEventDispatcher getOperatorEventDispatcher() {
+		return operatorChain.getOperatorEventDispatcher();
 	}
 
 	RecordWriterOutput<?>[] getStreamOutputs() {
@@ -1017,6 +976,28 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 				operator.initializeState();
 				operator.open();
 			}
+		}
+	}
+
+	// ------------------------------------------------------------------------
+	//  Operator Events
+	// ------------------------------------------------------------------------
+
+	@Override
+	public void dispatchOperatorEvent(OperatorID operator, SerializedValue<OperatorEvent> event) throws FlinkException {
+		try {
+			mailboxProcessor.getMainMailboxExecutor().execute(
+				() -> {
+					try {
+						operatorChain.dispatchOperatorEvent(operator, event);
+					} catch (Throwable t) {
+						mailboxProcessor.reportThrowable(t);
+					}
+				},
+				"dispatch operator event");
+		}
+		catch (RejectedExecutionException e) {
+			// this happens during shutdown, we can swallow this
 		}
 	}
 

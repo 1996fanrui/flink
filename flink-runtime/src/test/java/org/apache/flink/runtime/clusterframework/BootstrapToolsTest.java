@@ -43,6 +43,7 @@ import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutorService;
@@ -148,18 +149,18 @@ public class BootstrapToolsTest extends TestLogger {
 	@Test
 	public void testGetTaskManagerShellCommand() {
 		final Configuration cfg = new Configuration();
-		final TaskExecutorResourceSpec taskExecutorResourceSpec = new TaskExecutorResourceSpec(
+		final TaskExecutorProcessSpec taskExecutorProcessSpec = new TaskExecutorProcessSpec(
 			new CPUResource(1.0),
 			new MemorySize(0), // frameworkHeapSize
 			new MemorySize(0), // frameworkOffHeapSize
 			new MemorySize(111), // taskHeapSize
 			new MemorySize(0), // taskOffHeapSize
-			new MemorySize(222), // shuffleMemSize
+			new MemorySize(222), // networkMemSize
 			new MemorySize(0), // managedMemorySize
 			new MemorySize(333), // jvmMetaspaceSize
 			new MemorySize(0)); // jvmOverheadSize
 		final ContaineredTaskManagerParameters containeredParams =
-			new ContaineredTaskManagerParameters(taskExecutorResourceSpec, 4, new HashMap<String, String>());
+			new ContaineredTaskManagerParameters(taskExecutorProcessSpec, 4, new HashMap<String, String>());
 
 		// no logging, with/out krb5
 		final String java = "$JAVA_HOME/bin/java";
@@ -173,7 +174,7 @@ public class BootstrapToolsTest extends TestLogger {
 			"-Dlog4j.configuration=file:./conf/log4j.properties"; // if set
 		final String mainClass =
 			"org.apache.flink.runtime.clusterframework.BootstrapToolsTest";
-		final String dynamicConfigs = TaskExecutorResourceUtils.generateDynamicConfigsStr(taskExecutorResourceSpec).trim();
+		final String dynamicConfigs = TaskExecutorProcessUtils.generateDynamicConfigsStr(taskExecutorProcessSpec).trim();
 		final String basicArgs = "--configDir ./conf";
 		final String mainArgs = "-Djobmanager.rpc.address=host1 -Dkey.a=v1";
 		final String args = dynamicConfigs + " " + basicArgs + " " + mainArgs;
@@ -508,5 +509,28 @@ public class BootstrapToolsTest extends TestLogger {
 		final Configuration conf = new Configuration();
 		conf.setString(ResourceManagerOptions.CONTAINERIZED_HEAP_CUTOFF_RATIO.key(), "6000");
 		BootstrapTools.calculateHeapSize(4000, conf);
+	}
+
+	@Test
+	public void testGetEnvironmentVariables() {
+		Configuration testConf = new Configuration();
+		testConf.setString("containerized.master.env.LD_LIBRARY_PATH", "/usr/lib/native");
+
+		Map<String, String> res = BootstrapTools.getEnvironmentVariables("containerized.master.env.", testConf);
+
+		Assert.assertEquals(1, res.size());
+		Map.Entry<String, String> entry = res.entrySet().iterator().next();
+		Assert.assertEquals("LD_LIBRARY_PATH", entry.getKey());
+		Assert.assertEquals("/usr/lib/native", entry.getValue());
+	}
+
+	@Test
+	public void testGetEnvironmentVariablesErroneous() {
+		Configuration testConf = new Configuration();
+		testConf.setString("containerized.master.env.", "/usr/lib/native");
+
+		Map<String, String> res = BootstrapTools.getEnvironmentVariables("containerized.master.env.", testConf);
+
+		Assert.assertEquals(0, res.size());
 	}
 }

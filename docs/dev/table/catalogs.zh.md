@@ -1,6 +1,5 @@
 ---
 title: "Catalogs"
-is_beta: true
 nav-parent_id: tableapi
 nav-pos: 80
 ---
@@ -135,7 +134,7 @@ catalog.createTable(
         )
     );
 
-List<String> tables = catalog.listTables("mydb); // tables should contain "mytable"
+List<String> tables = catalog.listTables("mydb"); // tables should contain "mytable"
 {% endhighlight %}
 
 </div>

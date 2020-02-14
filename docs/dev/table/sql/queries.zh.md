@@ -25,7 +25,7 @@ under the License.
 * This will be replaced by the TOC
 {:toc}
 
-SELECT 查询需要使用 `TableEnvironment` 的 `sqlQuery()` 方法加以指定。这个方法会以 `Table` 的形式返回 SELECT 的查询结果。 `Table` 可以被用于 [随后的SQL 与 Table API 查询]({{ site.baseurl }}/zh/dev/table/common.html#mixing-table-api-and-sql) 、 [转换为 DataSet 或 DataStream ]({{ site.baseurl }}/zh/dev/table/common.html#integration-with-datastream-and-dataset-api)或 [输出到 TableSink ]({{ site.baseurl }}/dev/table/common.html#emit-a-table))。SQL 与 Table API 的查询可以进行无缝融合、整体优化并翻译为单一的程序。
+SELECT 查询需要使用 `TableEnvironment` 的 `sqlQuery()` 方法加以指定。这个方法会以 `Table` 的形式返回 SELECT 的查询结果。 `Table` 可以被用于 [随后的SQL 与 Table API 查询]({{ site.baseurl }}/zh/dev/table/common.html#mixing-table-api-and-sql) 、 [转换为 DataSet 或 DataStream ]({{ site.baseurl }}/zh/dev/table/common.html#integration-with-datastream-and-dataset-api)或 [输出到 TableSink ]({{ site.baseurl }}/zh/dev/table/common.html#emit-a-table)。SQL 与 Table API 的查询可以进行无缝融合、整体优化并翻译为单一的程序。
 
 为了可以在 SQL 查询中访问到表，你需要先 [在 TableEnvironment 中注册表 ]({{ site.baseurl }}/zh/dev/table/common.html#register-tables-in-the-catalog)。表可以通过 [TableSource]({{ site.baseurl }}/zh/dev/table/common.html#register-a-tablesource)、 [Table]({{ site.baseurl }}/zh/dev/table/common.html#register-a-table)、[CREATE TABLE 语句](create.html)、 [DataStream 或 DataSet]({{ site.baseurl }}/zh/dev/table/common.html#register-a-datastream-or-dataset-as-table) 注册。 用户也可以通过 [向 TableEnvironment 中注册 catalog ]({{ site.baseurl }}/zh/dev/table/catalogs.html) 的方式指定数据源的位置。
 
@@ -560,7 +560,7 @@ FROM Orders RIGHT JOIN Product ON Orders.productId = Product.id
 SELECT *
 FROM Orders FULL OUTER JOIN Product ON Orders.productId = Product.id
 {% endhighlight %}
-        <p><b>注意：</b> 流查询中可能会因为不同行的输入数量导致计算结果的状态无限增长。请提供具有有效保留间隔的查询配置，以防止出现过多的状态。详情请参考 <a href="{{ site.baseurl }}zh//dev/table/streaming/query_configuration.html">查询配置</a> 页面.</p>
+        <p><b>注意：</b> 流查询中可能会因为不同行的输入数量导致计算结果的状态无限增长。请提供具有有效保留间隔的查询配置，以防止出现过多的状态。详情请参考 <a href="{{ site.baseurl }}/zh/dev/table/streaming/query_configuration.html">查询配置</a> 页面.</p>
       </td>
     </tr>
     <tr>
@@ -1005,7 +1005,7 @@ WHERE rownum = 1
 
 - `ROW_NUMBER()`: 从第一行开始，依次为每一行分配一个唯一且连续的号码。
 - `PARTITION BY col1[, col2...]`: 指定分区的列，例如去重的键。
-- `ORDER BY time_attr [asc|desc]`: 指定排序的列。所制定的列必须为 [时间属性](streaming/time_attributes.html)。目前仅支持 [proctime attribute](streaming/time_attributes.html#processing-time)，在未来版本中将会支持 [Rowtime atttribute](streaming/time_attributes.html#event-time) 。升序（ ASC ）排列指只保留第一行，而降序排列（ DESC ）则指保留最后一行。
+- `ORDER BY time_attr [asc|desc]`: 指定排序的列。所制定的列必须为 [时间属性]({{ site.baseurl }}/zh/dev/table/streaming/time_attributes.html)。目前仅支持 [proctime attribute]({{ site.baseurl }}/zh/dev/table/streaming/time_attributes.html#processing-time)，在未来版本中将会支持 [Rowtime atttribute]({{ site.baseurl }}/zh/dev/table/streaming/time_attributes.html#event-time) 。升序（ ASC ）排列指只保留第一行，而降序排列（ DESC ）则指保留最后一行。
 - `WHERE rownum = 1`: Flink 需要 `rownum = 1` 以确定该查询是否为去重查询。
 
 以下的例子描述了如何指定 SQL 查询以在一个流计算表中进行去重操作。
@@ -1088,7 +1088,7 @@ SQL 查询的分组窗口是通过 `GROUP BY` 子句定义的。类似于使用�
 
 #### 时间属性
 
-在流处理表中的 SQL 查询中，分组窗口函数的 `time_attr` 参数必须引用一个合法的时间属性，且该属性需要指定行的处理时间或事件时间。可参考 [时间属性文档](streaming/time_attributes.html) 以了解如何定义时间属性。
+在流处理表中的 SQL 查询中，分组窗口函数的 `time_attr` 参数必须引用一个合法的时间属性，且该属性需要指定行的处理时间或事件时间。可参考 [时间属性文档]({{ site.baseurl }}/zh/dev/table/streaming/time_attributes.html) 以了解如何定义时间属性。
 
 对于批处理的 SQL 查询，分组窗口函数的 `time_attr` 参数必须是一个 `TIMESTAMP` 类型的属性。
 

@@ -348,7 +348,7 @@ public class BootstrapTools {
 	 * Get an instance of the dynamic properties option.
 	 *
 	 * <p>Dynamic properties allow the user to specify additional configuration values with -D, such as
-	 * <tt> -Dfs.overwrite-files=true  -Dtaskmanager.memory.shuffle.min=536346624</tt>
+	 * <tt> -Dfs.overwrite-files=true  -Dtaskmanager.memory.network.min=536346624</tt>
      */
 	public static Option newDynamicPropertiesOption() {
 		return new Option(DYNAMIC_PROPERTIES_OPT, true, "Dynamic properties");
@@ -401,8 +401,8 @@ public class BootstrapTools {
 		final Map<String, String> startCommandValues = new HashMap<>();
 		startCommandValues.put("java", "$JAVA_HOME/bin/java");
 
-		final TaskExecutorResourceSpec taskExecutorResourceSpec = tmParams.getTaskExecutorResourceSpec();
-		startCommandValues.put("jvmmem", TaskExecutorResourceUtils.generateJvmParametersStr(taskExecutorResourceSpec));
+		final TaskExecutorProcessSpec taskExecutorProcessSpec = tmParams.getTaskExecutorProcessSpec();
+		startCommandValues.put("jvmmem", TaskExecutorProcessUtils.generateJvmParametersStr(taskExecutorProcessSpec));
 
 		String javaOpts = flinkConfig.getString(CoreOptions.FLINK_JVM_OPTIONS);
 		if (flinkConfig.getString(CoreOptions.FLINK_TM_JVM_OPTIONS).length() > 0) {
@@ -435,7 +435,7 @@ public class BootstrapTools {
 			"1> " + logDirectory + "/taskmanager.out " +
 			"2> " + logDirectory + "/taskmanager.err");
 
-		String argsStr = TaskExecutorResourceUtils.generateDynamicConfigsStr(taskExecutorResourceSpec) + " --configDir " + configDirectory;
+		String argsStr = TaskExecutorProcessUtils.generateDynamicConfigsStr(taskExecutorProcessSpec) + " --configDir " + configDirectory;
 		if (!mainArgs.isEmpty()) {
 			argsStr += " " + mainArgs;
 		}
@@ -711,5 +711,23 @@ public class BootstrapTools {
 			heapLimit = minCutoff;
 		}
 		return memory - heapLimit;
+	}
+
+	/**
+	 * Method to extract environment variables from the flinkConfiguration based on the given prefix String.
+	 *
+	 * @param envPrefix Prefix for the environment variables key
+	 * @param flinkConfiguration The Flink config to get the environment variable definition from
+	 */
+	public static Map<String, String> getEnvironmentVariables(String envPrefix, Configuration flinkConfiguration) {
+		Map<String, String> result  = new HashMap<>();
+		for (Map.Entry<String, String> entry: flinkConfiguration.toMap().entrySet()) {
+			if (entry.getKey().startsWith(envPrefix) && entry.getKey().length() > envPrefix.length()) {
+				// remove prefix
+				String key = entry.getKey().substring(envPrefix.length());
+				result.put(key, entry.getValue());
+			}
+		}
+		return result;
 	}
 }

@@ -65,6 +65,7 @@ import org.apache.flink.table.functions.ScalarFunction;
 import org.apache.flink.table.functions.ScalarFunctionDefinition;
 import org.apache.flink.table.functions.TableFunction;
 import org.apache.flink.table.functions.TableFunctionDefinition;
+import org.apache.flink.table.functions.UserDefinedFunction;
 import org.apache.flink.table.functions.UserDefinedFunctionHelper;
 import org.apache.flink.table.module.Module;
 import org.apache.flink.table.module.ModuleManager;
@@ -132,22 +133,13 @@ public class TableEnvironmentImpl implements TableEnvironment {
 	 * Provides necessary methods for {@link ConnectTableDescriptor}.
 	 */
 	private final Registration registration = new Registration() {
+
 		@Override
 		public void createTemporaryTable(String path, CatalogBaseTable table) {
 			UnresolvedIdentifier unresolvedIdentifier = parser.parseIdentifier(path);
 			ObjectIdentifier objectIdentifier = catalogManager.qualifyIdentifier(
 				unresolvedIdentifier);
 			catalogManager.createTemporaryTable(table, objectIdentifier, false);
-		}
-
-		@Override
-		public void createTableSource(String name, TableSource<?> tableSource) {
-			registerTableSource(name, tableSource);
-		}
-
-		@Override
-		public void createTableSink(String name, TableSink<?> tableSink) {
-			registerTableSink(name, tableSink);
 		}
 	};
 
@@ -171,6 +163,7 @@ public class TableEnvironmentImpl implements TableEnvironment {
 		this.operationTreeBuilder = OperationTreeBuilder.create(
 			tableConfig,
 			functionCatalog,
+			catalogManager.getDataTypeFactory(),
 			path -> {
 				try {
 					UnresolvedIdentifier unresolvedIdentifier = parser.parseIdentifier(path);
@@ -190,13 +183,23 @@ public class TableEnvironmentImpl implements TableEnvironment {
 
 	public static TableEnvironmentImpl create(EnvironmentSettings settings) {
 
+		// temporary solution until FLINK-15635 is fixed
+		ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
+
 		TableConfig tableConfig = new TableConfig();
 
-		CatalogManager catalogManager = new CatalogManager(
-			settings.getBuiltInCatalogName(),
-			new GenericInMemoryCatalog(settings.getBuiltInCatalogName(), settings.getBuiltInDatabaseName()));
-
 		ModuleManager moduleManager = new ModuleManager();
+
+		CatalogManager catalogManager = CatalogManager.newBuilder()
+			.classLoader(classLoader)
+			.config(tableConfig.getConfiguration())
+			.defaultCatalog(
+				settings.getBuiltInCatalogName(),
+				new GenericInMemoryCatalog(
+					settings.getBuiltInCatalogName(),
+					settings.getBuiltInDatabaseName()))
+			.build();
+
 		FunctionCatalog functionCatalog = new FunctionCatalog(tableConfig, catalogManager, moduleManager);
 
 		Map<String, String> executorProperties = settings.toExecutorProperties();
@@ -205,7 +208,12 @@ public class TableEnvironmentImpl implements TableEnvironment {
 
 		Map<String, String> plannerProperties = settings.toPlannerProperties();
 		Planner planner = ComponentFactoryService.find(PlannerFactory.class, plannerProperties)
-			.create(plannerProperties, executor, tableConfig, functionCatalog, catalogManager);
+			.create(
+				plannerProperties,
+				executor,
+				tableConfig,
+				functionCatalog,
+				catalogManager);
 
 		return new TableEnvironmentImpl(
 			catalogManager,
@@ -255,6 +263,72 @@ public class TableEnvironmentImpl implements TableEnvironment {
 		functionCatalog.registerTempSystemScalarFunction(
 			name,
 			function);
+	}
+
+	@Override
+	public void createTemporarySystemFunction(String name, Class<? extends UserDefinedFunction> functionClass) {
+		final UserDefinedFunction functionInstance = UserDefinedFunctionHelper.instantiateFunction(functionClass);
+		createTemporarySystemFunction(name, functionInstance);
+	}
+
+	@Override
+	public void createTemporarySystemFunction(String name, UserDefinedFunction functionInstance) {
+		functionCatalog.registerTemporarySystemFunction(
+			name,
+			functionInstance,
+			false);
+	}
+
+	@Override
+	public boolean dropTemporarySystemFunction(String name) {
+		return functionCatalog.dropTemporarySystemFunction(
+			name,
+			true);
+	}
+
+	@Override
+	public void createFunction(String path, Class<? extends UserDefinedFunction> functionClass) {
+		createFunction(path, functionClass, false);
+	}
+
+	@Override
+	public void createFunction(String path, Class<? extends UserDefinedFunction> functionClass, boolean ignoreIfExists) {
+		final UnresolvedIdentifier unresolvedIdentifier = parser.parseIdentifier(path);
+		functionCatalog.registerCatalogFunction(
+			unresolvedIdentifier,
+			functionClass,
+			ignoreIfExists);
+	}
+
+	@Override
+	public boolean dropFunction(String path) {
+		final UnresolvedIdentifier unresolvedIdentifier = parser.parseIdentifier(path);
+		return functionCatalog.dropCatalogFunction(
+			unresolvedIdentifier,
+			true);
+	}
+
+	@Override
+	public void createTemporaryFunction(String path, Class<? extends UserDefinedFunction> functionClass) {
+		final UserDefinedFunction functionInstance = UserDefinedFunctionHelper.instantiateFunction(functionClass);
+		createTemporaryFunction(path, functionInstance);
+	}
+
+	@Override
+	public void createTemporaryFunction(String path, UserDefinedFunction functionInstance) {
+		final UnresolvedIdentifier unresolvedIdentifier = parser.parseIdentifier(path);
+		functionCatalog.registerTemporaryCatalogFunction(
+			unresolvedIdentifier,
+			functionInstance,
+			false);
+	}
+
+	@Override
+	public boolean dropTemporaryFunction(String path) {
+		final UnresolvedIdentifier unresolvedIdentifier = parser.parseIdentifier(path);
+		return functionCatalog.dropTemporaryCatalogFunction(
+			unresolvedIdentifier,
+			true);
 	}
 
 	@Override
@@ -338,7 +412,7 @@ public class TableEnvironmentImpl implements TableEnvironment {
 	public void insertInto(Table table, String sinkPath, String... sinkPathContinued) {
 		List<String> fullPath = new ArrayList<>(Arrays.asList(sinkPathContinued));
 		fullPath.add(0, sinkPath);
-		UnresolvedIdentifier unresolvedIdentifier = UnresolvedIdentifier.of(fullPath.toArray(new String[0]));
+		UnresolvedIdentifier unresolvedIdentifier = UnresolvedIdentifier.of(fullPath);
 
 		insertIntoInternal(unresolvedIdentifier, table);
 	}
@@ -753,7 +827,7 @@ public class TableEnvironmentImpl implements TableEnvironment {
 		String exMsg = getDDLOpExecuteErrorMsg(createCatalogFunctionOperation.asSummaryString());
 		try {
 			CatalogFunction function = createCatalogFunctionOperation.getCatalogFunction();
-			if (function.isTemporary()) {
+			if (createCatalogFunctionOperation.isTemporary()) {
 				boolean exist = functionCatalog.hasTemporaryCatalogFunction(
 					createCatalogFunctionOperation.getFunctionIdentifier());
 				if (!exist) {
@@ -787,7 +861,7 @@ public class TableEnvironmentImpl implements TableEnvironment {
 		String exMsg = getDDLOpExecuteErrorMsg(alterCatalogFunctionOperation.asSummaryString());
 		try {
 			CatalogFunction function = alterCatalogFunctionOperation.getCatalogFunction();
-			if (function.isTemporary()) {
+			if (alterCatalogFunctionOperation.isTemporary()) {
 				throw new ValidationException(
 					"Alter temporary catalog function is not supported");
 			} else {
@@ -855,15 +929,14 @@ public class TableEnvironmentImpl implements TableEnvironment {
 	}
 
 	private void dropSystemFunction(DropTempSystemFunctionOperation operation) {
-		String exMsg = getDDLOpExecuteErrorMsg(operation.asSummaryString());
 		try {
-			functionCatalog.dropTempSystemFunction(
+			functionCatalog.dropTemporarySystemFunction(
 				operation.getFunctionName(),
 				operation.isIfExists());
 		} catch (ValidationException e) {
 			throw e;
 		} catch (Exception e) {
-			throw new TableException(exMsg, e);
+			throw new TableException(getDDLOpExecuteErrorMsg(operation.asSummaryString()), e);
 		}
 	}
 

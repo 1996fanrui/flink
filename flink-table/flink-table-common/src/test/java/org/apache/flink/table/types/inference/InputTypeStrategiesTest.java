@@ -23,7 +23,7 @@ import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.functions.FunctionKind;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.inference.utils.CallContextMock;
-import org.apache.flink.table.types.inference.utils.DataTypeLookupMock;
+import org.apache.flink.table.types.inference.utils.DataTypeFactoryMock;
 import org.apache.flink.table.types.inference.utils.FunctionDefinitionMock;
 
 import org.junit.Rule;
@@ -413,16 +413,15 @@ public class InputTypeStrategiesTest {
 	private String generateSignature() {
 		final FunctionDefinitionMock functionDefinitionMock = new FunctionDefinitionMock();
 		functionDefinitionMock.functionKind = FunctionKind.SCALAR;
-		return TypeInferenceUtil.generateSignature("f", functionDefinitionMock, createTypeInference());
+		return TypeInferenceUtil.generateSignature(createTypeInference(), "f", functionDefinitionMock);
 	}
 
 	private TypeInferenceUtil.Result runTypeInference(List<DataType> actualArgumentTypes) {
 		final FunctionDefinitionMock functionDefinitionMock = new FunctionDefinitionMock();
 		functionDefinitionMock.functionKind = FunctionKind.SCALAR;
 
-		final DataTypeLookupMock dataTypeLookupMock = new DataTypeLookupMock();
-
 		final CallContextMock callContextMock = new CallContextMock();
+		callContextMock.typeFactory = new DataTypeFactoryMock();
 		callContextMock.functionDefinition = functionDefinitionMock;
 		callContextMock.argumentDataTypes = actualArgumentTypes;
 		callContextMock.argumentLiterals = IntStream.range(0, actualArgumentTypes.size())

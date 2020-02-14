@@ -265,20 +265,27 @@ public class ExecutionContext<ClusterID> {
 		}
 	}
 
-	public Pipeline createPipeline(String name, Configuration flinkConfig) {
+	public Pipeline createPipeline(String name) {
 		if (streamExecEnv != null) {
 			// special case for Blink planner to apply batch optimizations
 			// note: it also modifies the ExecutionConfig!
-			if (executor instanceof ExecutorBase) {
+			if (isBlinkPlanner(executor.getClass())) {
 				return ((ExecutorBase) executor).getStreamGraph(name);
 			}
 			return streamExecEnv.getStreamGraph(name);
 		} else {
-			final int parallelism = execEnv.getParallelism();
 			return execEnv.createProgramPlan(name);
 		}
 	}
 
+	private boolean isBlinkPlanner(Class<? extends Executor> executorClass) {
+		try {
+			return ExecutorBase.class.isAssignableFrom(executorClass);
+		} catch (NoClassDefFoundError ignore) {
+			// blink planner might not be on the class path
+			return false;
+		}
+	}
 
 	/** Returns a builder for this {@link ExecutionContext}. */
 	public static Builder builder(
@@ -444,16 +451,24 @@ public class ExecutionContext<ClusterID> {
 			final TableConfig config = new TableConfig();
 			environment.getConfiguration().asMap().forEach((k, v) ->
 					config.getConfiguration().setString(k, v));
-			// Step 1.1 Initialize the CatalogManager if required.
-			final CatalogManager catalogManager = new CatalogManager(
+
+			// Step 1.1 Initialize the ModuleManager if required.
+			final ModuleManager moduleManager = new ModuleManager();
+
+			// Step 1.2 Initialize the CatalogManager if required.
+			final CatalogManager catalogManager = CatalogManager.newBuilder()
+				.classLoader(classLoader)
+				.config(config.getConfiguration())
+				.defaultCatalog(
 					settings.getBuiltInCatalogName(),
 					new GenericInMemoryCatalog(
-							settings.getBuiltInCatalogName(),
-							settings.getBuiltInDatabaseName()));
-			// Step 1.2 Initialize the ModuleManager if required.
-			final ModuleManager moduleManager = new ModuleManager();
+						settings.getBuiltInCatalogName(),
+						settings.getBuiltInDatabaseName()))
+				.build();
+
 			// Step 1.3 Initialize the FunctionCatalog if required.
 			final FunctionCatalog functionCatalog = new FunctionCatalog(config, catalogManager, moduleManager);
+
 			// Step 1.4 Set up session state.
 			this.sessionState = SessionState.of(config, catalogManager, moduleManager, functionCatalog);
 
@@ -679,19 +694,6 @@ public class ExecutionContext<ClusterID> {
 			throw new SqlExecutionException(
 				"Invalid temporal table '" + temporalTableEntry.getName() + "' over table '" +
 					temporalTableEntry.getHistoryTable() + ".\nCause: " + e.getMessage());
-		}
-	}
-
-	private Pipeline createPipeline(String name) {
-		if (streamExecEnv != null) {
-			// special case for Blink planner to apply batch optimizations
-			// note: it also modifies the ExecutionConfig!
-			if (executor instanceof ExecutorBase) {
-				return ((ExecutorBase) executor).getStreamGraph(name);
-			}
-			return streamExecEnv.getStreamGraph(name);
-		} else {
-			return execEnv.createProgramPlan(name);
 		}
 	}
 
