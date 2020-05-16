@@ -1,7 +1,7 @@
 ---
 title: "Flink DataSet API 编程指南"
 nav-id: batch
-nav-title: Batch (DataSet API)
+nav-title: DataSet API
 nav-parent_id: dev
 nav-pos: 30
 nav-show_overview: true
@@ -249,10 +249,10 @@ Dataset<Tuple3<Integer, String, Double>> input = // [...]
 DataSet<Tuple3<Integer, String, Double>> output = input.aggregate(SUM, 0).and(MIN, 2);
 {% endhighlight %}
 	<p>You can also use short-hand syntax for minimum, maximum, and sum aggregations.</p>
-	{% highlight java %}
-	Dataset<Tuple3<Integer, String, Double>> input = // [...]
+{% highlight java %}
+Dataset<Tuple3<Integer, String, Double>> input = // [...]
 DataSet<Tuple3<Integer, String, Double>> output = input.sum(0).andMin(2);
-	{% endhighlight %}
+{% endhighlight %}
       </td>
     </tr>
 
@@ -588,9 +588,9 @@ val output: DataSet[(Int, String, Double)] = input.sum(0).min(2)
       <td>
         <p>Returns the distinct elements of a data set. It removes the duplicate entries
         from the input DataSet, with respect to all fields of the elements, or a subset of fields.</p>
-      {% highlight scala %}
-         data.distinct()
-      {% endhighlight %}
+{% highlight scala %}
+data.distinct()
+{% endhighlight %}
       </td>
     </tr>
 
@@ -887,7 +887,7 @@ DataSet<Long> numbers = env.generateSequence(1, 10000000);
 // Read data from a relational database using the JDBC input format
 DataSet<Tuple2<String, Integer> dbData =
     env.createInput(
-      JDBCInputFormat.buildJDBCInputFormat()
+      JdbcInputFormat.buildJdbcInputFormat()
                      .setDrivername("org.apache.derby.jdbc.EmbeddedDriver")
                      .setDBUrl("jdbc:derby:memory:persons")
                      .setQuery("select name, age from persons")
@@ -1189,7 +1189,7 @@ DataSet<Tuple3<String, Integer, Double>> myResult = [...]
 // write Tuple DataSet to a relational database
 myResult.output(
     // build and configure OutputFormat
-    JDBCOutputFormat.buildJDBCOutputFormat()
+    JdbcOutputFormat.buildJdbcOutputFormat()
                     .setDrivername("org.apache.derby.jdbc.EmbeddedDriver")
                     .setDBUrl("jdbc:derby:memory:persons")
                     .setQuery("insert into persons (name, age, height) values (?,?,?)")
@@ -2122,8 +2122,6 @@ Passing Parameters to Functions
 -------------------
 
 Parameters can be passed to functions using either the constructor or the `withParameters(Configuration)` method. The parameters are serialized as part of the function object and shipped to all parallel task instances.
-
-Check also the [best practices guide on how to pass command line arguments to functions]({{ site.baseurl }}/dev/best_practices.html#parsing-command-line-arguments-and-passing-them-around-in-your-flink-application).
 
 #### Via Constructor
 

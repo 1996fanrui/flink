@@ -26,11 +26,10 @@ export OUTPUT_FILE=kubernetes_wc_out
 export FLINK_JOB_PARALLELISM=1
 export FLINK_JOB_ARGUMENTS='"--output", "/cache/kubernetes_wc_out"'
 
-function cleanup {
+function internal_cleanup {
     kubectl delete job flink-job-cluster
     kubectl delete service flink-job-cluster
     kubectl delete deployment flink-task-manager
-    stop_kubernetes
 }
 
 start_kubernetes
@@ -38,7 +37,7 @@ start_kubernetes
 mkdir -p $OUTPUT_VOLUME
 
 cd "$DOCKER_MODULE_DIR"
-./build.sh --from-local-dist --job-artifacts ${FLINK_DIR}/examples/batch/WordCount.jar --image-name ${FLINK_IMAGE_NAME}
+build_image_with_jar ${FLINK_DIR}/examples/batch/WordCount.jar ${FLINK_IMAGE_NAME}
 cd "$END_TO_END_DIR"
 
 

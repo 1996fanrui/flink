@@ -23,7 +23,7 @@ import org.apache.flink.table.api.Types
 import org.apache.flink.table.api.scala._
 import org.apache.flink.table.expressions.utils.{Func1, RichFunc1}
 import org.apache.flink.table.functions.ScalarFunction
-import org.apache.flink.table.functions.python.{PythonEnv, PythonFunction}
+import org.apache.flink.table.functions.python.{PythonEnv, PythonFunction, PythonFunctionKind}
 import org.apache.flink.table.utils.TableTestBase
 import org.apache.flink.table.utils.TableTestUtil._
 
@@ -473,7 +473,7 @@ class ExpressionReductionRulesTest extends TableTestBase {
     val table = util.addTable[(Int, Long, String)]("MyTable", 'a, 'b, 'c)
     val result = table
       .select('a, 'b, 'c, DeterministicNullFunc() as 'd)
-      .where("d.isNull")
+      .where($"d".isNull)
       .select('a, 'b, 'c)
 
     val expected: String = unaryNode("DataStreamCalc",
@@ -492,7 +492,7 @@ class ExpressionReductionRulesTest extends TableTestBase {
 
     val result = table
       .select('a, 'b, 'c, NonDeterministicNullFunc() as 'd)
-      .where("d.isNull")
+      .where($"d".isNull)
       .select('a, 'b, 'c)
 
     val expected = unaryNode(
@@ -574,6 +574,7 @@ object DeterministicNullFunc extends ScalarFunction {
   override def isDeterministic = true
 }
 
+@SerialVersionUID(1L)
 object DeterministicPythonFunc extends ScalarFunction with PythonFunction {
 
   def eval(): Long = 1L

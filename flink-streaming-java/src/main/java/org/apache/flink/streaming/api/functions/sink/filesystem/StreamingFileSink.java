@@ -18,6 +18,7 @@
 
 package org.apache.flink.streaming.api.functions.sink.filesystem;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.serialization.BulkWriter;
@@ -165,9 +166,9 @@ public class StreamingFileSink<IN>
 	 * @return The builder where the remaining of the configuration parameters for the sink can be configured.
 	 * In order to instantiate the sink, call {@link RowFormatBuilder#build()} after specifying the desired parameters.
 	 */
-	public static <IN> StreamingFileSink.RowFormatBuilder<IN, String, ? extends RowFormatBuilder<IN, String, ?>> forRowFormat(
+	public static <IN> StreamingFileSink.DefaultRowFormatBuilder<IN> forRowFormat(
 			final Path basePath, final Encoder<IN> encoder) {
-		return new StreamingFileSink.RowFormatBuilder<>(basePath, encoder, new DateTimeBucketAssigner<>());
+		return new DefaultRowFormatBuilder<>(basePath, encoder, new DateTimeBucketAssigner<>());
 	}
 
 	/**
@@ -178,9 +179,9 @@ public class StreamingFileSink<IN>
 	 * @return The builder where the remaining of the configuration parameters for the sink can be configured.
 	 * In order to instantiate the sink, call {@link RowFormatBuilder#build()} after specifying the desired parameters.
 	 */
-	public static <IN> StreamingFileSink.BulkFormatBuilder<IN, String, ? extends BulkFormatBuilder<IN, String, ?>> forBulkFormat(
+	public static <IN> StreamingFileSink.DefaultBulkFormatBuilder<IN> forBulkFormat(
 			final Path basePath, final BulkWriter.Factory<IN> writerFactory) {
-		return new StreamingFileSink.BulkFormatBuilder<>(basePath, writerFactory, new DateTimeBucketAssigner<>());
+		return new StreamingFileSink.DefaultBulkFormatBuilder<>(basePath, writerFactory, new DateTimeBucketAssigner<>());
 	}
 
 	/**
@@ -222,6 +223,8 @@ public class StreamingFileSink<IN>
 
 		private OutputFileConfig outputFileConfig;
 
+		private BucketLifeCycleListener<IN, BucketID> bucketLifeCycleListener;
+
 		protected RowFormatBuilder(Path basePath, Encoder<IN> encoder, BucketAssigner<IN, BucketID> bucketAssigner) {
 			this(basePath, encoder, bucketAssigner, DefaultRollingPolicy.builder().build(), DEFAULT_BUCKET_CHECK_INTERVAL, new DefaultBucketFactoryImpl<>(), OutputFileConfig.builder().build());
 		}
@@ -262,6 +265,12 @@ public class StreamingFileSink<IN>
 			return self();
 		}
 
+		@Internal
+		public T withBucketLifeCycleListener(final BucketLifeCycleListener<IN, BucketID> listener) {
+			this.bucketLifeCycleListener = Preconditions.checkNotNull(listener);
+			return self();
+		}
+
 		public T withOutputFileConfig(final OutputFileConfig outputFileConfig) {
 			this.outputFileConfig = outputFileConfig;
 			return self();
@@ -291,8 +300,21 @@ public class StreamingFileSink<IN>
 					bucketFactory,
 					new RowWisePartWriter.Factory<>(encoder),
 					rollingPolicy,
+					bucketLifeCycleListener,
 					subtaskIndex,
 					outputFileConfig);
+		}
+	}
+
+	/**
+	 * Builder for the vanilla {@link StreamingFileSink} using a row format.
+	 * @param <IN> record type
+	 */
+	public static final class DefaultRowFormatBuilder<IN> extends RowFormatBuilder<IN, String, DefaultRowFormatBuilder<IN>> {
+		private static final long serialVersionUID = -8503344257202146718L;
+
+		private DefaultRowFormatBuilder(Path basePath, Encoder<IN> encoder, BucketAssigner<IN, String> bucketAssigner) {
+			super(basePath, encoder, bucketAssigner);
 		}
 	}
 
@@ -313,6 +335,8 @@ public class StreamingFileSink<IN>
 		private BucketAssigner<IN, BucketID> bucketAssigner;
 
 		private CheckpointRollingPolicy<IN, BucketID> rollingPolicy;
+
+		private BucketLifeCycleListener<IN, BucketID> bucketLifeCycleListener;
 
 		private BucketFactory<IN, BucketID> bucketFactory;
 
@@ -359,6 +383,12 @@ public class StreamingFileSink<IN>
 			return self();
 		}
 
+		@Internal
+		public T withBucketLifeCycleListener(final BucketLifeCycleListener<IN, BucketID> listener) {
+			this.bucketLifeCycleListener = Preconditions.checkNotNull(listener);
+			return self();
+		}
+
 		@VisibleForTesting
 		T withBucketFactory(final BucketFactory<IN, BucketID> factory) {
 			this.bucketFactory = Preconditions.checkNotNull(factory);
@@ -389,8 +419,22 @@ public class StreamingFileSink<IN>
 					bucketFactory,
 					new BulkPartWriter.Factory<>(writerFactory),
 					rollingPolicy,
+					bucketLifeCycleListener,
 					subtaskIndex,
 					outputFileConfig);
+		}
+	}
+
+	/**
+	 * Builder for the vanilla {@link StreamingFileSink} using a bulk format.
+	 * @param <IN> record type
+	 */
+	public static final class DefaultBulkFormatBuilder<IN> extends BulkFormatBuilder<IN, String, DefaultBulkFormatBuilder<IN>> {
+
+		private static final long serialVersionUID = 7493169281036370228L;
+
+		private DefaultBulkFormatBuilder(Path basePath, BulkWriter.Factory<IN> writerFactory, BucketAssigner<IN, String> assigner) {
+			super(basePath, writerFactory, assigner);
 		}
 	}
 

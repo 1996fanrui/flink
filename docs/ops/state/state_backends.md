@@ -60,7 +60,7 @@ The MemoryStateBackend can be configured to use asynchronous snapshots. While we
 by default. To disable this feature, users can instantiate a `MemoryStateBackend` with the corresponding boolean flag in the constructor set to `false`(this should only used for debug), e.g.:
 
 {% highlight java %}
-    new MemoryStateBackend(MAX_MEM_STATE_SIZE, false);
+new MemoryStateBackend(MAX_MEM_STATE_SIZE, false);
 {% endhighlight %}
 
 Limitations of the MemoryStateBackend:
@@ -74,7 +74,7 @@ The MemoryStateBackend is encouraged for:
   - Local development and debugging
   - Jobs that do hold little state, such as jobs that consist only of record-at-a-time functions (Map, FlatMap, Filter, ...). The Kafka Consumer requires very little state.
 
-It is also recommended to set [managed memory](../memory/mem_setup.html#managed-memory) to zero.
+It is also recommended to set [managed memory](../memory/mem_setup_tm.html#managed-memory) to zero.
 This will ensure that the maximum amount of memory is allocated for user code on the JVM.
 
 ### The FsStateBackend
@@ -86,7 +86,7 @@ The FsStateBackend holds in-flight data in the TaskManager's memory. Upon checkp
 The FsStateBackend uses *asynchronous snapshots by default* to avoid blocking the processing pipeline while writing state checkpoints. To disable this feature, users can instantiate a `FsStateBackend` with the corresponding boolean flag in the constructor set to `false`, e.g.:
 
 {% highlight java %}
-    new FsStateBackend(path, false);
+new FsStateBackend(path, false);
 {% endhighlight %}
 
 The FsStateBackend is encouraged for:
@@ -94,7 +94,7 @@ The FsStateBackend is encouraged for:
   - Jobs with large state, long windows, large key/value states.
   - All high-availability setups.
 
-It is also recommended to set [managed memory](../memory/mem_setup.html#managed-memory) to zero.
+It is also recommended to set [managed memory](../memory/mem_setup_tm.html#managed-memory) to zero.
 This will ensure that the maximum amount of memory is allocated for user code on the JVM.
 
 ### The RocksDBStateBackend
@@ -213,6 +213,9 @@ While we encourage the use of incremental checkpoints for large state, you need 
   - Setting a default in your `flink-conf.yaml`: `state.backend.incremental: true` will enable incremental checkpoints, unless the application overrides this setting in the code.
   - You can alternatively configure this directly in the code (overrides the config default): `RocksDBStateBackend backend = new RocksDBStateBackend(checkpointDirURI, true);`
 
+Notice that once incremental checkpoont is enabled, the `Checkpointed Data Size` showed in web UI only represents the 
+delta checkpointed data size of that checkpoint instead of full state size.
+
 ### Memory Management
 
 Flink aims to control the total process memory consumption to make sure that the Flink TaskManagers have a well-behaved memory footprint. That means staying within the limits enforced by the environment (Docker/Kubernetes, Yarn, etc) to not get killed for consuming too much memory, but also to not under-utilize memory (unnecessary spilling to disk, wasted caching opportunities, reduced performance).
@@ -305,35 +308,35 @@ The default value for `state.backend.rocksdb.options-factory` is in fact `org.ap
 
 Below is an example how to define a custom ConfigurableOptionsFactory (set class name under `state.backend.rocksdb.options-factory`).
 
-    {% highlight java %}
+{% highlight java %}
 
-    public class MyOptionsFactory implements ConfigurableRocksDBOptionsFactory {
+public class MyOptionsFactory implements ConfigurableRocksDBOptionsFactory {
 
-        private static final long DEFAULT_SIZE = 256 * 1024 * 1024;  // 256 MB
-        private long blockCacheSize = DEFAULT_SIZE;
+    private static final long DEFAULT_SIZE = 256 * 1024 * 1024;  // 256 MB
+    private long blockCacheSize = DEFAULT_SIZE;
 
-        @Override
-        public DBOptions createDBOptions(DBOptions currentOptions, Collection<AutoCloseable> handlesToClose) {
-            return currentOptions.setIncreaseParallelism(4)
-                   .setUseFsync(false);
-        }
-
-        @Override
-        public ColumnFamilyOptions createColumnOptions(
-            ColumnFamilyOptions currentOptions, Collection<AutoCloseable> handlesToClose) {
-            return currentOptions.setTableFormatConfig(
-                new BlockBasedTableConfig()
-                    .setBlockCacheSize(blockCacheSize)
-                    .setBlockSize(128 * 1024));            // 128 KB
-        }
-
-        @Override
-        public OptionsFactory configure(Configuration configuration) {
-            this.blockCacheSize =
-                configuration.getLong("my.custom.rocksdb.block.cache.size", DEFAULT_SIZE);
-            return this;
-        }
+    @Override
+    public DBOptions createDBOptions(DBOptions currentOptions, Collection<AutoCloseable> handlesToClose) {
+        return currentOptions.setIncreaseParallelism(4)
+               .setUseFsync(false);
     }
-    {% endhighlight %}
+
+    @Override
+    public ColumnFamilyOptions createColumnOptions(
+        ColumnFamilyOptions currentOptions, Collection<AutoCloseable> handlesToClose) {
+        return currentOptions.setTableFormatConfig(
+            new BlockBasedTableConfig()
+                .setBlockCacheSize(blockCacheSize)
+                .setBlockSize(128 * 1024));            // 128 KB
+    }
+
+    @Override
+    public OptionsFactory configure(Configuration configuration) {
+        this.blockCacheSize =
+            configuration.getLong("my.custom.rocksdb.block.cache.size", DEFAULT_SIZE);
+        return this;
+    }
+}
+{% endhighlight %}
 
 {% top %}

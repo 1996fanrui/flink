@@ -35,7 +35,7 @@ import org.apache.flink.streaming.api.collector.selector.OutputSelector
 import org.apache.flink.streaming.api.datastream.{AllWindowedStream => JavaAllWindowedStream, DataStream => JavaStream, KeyedStream => JavaKeyedStream, _}
 import org.apache.flink.streaming.api.functions.sink.SinkFunction
 import org.apache.flink.streaming.api.functions.timestamps.{AscendingTimestampExtractor, BoundedOutOfOrdernessTimestampExtractor}
-import org.apache.flink.streaming.api.functions.{AssignerWithPeriodicWatermarks, AssignerWithPunctuatedWatermarks, ProcessFunction, TimestampExtractor}
+import org.apache.flink.streaming.api.functions.{AssignerWithPeriodicWatermarks, AssignerWithPunctuatedWatermarks, ProcessFunction}
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator
 import org.apache.flink.streaming.api.windowing.assigners._
 import org.apache.flink.streaming.api.windowing.time.Time
@@ -388,13 +388,16 @@ class DataStream[T](stream: JavaStream[T]) {
   /**
    * Groups the elements of a DataStream by the given key positions (for tuple/array types) to
    * be used with grouped operators like grouped reduce or grouped aggregations.
+   *
    */
+  @deprecated("use [[DataStream.keyBy(KeySelector)]] instead")
   def keyBy(fields: Int*): KeyedStream[T, JavaTuple] = asScalaStream(stream.keyBy(fields: _*))
 
   /**
    * Groups the elements of a DataStream by the given field expressions to
    * be used with grouped operators like grouped reduce or grouped aggregations.
    */
+  @deprecated("use [[DataStream.keyBy(KeySelector)]] instead")
   def keyBy(firstField: String, otherFields: String*): KeyedStream[T, JavaTuple] =
     asScalaStream(stream.keyBy(firstField +: otherFields.toArray: _*))
 
@@ -433,6 +436,7 @@ class DataStream[T](stream: JavaStream[T]) {
    *
    * Note: This method works only on single field keys.
    */
+  @deprecated("Use [[DataStream.partitionCustom(Partitioner, Function1)]] instead")
   def partitionCustom[K: TypeInformation](partitioner: Partitioner[K], field: Int) : DataStream[T] =
     asScalaStream(stream.partitionCustom(partitioner, field))
 
@@ -443,6 +447,7 @@ class DataStream[T](stream: JavaStream[T]) {
    *
    * Note: This method works only on single field keys.
    */
+  @deprecated("Use [[DataStream.partitionCustom(Partitioner, Function1)]] instead")
   def partitionCustom[K: TypeInformation](partitioner: Partitioner[K], field: String)
         : DataStream[T] =
     asScalaStream(stream.partitionCustom(partitioner, field))
@@ -806,22 +811,6 @@ class DataStream[T](stream: JavaStream[T]) {
   @PublicEvolving
   def windowAll[W <: Window](assigner: WindowAssigner[_ >: T, W]): AllWindowedStream[T, W] = {
     new AllWindowedStream[T, W](new JavaAllWindowedStream[T, W](stream, assigner))
-  }
-  
-  /**
-   * Extracts a timestamp from an element and assigns it as the internal timestamp of that element.
-   * The internal timestamps are, for example, used to to event-time window operations.
-   *
-   * If you know that the timestamps are strictly increasing you can use an
-   * [[AscendingTimestampExtractor]]. Otherwise,
-   * you should provide a [[TimestampExtractor]] that also implements
-   * [[TimestampExtractor#getCurrentWatermark]] to keep track of watermarks.
-   *
-   * @see org.apache.flink.streaming.api.watermark.Watermark
-   */
-  @deprecated
-  def assignTimestamps(extractor: TimestampExtractor[T]): DataStream[T] = {
-    asScalaStream(stream.assignTimestamps(clean(extractor)))
   }
 
   /**

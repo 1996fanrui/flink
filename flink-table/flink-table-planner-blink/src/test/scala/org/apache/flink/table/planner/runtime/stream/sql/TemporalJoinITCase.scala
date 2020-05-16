@@ -88,7 +88,7 @@ class TemporalJoinITCase(state: StateBackendMode)
     tEnv.registerTable("RatesHistory", ratesHistory)
     tEnv.registerFunction(
       "Rates",
-      ratesHistory.createTemporalTableFunction("proctime", "currency"))
+      ratesHistory.createTemporalTableFunction($"proctime", $"currency"))
 
     val result = tEnv.sqlQuery(sqlQuery).toAppendStream[Row]
     result.addSink(new TestingAppendSink)
@@ -142,16 +142,16 @@ class TemporalJoinITCase(state: StateBackendMode)
     tEnv.registerTable("RatesHistory", ratesHistory)
     tEnv.registerTable("FilteredRatesHistory",
       tEnv.sqlQuery("SELECT * FROM RatesHistory WHERE rate > 110"))
-    tEnv.registerFunction(
+    tEnv.createTemporarySystemFunction(
       "Rates",
       tEnv
-        .scan("FilteredRatesHistory")
-        .createTemporalTableFunction("rowtime", "currency"))
+        .from("FilteredRatesHistory")
+        .createTemporalTableFunction($"rowtime", $"currency"))
     tEnv.registerTable("TemporalJoinResult", tEnv.sqlQuery(sqlQuery))
 
     // Scan from registered table to test for interplay between
     // LogicalCorrelateToTemporalTableJoinRule and TableScanRule
-    val result = tEnv.scan("TemporalJoinResult").toAppendStream[Row]
+    val result = tEnv.from("TemporalJoinResult").toAppendStream[Row]
     val sink = new TestingAppendSink
     result.addSink(sink)
     env.execute()
@@ -213,12 +213,12 @@ class TemporalJoinITCase(state: StateBackendMode)
 
     tEnv.createTemporaryView("Orders", orders)
     tEnv.createTemporaryView("RatesHistory", ratesHistory)
-    tEnv.registerFunction(
+    tEnv.createTemporarySystemFunction(
       "Rates",
-      ratesHistory.createTemporalTableFunction("rowtime", "currency"))
+      ratesHistory.createTemporalTableFunction($"rowtime", $"currency"))
     tEnv.registerFunction(
       "Prices",
-      pricesHistory.createTemporalTableFunction("rowtime", "productId"))
+      pricesHistory.createTemporalTableFunction($"rowtime", $"productId"))
 
     tEnv.createTemporaryView("TemporalJoinResult", tEnv.sqlQuery(sqlQuery))
 

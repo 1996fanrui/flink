@@ -22,7 +22,7 @@ import org.apache.flink.api.java.tuple.{Tuple2 => JTuple2}
 import org.apache.flink.api.java.typeutils.RowTypeInfo
 import org.apache.flink.api.scala._
 import org.apache.flink.table.api.{TableException, Types}
-import org.apache.flink.table.dataformat.Decimal
+import org.apache.flink.table.data.DecimalDataUtils
 import org.apache.flink.table.planner.runtime.utils.BatchTestBase
 import org.apache.flink.table.planner.runtime.utils.BatchTestBase.row
 import org.apache.flink.table.planner.runtime.utils.TestData._
@@ -303,7 +303,7 @@ abstract class AggregateITCaseBase(testName: String) extends BatchTestBase {
 
   // with default scale for BigDecimal.class
   def bigX(i: Int): java.math.BigDecimal = big(i).setScale(
-    Decimal.DECIMAL_SYSTEM_DEFAULT.getScale)
+    DecimalDataUtils.DECIMAL_SYSTEM_DEFAULT.getScale)
 
   val (b1x, b2x, b3x) = (bigX(1), bigX(2), bigX(3))
 
@@ -852,7 +852,7 @@ abstract class AggregateITCaseBase(testName: String) extends BatchTestBase {
 //        "7499,ALLEN,SALESMAN,7698,1981-02-20,1600.00,300.00,30$" +
 //        "7521,WARD,SALESMAN,7698,1981-02-22,1250.00,500.00,30",
 //      "csv-test", "tmp")
-//    tEnv.registerTableSource("emp",
+//    tEnv.asInstanceOf[TableEnvironmentInternal].registerTableSourceInternal("emp",
 //      CsvTableSource.builder()
 //        .path(csvPath)
 //        .fields(Array("empno", "ename", "job", "mgr", "hiredate", "sal", "comm", "deptno"),

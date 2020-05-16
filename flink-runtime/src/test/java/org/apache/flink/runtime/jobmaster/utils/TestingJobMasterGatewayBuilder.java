@@ -41,6 +41,8 @@ import org.apache.flink.runtime.jobmaster.SerializedInputSplit;
 import org.apache.flink.runtime.messages.Acknowledge;
 import org.apache.flink.runtime.messages.checkpoint.DeclineCheckpoint;
 import org.apache.flink.runtime.messages.webmonitor.JobDetails;
+import org.apache.flink.runtime.operators.coordination.CoordinationRequest;
+import org.apache.flink.runtime.operators.coordination.CoordinationResponse;
 import org.apache.flink.runtime.operators.coordination.OperatorEvent;
 import org.apache.flink.runtime.query.KvStateLocation;
 import org.apache.flink.runtime.query.UnknownKvStateLocation;
@@ -51,7 +53,7 @@ import org.apache.flink.runtime.state.KeyGroupRange;
 import org.apache.flink.runtime.taskexecutor.AccumulatorReport;
 import org.apache.flink.runtime.taskexecutor.slot.SlotOffer;
 import org.apache.flink.runtime.taskmanager.TaskExecutionState;
-import org.apache.flink.runtime.taskmanager.TaskManagerLocation;
+import org.apache.flink.runtime.taskmanager.UnresolvedTaskManagerLocation;
 import org.apache.flink.util.SerializedValue;
 import org.apache.flink.util.function.TriConsumer;
 import org.apache.flink.util.function.TriFunction;
@@ -85,7 +87,7 @@ public class TestingJobMasterGatewayBuilder {
 	private Consumer<ResourceManagerId> disconnectResourceManagerConsumer = ignored -> {};
 	private BiFunction<ResourceID, Collection<SlotOffer>, CompletableFuture<Collection<SlotOffer>>> offerSlotsFunction = (ignoredA, ignoredB) -> CompletableFuture.completedFuture(Collections.emptyList());
 	private TriConsumer<ResourceID, AllocationID, Throwable> failSlotConsumer = (ignoredA, ignoredB, ignoredC) -> {};
-	private BiFunction<String, TaskManagerLocation, CompletableFuture<RegistrationResponse>> registerTaskManagerFunction = (ignoredA, ignoredB) -> CompletableFuture.completedFuture(new JMTMRegistrationSuccess(RESOURCE_MANAGER_ID));
+	private BiFunction<String, UnresolvedTaskManagerLocation, CompletableFuture<RegistrationResponse>> registerTaskManagerFunction = (ignoredA, ignoredB) -> CompletableFuture.completedFuture(new JMTMRegistrationSuccess(RESOURCE_MANAGER_ID));
 	private BiConsumer<ResourceID, AccumulatorReport> taskManagerHeartbeatConsumer = (ignoredA, ignoredB) -> {};
 	private Consumer<ResourceID> resourceManagerHeartbeatConsumer = ignored -> {};
 	private Supplier<CompletableFuture<JobDetails>> requestJobDetailsSupplier = () -> FutureUtils.completedExceptionally(new UnsupportedOperationException());
@@ -102,6 +104,7 @@ public class TestingJobMasterGatewayBuilder {
 	private Function<Tuple4<JobID, JobVertexID, KeyGroupRange, String>, CompletableFuture<Acknowledge>> notifyKvStateUnregisteredFunction = ignored -> CompletableFuture.completedFuture(Acknowledge.get());
 	private TriFunction<String, Object, byte[], CompletableFuture<Object>> updateAggregateFunction = (a, b, c) -> CompletableFuture.completedFuture(new Object());
 	private TriFunction<ExecutionAttemptID, OperatorID, SerializedValue<OperatorEvent>, CompletableFuture<Acknowledge>> operatorEventSender = (a, b, c) -> CompletableFuture.completedFuture(Acknowledge.get());
+	private BiFunction<OperatorID, SerializedValue<CoordinationRequest>, CompletableFuture<CoordinationResponse>> deliverCoordinationRequestFunction = (a, b) -> FutureUtils.completedExceptionally(new UnsupportedOperationException());
 
 	public TestingJobMasterGatewayBuilder setAddress(String address) {
 		this.address = address;
@@ -158,7 +161,7 @@ public class TestingJobMasterGatewayBuilder {
 		return this;
 	}
 
-	public TestingJobMasterGatewayBuilder setRegisterTaskManagerFunction(BiFunction<String, TaskManagerLocation, CompletableFuture<RegistrationResponse>> registerTaskManagerFunction) {
+	public TestingJobMasterGatewayBuilder setRegisterTaskManagerFunction(BiFunction<String, UnresolvedTaskManagerLocation, CompletableFuture<RegistrationResponse>> registerTaskManagerFunction) {
 		this.registerTaskManagerFunction = registerTaskManagerFunction;
 		return this;
 	}
@@ -243,6 +246,11 @@ public class TestingJobMasterGatewayBuilder {
 		return this;
 	}
 
+	public TestingJobMasterGatewayBuilder setDeliverCoordinationRequestFunction(BiFunction<OperatorID, SerializedValue<CoordinationRequest>, CompletableFuture<CoordinationResponse>> deliverCoordinationRequestFunction) {
+		this.deliverCoordinationRequestFunction = deliverCoordinationRequestFunction;
+		return this;
+	}
+
 	public TestingJobMasterGateway build() {
 		return new TestingJobMasterGateway(
 			address,
@@ -272,6 +280,7 @@ public class TestingJobMasterGatewayBuilder {
 			notifyKvStateRegisteredFunction,
 			notifyKvStateUnregisteredFunction,
 			updateAggregateFunction,
-			operatorEventSender);
+			operatorEventSender,
+			deliverCoordinationRequestFunction);
 	}
 }

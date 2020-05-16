@@ -18,10 +18,10 @@
 package org.apache.flink.streaming.api.functions.source;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.io.CheckpointableInputFormat;
-import org.apache.flink.api.common.io.FileInputFormat;
+import org.apache.flink.api.common.io.InputFormat;
+import org.apache.flink.api.common.io.RichInputFormat;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
@@ -36,8 +36,8 @@ import org.apache.flink.streaming.api.operators.OutputTypeConfigurable;
 import org.apache.flink.streaming.api.operators.StreamSourceContexts;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
+import org.apache.flink.streaming.runtime.tasks.ProcessingTimeService;
 import org.apache.flink.util.ExceptionUtils;
-import org.apache.flink.util.FlinkRuntimeException;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.function.RunnableWithException;
 
@@ -79,11 +79,11 @@ import static org.apache.flink.util.Preconditions.checkState;
  * </ol></p>
  * <p>Using {@link MailboxExecutor} allows to avoid explicit synchronization. At most one mail should be enqueued at any
  * given time.</p>
- * <p>Using FSM approach allows to explicitly define states and enforce {@link ReaderState#TRANSITIONS transitions} between them.</p>
+ * <p>Using FSM approach allows to explicitly define states and enforce {@link ReaderState#VALID_TRANSITIONS transitions} between them.</p>
  */
 @Internal
-public class ContinuousFileReaderOperator<OUT> extends AbstractStreamOperator<OUT>
-	implements OneInputStreamOperator<TimestampedFileInputSplit, OUT>, OutputTypeConfigurable<OUT> {
+public class ContinuousFileReaderOperator<OUT, T extends TimestampedInputSplit> extends AbstractStreamOperator<OUT>
+	implements OneInputStreamOperator<T, OUT>, OutputTypeConfigurable<OUT> {
 
 	private static final long serialVersionUID = 1L;
 
@@ -92,7 +92,7 @@ public class ContinuousFileReaderOperator<OUT> extends AbstractStreamOperator<OU
 	private enum ReaderState {
 		IDLE {
 			@Override
-			public boolean prepareToProcessRecord(ContinuousFileReaderOperator<?> op) {
+			public boolean prepareToProcessRecord(ContinuousFileReaderOperator<?, ?> op) {
 				throw new IllegalStateException("not processing any records in IDLE state");
 			}
 		},
@@ -101,12 +101,12 @@ public class ContinuousFileReaderOperator<OUT> extends AbstractStreamOperator<OU
 		 */
 		OPENING { // the split was added and message to itself was enqueued to process it
 			@Override
-			public boolean prepareToProcessRecord(ContinuousFileReaderOperator<?> op) throws IOException {
+			public boolean prepareToProcessRecord(ContinuousFileReaderOperator<?, ?> op) throws IOException {
 				if (op.splits.isEmpty()) {
 					op.switchState(ReaderState.IDLE);
 					return false;
 				} else {
-					op.loadSplit(op.splits.poll());
+					((ContinuousFileReaderOperator) op).loadSplit(op.splits.poll());
 					op.switchState(ReaderState.READING);
 					return true;
 				}
@@ -117,13 +117,22 @@ public class ContinuousFileReaderOperator<OUT> extends AbstractStreamOperator<OU
 		 */
 		READING {
 			@Override
-			public boolean prepareToProcessRecord(ContinuousFileReaderOperator<?> op) {
+			public boolean prepareToProcessRecord(ContinuousFileReaderOperator<?, ?> op) {
 				return true;
 			}
 
 			@Override
-			public void onNoMoreData(ContinuousFileReaderOperator<?> op) {
+			public void onNoMoreData(ContinuousFileReaderOperator<?, ?> op) {
 				op.switchState(ReaderState.IDLE);
+			}
+		},
+		/**
+		 * No further processing can be done; only state disposal transition to {@link #CLOSED} allowed.
+		 */
+		FAILED {
+			@Override
+			public boolean prepareToProcessRecord(ContinuousFileReaderOperator<?, ?> op) {
+				throw new IllegalStateException("not processing any records in ERRORED state");
 			}
 		},
 		/**
@@ -132,15 +141,15 @@ public class ContinuousFileReaderOperator<OUT> extends AbstractStreamOperator<OU
 		 */
 		CLOSING {
 			@Override
-			public boolean prepareToProcessRecord(ContinuousFileReaderOperator<?> op) throws IOException {
+			public boolean prepareToProcessRecord(ContinuousFileReaderOperator<?, ?> op) throws IOException {
 				if (op.currentSplit == null && !op.splits.isEmpty()) {
-					op.loadSplit(op.splits.poll());
+					((ContinuousFileReaderOperator) op).loadSplit(op.splits.poll());
 				}
 				return true;
 			}
 
 			@Override
-			public void onNoMoreData(ContinuousFileReaderOperator<?> op) {
+			public void onNoMoreData(ContinuousFileReaderOperator<?, ?> op) {
 				// need one more mail to unblock possible yield() in close() method (todo: wait with timeout in yield)
 				op.enqueueProcessRecord();
 				op.switchState(CLOSED);
@@ -148,7 +157,7 @@ public class ContinuousFileReaderOperator<OUT> extends AbstractStreamOperator<OU
 		},
 		CLOSED {
 			@Override
-			public boolean prepareToProcessRecord(ContinuousFileReaderOperator<?> op) {
+			public boolean prepareToProcessRecord(ContinuousFileReaderOperator<?, ?> op) {
 				LOG.warn("not processing any records while closed");
 				return false;
 			}
@@ -158,15 +167,16 @@ public class ContinuousFileReaderOperator<OUT> extends AbstractStreamOperator<OU
 		/**
 		 * Possible transition FROM each state.
 		 */
-		private static final Map<ReaderState, Set<ReaderState>> TRANSITIONS;
+		private static final Map<ReaderState, Set<ReaderState>> VALID_TRANSITIONS;
 		static {
 			Map<ReaderState, Set<ReaderState>> tmpTransitions = new HashMap<>();
-			tmpTransitions.put(IDLE, EnumSet.of(OPENING, CLOSED));
-			tmpTransitions.put(OPENING, EnumSet.of(READING, CLOSING));
-			tmpTransitions.put(READING, EnumSet.of(IDLE, OPENING, CLOSING));
-			tmpTransitions.put(CLOSING, EnumSet.of(CLOSED));
+			tmpTransitions.put(IDLE, EnumSet.of(OPENING, CLOSED, FAILED));
+			tmpTransitions.put(OPENING, EnumSet.of(READING, CLOSING, FAILED));
+			tmpTransitions.put(READING, EnumSet.of(IDLE, OPENING, CLOSING, FAILED));
+			tmpTransitions.put(CLOSING, EnumSet.of(CLOSED, FAILED));
+			tmpTransitions.put(FAILED, EnumSet.of(CLOSED));
 			tmpTransitions.put(CLOSED, EnumSet.noneOf(ReaderState.class));
-			TRANSITIONS = new EnumMap<>(tmpTransitions);
+			VALID_TRANSITIONS = new EnumMap<>(tmpTransitions);
 		}
 
 		public boolean isAcceptingSplits() {
@@ -178,7 +188,7 @@ public class ContinuousFileReaderOperator<OUT> extends AbstractStreamOperator<OU
 		}
 
 		public boolean canSwitchTo(ReaderState next) {
-			return TRANSITIONS
+			return VALID_TRANSITIONS
 					.getOrDefault(this, EnumSet.noneOf(ReaderState.class))
 					.contains(next);
 		}
@@ -187,42 +197,42 @@ public class ContinuousFileReaderOperator<OUT> extends AbstractStreamOperator<OU
 		 * Prepare to process new record OR split.
 		 * @return true if should read the record
 		 */
-		public abstract boolean prepareToProcessRecord(ContinuousFileReaderOperator<?> op) throws IOException;
+		public abstract boolean prepareToProcessRecord(ContinuousFileReaderOperator<?, ?> op) throws IOException;
 
-		public void onNoMoreData(ContinuousFileReaderOperator<?> op) {
+		public void onNoMoreData(ContinuousFileReaderOperator<?, ?> op) {
 		}
 	}
 
-	private transient FileInputFormat<OUT> format;
+	private transient InputFormat<OUT, ? super T> format;
 	private TypeSerializer<OUT> serializer;
 	private transient MailboxExecutor executor;
 	private transient OUT reusedRecord;
 	private transient SourceFunction.SourceContext<OUT> sourceContext;
-	private transient ListState<TimestampedFileInputSplit> checkpointedState;
+	private transient ListState<T> checkpointedState;
 	/**
 	 * MUST only be changed via {@link #switchState(ReaderState) switchState}.
 	 */
 	private transient ReaderState state = ReaderState.IDLE;
-	private transient PriorityQueue<TimestampedFileInputSplit> splits;
-	private transient TimestampedFileInputSplit currentSplit; // can't work just on queue tail because it can change because it's PQ
+	private transient PriorityQueue<T> splits = new PriorityQueue<>();
+	private transient T currentSplit; // can't work just on queue tail because it can change because it's PQ
 	private transient Counter completedSplitsCounter;
 
 	private final transient RunnableWithException processRecordAction = () -> {
 		try {
 			processRecord();
 		} catch (Exception e) {
-			switchState(ReaderState.CLOSED);
+			switchState(ReaderState.FAILED);
 			throw e;
 		}
 	};
 
-	@VisibleForTesting
-	public ContinuousFileReaderOperator(FileInputFormat<OUT> format) {
-		this.format = checkNotNull(format);
-	}
+	ContinuousFileReaderOperator(
+		InputFormat<OUT, ? super T> format,
+		ProcessingTimeService processingTimeService,
+		MailboxExecutor mailboxExecutor) {
 
-	public ContinuousFileReaderOperator(FileInputFormat<OUT> format, MailboxExecutor mailboxExecutor) {
 		this.format = checkNotNull(format);
+		this.processingTimeService = checkNotNull(processingTimeService);
 		this.executor = checkNotNull(mailboxExecutor);
 	}
 
@@ -243,7 +253,7 @@ public class ContinuousFileReaderOperator<OUT> extends AbstractStreamOperator<OU
 		LOG.info("Restoring state for the {} (taskIdx={}).", getClass().getSimpleName(), subtaskIdx);
 
 		splits = splits == null ? new PriorityQueue<>() : splits;
-		for (TimestampedFileInputSplit split : checkpointedState.get()) {
+		for (T split : checkpointedState.get()) {
 			splits.add(split);
 		}
 
@@ -260,7 +270,9 @@ public class ContinuousFileReaderOperator<OUT> extends AbstractStreamOperator<OU
 			"Probably the setOutputType() was not called. Please report it.");
 
 		this.state = ReaderState.IDLE;
-		this.format.setRuntimeContext(getRuntimeContext());
+		if (this.format instanceof RichInputFormat) {
+			((RichInputFormat) this.format).setRuntimeContext(getRuntimeContext());
+		}
 		this.format.configure(new Configuration());
 
 		this.sourceContext = StreamSourceContexts.getSourceContext(
@@ -274,7 +286,6 @@ public class ContinuousFileReaderOperator<OUT> extends AbstractStreamOperator<OU
 
 		this.reusedRecord = serializer.createInstance();
 		this.completedSplitsCounter = getMetricGroup().counter("numSplitsProcessed");
-		this.executor = executor != null ? executor : getContainingTask().getMailboxExecutorFactory().createExecutor(getOperatorConfig().getChainIndex());
 		this.splits = this.splits == null ? new PriorityQueue<>() : this.splits;
 
 		if (!splits.isEmpty()) {
@@ -283,7 +294,7 @@ public class ContinuousFileReaderOperator<OUT> extends AbstractStreamOperator<OU
 	}
 
 	@Override
-	public void processElement(StreamRecord<TimestampedFileInputSplit> element) throws Exception {
+	public void processElement(StreamRecord<T> element) throws Exception {
 		Preconditions.checkState(state.isAcceptingSplits());
 		splits.offer(element.getValue());
 		if (state == ReaderState.IDLE) {
@@ -342,16 +353,18 @@ public class ContinuousFileReaderOperator<OUT> extends AbstractStreamOperator<OU
 		}
 	}
 
-	private void loadSplit(TimestampedFileInputSplit split) throws IOException {
+	private void loadSplit(T split) throws IOException {
 		Preconditions.checkState(state != ReaderState.READING && state != ReaderState.CLOSED, "can't load split in state %s", state);
 		Preconditions.checkNotNull(split, "split is null");
 		LOG.debug("load split: {}", split);
 		currentSplit = split;
-		format.openInputFormat();
+		if (this.format instanceof RichInputFormat) {
+			((RichInputFormat) this.format).openInputFormat();
+		}
 		if (format instanceof CheckpointableInputFormat && currentSplit.getSplitState() != null) {
 			// recovering after a node failure with an input
 			// format that supports resetting the offset
-			((CheckpointableInputFormat<TimestampedFileInputSplit, Serializable>) format).
+			((CheckpointableInputFormat<T, Serializable>) format).
 					reopen(currentSplit, currentSplit.getSplitState());
 		} else {
 			// we either have a new split, or we recovered from a node
@@ -383,7 +396,7 @@ public class ContinuousFileReaderOperator<OUT> extends AbstractStreamOperator<OU
 			try {
 				cleanUp();
 			} catch (Exception ex) {
-				e = ExceptionUtils.firstOrSuppressed(ex, e);
+				e = ex;
 			}
 		}
 		{
@@ -435,26 +448,30 @@ public class ContinuousFileReaderOperator<OUT> extends AbstractStreamOperator<OU
 		cleanUp();
 	}
 
-	private void cleanUp() {
+	private void cleanUp() throws Exception {
 		LOG.debug("cleanup, state={}", state);
 
 		RunnableWithException[] runClose = {
 				() -> sourceContext.close(),
 				() -> output.close(),
 				() -> format.close(),
-				() -> format.closeInputFormat()};
+				() -> {
+					if (this.format instanceof RichInputFormat) {
+						((RichInputFormat) this.format).closeInputFormat();
+					}
+				}};
 		Exception firstException = null;
 
 		for (RunnableWithException r : runClose) {
 			try {
 				r.run();
 			} catch (Exception e) {
-				firstException = ExceptionUtils.firstOrSuppressed(firstException, e);
+				firstException = ExceptionUtils.firstOrSuppressed(e, firstException);
 			}
 		}
 		currentSplit = null;
 		if (firstException != null) {
-			throw new FlinkRuntimeException("Unable to properly cleanup ContinuousFileReaderOperator", firstException);
+			throw firstException;
 		}
 	}
 
@@ -469,10 +486,10 @@ public class ContinuousFileReaderOperator<OUT> extends AbstractStreamOperator<OU
 
 		checkpointedState.clear();
 
-		List<TimestampedFileInputSplit> readerState = getReaderState();
+		List<T> readerState = getReaderState();
 
 		try {
-			for (TimestampedFileInputSplit split : readerState) {
+			for (T split : readerState) {
 				checkpointedState.add(split);
 			}
 		} catch (Exception e) {
@@ -488,12 +505,12 @@ public class ContinuousFileReaderOperator<OUT> extends AbstractStreamOperator<OU
 		}
 	}
 
-	private List<TimestampedFileInputSplit> getReaderState() throws IOException {
-		List<TimestampedFileInputSplit> snapshot = new ArrayList<>(splits.size());
+	private List<T> getReaderState() throws IOException {
+		List<T> snapshot = new ArrayList<>(splits.size());
 		if (currentSplit != null) {
 			if (this.format instanceof CheckpointableInputFormat && state == ReaderState.READING) {
 				Serializable formatState =
-						((CheckpointableInputFormat<TimestampedFileInputSplit, Serializable>) this.format).getCurrentState();
+						((CheckpointableInputFormat<T, Serializable>) this.format).getCurrentState();
 				this.currentSplit.setSplitState(formatState);
 			}
 			snapshot.add(this.currentSplit);

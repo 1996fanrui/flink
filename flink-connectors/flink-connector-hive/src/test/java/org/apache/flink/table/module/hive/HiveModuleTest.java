@@ -19,7 +19,6 @@ package org.apache.flink.table.module.hive;
 
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.TableEnvironment;
-import org.apache.flink.table.api.TableUtils;
 import org.apache.flink.table.catalog.hive.HiveTestUtils;
 import org.apache.flink.table.catalog.hive.client.HiveShimLoader;
 import org.apache.flink.table.functions.FunctionDefinition;
@@ -28,6 +27,8 @@ import org.apache.flink.table.functions.ScalarFunctionDefinition;
 import org.apache.flink.table.functions.hive.HiveSimpleUDF;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.types.Row;
+
+import org.apache.flink.shaded.guava18.com.google.common.collect.Lists;
 
 import org.junit.BeforeClass;
 import org.junit.Test;
@@ -83,7 +84,7 @@ public class HiveModuleTest {
 
 	@Test
 	public void testHiveBuiltInFunction() {
-		FunctionDefinition fd = new HiveModule(HiveShimLoader.getHiveVersion()).getFunctionDefinition("reverse").get();
+		FunctionDefinition fd = new HiveModule().getFunctionDefinition("reverse").get();
 
 		ScalarFunction func = ((ScalarFunctionDefinition) fd).getScalarFunction();
 		HiveSimpleUDF udf = (HiveSimpleUDF) func;
@@ -102,7 +103,7 @@ public class HiveModuleTest {
 
 	@Test
 	public void testNonExistFunction() {
-		assertFalse(new HiveModule(HiveShimLoader.getHiveVersion()).getFunctionDefinition("nonexist").isPresent());
+		assertFalse(new HiveModule().getFunctionDefinition("nonexist").isPresent());
 	}
 
 	@Test
@@ -110,22 +111,27 @@ public class HiveModuleTest {
 		TableEnvironment tEnv = HiveTestUtils.createTableEnvWithBlinkPlannerBatchMode();
 
 		tEnv.unloadModule("core");
-		tEnv.loadModule("hive", new HiveModule(HiveShimLoader.getHiveVersion()));
+		tEnv.loadModule("hive", new HiveModule());
 
-		List<Row> results = TableUtils.collectToList(tEnv.sqlQuery("select concat('an', 'bn')"));
+		List<Row> results = Lists.newArrayList(
+				tEnv.sqlQuery("select concat('an', 'bn')").execute().collect());
 		assertEquals("[anbn]", results.toString());
 
-		results = TableUtils.collectToList(tEnv.sqlQuery("select concat('ab', cast('cdefghi' as varchar(5)))"));
+		results = Lists.newArrayList(
+				tEnv.sqlQuery("select concat('ab', cast('cdefghi' as varchar(5)))").execute().collect());
 		assertEquals("[abcdefg]", results.toString());
 
-		results = TableUtils.collectToList(tEnv.sqlQuery("select concat('ab',cast(12.34 as decimal(10,5)))"));
+		results = Lists.newArrayList(
+				tEnv.sqlQuery("select concat('ab',cast(12.34 as decimal(10,5)))").execute().collect());
 		assertEquals("[ab12.34]", results.toString());
 
-		results = TableUtils.collectToList(tEnv.sqlQuery("select concat(cast('2018-01-19' as date),cast('2019-12-27 17:58:23.385' as timestamp))"));
+		results = Lists.newArrayList(
+				tEnv.sqlQuery("select concat(cast('2018-01-19' as date),cast('2019-12-27 17:58:23.385' as timestamp))").execute().collect());
 		assertEquals("[2018-01-192019-12-27 17:58:23.385]", results.toString());
 
 		// TODO: null cannot be a constant argument at the moment. This test will make more sense when that changes.
-		results = TableUtils.collectToList(tEnv.sqlQuery("select concat('ab',cast(null as int))"));
+		results = Lists.newArrayList(
+				tEnv.sqlQuery("select concat('ab',cast(null as int))").execute().collect());
 		assertEquals("[null]", results.toString());
 	}
 
@@ -134,19 +140,32 @@ public class HiveModuleTest {
 		TableEnvironment tEnv = HiveTestUtils.createTableEnvWithBlinkPlannerBatchMode();
 
 		tEnv.unloadModule("core");
-		tEnv.loadModule("hive", new HiveModule(HiveShimLoader.getHiveVersion()));
+		tEnv.loadModule("hive", new HiveModule());
 
-		List<Row> results = TableUtils.collectToList(tEnv.sqlQuery("select negative(5.1)"));
+		List<Row> results = Lists.newArrayList(tEnv.sqlQuery("select negative(5.1)").execute().collect());
 
 		assertEquals("[-5.1]", results.toString());
 	}
 
 	@Test
 	public void testBlackList() {
-		HiveModule hiveModule = new HiveModule(HiveShimLoader.getHiveVersion());
+		HiveModule hiveModule = new HiveModule();
 		assertFalse(hiveModule.listFunctions().removeAll(HiveModule.BUILT_IN_FUNC_BLACKLIST));
 		for (String banned : HiveModule.BUILT_IN_FUNC_BLACKLIST) {
 			assertFalse(hiveModule.getFunctionDefinition(banned).isPresent());
 		}
+	}
+
+	@Test
+	public void testConstantReturnValue() throws Exception {
+		TableEnvironment tableEnv = HiveTestUtils.createTableEnvWithBlinkPlannerBatchMode();
+
+		tableEnv.unloadModule("core");
+		tableEnv.loadModule("hive", new HiveModule());
+
+		List<Row> results = Lists.newArrayList(
+				tableEnv.sqlQuery("select str_to_map('a:1,b:2,c:3',',',':')").execute().collect());
+
+		assertEquals("[{a=1, b=2, c=3}]", results.toString());
 	}
 }

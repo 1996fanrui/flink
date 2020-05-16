@@ -39,7 +39,7 @@ class TemporalJoinTest extends TableTestBase {
 
   util.addFunction(
     "Rates",
-    ratesHistory.createTemporalTableFunction("rowtime", "currency"))
+    ratesHistory.createTemporalTableFunction($"rowtime", $"currency"))
 
   private val proctimeOrders = util.addDataStream[(Long, String)](
     "ProctimeOrders", 'o_amount, 'o_currency, 'o_proctime.proctime)
@@ -49,7 +49,7 @@ class TemporalJoinTest extends TableTestBase {
 
   util.addFunction(
     "ProctimeRates",
-    proctimeRatesHistory.createTemporalTableFunction("proctime", "currency"))
+    proctimeRatesHistory.createTemporalTableFunction($"proctime", $"currency"))
 
   @Test
   def testSimpleJoin(): Unit = {
@@ -103,8 +103,8 @@ class TemporalJoinTest extends TableTestBase {
       "RatesHistory", 'rowtime.rowtime, 'comment, 'currency, 'rate, 'secondary_key)
     val rates = util.tableEnv
       .sqlQuery("SELECT * FROM RatesHistory WHERE rate > 110")
-      .createTemporalTableFunction("rowtime", "currency")
-    util.addFunction("Rates", rates)
+      .createTemporalTableFunction($"rowtime", $"currency")
+    util.addTemporarySystemFunction("Rates", rates)
 
     val sqlQuery =
       "SELECT * FROM " +

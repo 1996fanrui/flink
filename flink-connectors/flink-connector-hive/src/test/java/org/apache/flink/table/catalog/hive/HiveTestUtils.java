@@ -18,9 +18,10 @@
 
 package org.apache.flink.table.catalog.hive;
 
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.EnvironmentSettings;
-import org.apache.flink.table.api.SqlDialect;
 import org.apache.flink.table.api.TableEnvironment;
+import org.apache.flink.table.api.java.StreamTableEnvironment;
 import org.apache.flink.table.catalog.CatalogTest;
 import org.apache.flink.table.catalog.exceptions.CatalogException;
 import org.apache.flink.table.catalog.hive.client.HiveShimLoader;
@@ -67,11 +68,11 @@ public class HiveTestUtils {
 
 	public static HiveCatalog createHiveCatalog(String name, String hiveVersion) {
 		return new HiveCatalog(name, null, createHiveConf(),
-				StringUtils.isNullOrWhitespaceOnly(hiveVersion) ? HiveShimLoader.getHiveVersion() : hiveVersion);
+				StringUtils.isNullOrWhitespaceOnly(hiveVersion) ? HiveShimLoader.getHiveVersion() : hiveVersion, true);
 	}
 
 	public static HiveCatalog createHiveCatalog(HiveConf hiveConf) {
-		return new HiveCatalog(CatalogTest.TEST_CATALOG_NAME, null, hiveConf, HiveShimLoader.getHiveVersion());
+		return new HiveCatalog(CatalogTest.TEST_CATALOG_NAME, null, hiveConf, HiveShimLoader.getHiveVersion(), true);
 	}
 
 	public static HiveConf createHiveConf() {
@@ -114,7 +115,14 @@ public class HiveTestUtils {
 		EnvironmentSettings settings = EnvironmentSettings.newInstance().useBlinkPlanner().inBatchMode().build();
 		TableEnvironment tableEnv = TableEnvironment.create(settings);
 		tableEnv.getConfig().getConfiguration().setInteger(TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM.key(), 1);
-		tableEnv.getConfig().setSqlDialect(SqlDialect.HIVE);
+		return tableEnv;
+	}
+
+	public static StreamTableEnvironment createTableEnvWithBlinkPlannerStreamMode(
+			StreamExecutionEnvironment env) {
+		EnvironmentSettings settings = EnvironmentSettings.newInstance().useBlinkPlanner().inStreamingMode().build();
+		StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env, settings);
+		tableEnv.getConfig().getConfiguration().setInteger(TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM.key(), 1);
 		return tableEnv;
 	}
 

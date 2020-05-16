@@ -25,26 +25,14 @@ under the License.
 
 This walkthrough will quickly get you started building a pure Python Flink project.
 
-<span class="label label-info">Note</span> Python 3.5 or higher is required to run PyFlink. Run the following command to confirm that the command “python” in current environment points to Python 3.5+:
-
-{% highlight bash %}
-$ python --version
-# the version printed here must be 3.5+
-{% endhighlight %}
+Please refer to the Python Table API [installation guide]({{ site.baseurl }}/dev/table/python/installation.html) on how to set up the Python execution environments.
 
 * This will be replaced by the TOC
 {:toc}
 
 ## Setting up a Python Project
 
-You can begin by creating a Python project and installing the PyFlink package.
-PyFlink is available via PyPi and can be easily installed using `pip`.
-
-{% highlight bash %}
-$ python -m pip install apache-flink
-{% endhighlight %}
-
-You can also build PyFlink from source by following the [development guide]({{ site.baseurl }}/flinkDev/building.html#build-pyflink).
+You can begin by creating a Python project and installing the PyFlink package following the [installation guide]({{ site.baseurl }}/dev/table/python/installation.html#installation-of-pyflink).
 
 ## Writing a Flink Python Table API Program
 
@@ -80,7 +68,32 @@ t_env.connect(FileSystem().path('/tmp/output')) \
                  .field('count', DataTypes.BIGINT())) \
     .create_temporary_table('mySink')
 {% endhighlight %}
+You can also use the TableEnvironment.sql_update() method to register a source/sink table defined in DDL:
+{% highlight python %}
+my_source_ddl = """
+    create table mySource (
+        word VARCHAR
+    ) with (
+        'connector.type' = 'filesystem',
+        'format.type' = 'csv',
+        'connector.path' = '/tmp/input'
+    )
+"""
 
+my_sink_ddl = """
+    create table mySink (
+        word VARCHAR,
+        `count` BIGINT
+    ) with (
+        'connector.type' = 'filesystem',
+        'format.type' = 'csv',
+        'connector.path' = '/tmp/output'
+    )
+"""
+
+t_env.sql_update(my_source_ddl)
+t_env.sql_update(my_sink_ddl)
+{% endhighlight %}
 This registers a table named `mySource` and a table named `mySink` in the execution environment.
 The table `mySource` has only one column, word, and it consumes strings read from file `/tmp/input`.
 The table `mySink` has two columns, word and count, and writes data to the file `/tmp/output`, with `\t` as the field delimiter.
@@ -143,7 +156,7 @@ t_env.execute("tutorial_job")
 Firstly, you need to prepare input data in the "/tmp/input" file. You can choose the following command line to prepare the input data:
 
 {% highlight bash %}
-$ echo "flink\npyflink\nflink" > /tmp/input
+$ echo -e  "flink\npyflink\nflink" > /tmp/input
 {% endhighlight %}
 
 Next, you can run this example on the command line (Note: if the result file "/tmp/output" has already existed, you need to remove the file before running the example):

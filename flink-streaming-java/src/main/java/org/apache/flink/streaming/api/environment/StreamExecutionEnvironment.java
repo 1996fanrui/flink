@@ -34,7 +34,6 @@ import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.dag.Transformation;
 import org.apache.flink.api.java.ClosureCleaner;
-import org.apache.flink.api.java.ExecutionEnvironment;
 import org.apache.flink.api.java.Utils;
 import org.apache.flink.api.java.io.TextInputFormat;
 import org.apache.flink.api.java.tuple.Tuple2;
@@ -43,14 +42,11 @@ import org.apache.flink.api.java.typeutils.MissingTypeInfo;
 import org.apache.flink.api.java.typeutils.PojoTypeInfo;
 import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
 import org.apache.flink.api.java.typeutils.TypeExtractor;
-import org.apache.flink.client.program.ContextEnvironment;
-import org.apache.flink.client.program.OptimizerPlanEnvironment;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.DeploymentOptions;
 import org.apache.flink.configuration.ExecutionOptions;
 import org.apache.flink.configuration.PipelineOptions;
 import org.apache.flink.configuration.ReadableConfig;
-import org.apache.flink.configuration.ReadableConfigToConfigurationAdapter;
 import org.apache.flink.configuration.RestOptions;
 import org.apache.flink.core.execution.DefaultExecutorServiceLoader;
 import org.apache.flink.core.execution.DetachedJobExecutionResult;
@@ -70,7 +66,6 @@ import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.functions.source.ContinuousFileMonitoringFunction;
-import org.apache.flink.streaming.api.functions.source.ContinuousFileReaderOperator;
 import org.apache.flink.streaming.api.functions.source.ContinuousFileReaderOperatorFactory;
 import org.apache.flink.streaming.api.functions.source.FileMonitoringFunction;
 import org.apache.flink.streaming.api.functions.source.FileProcessingMode;
@@ -83,11 +78,14 @@ import org.apache.flink.streaming.api.functions.source.ParallelSourceFunction;
 import org.apache.flink.streaming.api.functions.source.SocketTextStreamFunction;
 import org.apache.flink.streaming.api.functions.source.SourceFunction;
 import org.apache.flink.streaming.api.functions.source.StatefulSequenceSource;
+import org.apache.flink.streaming.api.functions.source.TimestampedFileInputSplit;
 import org.apache.flink.streaming.api.graph.StreamGraph;
 import org.apache.flink.streaming.api.graph.StreamGraphGenerator;
 import org.apache.flink.streaming.api.operators.StreamSource;
 import org.apache.flink.util.DynamicCodeLoadingException;
 import org.apache.flink.util.ExceptionUtils;
+import org.apache.flink.util.FlinkException;
+import org.apache.flink.util.InstantiationUtil;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.SplittableIterator;
 import org.apache.flink.util.StringUtils;
@@ -223,6 +221,10 @@ public class StreamExecutionEnvironment {
 		return this.configuration;
 	}
 
+	protected ClassLoader getUserClassloader() {
+		return userClassloader;
+	}
+
 	/**
 	 * Gets the config object.
 	 */
@@ -235,6 +237,14 @@ public class StreamExecutionEnvironment {
 	*/
 	public List<Tuple2<String, DistributedCache.DistributedCacheEntry>> getCachedFiles() {
 		return cacheFile;
+	}
+
+	/**
+	 * Gets the config JobListeners.
+	 */
+	@PublicEvolving
+	public List<JobListener> getJobListeners() {
+		return jobListeners;
 	}
 
 	/**
@@ -754,6 +764,8 @@ public class StreamExecutionEnvironment {
 			.ifPresent(c -> this.isChainingEnabled = c);
 		configuration.getOptional(ExecutionOptions.BUFFER_TIMEOUT)
 			.ifPresent(t -> this.setBufferTimeout(t.toMillis()));
+		configuration.getOptional(DeploymentOptions.JOB_LISTENERS)
+			.ifPresent(listeners -> registerCustomListeners(classLoader, listeners));
 		configuration.getOptional(PipelineOptions.CACHED_FILES)
 			.ifPresent(f -> {
 				this.cacheFile.clear();
@@ -763,10 +775,22 @@ public class StreamExecutionEnvironment {
 		checkpointCfg.configure(configuration);
 	}
 
+	private void registerCustomListeners(final ClassLoader classLoader, final List<String> listeners) {
+		for (String listener : listeners) {
+			try {
+				final JobListener jobListener = InstantiationUtil.instantiate(
+						listener, JobListener.class, classLoader);
+				jobListeners.add(jobListener);
+			} catch (FlinkException e) {
+				throw new WrappingRuntimeException("Could not load JobListener : " + listener, e);
+			}
+		}
+	}
+
 	private StateBackend loadStateBackend(ReadableConfig configuration, ClassLoader classLoader) {
 		try {
 			return StateBackendLoader.loadStateBackendFromConfig(
-				new ReadableConfigToConfigurationAdapter(configuration),
+				configuration,
 				classLoader,
 				null);
 		} catch (DynamicCodeLoadingException | IOException e) {
@@ -1044,7 +1068,7 @@ public class StreamExecutionEnvironment {
 	 *
 	 * <p><b>NOTES ON CHECKPOINTING: </b> The source monitors the path, creates the
 	 * {@link org.apache.flink.core.fs.FileInputSplit FileInputSplits} to be processed, forwards
-	 * them to the downstream {@link ContinuousFileReaderOperator readers} to read the actual data,
+	 * them to the downstream readers to read the actual data,
 	 * and exits, without waiting for the readers to finish reading. This implies that no more
 	 * checkpoint barriers are going to be forwarded after the source exits, thus having no
 	 * checkpoints after that point.
@@ -1064,7 +1088,7 @@ public class StreamExecutionEnvironment {
 	 *
 	 * <p><b>NOTES ON CHECKPOINTING: </b> The source monitors the path, creates the
 	 * {@link org.apache.flink.core.fs.FileInputSplit FileInputSplits} to be processed,
-	 * forwards them to the downstream {@link ContinuousFileReaderOperator readers} to read the actual data,
+	 * forwards them to the downstream readers to read the actual data,
 	 * and exits, without waiting for the readers to finish reading. This implies that no more checkpoint
 	 * barriers are going to be forwarded after the source exits, thus having no checkpoints after that point.
 	 *
@@ -1097,7 +1121,7 @@ public class StreamExecutionEnvironment {
 	 *
 	 * <p><b>NOTES ON CHECKPOINTING: </b> The source monitors the path, creates the
 	 * {@link org.apache.flink.core.fs.FileInputSplit FileInputSplits} to be processed,
-	 * forwards them to the downstream {@link ContinuousFileReaderOperator readers} to read the actual data,
+	 * forwards them to the downstream readers to read the actual data,
 	 * and exits, without waiting for the readers to finish reading. This implies that no more checkpoint
 	 * barriers are going to be forwarded after the source exits, thus having no checkpoints after that point.
 	 *
@@ -1175,7 +1199,7 @@ public class StreamExecutionEnvironment {
 	 *
 	 * <p><b>NOTES ON CHECKPOINTING: </b> If the {@code watchType} is set to {@link FileProcessingMode#PROCESS_ONCE},
 	 * the source monitors the path <b>once</b>, creates the {@link org.apache.flink.core.fs.FileInputSplit FileInputSplits}
-	 * to be processed, forwards them to the downstream {@link ContinuousFileReaderOperator readers} to read the actual data,
+	 * to be processed, forwards them to the downstream readers to read the actual data,
 	 * and exits, without waiting for the readers to finish reading. This implies that no more checkpoint barriers
 	 * are going to be forwarded after the source exits, thus having no checkpoints after that point.
 	 *
@@ -1246,7 +1270,7 @@ public class StreamExecutionEnvironment {
 	 *
 	 * <p><b>NOTES ON CHECKPOINTING: </b> If the {@code watchType} is set to {@link FileProcessingMode#PROCESS_ONCE},
 	 * the source monitors the path <b>once</b>, creates the {@link org.apache.flink.core.fs.FileInputSplit FileInputSplits}
-	 * to be processed, forwards them to the downstream {@link ContinuousFileReaderOperator readers} to read the actual data,
+	 * to be processed, forwards them to the downstream readers to read the actual data,
 	 * and exits, without waiting for the readers to finish reading. This implies that no more checkpoint barriers
 	 * are going to be forwarded after the source exits, thus having no checkpoints after that point.
 	 *
@@ -1404,7 +1428,7 @@ public class StreamExecutionEnvironment {
 	 * <p><b>NOTES ON CHECKPOINTING: </b> In the case of a {@link FileInputFormat}, the source
 	 * (which executes the {@link ContinuousFileMonitoringFunction}) monitors the path, creates the
 	 * {@link org.apache.flink.core.fs.FileInputSplit FileInputSplits} to be processed, forwards
-	 * them to the downstream {@link ContinuousFileReaderOperator} to read the actual data, and exits,
+	 * them to the downstream readers to read the actual data, and exits,
 	 * without waiting for the readers to finish reading. This implies that no more checkpoint
 	 * barriers are going to be forwarded after the source exits, thus having no checkpoints.
 	 *
@@ -1429,7 +1453,7 @@ public class StreamExecutionEnvironment {
 	 * <p><b>NOTES ON CHECKPOINTING: </b> In the case of a {@link FileInputFormat}, the source
 	 * (which executes the {@link ContinuousFileMonitoringFunction}) monitors the path, creates the
 	 * {@link org.apache.flink.core.fs.FileInputSplit FileInputSplits} to be processed, forwards
-	 * them to the downstream {@link ContinuousFileReaderOperator} to read the actual data, and exits,
+	 * them to the downstream readers to read the actual data, and exits,
 	 * without waiting for the readers to finish reading. This implies that no more checkpoint
 	 * barriers are going to be forwarded after the source exits, thus having no checkpoints.
 	 *
@@ -1484,7 +1508,8 @@ public class StreamExecutionEnvironment {
 		ContinuousFileMonitoringFunction<OUT> monitoringFunction =
 			new ContinuousFileMonitoringFunction<>(inputFormat, monitoringMode, getParallelism(), interval);
 
-		ContinuousFileReaderOperatorFactory<OUT> factory = new ContinuousFileReaderOperatorFactory<>(inputFormat);
+		ContinuousFileReaderOperatorFactory<OUT, TimestampedFileInputSplit> factory =
+				new ContinuousFileReaderOperatorFactory<>(inputFormat);
 
 		SingleOutputStreamOperator<OUT> source = addSource(monitoringFunction, sourceName)
 				.transform("Split Reader: " + sourceName, typeInfo, factory);
@@ -1856,22 +1881,7 @@ public class StreamExecutionEnvironment {
 	public static StreamExecutionEnvironment getExecutionEnvironment() {
 		return Utils.resolveFactory(threadLocalContextEnvironmentFactory, contextEnvironmentFactory)
 			.map(StreamExecutionEnvironmentFactory::createExecutionEnvironment)
-			.orElseGet(StreamExecutionEnvironment::createStreamExecutionEnvironment);
-	}
-
-	private static StreamExecutionEnvironment createStreamExecutionEnvironment() {
-		// because the streaming project depends on "flink-clients" (and not the other way around)
-		// we currently need to intercept the data set environment and create a dependent stream env.
-		// this should be fixed once we rework the project dependencies
-
-		ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
-		if (env instanceof ContextEnvironment) {
-			return new StreamContextEnvironment((ContextEnvironment) env);
-		} else if (env instanceof OptimizerPlanEnvironment) {
-			return new StreamPlanEnvironment(env);
-		} else {
-			return createLocalEnvironment();
-		}
+			.orElseGet(StreamExecutionEnvironment::createLocalEnvironment);
 	}
 
 	/**

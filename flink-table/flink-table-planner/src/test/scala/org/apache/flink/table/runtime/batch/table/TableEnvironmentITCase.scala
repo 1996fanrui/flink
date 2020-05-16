@@ -22,6 +22,7 @@ import java.util
 
 import org.apache.flink.api.scala._
 import org.apache.flink.api.scala.util.CollectionDataSets
+import org.apache.flink.table.api.internal.TableEnvironmentInternal
 import org.apache.flink.table.api.scala._
 import org.apache.flink.table.runtime.utils.TableProgramsTestBase.TableConfigMode
 import org.apache.flink.table.runtime.utils.{TableProgramsCollectionTestBase, TableProgramsTestBase}
@@ -48,7 +49,7 @@ class TableEnvironmentITCase(
     val tEnv = BatchTableEnvironment.create(env, config)
 
     val ds = CollectionDataSets.get3TupleDataSet(env)
-    tEnv.registerDataSet(tableName, ds)
+    tEnv.createTemporaryView(tableName, ds)
     val t = tEnv.scan(tableName).select('_1, '_2, '_3)
 
     val expected = "1,1,Hi\n" + "2,2,Hello\n" + "3,2,Hello world\n" +
@@ -69,7 +70,7 @@ class TableEnvironmentITCase(
     val tEnv = BatchTableEnvironment.create(env, config)
 
     val ds = CollectionDataSets.get3TupleDataSet(env)
-    tEnv.registerDataSet(tableName, ds, 'a, 'b, 'c) // new alias
+    tEnv.createTemporaryView(tableName, ds, 'a, 'b, 'c) // new alias
     val t = tEnv.scan(tableName).select('a, 'b)
 
     val expected = "1,1\n" + "2,2\n" + "3,2\n" + "4,3\n" + "5,3\n" + "6,3\n" +
@@ -87,7 +88,7 @@ class TableEnvironmentITCase(
     val tEnv = BatchTableEnvironment.create(env, config)
 
     val ds = CollectionDataSets.get3TupleDataSet(env)
-    tEnv.registerDataSet(tableName, ds, '_3, '_1, '_2) // new order
+    tEnv.createTemporaryView(tableName, ds, '_3, '_1, '_2) // new order
     val t = tEnv.scan(tableName).select('_1, '_2)
 
     val expected = "1,1\n" + "2,2\n" + "3,2\n" + "4,3\n" + "5,3\n" + "6,3\n" +
@@ -187,18 +188,19 @@ class TableEnvironmentITCase(
     val tEnv = BatchTableEnvironment.create(env)
     MemoryTableSourceSinkUtil.clear()
 
-    val t = CollectionDataSets.getSmall3TupleDataSet(env).toTable(tEnv).as('a, 'b, 'c)
+    val t = CollectionDataSets.getSmall3TupleDataSet(env).toTable(tEnv).as("a", "b", "c")
     tEnv.registerTable("sourceTable", t)
 
     val fieldNames = Array("d", "e", "f")
     val fieldTypes = tEnv.scan("sourceTable").getSchema.getFieldTypes
     val sink = new MemoryTableSourceSinkUtil.UnsafeMemoryAppendTableSink
-    tEnv.registerTableSink("targetTable", sink.configure(fieldNames, fieldTypes))
+    tEnv.asInstanceOf[TableEnvironmentInternal].registerTableSinkInternal(
+      "targetTable", sink.configure(fieldNames, fieldTypes))
 
     tEnv.scan("sourceTable")
       .select('a, 'b, 'c)
       .insertInto("targetTable")
-    env.execute()
+    tEnv.execute("job name")
 
     val expected = List("1,1,Hi", "2,2,Hello", "3,2,Hello world")
     assertEquals(expected.sorted, MemoryTableSourceSinkUtil.tableDataStrings.sorted)

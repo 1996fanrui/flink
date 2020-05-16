@@ -153,7 +153,6 @@ catalogs:
    - name: myhive
      type: hive
      hive-conf-dir: /opt/hive-conf  # contains hive-site.xml
-     hive-version: 2.3.4
 {% endhighlight %}
 
 
@@ -191,7 +190,6 @@ Flink SQL> CREATE TABLE mykafka (name String, age Int) WITH (
    'connector.type' = 'kafka',
    'connector.version' = 'universal',
    'connector.topic' = 'test',
-   'connector.properties.zookeeper.connect' = 'localhost:2181',
    'connector.properties.bootstrap.servers' = 'localhost:9092',
    'format.type' = 'csv',
    'update-mode' = 'append'
@@ -228,7 +226,6 @@ Location:           	......
 Table Type:         	MANAGED_TABLE
 Table Parameters:
 	flink.connector.properties.bootstrap.servers	localhost:9092
-	flink.connector.properties.zookeeper.connect	localhost:2181
 	flink.connector.topic	test
 	flink.connector.type	kafka
 	flink.connector.version	universal

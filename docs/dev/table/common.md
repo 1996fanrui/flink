@@ -441,7 +441,6 @@ the current catalog and current database will be referred. Users can switch the 
 table API or SQL.
 
 Identifiers follow SQL requirements which means that they can be escaped with a backtick character (`` ` ``).
-Additionally all SQL reserved keywords must be escaped.
 
 <div class="codetabs" markdown="1">
 <div data-lang="java" markdown="1">
@@ -459,10 +458,6 @@ tableEnv.createTemporaryView("exampleView", table);
 // register the view named 'exampleView' in the catalog named 'custom_catalog'
 // in the database named 'other_database' 
 tableEnv.createTemporaryView("other_database.exampleView", table);
-
-// register the view named 'View' in the catalog named 'custom_catalog' in the
-// database named 'custom_database'. 'View' is a reserved keyword and must be escaped.  
-tableEnv.createTemporaryView("`View`", table);
 
 // register the view named 'example.View' in the catalog named 'custom_catalog'
 // in the database named 'custom_database' 
@@ -491,10 +486,6 @@ tableEnv.createTemporaryView("exampleView", table)
 // register the view named 'exampleView' in the catalog named 'custom_catalog'
 // in the database named 'other_database' 
 tableEnv.createTemporaryView("other_database.exampleView", table)
-
-// register the view named 'View' in the catalog named 'custom_catalog' in the
-// database named 'custom_database'. 'View' is a reserved keyword and must be escaped.  
-tableEnv.createTemporaryView("`View`", table)
 
 // register the view named 'example.View' in the catalog named 'custom_catalog'
 // in the database named 'custom_database' 
@@ -533,9 +524,9 @@ TableEnvironment tableEnv = ...; // see "Create a TableEnvironment" section
 Table orders = tableEnv.from("Orders");
 // compute revenue for all customers from France
 Table revenue = orders
-  .filter("cCountry === 'FRANCE'")
-  .groupBy("cID, cName")
-  .select("cID, cName, revenue.sum AS revSum");
+  .filter($("cCountry").isEqual("FRANCE"))
+  .groupBy($("cID"), $("cName")
+  .select($("cID"), $("cName"), $("revenue").sum().as("revSum"));
 
 // emit or convert Table
 // execute query
@@ -553,9 +544,9 @@ val tableEnv = ... // see "Create a TableEnvironment" section
 val orders = tableEnv.from("Orders")
 // compute revenue for all customers from France
 val revenue = orders
-  .filter('cCountry === "FRANCE")
-  .groupBy('cID, 'cName)
-  .select('cID, 'cName, 'revenue.sum AS 'revSum)
+  .filter($"cCountry" === "FRANCE")
+  .groupBy($"cID", $"cName")
+  .select($"cID", $"cName", $"revenue".sum AS "revSum")
 
 // emit or convert Table
 // execute query
@@ -844,13 +835,18 @@ Table API and SQL queries are translated into [DataStream]({{ site.baseurl }}/de
 1. Optimization of the logical plan
 2. Translation into a DataStream or DataSet program
 
-A Table API or SQL query is translated when:
+For streaming, a Table API or SQL query is translated when:
+
+* `TableEnvironment.execute()` is called. A `Table` (emitted to a `TableSink` through `Table.insertInto()`) or a SQL update query (specified through `TableEnvironment.sqlUpdate()`) will be buffered in `TableEnvironment` first. Each sink will be optimized independently. The execution graph contains multiple independent sub-DAGs.
+* A `Table` is translated when it is converted into a `DataStream` (see [Integration with DataStream and DataSet API](#integration-with-datastream-and-dataset-api)). Once translated, it's a regular DataStream program and is executed when `StreamExecutionEnvironment.execute()` is called.
+
+For batch, a Table API or SQL query is translated when:
 
 * a `Table` is emitted to a `TableSink`, i.e., when `Table.insertInto()` is called.
 * a SQL update query is specified, i.e., when `TableEnvironment.sqlUpdate()` is called.
-* a `Table` is converted into a `DataStream` or `DataSet` (see [Integration with DataStream and DataSet API](#integration-with-datastream-and-dataset-api)).
+* a `Table` is converted into a `DataSet` (see [Integration with DataStream and DataSet API](#integration-with-datastream-and-dataset-api)).
 
-Once translated, a Table API or SQL query is handled like a regular DataStream or DataSet program and is executed when `StreamExecutionEnvironment.execute()` or `ExecutionEnvironment.execute()` is called.
+Once translated, a Table API or SQL query is handled like a regular DataSet program and is executed when `ExecutionEnvironment.execute()` is called.
 
 </div>
 
@@ -860,17 +856,11 @@ Table API and SQL queries are translated into [DataStream]({{ site.baseurl }}/de
 1. Optimization of the logical plan,
 2. Translation into a DataStream program.
 
-The behavior of translating  a query is different for `TableEnvironment` and `StreamTableEnvironment`.
+a Table API or SQL query is translated when:
 
-For `TableEnvironment`, a Table API or SQL query is translated when `TableEnvironment.execute()` is called, because `TableEnvironment` will optimize multiple-sinks into one DAG.
+* `TableEnvironment.execute()` is called. A `Table` (emitted to a `TableSink` through `Table.insertInto()`) or a SQL update query (specified through `TableEnvironment.sqlUpdate()`) will be buffered in `TableEnvironment` first. All sinks will be optimized into one DAG.
+* A `Table` is translated when it is converted into a `DataStream` (see [Integration with DataStream and DataSet API](#integration-with-datastream-and-dataset-api)). Once translated, it's a regular DataStream program and is executed when `StreamExecutionEnvironment.execute()` is called.
 
-While for `StreamTableEnvironment`, a Table API or SQL query is translated when:
-
-* a `Table` is emitted to a `TableSink`, i.e., when `Table.insertInto()` is called.
-* a SQL update query is specified, i.e., when `TableEnvironment.sqlUpdate()` is called.
-* a `Table` is converted into a `DataStream`.
-
-Once translated, a Table API or SQL query is handled like a regular DataStream program and is executed when `TableEnvironment.execute()` or `StreamExecutionEnvironment.execute()` is called.
 
 </div>
 </div>
@@ -910,7 +900,7 @@ DataStream<Tuple2<Long, String>> stream = ...
 tableEnv.createTemporaryView("myTable", stream);
 
 // register the DataStream as View "myTable2" with fields "myLong", "myString"
-tableEnv.createTemporaryView("myTable2", stream, "myLong, myString");
+tableEnv.createTemporaryView("myTable2", stream, $("myLong"), $("myString"));
 {% endhighlight %}
 </div>
 
@@ -950,7 +940,7 @@ DataStream<Tuple2<Long, String>> stream = ...
 Table table1 = tableEnv.fromDataStream(stream);
 
 // Convert the DataStream into a Table with fields "myLong", "myString"
-Table table2 = tableEnv.fromDataStream(stream, "myLong, myString");
+Table table2 = tableEnv.fromDataStream(stream, $("myLong"), $("myString"));
 {% endhighlight %}
 </div>
 
@@ -962,11 +952,11 @@ val tableEnv = ... // see "Create a TableEnvironment" section
 
 val stream: DataStream[(Long, String)] = ...
 
-// convert the DataStream into a Table with default fields '_1, '_2
+// convert the DataStream into a Table with default fields "_1", "_2"
 val table1: Table = tableEnv.fromDataStream(stream)
 
-// convert the DataStream into a Table with fields 'myLong, 'myString
-val table2: Table = tableEnv.fromDataStream(stream, 'myLong, 'myString)
+// convert the DataStream into a Table with fields "myLong", "myString"
+val table2: Table = tableEnv.fromDataStream(stream, $"myLong", $"myString")
 {% endhighlight %}
 </div>
 </div>
@@ -1120,10 +1110,10 @@ DataStream<Tuple2<Long, Integer>> stream = ...
 Table table = tableEnv.fromDataStream(stream);
 
 // convert DataStream into Table with field "myLong" only
-Table table = tableEnv.fromDataStream(stream, "myLong");
+Table table = tableEnv.fromDataStream(stream, $("myLong"));
 
 // convert DataStream into Table with field names "myLong" and "myInt"
-Table table = tableEnv.fromDataStream(stream, "myLong, myInt");
+Table table = tableEnv.fromDataStream(stream, $("myLong"), $("myInt"));
 {% endhighlight %}
 </div>
 
@@ -1138,10 +1128,10 @@ val stream: DataStream[(Long, Int)] = ...
 val table: Table = tableEnv.fromDataStream(stream)
 
 // convert DataStream into Table with field "myLong" only
-val table: Table = tableEnv.fromDataStream(stream, 'myLong)
+val table: Table = tableEnv.fromDataStream(stream, $"myLong")
 
 // convert DataStream into Table with field names "myLong" and "myInt"
-val table: Table = tableEnv.fromDataStream(stream, 'myLong, 'myInt)
+val table: Table = tableEnv.fromDataStream(stream, $"myLong", $"myInt")
 {% endhighlight %}
 </div>
 </div>
@@ -1164,13 +1154,13 @@ DataStream<Tuple2<Long, Integer>> stream = ...
 Table table = tableEnv.fromDataStream(stream);
 
 // convert DataStream into Table with field "f1" only
-Table table = tableEnv.fromDataStream(stream, "f1");
+Table table = tableEnv.fromDataStream(stream, $("f1"));
 
 // convert DataStream into Table with swapped fields
-Table table = tableEnv.fromDataStream(stream, "f1, f0");
+Table table = tableEnv.fromDataStream(stream, $("f1"), $("f0"));
 
 // convert DataStream into Table with swapped fields and field names "myInt" and "myLong"
-Table table = tableEnv.fromDataStream(stream, "f1 as myInt, f0 as myLong");
+Table table = tableEnv.fromDataStream(stream, $("f1").as("myInt"), $("f0").as("myLong"));
 {% endhighlight %}
 </div>
 
@@ -1185,13 +1175,13 @@ val stream: DataStream[(Long, Int)] = ...
 val table: Table = tableEnv.fromDataStream(stream)
 
 // convert DataStream into Table with field "_2" only
-val table: Table = tableEnv.fromDataStream(stream, '_2)
+val table: Table = tableEnv.fromDataStream(stream, $"_2")
 
 // convert DataStream into Table with swapped fields
-val table: Table = tableEnv.fromDataStream(stream, '_2, '_1)
+val table: Table = tableEnv.fromDataStream(stream, $"_2", $"_1")
 
 // convert DataStream into Table with swapped fields and field names "myInt" and "myLong"
-val table: Table = tableEnv.fromDataStream(stream, '_2 as 'myInt, '_1 as 'myLong)
+val table: Table = tableEnv.fromDataStream(stream, $"_2" as "myInt", $"_1" as "myLong")
 {% endhighlight %}
 </div>
 </div>
@@ -1212,7 +1202,7 @@ DataStream<Long> stream = ...
 Table table = tableEnv.fromDataStream(stream);
 
 // convert DataStream into Table with field name "myLong"
-Table table = tableEnv.fromDataStream(stream, "myLong");
+Table table = tableEnv.fromDataStream(stream, $("myLong"));
 {% endhighlight %}
 </div>
 
@@ -1227,7 +1217,7 @@ val stream: DataStream[Long] = ...
 val table: Table = tableEnv.fromDataStream(stream)
 
 // convert DataStream into Table with field name "myLong"
-val table: Table = tableEnv.fromDataStream(stream, 'myLong)
+val table: Table = tableEnv.fromDataStream(stream, $"myLong")
 {% endhighlight %}
 </div>
 </div>
@@ -1248,16 +1238,16 @@ DataStream<Tuple2<Long, String>> stream = ...
 Table table = tableEnv.fromDataStream(stream);
 
 // convert DataStream into Table with renamed field names "myLong", "myString" (position-based)
-Table table = tableEnv.fromDataStream(stream, "myLong, myString");
+Table table = tableEnv.fromDataStream(stream, $("myLong"), $("myString"));
 
 // convert DataStream into Table with reordered fields "f1", "f0" (name-based)
-Table table = tableEnv.fromDataStream(stream, "f1, f0");
+Table table = tableEnv.fromDataStream(stream, $("f1"), $("f0"));
 
 // convert DataStream into Table with projected field "f1" (name-based)
-Table table = tableEnv.fromDataStream(stream, "f1");
+Table table = tableEnv.fromDataStream(stream, $("f1"));
 
 // convert DataStream into Table with reordered and aliased fields "myString", "myLong" (name-based)
-Table table = tableEnv.fromDataStream(stream, "f1 as 'myString', f0 as 'myLong'");
+Table table = tableEnv.fromDataStream(stream, $("f1").as("myString"), $("f0").as("myLong"));
 {% endhighlight %}
 </div>
 
@@ -1272,16 +1262,16 @@ val stream: DataStream[(Long, String)] = ...
 val table: Table = tableEnv.fromDataStream(stream)
 
 // convert DataStream into Table with field names "myLong", "myString" (position-based)
-val table: Table = tableEnv.fromDataStream(stream, 'myLong, 'myString)
+val table: Table = tableEnv.fromDataStream(stream, $"myLong", $"myString")
 
 // convert DataStream into Table with reordered fields "_2", "_1" (name-based)
-val table: Table = tableEnv.fromDataStream(stream, '_2, '_1)
+val table: Table = tableEnv.fromDataStream(stream, $"_2", $"_1")
 
 // convert DataStream into Table with projected field "_2" (name-based)
-val table: Table = tableEnv.fromDataStream(stream, '_2)
+val table: Table = tableEnv.fromDataStream(stream, $"_2")
 
 // convert DataStream into Table with reordered and aliased fields "myString", "myLong" (name-based)
-val table: Table = tableEnv.fromDataStream(stream, '_2 as 'myString, '_1 as 'myLong)
+val table: Table = tableEnv.fromDataStream(stream, $"_2" as "myString", $"_1" as "myLong")
 
 // define case class
 case class Person(name: String, age: Int)
@@ -1291,10 +1281,10 @@ val streamCC: DataStream[Person] = ...
 val table = tableEnv.fromDataStream(streamCC)
 
 // convert DataStream into Table with field names 'myName, 'myAge (position-based)
-val table = tableEnv.fromDataStream(streamCC, 'myName, 'myAge)
+val table = tableEnv.fromDataStream(streamCC, $"myName", $"myAge")
 
 // convert DataStream into Table with reordered and aliased fields "myAge", "myName" (name-based)
-val table: Table = tableEnv.fromDataStream(stream, 'age as 'myAge, 'name as 'myName)
+val table: Table = tableEnv.fromDataStream(stream, $"age" as "myAge", $"name" as "myName")
 
 {% endhighlight %}
 </div>
@@ -1302,7 +1292,7 @@ val table: Table = tableEnv.fromDataStream(stream, 'age as 'myAge, 'name as 'myN
 
 #### POJO (Java and Scala)
 
-Flink supports POJOs as composite types. The rules for what determines a POJO are documented [here]({{ site.baseurl }}/dev/api_concepts.html#pojos).
+Flink supports POJOs as composite types. The rules for what determines a POJO are documented [here]({% link dev/types_serialization.md %}#pojos).
 
 When converting a POJO `DataStream` or `DataSet` into a `Table` without specifying field names, the names of the original POJO fields are used. The name mapping requires the original names and cannot be done by positions. Fields can be renamed using an alias (with the `as` keyword), reordered, and projected.
 
@@ -1319,13 +1309,13 @@ DataStream<Person> stream = ...
 Table table = tableEnv.fromDataStream(stream);
 
 // convert DataStream into Table with renamed fields "myAge", "myName" (name-based)
-Table table = tableEnv.fromDataStream(stream, "age as myAge, name as myName");
+Table table = tableEnv.fromDataStream(stream, $("age").as("myAge"), $("name").as("myName"));
 
 // convert DataStream into Table with projected field "name" (name-based)
-Table table = tableEnv.fromDataStream(stream, "name");
+Table table = tableEnv.fromDataStream(stream, $("name"));
 
 // convert DataStream into Table with projected and renamed field "myName" (name-based)
-Table table = tableEnv.fromDataStream(stream, "name as myName");
+Table table = tableEnv.fromDataStream(stream, $("name").as("myName"));
 {% endhighlight %}
 </div>
 
@@ -1341,13 +1331,13 @@ val stream: DataStream[Person] = ...
 val table: Table = tableEnv.fromDataStream(stream)
 
 // convert DataStream into Table with renamed fields "myAge", "myName" (name-based)
-val table: Table = tableEnv.fromDataStream(stream, 'age as 'myAge, 'name as 'myName)
+val table: Table = tableEnv.fromDataStream(stream, $"age" as "myAge", $"name" as "myName")
 
 // convert DataStream into Table with projected field "name" (name-based)
-val table: Table = tableEnv.fromDataStream(stream, 'name)
+val table: Table = tableEnv.fromDataStream(stream, $"name")
 
 // convert DataStream into Table with projected and renamed field "myName" (name-based)
-val table: Table = tableEnv.fromDataStream(stream, 'name as 'myName)
+val table: Table = tableEnv.fromDataStream(stream, $"name" as "myName")
 {% endhighlight %}
 </div>
 </div>
@@ -1369,16 +1359,16 @@ DataStream<Row> stream = ...
 Table table = tableEnv.fromDataStream(stream);
 
 // convert DataStream into Table with renamed field names "myName", "myAge" (position-based)
-Table table = tableEnv.fromDataStream(stream, "myName, myAge");
+Table table = tableEnv.fromDataStream(stream, $("myName"), $("myAge"));
 
 // convert DataStream into Table with renamed fields "myName", "myAge" (name-based)
-Table table = tableEnv.fromDataStream(stream, "name as myName, age as myAge");
+Table table = tableEnv.fromDataStream(stream, $("name").as("myName"), $("age").as("myAge"));
 
 // convert DataStream into Table with projected field "name" (name-based)
-Table table = tableEnv.fromDataStream(stream, "name");
+Table table = tableEnv.fromDataStream(stream, $("name"));
 
 // convert DataStream into Table with projected and renamed field "myName" (name-based)
-Table table = tableEnv.fromDataStream(stream, "name as myName");
+Table table = tableEnv.fromDataStream(stream, $("name").as("myName"));
 {% endhighlight %}
 </div>
 
@@ -1394,16 +1384,16 @@ val stream: DataStream[Row] = ...
 val table: Table = tableEnv.fromDataStream(stream)
 
 // convert DataStream into Table with renamed field names "myName", "myAge" (position-based)
-val table: Table = tableEnv.fromDataStream(stream, 'myName, 'myAge)
+val table: Table = tableEnv.fromDataStream(stream, $"myName", $"myAge")
 
 // convert DataStream into Table with renamed fields "myName", "myAge" (name-based)
-val table: Table = tableEnv.fromDataStream(stream, 'name as 'myName, 'age as 'myAge)
+val table: Table = tableEnv.fromDataStream(stream, $"name" as "myName", $"age" as "myAge")
 
 // convert DataStream into Table with projected field "name" (name-based)
-val table: Table = tableEnv.fromDataStream(stream, 'name)
+val table: Table = tableEnv.fromDataStream(stream, $"name")
 
 // convert DataStream into Table with projected and renamed field "myName" (name-based)
-val table: Table = tableEnv.fromDataStream(stream, 'name as 'myName)
+val table: Table = tableEnv.fromDataStream(stream, $"name" as "myName")
 {% endhighlight %}
 </div>
 </div>
@@ -1469,10 +1459,10 @@ StreamTableEnvironment tEnv = StreamTableEnvironment.create(env);
 DataStream<Tuple2<Integer, String>> stream1 = env.fromElements(new Tuple2<>(1, "hello"));
 DataStream<Tuple2<Integer, String>> stream2 = env.fromElements(new Tuple2<>(1, "hello"));
 
-Table table1 = tEnv.fromDataStream(stream1, "count, word");
-Table table2 = tEnv.fromDataStream(stream2, "count, word");
+Table table1 = tEnv.fromDataStream(stream1, $("count"), $("word"));
+Table table2 = tEnv.fromDataStream(stream2, $("count"), $("word"));
 Table table = table1
-  .where("LIKE(word, 'F%')")
+  .where($("word").like("F%"))
   .unionAll(table2);
 
 String explanation = tEnv.explain(table);
@@ -1485,10 +1475,10 @@ System.out.println(explanation);
 val env = StreamExecutionEnvironment.getExecutionEnvironment
 val tEnv = StreamTableEnvironment.create(env)
 
-val table1 = env.fromElements((1, "hello")).toTable(tEnv, 'count, 'word)
-val table2 = env.fromElements((1, "hello")).toTable(tEnv, 'count, 'word)
+val table1 = env.fromElements((1, "hello")).toTable(tEnv, $"count", $"word")
+val table2 = env.fromElements((1, "hello")).toTable(tEnv, $"count", $"word")
 val table = table1
-  .where('word.like("F%"))
+  .where($"word".like("F%"))
   .unionAll(table2)
 
 val explanation: String = tEnv.explain(table)
@@ -1666,7 +1656,7 @@ tEnv.connect(new FileSystem("/sink/path2"))
     .withSchema(schema)
     .createTemporaryTable("MySink2");
 
-Table table1 = tEnv.from("MySource1").where("LIKE(word, 'F%')");
+Table table1 = tEnv.from("MySource1").where($("word").like("F%"));
 table1.insertInto("MySink1");
 
 Table table2 = table1.unionAll(tEnv.from("MySource2"));
@@ -1704,7 +1694,7 @@ tEnv.connect(new FileSystem("/sink/path2"))
     .withSchema(schema)
     .createTemporaryTable("MySink2")
 
-val table1 = tEnv.from("MySource1").where("LIKE(word, 'F%')")
+val table1 = tEnv.from("MySource1").where($"word".like("F%"))
 table1.insertInto("MySink1")
 
 val table2 = table1.unionAll(tEnv.from("MySource2"))
@@ -1759,11 +1749,11 @@ the result of multiple-sinks plan is
 {% highlight text %}
 
 == Abstract Syntax Tree ==
-LogicalSink(name=[MySink1], fields=[count, word])
+LogicalLegacySink(name=[MySink1], fields=[count, word])
 +- LogicalFilter(condition=[LIKE($1, _UTF-16LE'F%')])
    +- LogicalTableScan(table=[[default_catalog, default_database, MySource1, source: [CsvTableSource(read fields: count, word)]]])
 
-LogicalSink(name=[MySink2], fields=[count, word])
+LogicalLegacySink(name=[MySink2], fields=[count, word])
 +- LogicalUnion(all=[true])
    :- LogicalFilter(condition=[LIKE($1, _UTF-16LE'F%')])
    :  +- LogicalTableScan(table=[[default_catalog, default_database, MySource1, source: [CsvTableSource(read fields: count, word)]]])
@@ -1773,10 +1763,10 @@ LogicalSink(name=[MySink2], fields=[count, word])
 Calc(select=[count, word], where=[LIKE(word, _UTF-16LE'F%')], reuse_id=[1])
 +- TableSourceScan(table=[[default_catalog, default_database, MySource1, source: [CsvTableSource(read fields: count, word)]]], fields=[count, word])
 
-Sink(name=[MySink1], fields=[count, word])
+LegacySink(name=[MySink1], fields=[count, word])
 +- Reused(reference_id=[1])
 
-Sink(name=[MySink2], fields=[count, word])
+LegacySink(name=[MySink2], fields=[count, word])
 +- Union(all=[true], union=[count, word])
    :- Reused(reference_id=[1])
    +- TableSourceScan(table=[[default_catalog, default_database, MySource2, source: [CsvTableSource(read fields: count, word)]]], fields=[count, word])
