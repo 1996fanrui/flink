@@ -136,6 +136,14 @@ public class BackendRestorerProcedure<
 			" provided restore options.", collectedException);
 	}
 
+	/**
+	 * 该方法调用 instanceSupplier.apply(restoreState); 函数式接口去创建相应的 AbstractKeyedStateBackend
+	 * 		如果 stateBackend 是 RocksDBStateBackend，就会创建出 RocksDBKeyedStateBackend
+	 * 		如果是 Memory 或 Fs 都会创建出 HeapKeyedStateBackend
+	 * @param restoreState
+	 * @return
+	 * @throws Exception
+	 */
 	private T attemptCreateAndRestore(Collection<S> restoreState) throws Exception {
 
 		// create a new backend with necessary initialization.

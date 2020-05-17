@@ -80,6 +80,7 @@ class RocksDBValueState<K, N, V>
 	@Override
 	public V value() {
 		try {
+			// 真正操作 RocksDB
 			byte[] valueBytes = backend.db.get(columnFamily,
 				serializeCurrentKeyWithGroupAndNamespace());
 
@@ -101,6 +102,7 @@ class RocksDBValueState<K, N, V>
 		}
 
 		try {
+			// 真正操作 RocksDB
 			backend.db.put(columnFamily, writeOptions,
 				serializeCurrentKeyWithGroupAndNamespace(),
 				serializeValue(value));

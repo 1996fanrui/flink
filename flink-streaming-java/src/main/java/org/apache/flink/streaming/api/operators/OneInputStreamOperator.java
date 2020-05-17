@@ -35,6 +35,8 @@ import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 public interface OneInputStreamOperator<IN, OUT> extends StreamOperator<OUT> {
 
 	/**
+	 * 重点在于 processElement 处理每一条数据，然后自定义的 udf 将会重写 processElement 方法，
+	 * 例如 StreamFlatMap 中，就会调用 udf 的 flatMap 方法来处理数据
 	 * Processes one element that arrived at this operator.
 	 * This method is guaranteed to not be called concurrently with other methods of the operator.
 	 */

@@ -223,17 +223,21 @@ public final class StreamTwoInputProcessor<IN1, IN2> implements StreamInputProce
 		while (true) {
 			if (currentRecordDeserializer != null) {
 				DeserializationResult result;
+				// 当前数据是 第一个流的数据，返回的 result 表示反序列化的状态结果
 				if (currentChannel < numInputChannels1) {
 					result = currentRecordDeserializer.getNextRecord(deserializationDelegate1);
 				} else {
+					// 当前数据是 第二个流的数据
 					result = currentRecordDeserializer.getNextRecord(deserializationDelegate2);
 				}
 
+				// 当前 buffer 消费完了，所以 currentRecordDeserializer 设置为空
 				if (result.isBufferConsumed()) {
 					currentRecordDeserializer.getCurrentBuffer().recycleBuffer();
 					currentRecordDeserializer = null;
 				}
 
+				// 本次反序列化记录是完整的，则开始处理数据
 				if (result.isFullRecord()) {
 					if (currentChannel < numInputChannels1) {
 						StreamElement recordOrWatermark = deserializationDelegate1.getInstance();
@@ -254,8 +258,16 @@ public final class StreamTwoInputProcessor<IN1, IN2> implements StreamInputProce
 						else {
 							StreamRecord<IN1> record = recordOrWatermark.asRecord();
 							synchronized (lock) {
+								// NumRecordsIn 的 Metric 首先 increment，
 								numRecordsIn.inc();
+
+								// 因为这里是 StreamTwoInputProcessor，所以会调用 TwoInputStreamOperator 的相关方法
+								// 同样也会执行 setKeyContextElement1 或 setKeyContextElement2
 								streamOperator.setKeyContextElement1(record);
+
+								// 重点执行 TwoInputStreamOperator 的 processElement1 或 processElement2 方法，
+								// 实际上执行具体算子的 processElement 方法，例如 CoProcessOperator、IntervalJoinOperator 的 processElement1 或 processElement2 方法，
+								// CoProcessOperator 就会调用 CoProcessFunction 的 processElement1 或 processElement2 方法
 								streamOperator.processElement1(record);
 							}
 							return true;

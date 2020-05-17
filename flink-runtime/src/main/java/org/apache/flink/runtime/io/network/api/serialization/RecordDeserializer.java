@@ -24,6 +24,7 @@ import org.apache.flink.runtime.io.network.buffer.Buffer;
 import java.io.IOException;
 
 /**
+ * 将 Memory Segment 数据转换为 record
  * Interface for turning sequences of memory segments into records.
  */
 public interface RecordDeserializer<T extends IOReadableWritable> {
@@ -36,8 +37,10 @@ public interface RecordDeserializer<T extends IOReadableWritable> {
 		INTERMEDIATE_RECORD_FROM_BUFFER(true, false),
 		LAST_RECORD_FROM_BUFFER(true, true);
 
+		// 本次反序列的结果是个完整的记录
 		private final boolean isFullRecord;
 
+		// 本次反序列化结束后，当前 Buffer 消费完成了
 		private final boolean isBufferConsumed;
 
 		private DeserializationResult(boolean isFullRecord, boolean isBufferConsumed) {

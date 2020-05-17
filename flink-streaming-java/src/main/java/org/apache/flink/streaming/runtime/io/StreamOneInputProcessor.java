@@ -130,16 +130,21 @@ public final class StreamOneInputProcessor<IN> implements StreamInputProcessor {
 
 	@Override
 	public boolean processInput() throws Exception {
+		// 初始化 NumRecordsIn 的 Metric
 		initializeNumRecordsIn();
 
+		// 从 input 中获取数据，注意如果input 中没有数据，则不能阻塞
 		StreamElement recordOrMark = input.pollNextNullable();
 		if (recordOrMark == null) {
 			input.isAvailable().get();
 			return !checkFinished();
 		}
+		// 从 input 中获取 channel 的编号，然后执行 processElement 方法
 		int channel = input.getLastChannel();
 		checkState(channel != StreamTaskInput.UNSPECIFIED);
 
+		// processElement 方法中判断 element 的类型，
+		// 四种类型：Record、WaterMark、StreamStatus、LatencyMarker
 		processElement(recordOrMark, channel);
 		return true;
 	}
@@ -160,7 +165,15 @@ public final class StreamOneInputProcessor<IN> implements StreamInputProcessor {
 			StreamRecord<IN> record = recordOrMark.asRecord();
 			synchronized (lock) {
 				numRecordsIn.inc();
+				// 因为这里是 StreamOneInputProcessor，所以会调用 OneInputStreamOperator 的相关方法
+				// 首先调用 OneInputStreamOperator 的 setKeyContextElement1 方法用于从 KeySelector 中提取出数据的 key
+				// （如果是不是 KeyStream，则没有 KeySelector）
 				streamOperator.setKeyContextElement1(record);
+
+				//然后调用 OneInputStreamOperator 的 processElement 方法
+				//实际上执行具体算子的 processElement 方法，
+				// 例如 StreamFlatMap、StreamFilter 的 processElement 方法，
+				// StreamFlatMap 就会调用 FlatmapFunction 的 flatmap 方法
 				streamOperator.processElement(record);
 			}
 		}

@@ -170,6 +170,7 @@ public final class StreamingFunctionUtils {
 		}
 	}
 
+	// 调用 udf 的  initializeState 方法，前提是 userFunction instanceof CheckpointedFunction
 	private static boolean tryRestoreFunction(
 			StateInitializationContext context,
 			Function userFunction) throws Exception {

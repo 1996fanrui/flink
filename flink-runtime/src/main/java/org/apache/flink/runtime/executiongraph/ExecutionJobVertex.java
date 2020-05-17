@@ -72,6 +72,9 @@ import java.util.stream.Collectors;
  * An {@code ExecutionJobVertex} is part of the {@link ExecutionGraph}, and the peer
  * to the {@link JobVertex}.
  *
+ * ExecutionJobVertex 与 ExecutionVertex 的对应关系：
+ * 	ExecutionVertex 对应一个 Operator
+ * 	ExecutionJobVertex 对应 Operator 的一个实例
  * <p>The {@code ExecutionJobVertex} corresponds to a parallelized operation. It
  * contains an {@link ExecutionVertex} for each parallel instance of that operation.
  */

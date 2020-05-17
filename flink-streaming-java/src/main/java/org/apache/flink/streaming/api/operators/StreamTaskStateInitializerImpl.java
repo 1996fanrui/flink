@@ -229,6 +229,16 @@ public class StreamTaskStateInitializerImpl implements StreamTaskStateInitialize
 		return timeServiceManager;
 	}
 
+	/**
+	 * operatorStateBackend 方法初始化 operatorStateBackend
+	 * 这里无论是何种 StateBackend，都会创建出 DefaultOperatorStateBackend
+	 * 也就验证了一点：RocksDB 只支持 KeyedState，OperatorState 都是按照 Heap 的方案。
+	 * @param operatorIdentifierText
+	 * @param prioritizedOperatorSubtaskStates
+	 * @param backendCloseableRegistry
+	 * @return
+	 * @throws Exception
+	 */
 	protected OperatorStateBackend operatorStateBackend(
 		String operatorIdentifierText,
 		PrioritizedOperatorSubtaskState prioritizedOperatorSubtaskStates,
@@ -288,6 +298,7 @@ public class StreamTaskStateInitializerImpl implements StreamTaskStateInitialize
 		backendCloseableRegistry.registerCloseable(cancelStreamRegistryForRestore);
 		BackendRestorerProcedure<AbstractKeyedStateBackend<K>, KeyedStateHandle> backendRestorer =
 			new BackendRestorerProcedure<>(
+				// 这里是函数式接口，并不是去 create StateBackend
 				(stateHandles) -> stateBackend.createKeyedStateBackend(
 					environment,
 					environment.getJobID(),
@@ -304,6 +315,7 @@ public class StreamTaskStateInitializerImpl implements StreamTaskStateInitialize
 				logDescription);
 
 		try {
+			// 这里去 create StateBackend 并恢复状态文件
 			return backendRestorer.createAndRestore(
 				prioritizedOperatorSubtaskStates.getPrioritizedManagedKeyedState());
 		} finally {

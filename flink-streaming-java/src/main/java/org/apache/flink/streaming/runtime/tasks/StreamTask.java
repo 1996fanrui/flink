@@ -273,6 +273,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 	 * @throws Exception on any problems in the action.
 	 */
 	protected void performDefaultAction(ActionContext context) throws Exception {
+		// inputProcessor 主要有两种实现 StreamOneInputProcessor 和 StreamTwoInputProcessor
 		if (!inputProcessor.processInput()) {
 			context.allActionsCompleted();
 		}
@@ -356,6 +357,8 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 			checkpointExceptionHandler = cpExceptionHandlerFactory
 				.createCheckpointExceptionHandler(getEnvironment());
 
+			// 创建 StateBackend, 优先从 app 的设置中去加载，再去 config 中去加载，
+			// 都没有配置，则创建默认的 MemoryStateBackend
 			stateBackend = createStateBackend();
 			checkpointStorage = stateBackend.createCheckpointStorage(getEnvironment().getJobID());
 
@@ -389,6 +392,8 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 				// so that we avoid race conditions in the case that initializeState()
 				// registers a timer, that fires before the open() is called.
 
+				// 循环遍历，对该 task 所有 Operator 进行状态初始化，
+				// 包括初始化 StateBackend ，并调用 udf 的 initializeState 方法
 				initializeState();
 				openAllOperators();
 			}
@@ -400,6 +405,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 
 			// let the task do its work
 			isRunning = true;
+			// 死循环处理数据
 			run();
 
 			// if this left the run() method cleanly despite the fact that this was canceled,
@@ -869,6 +875,8 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 		checkpointingOperation.executeCheckpointing();
 	}
 
+	// 循环遍历，对该 task 所有 Operator 进行状态初始化，
+	// 包括初始化 StateBackend ，并调用 udf 的 initializeState 方法
 	private void initializeState() throws Exception {
 
 		StreamOperator<?>[] allOperators = operatorChain.getAllOperators();
