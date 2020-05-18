@@ -147,6 +147,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 
 	/**
 	 * The input processor. Initialized in {@link #init()} method.
+	 * inputProcessor 永远表示当前 StreamTask 中 OperatorChain 的 headOperator
 	 */
 	@Nullable
 	protected StreamInputProcessor inputProcessor;

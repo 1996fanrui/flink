@@ -166,8 +166,9 @@ public final class StreamOneInputProcessor<IN> implements StreamInputProcessor {
 			synchronized (lock) {
 				numRecordsIn.inc();
 				// 因为这里是 StreamOneInputProcessor，所以会调用 OneInputStreamOperator 的相关方法
-				// 首先调用 OneInputStreamOperator 的 setKeyContextElement1 方法用于从 KeySelector 中提取出数据的 key
-				// （如果是不是 KeyStream，则没有 KeySelector）
+				// 首先调用 OneInputStreamOperator 的 setKeyContextElement1
+				// 该操作主要是要调用 KeyedStateBackend 的 setCurrentKey 方法，
+				// 然后处理该数据时，从 KeyedStateBackend 中读取到的 状态数据都是当前 key 的数据
 				streamOperator.setKeyContextElement1(record);
 
 				//然后调用 OneInputStreamOperator 的 processElement 方法

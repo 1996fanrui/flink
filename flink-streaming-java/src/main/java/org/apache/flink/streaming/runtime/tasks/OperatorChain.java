@@ -534,6 +534,8 @@ public class OperatorChain<OUT, OP extends StreamOperator<OUT>> implements Strea
 			pushToOperator(record);
 		}
 
+		// OperatorChain 的场景，会在上一个 Operator 调用 out.collect 输出时，
+		// 直接调用下一个 Operator 的 processElement 方法
 		protected <X> void pushToOperator(StreamRecord<X> record) {
 			try {
 				// we know that the given outputTag matches our OutputTag so the record

@@ -75,6 +75,7 @@ public class OneInputStreamTask<IN, OUT> extends StreamTask<OUT, OneInputStreamO
 		if (numberOfInputs > 0) {
 			InputGate[] inputGates = getEnvironment().getAllInputGates();
 
+			// inputProcessor 永远表示当前 StreamTask 中 OperatorChain 的 headOperator
 			inputProcessor = new StreamOneInputProcessor<>(
 					inputGates,
 					inSerializer,
@@ -84,7 +85,7 @@ public class OneInputStreamTask<IN, OUT> extends StreamTask<OUT, OneInputStreamO
 					getEnvironment().getIOManager(),
 					getEnvironment().getTaskManagerInfo().getConfiguration(),
 					getStreamStatusMaintainer(),
-					this.headOperator,
+					this.headOperator, 	// important
 					getEnvironment().getMetricGroup().getIOMetricGroup(),
 					inputWatermarkGauge,
 					getTaskNameWithSubtaskAndId(),

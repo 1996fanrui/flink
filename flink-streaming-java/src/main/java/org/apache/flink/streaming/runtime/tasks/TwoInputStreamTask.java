@@ -44,6 +44,7 @@ public class TwoInputStreamTask<IN1, IN2, OUT> extends AbstractTwoInputStreamTas
 		TypeSerializer<IN1> inputDeserializer1,
 		TypeSerializer<IN2> inputDeserializer2) throws Exception {
 
+		// inputProcessor 永远表示当前 StreamTask 中 OperatorChain 的 headOperator
 		this.inputProcessor = new StreamTwoInputProcessor<>(
 			inputGates1, inputGates2,
 			inputDeserializer1, inputDeserializer2,
@@ -53,7 +54,7 @@ public class TwoInputStreamTask<IN1, IN2, OUT> extends AbstractTwoInputStreamTas
 			getEnvironment().getIOManager(),
 			getEnvironment().getTaskManagerInfo().getConfiguration(),
 			getStreamStatusMaintainer(),
-			this.headOperator,
+			this.headOperator,	// important
 			getEnvironment().getMetricGroup().getIOMetricGroup(),
 			input1WatermarkGauge,
 			input2WatermarkGauge,
