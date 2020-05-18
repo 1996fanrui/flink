@@ -41,6 +41,8 @@ import java.util.List;
  * @param <V> The type of the value.
  */
 class HeapListState<K, N, V>
+	// 这里 AbstractHeapMergingState 的 SV 泛型设定为 List<V>
+	// 所以 将整个 List<V> 作为 Value 存储到了 stateTable 中
 	extends AbstractHeapMergingState<K, N, V, List<V>, Iterable<V>>
 	implements InternalListState<K, N, V> {
 	/**
@@ -85,6 +87,13 @@ class HeapListState<K, N, V>
 		return getInternal();
 	}
 
+	/**
+	 * 从 stateTable 中获取 相应的 list，
+	 * list 为空，则创建一个 ArrayList，并添加到 stateTable 中，
+	 * 将 当前元素添加到 ArrayList 中
+	 * @param value The new value for the state.
+	 *
+	 */
 	@Override
 	public void add(V value) {
 		Preconditions.checkNotNull(value, "You cannot add null to a ListState.");

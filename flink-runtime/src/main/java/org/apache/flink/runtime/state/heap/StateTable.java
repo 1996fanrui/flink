@@ -135,6 +135,7 @@ public abstract class StateTable<K, N, S>
 	 * if no mapping for the specified key is found.
 	 */
 	public S get(N namespace) {
+		// 这里第一个参数就是获取当前的 key，第二个参数获取当前的 KeyGroupIndex
 		return get(keyContext.getCurrentKey(), keyContext.getCurrentKeyGroupIndex(), namespace);
 	}
 
@@ -156,6 +157,7 @@ public abstract class StateTable<K, N, S>
 	 * @param state     the state. Can be null.
 	 */
 	public void put(N namespace, S state) {
+		// put 操作与 get 操作类似，获取 currentKey 及对应的 KeyGroup
 		put(keyContext.getCurrentKey(), keyContext.getCurrentKeyGroupIndex(), namespace, state);
 	}
 
@@ -235,12 +237,15 @@ public abstract class StateTable<K, N, S>
 	private S get(K key, int keyGroupIndex, N namespace) {
 		checkKeyNamespacePreconditions(key, namespace);
 
+		// StateTable 会为每个 KeyGroup 的数据初始化一个StateMap来做数据的隔离
+		// 这里第一步先拿到相应的 StateMap
 		StateMap<K, N, S> stateMap = getMapForKeyGroup(keyGroupIndex);
 
 		if (stateMap == null) {
 			return null;
 		}
 
+		// 根据 key 和 namespace 从 map 中获取对应的 Value
 		return stateMap.get(key, namespace);
 	}
 
@@ -332,7 +337,9 @@ public abstract class StateTable<K, N, S>
 	public void put(K key, int keyGroup, N namespace, S state) {
 		checkKeyNamespacePreconditions(key, namespace);
 
+		// StateMap 按照 KeyGroup 隔离，这里按照 KeyGroup 获取对应的 StateMap
 		StateMap<K, N, S> stateMap = getMapForKeyGroup(keyGroup);
+		// 插入数据到 StateMap 中
 		stateMap.put(key, namespace, state);
 	}
 

@@ -831,11 +831,13 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 
 		/**
 		 * The version of this {@link StateMapEntry}. This is meta data for copy-on-write of the map structure.
+		 * new entry 时的版本号
 		 */
 		int entryVersion;
 
 		/**
 		 * The version of the state object in this entry. This is meta data for copy-on-write of the state object itself.
+		 * 每次数据更新，都要实时更新 版本号
 		 */
 		int stateVersion;
 

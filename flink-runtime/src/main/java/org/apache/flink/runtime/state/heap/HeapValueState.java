@@ -70,6 +70,7 @@ class HeapValueState<K, N, V>
 
 	@Override
 	public V value() {
+		// value 方法，也就是 get 操作
 		final V result = stateTable.get(currentNamespace);
 
 		if (result == null) {
@@ -81,7 +82,7 @@ class HeapValueState<K, N, V>
 
 	@Override
 	public void update(V value) {
-
+		// update 方法，也就是 put 操作
 		if (value == null) {
 			clear();
 			return;

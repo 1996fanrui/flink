@@ -41,6 +41,9 @@ import java.util.Map;
  * @param <UV> The type of the values in the state.
  */
 class HeapMapState<K, N, UK, UV>
+	// 这里 AbstractHeapState 的 SV 泛型设定为 Map<UK, UV>，
+	// 所以 将整个 Map 作为 Value 存储到了 stateTable 中
+	// 从实现来讲，State 中存储的 HashMap，为了便于 区分 Map 和 MapState，所以注释都用的 HashMap 便于理解
 	extends AbstractHeapState<K, N, Map<UK, UV>>
 	implements InternalMapState<K, N, UK, UV> {
 
@@ -94,15 +97,18 @@ class HeapMapState<K, N, UK, UV>
 	@Override
 	public void put(UK userKey, UV userValue) {
 
+		// 找到当前对应的 HashMap
 		Map<UK, UV> userMap = stateTable.get(currentNamespace);
+		// 如果还未初始化，则 new 一个 HashMap 作为默认值
 		if (userMap == null) {
 			userMap = new HashMap<>();
 			stateTable.put(currentNamespace, userMap);
 		}
-
+		// 插入数据到 State 的 HashMap 中
 		userMap.put(userKey, userValue);
 	}
 
+	// 插入 一个 HashMap 到 State 已有的 HashMap 中
 	@Override
 	public void putAll(Map<UK, UV> value) {
 
@@ -119,6 +125,7 @@ class HeapMapState<K, N, UK, UV>
 	@Override
 	public void remove(UK userKey) {
 
+		// 获取到 State 中的 HashMap，将对应的 UK 从 map 中删除
 		Map<UK, UV> userMap = stateTable.get(currentNamespace);
 		if (userMap == null) {
 			return;
@@ -133,6 +140,7 @@ class HeapMapState<K, N, UK, UV>
 
 	@Override
 	public boolean contains(UK userKey) {
+		// 查询 UK 是否存在，先看 是否存在 hashMap，再看 UK 是否在 HashMap 中
 		Map<UK, UV> userMap = stateTable.get(currentNamespace);
 		return userMap != null && userMap.containsKey(userKey);
 	}
