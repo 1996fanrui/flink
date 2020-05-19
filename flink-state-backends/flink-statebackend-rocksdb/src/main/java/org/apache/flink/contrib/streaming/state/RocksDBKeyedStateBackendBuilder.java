@@ -159,6 +159,7 @@ public class RocksDBKeyedStateBackendBuilder<K> extends AbstractKeyedStateBacken
 		this.numberOfTransferingThreads = RocksDBOptions.CHECKPOINT_TRANSFER_THREAD_NUM.defaultValue();
 	}
 
+	// 仅仅是单元测试才会用到该构造器
 	@VisibleForTesting
 	RocksDBKeyedStateBackendBuilder(
 		String operatorIdentifier,
@@ -252,25 +253,42 @@ public class RocksDBKeyedStateBackendBuilder<K> extends AbstractKeyedStateBacken
 		PriorityQueueSetFactory priorityQueueFactory;
 		RocksDBSerializedCompositeKeyBuilder<K> sharedRocksKeyBuilder;
 		// Number of bytes required to prefix the key groups.
+		// 用于补 0 操作：如果数据是 5 位数，那么 1 应该显示为 00001
 		int keyGroupPrefixBytes = RocksDBKeySerializationUtils.computeRequiredBytesInKeyGroupPrefix(numberOfKeyGroups);
 		try {
 			// Variables for snapshot strategy when incremental checkpoint is enabled
 			UUID backendUID = UUID.randomUUID();
+			//
 			SortedMap<Long, Set<StateHandleID>> materializedSstFiles = new TreeMap<>();
 			long lastCompletedCheckpointId = -1L;
+
+			// 正式代码 injectedTestDB 肯定为 null，
+			// 只有测试代码 injectedTestDB 才可能不为 null
 			if (injectedTestDB != null) {
+				// 测试用的分支
 				db = injectedTestDB;
 				defaultColumnFamilyHandle = injectedDefaultColumnFamilyHandle;
 				nativeMetricMonitor = nativeMetricOptions.isEnabled() ?
 					new RocksDBNativeMetricMonitor(nativeMetricOptions, metricGroup, db) : null;
 			} else {
+				// 准备 instanceBasePath 目录，用于状态存储
 				prepareDirectories();
+
+				// 根据 restoreStateHandles 决定三种恢复模式：
+				// 1、 RocksDB 无需恢复，直接启动
+				// 2、 RocksDB 增量 Checkpoint 的状态恢复
+				// 3、 RocksDB 全量 Checkpoint 的状态恢复
 				restoreOperation = getRocksDBRestoreOperation(
 					keyGroupPrefixBytes, cancelStreamRegistry, kvStateInformation, ttlCompactFiltersManager);
+
+				// 恢复状态，并打开 db，具体 执行三种不同恢复流程
 				RocksDBRestoreResult restoreResult = restoreOperation.restore();
 				db = restoreResult.getDb();
+
 				defaultColumnFamilyHandle = restoreResult.getDefaultColumnFamilyHandle();
 				nativeMetricMonitor = restoreResult.getNativeMetricMonitor();
+
+				// RocksDB 的增量 Checkpoint 模式，则获取 sst 文件，
 				if (restoreOperation instanceof RocksDBIncrementalRestoreOperation) {
 					backendUID = restoreResult.getBackendUID();
 					materializedSstFiles = restoreResult.getRestoredSstFiles();
@@ -286,9 +304,12 @@ public class RocksDBKeyedStateBackendBuilder<K> extends AbstractKeyedStateBacken
 				keySerializerProvider.currentSchemaSerializer(),
 				keyGroupPrefixBytes,
 				32);
+
 			// init snapshot strategy after db is assured to be initialized
+			//
 			snapshotStrategy = initializeSavepointAndCheckpointStrategies(cancelStreamRegistryForBackend, rocksDBResourceGuard,
 				kvStateInformation, keyGroupPrefixBytes, db, backendUID, materializedSstFiles, lastCompletedCheckpointId);
+
 			// init priority queue factory
 			priorityQueueFactory = initPriorityQueueFactory(keyGroupPrefixBytes, kvStateInformation, db,
 				writeBatchWrapper, nativeMetricMonitor);
@@ -356,6 +377,10 @@ public class RocksDBKeyedStateBackendBuilder<K> extends AbstractKeyedStateBacken
 			keyContext);
 	}
 
+	// 根据 restoreStateHandles 决定三种恢复模式：
+	// 1、 RocksDB 直接启动无需恢复
+	// 2、 增量 Checkpoint 的 RocksDB 恢复
+	// 3、 全量 Checkpoint 的 RocksDB 恢复
 	private AbstractRocksDBRestoreOperation<K> getRocksDBRestoreOperation(
 		int keyGroupPrefixBytes,
 		CloseableRegistry cancelStreamRegistry,

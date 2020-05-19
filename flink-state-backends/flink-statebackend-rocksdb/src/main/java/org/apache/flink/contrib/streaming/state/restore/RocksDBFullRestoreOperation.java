@@ -124,6 +124,7 @@ public class RocksDBFullRestoreOperation<K> extends AbstractRocksDBRestoreOperat
 	/**
 	 * Restores all key-groups data that is referenced by the passed state handles.
 	 *
+	 *	- data ingestion after db open: #getOrRegisterStateColumnFamilyHandle before creating column family
 	 */
 	@Override
 	public RocksDBRestoreResult restore()

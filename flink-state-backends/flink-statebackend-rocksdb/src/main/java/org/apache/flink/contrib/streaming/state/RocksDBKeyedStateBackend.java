@@ -151,6 +151,7 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 	/**
 	 * Information about the k/v states, maintained in the order as we create them. This is used to retrieve the
 	 * column family that is used for a state and also for sanity checks when restoring.
+	 * 维护的 StateName 与 StateInfo 的
 	 */
 	private final LinkedHashMap<String, RocksDbKvStateInfo> kvStateInformation;
 
@@ -468,6 +469,7 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 		TypeSerializer<N> namespaceSerializer,
 		@Nonnull StateSnapshotTransformFactory<SEV> snapshotTransformFactory) throws Exception {
 
+		// oldStateInfo 表示恢复回来的 StateInfo
 		RocksDbKvStateInfo oldStateInfo = kvStateInformation.get(stateDesc.getName());
 
 		TypeSerializer<SV> stateSerializer = stateDesc.getSerializer();
@@ -479,6 +481,7 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 			RegisteredKeyValueStateBackendMetaInfo<N, SV> castedMetaInfo =
 				(RegisteredKeyValueStateBackendMetaInfo<N, SV>) oldStateInfo.metaInfo;
 
+			// 把 恢复的 State 与 创建的 State 的元信息做检验
 			newMetaInfo = updateRestoredStateMetaInfo(
 				Tuple2.of(oldStateInfo.columnFamilyHandle, castedMetaInfo),
 				stateDesc,

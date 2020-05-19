@@ -24,6 +24,8 @@ import javax.annotation.Nonnull;
 
 /**
  * Base class for all registered state in state backends.
+ * 维护 State name、State 类型：BackendStateType，还有序列化相关信息
+ * 序列化信息查看具体实现类：按照 BackendStateType 不同有四种实现
  */
 public abstract class RegisteredStateMetaInfoBase {
 

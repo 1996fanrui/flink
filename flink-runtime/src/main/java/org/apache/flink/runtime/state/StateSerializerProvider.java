@@ -291,6 +291,7 @@ public abstract class StateSerializerProvider<T> {
 			}
 
 			TypeSerializerSchemaCompatibility<T> result = previousSerializerSnapshot.resolveSchemaCompatibility(newSerializer);
+			//
 			if (result.isIncompatible()) {
 				invalidateCurrentSchemaSerializerAccess();
 			}

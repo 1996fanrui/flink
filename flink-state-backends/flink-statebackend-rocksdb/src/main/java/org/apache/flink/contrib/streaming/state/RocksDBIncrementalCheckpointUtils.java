@@ -51,10 +51,13 @@ public class RocksDBIncrementalCheckpointUtils {
 	 */
 	private static final BiFunction<KeyedStateHandle, KeyGroupRange, Double> STATE_HANDLE_EVALUATOR = (stateHandle, targetKeyGroupRange) -> {
 		final KeyGroupRange handleKeyGroupRange = stateHandle.getKeyGroupRange();
+		// 计算当前 StateHandle 与 目标 Handle 在 KeyGroup 上的交集
 		final KeyGroupRange intersectGroup = handleKeyGroupRange.getIntersection(targetKeyGroupRange);
 
+		// 计算 当前 StateHandle 对应的状态文件 在当前 subtask 的概率
 		final double overlapFraction = (double) intersectGroup.getNumberOfKeyGroups() / handleKeyGroupRange.getNumberOfKeyGroups();
 
+		// 概率小于 0.75 返回 -1，意味着该 StateHandle 是肯定会被丢弃的
 		if (overlapFraction < OVERLAP_FRACTION_THRESHOLD) {
 			return -1.0;
 		}

@@ -155,6 +155,7 @@ public abstract class AbstractRocksDBRestoreOperation<K> implements RocksDBResto
 		if (null == registeredStateMetaInfoEntry) {
 			// create a meta info for the state on restore;
 			// this allows us to retain the state in future snapshots even if it wasn't accessed
+			// 给 恢复的 State 创建一个 元信息
 			RegisteredStateMetaInfoBase stateMetaInfo =
 				RegisteredStateMetaInfoBase.fromMetaInfoSnapshot(stateMetaInfoSnapshot);
 			if (columnFamilyHandle == null) {
@@ -164,6 +165,7 @@ public abstract class AbstractRocksDBRestoreOperation<K> implements RocksDBResto
 				registeredStateMetaInfoEntry = new RocksDbKvStateInfo(columnFamilyHandle, stateMetaInfo);
 			}
 
+			// 将 StateName 和 registeredStateMetaInfoEntry 的映射关系维护到 kvStateInformation 中
 			RocksDBOperationUtils.registerKvStateInformation(
 				kvStateInformation,
 				nativeMetricMonitor,

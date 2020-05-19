@@ -194,6 +194,7 @@ public class TtlStateFactory<K, N, SV, TTLSV, S extends State, IS extends S> {
 		createTtlStateContext(StateDescriptor<TTLS, TTLV> ttlDescriptor) throws Exception {
 
 		ttlDescriptor.enableTimeToLive(stateDesc.getTtlConfig()); // also used by RocksDB backend for TTL compaction filter config
+		// 创建 State
 		OIS originalState = (OIS) stateBackend.createInternalState(
 			namespaceSerializer, ttlDescriptor, getSnapshotTransformFactory());
 		return new TtlStateContext<>(

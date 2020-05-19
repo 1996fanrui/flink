@@ -63,6 +63,7 @@ public class RocksDBStateDownloader extends RocksDBStateDataTransfer {
 		final Map<StateHandleID, StreamStateHandle> miscFiles =
 			restoreStateHandle.getPrivateState();
 
+		// 拉取 sst 和 PrivateState 到本地
 		downloadDataForAllStateHandles(sstFiles, dest, closeableRegistry);
 		downloadDataForAllStateHandles(miscFiles, dest, closeableRegistry);
 	}
@@ -80,8 +81,10 @@ public class RocksDBStateDownloader extends RocksDBStateDataTransfer {
 			List<Runnable> runnables = createDownloadRunnables(stateHandleMap, restoreInstancePath, closeableRegistry);
 			List<CompletableFuture<Void>> futures = new ArrayList<>(runnables.size());
 			for (Runnable runnable : runnables) {
+				// 使用 executorService 线程池异步地拉取要下载的文件
 				futures.add(CompletableFuture.runAsync(runnable, executorService));
 			}
+			// wait 所有的 task 执行结束
 			FutureUtils.waitForAll(futures).get();
 		} catch (ExecutionException e) {
 			Throwable throwable = ExceptionUtils.stripExecutionException(e);
@@ -123,8 +126,7 @@ public class RocksDBStateDownloader extends RocksDBStateDataTransfer {
 		FSDataOutputStream outputStream = null;
 
 		try {
-			FileSystem restoreFileSystem = restoreFilePath.getFileSystem();
-			inputStream = remoteFileHandle.openInputStream();
+			FileSystem restoreFileSystem = restoreFilePath.getFileSystem();			inputStream = remoteFileHandle.openInputStream();
 			closeableRegistry.registerCloseable(inputStream);
 
 			outputStream = restoreFileSystem.create(restoreFilePath, FileSystem.WriteMode.OVERWRITE);

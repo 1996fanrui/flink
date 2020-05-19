@@ -317,6 +317,7 @@ public class StreamTaskStateInitializerImpl implements StreamTaskStateInitialize
 		try {
 			// 这里去 create StateBackend 并恢复状态文件
 			return backendRestorer.createAndRestore(
+				// 获取 StateHandle 的集合
 				prioritizedOperatorSubtaskStates.getPrioritizedManagedKeyedState());
 		} finally {
 			if (backendCloseableRegistry.unregisterCloseable(cancelStreamRegistryForRestore)) {

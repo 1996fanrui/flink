@@ -463,6 +463,7 @@ public class RocksDBStateBackend extends AbstractStateBackend implements Configu
 	//  State holding data structures
 	// ------------------------------------------------------------------------
 
+	// 创建 AbstractKeyedStateBackend, 这里就是创建 RocksDBKeyedStateBackend
 	@Override
 	public <K> AbstractKeyedStateBackend<K> createKeyedStateBackend(
 		Environment env,

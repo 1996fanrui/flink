@@ -42,7 +42,9 @@ public class StateMetaInfoSnapshot {
 	public enum BackendStateType {
 		KEY_VALUE,
 		OPERATOR,
+		// 广播流
 		BROADCAST,
+		// Timer
 		PRIORITY_QUEUE
 	}
 
