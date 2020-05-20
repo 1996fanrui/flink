@@ -64,8 +64,13 @@ public class HeapRestoreOperation<K> implements RestoreOperation<Void> {
 	private final Collection<KeyedStateHandle> restoreStateHandles;
 	private final StateSerializerProvider<K> keySerializerProvider;
 	private final ClassLoader userCodeClassLoader;
+
+	// StateName 及 对应的 StateTable，每个 State 对应一个 StateTable 存储状态数据
 	private final Map<String, StateTable<K, ?, ?>> registeredKVStates;
+
+	// StateName 及 对应的 PriorityQueue State 的映射关系，用于存储 Timer 的 State
 	private final Map<String, HeapPriorityQueueSnapshotRestoreWrapper> registeredPQStates;
+
 	private final CloseableRegistry cancelStreamRegistry;
 	private final HeapPriorityQueueSetFactory priorityQueueSetFactory;
 	@Nonnull
@@ -115,6 +120,7 @@ public class HeapRestoreOperation<K> implements RestoreOperation<Void> {
 				continue;
 			}
 
+			// Fs 模式对应的 KeyedStateHandle 必然是 KeyGroupsStateHandle。
 			if (!(keyedStateHandle instanceof KeyGroupsStateHandle)) {
 				throw new IllegalStateException("Unexpected state handle type, " +
 					"expected: " + KeyGroupsStateHandle.class +
@@ -148,8 +154,10 @@ public class HeapRestoreOperation<K> implements RestoreOperation<Void> {
 				List<StateMetaInfoSnapshot> restoredMetaInfos =
 					serializationProxy.getStateMetaInfoSnapshots();
 
+				// 创建 StateName 和 具体 State 的映射关系：包括 KeyedState 和 Timer 相关的 State
 				createOrCheckStateForMetaInfo(restoredMetaInfos, kvStatesById);
 
+				// 读取 数据，加入到具体的 StateTable 中
 				readStateHandleStateData(
 					fsDataInputStream,
 					inView,
@@ -179,6 +187,7 @@ public class HeapRestoreOperation<K> implements RestoreOperation<Void> {
 					if (registeredState == null) {
 						RegisteredKeyValueStateBackendMetaInfo<?, ?> registeredKeyedBackendStateMetaInfo =
 							new RegisteredKeyValueStateBackendMetaInfo<>(metaInfoSnapshot);
+						// 将 StateName 及 对应的 StateTable 维护在 registeredKVStates 中
 						registeredKVStates.put(
 							metaInfoSnapshot.getName(),
 							snapshotStrategy.newStateTable(
@@ -190,6 +199,8 @@ public class HeapRestoreOperation<K> implements RestoreOperation<Void> {
 				case PRIORITY_QUEUE:
 					registeredState = registeredPQStates.get(metaInfoSnapshot.getName());
 					if (registeredState == null) {
+						// 创建 PriorityQueue 用于存储 Timer 的 State，
+						// 将 StateName 和 具体的 State 维护在 registeredPQStates 中
 						createInternal(new RegisteredPriorityQueueStateBackendMetaInfo<>(metaInfoSnapshot));
 					}
 					break;
@@ -236,6 +247,7 @@ public class HeapRestoreOperation<K> implements RestoreOperation<Void> {
 			SnappyStreamCompressionDecorator.INSTANCE : UncompressedStreamCompressionDecorator.INSTANCE;
 
 		for (Tuple2<Integer, Long> groupOffset : keyGroupOffsets) {
+			// 遍历 一个个 KeyGroup，这里可以拿到 KeyGroupIndex 及对应的 offset
 			int keyGroupIndex = groupOffset.f0;
 			long offset = groupOffset.f1;
 
@@ -290,6 +302,7 @@ public class HeapRestoreOperation<K> implements RestoreOperation<Void> {
 			}
 
 			StateSnapshotKeyGroupReader keyGroupReader = registeredState.keyGroupReader(readVersion);
+			// 从 inView 中读取数据，put 到 StateTable 中
 			keyGroupReader.readMappingsInKeyGroup(inView, keyGroupIndex);
 		}
 	}

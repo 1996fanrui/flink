@@ -301,6 +301,8 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 	@Override
 	public void setCurrentKey(K newKey) {
 		super.setCurrentKey(newKey);
+		// setCurrentKey 之后，就要开始处理当前 key 的数据了，处理过程中可能要操作 State，与 StateBackend 交互
+		// 一旦交互就会涉及到 RocksDB 中 key 的拼接，所在这里先提前完成 KeyGroup + Key 的拼接
 		sharedRocksKeyBuilder.setKeyAndKeyGroup(getCurrentKey(), getCurrentKeyGroupIndex());
 	}
 

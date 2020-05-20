@@ -37,6 +37,7 @@ public class KeyGroupRangeOffsets implements Iterable<Tuple2<Integer, Long>> , S
 	private final KeyGroupRange keyGroupRange;
 
 	/** the aligned array of offsets for the key-groups */
+	// 数组保存了每个 KeyGroup 对应的 offset，所以：数组的长度 == keyGroupRange 中 KeyGroup 的数量
 	private final long[] offsets;
 
 	/**

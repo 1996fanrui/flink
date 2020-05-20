@@ -31,6 +31,8 @@ import javax.annotation.concurrent.NotThreadSafe;
 import java.io.IOException;
 
 /**
+ * 负责 currentKey, currentGroup and namespace 的序列化。优化：尽可能重用之前序列化的 currentKeyed
+ *
  * Responsible for serialization of currentKey, currentGroup and namespace.
  * Will reuse the previous serialized currentKeyed if possible.
  * @param <K> type of the key.
@@ -54,7 +56,10 @@ class RocksDBSerializedCompositeKeyBuilder<K> {
 	/** This flag indicates whether the key type has a variable byte size in serialization. */
 	private final boolean keySerializerTypeVariableSized;
 
-	/** Mark for the position after the serialized key. */
+	/**
+	 * Mark for the position after the serialized key.
+	 * 标记 KeyGroup + key 序列化好之后，总共占了几个 byte
+	 */
 	@Nonnegative
 	private int afterKeyMark;
 
@@ -113,6 +118,7 @@ class RocksDBSerializedCompositeKeyBuilder<K> {
 		try {
 			serializeNamespace(namespace, namespaceSerializer);
 			final byte[] result = keyOutView.getCopyOfBuffer();
+			// afterKeyMark
 			resetToKey();
 			return result;
 		} catch (IOException shouldNeverHappen) {
@@ -157,6 +163,7 @@ class RocksDBSerializedCompositeKeyBuilder<K> {
 			keyOutView);
 		// write key
 		keySerializer.serialize(key, keyOutView);
+		// afterKeyMark 表示 KeyGroup + key 序列化好之后，总共占了几个 byte
 		afterKeyMark = keyOutView.length();
 	}
 
@@ -168,6 +175,7 @@ class RocksDBSerializedCompositeKeyBuilder<K> {
 		assert isKeyWritten();
 
 		final boolean ambiguousCompositeKeyPossible = isAmbiguousCompositeKeyPossible(namespaceSerializer);
+		// 如果 可能有歧义，将 key 的长度序列到 RocksDB 的 key 中
 		if (ambiguousCompositeKeyPossible) {
 			RocksDBKeySerializationUtils.writeVariableIntBytes(
 				afterKeyMark - keyGroupPrefixBytes,

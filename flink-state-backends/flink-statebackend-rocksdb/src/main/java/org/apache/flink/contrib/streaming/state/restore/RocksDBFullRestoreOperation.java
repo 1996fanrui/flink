@@ -129,10 +129,14 @@ public class RocksDBFullRestoreOperation<K> extends AbstractRocksDBRestoreOperat
 	@Override
 	public RocksDBRestoreResult restore()
 		throws IOException, StateMigrationException, RocksDBException {
+		// 打开空的 DB
 		openDB();
+		// 遍历所有的 restoreStateHandles
 		for (KeyedStateHandle keyedStateHandle : restoreStateHandles) {
 			if (keyedStateHandle != null) {
 
+				// RocksDB 的 Full 模式与 Savepoint 模式保存的状态文件都是 Flink 自己序列化好的问题，
+				// 其对应的 KeyedStateHandle 必然是 KeyGroupsStateHandle。
 				if (!(keyedStateHandle instanceof KeyGroupsStateHandle)) {
 					throw new IllegalStateException("Unexpected state handle type, " +
 						"expected: " + KeyGroupsStateHandle.class +
@@ -156,6 +160,7 @@ public class RocksDBFullRestoreOperation<K> extends AbstractRocksDBRestoreOperat
 			cancelStreamRegistry.registerCloseable(currentStateHandleInStream);
 			currentStateHandleInView = new DataInputViewStreamWrapper(currentStateHandleInStream);
 			restoreKVStateMetaData();
+			// 将当前 StateHandle 中属于当前 KeyGroupRange 的数据 put 到 db 中
 			restoreKVStateData();
 		} finally {
 			if (cancelStreamRegistry.unregisterCloseable(currentStateHandleInStream)) {
@@ -209,6 +214,7 @@ public class RocksDBFullRestoreOperation<K> extends AbstractRocksDBRestoreOperat
 						//insert all k/v pairs into DB
 						boolean keyGroupHasMoreKeys = true;
 						while (keyGroupHasMoreKeys) {
+							// 反序列化出 kv
 							byte[] key = BytePrimitiveArraySerializer.INSTANCE.deserialize(compressedKgInputView);
 							byte[] value = BytePrimitiveArraySerializer.INSTANCE.deserialize(compressedKgInputView);
 							if (hasMetaDataFollowsFlag(key)) {
