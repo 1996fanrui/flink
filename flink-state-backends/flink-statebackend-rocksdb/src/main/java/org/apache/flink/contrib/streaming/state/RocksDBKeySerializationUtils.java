@@ -138,10 +138,11 @@ public class RocksDBKeySerializationUtils {
 		} while (value != 0);
 	}
 
-	public static void serializeKeyGroup(int keyGroup, byte[] startKeyGroupPrefixBytes) {
+	// 将 keyGroupIndex 转换成 RocksDB 中 二进制的格式
+	public static void serializeKeyGroup(int keyGroupIndex, byte[] startKeyGroupPrefixBytes) {
 		final int keyGroupPrefixBytes = startKeyGroupPrefixBytes.length;
 		for (int j = 0; j < keyGroupPrefixBytes; ++j) {
-			startKeyGroupPrefixBytes[j] = extractByteAtPosition(keyGroup, keyGroupPrefixBytes - j - 1);
+			startKeyGroupPrefixBytes[j] = extractByteAtPosition(keyGroupIndex, keyGroupPrefixBytes - j - 1);
 		}
 	}
 

@@ -126,7 +126,8 @@ public class RocksDBStateDownloader extends RocksDBStateDataTransfer {
 		FSDataOutputStream outputStream = null;
 
 		try {
-			FileSystem restoreFileSystem = restoreFilePath.getFileSystem();			inputStream = remoteFileHandle.openInputStream();
+			FileSystem restoreFileSystem = restoreFilePath.getFileSystem();
+			inputStream = remoteFileHandle.openInputStream();
 			closeableRegistry.registerCloseable(inputStream);
 
 			outputStream = restoreFileSystem.create(restoreFilePath, FileSystem.WriteMode.OVERWRITE);

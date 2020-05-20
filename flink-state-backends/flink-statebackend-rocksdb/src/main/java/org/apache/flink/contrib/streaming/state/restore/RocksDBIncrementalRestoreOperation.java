@@ -299,6 +299,8 @@ public class RocksDBIncrementalRestoreOperation<K> extends AbstractRocksDBRestor
 
 	/**
 	 * rescaling 用于恢复多个 Incremental 的 State
+	 * 创建一个临时的 RocksDB 实例，所有的数据从临时的实例拷贝到真正的实例，然后临时实例废弃。
+	 *
 	 * Recovery from multi incremental states with rescaling.
 	 * For rescaling, this method creates a temporary RocksDB instance for a key-groups shard.
 	 * All contents from the temporary instance are copied into the
@@ -316,19 +318,24 @@ public class RocksDBIncrementalRestoreOperation<K> extends AbstractRocksDBRestor
 
 		// Init base DB instance
 		if (initialHandle != null) {
+			// 打开选取的认为最好的 StateHandle 对应的 db，并对其多余的 KeyGroup 进行裁剪
 			restoreStateHandles.remove(initialHandle);
 			initDBWithRescaling(initialHandle);
 		} else {
+			// open 一个临时空的 db
 			openDB();
 		}
 
 		// Transfer remaining key-groups from temporary instance into base DB
+		// 将 target 的 startKey 和 endKey 转换成 byte 形式
 		byte[] startKeyGroupPrefixBytes = new byte[keyGroupPrefixBytes];
 		RocksDBKeySerializationUtils.serializeKeyGroup(keyGroupRange.getStartKeyGroup(), startKeyGroupPrefixBytes);
 
 		byte[] stopKeyGroupPrefixBytes = new byte[keyGroupPrefixBytes];
 		RocksDBKeySerializationUtils.serializeKeyGroup(keyGroupRange.getEndKeyGroup() + 1, stopKeyGroupPrefixBytes);
 
+		// 将所有要恢复的 StateHandle 中对应的 RocksDB 恢复，
+		// 并将 target 的 startKey 和 endKey 之间的数据 put 到目标 db
 		for (KeyedStateHandle rawStateHandle : restoreStateHandles) {
 
 			if (!(rawStateHandle instanceof IncrementalRemoteKeyedStateHandle)) {
@@ -356,10 +363,12 @@ public class RocksDBIncrementalRestoreOperation<K> extends AbstractRocksDBRestor
 
 					try (RocksIteratorWrapper iterator = RocksDBOperationUtils.getRocksIterator(tmpRestoreDBInfo.db, tmpColumnFamilyHandle)) {
 
+						// seek 到 startKey 的位置
 						iterator.seek(startKeyGroupPrefixBytes);
 
 						while (iterator.isValid()) {
 
+							// 遍历出来的 key 必须比 stopKey 小，则数据 put 到 db；否则直接 break 退出循环
 							if (RocksDBIncrementalCheckpointUtils.beforeThePrefixBytes(iterator.key(), stopKeyGroupPrefixBytes)) {
 								writeBatchWrapper.put(targetColumnFamilyHandle, iterator.key(), iterator.value());
 							} else {
@@ -373,6 +382,7 @@ public class RocksDBIncrementalRestoreOperation<K> extends AbstractRocksDBRestor
 					} // releases native iterator resources
 				}
 			} finally {
+				// 清理临时目录
 				cleanUpPathQuietly(temporaryRestoreInstancePath);
 			}
 		}
@@ -383,9 +393,11 @@ public class RocksDBIncrementalRestoreOperation<K> extends AbstractRocksDBRestor
 		assert (initialHandle instanceof IncrementalRemoteKeyedStateHandle);
 
 		// 1. Restore base DB from selected initial handle
+		// 按照 IncrementalRemote 模式将 DB 初始化，并打开
 		restoreFromRemoteState((IncrementalRemoteKeyedStateHandle) initialHandle);
 
 		// 2. Clip the base DB instance
+		// 裁剪 DB（初始 DB KeyGroup 可能比 目标的 DB 的 KG 范围大一些）
 		try {
 			RocksDBIncrementalCheckpointUtils.clipDBWithKeyGroupRange(
 				db,

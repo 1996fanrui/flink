@@ -54,7 +54,7 @@ public class RocksDBIncrementalCheckpointUtils {
 		// 计算当前 StateHandle 与 目标 Handle 在 KeyGroup 上的交集
 		final KeyGroupRange intersectGroup = handleKeyGroupRange.getIntersection(targetKeyGroupRange);
 
-		// 计算 当前 StateHandle 对应的状态文件 在当前 subtask 的概率
+		// 计算 当前 StateHandle 对应的状态文件上 有 百分之多少的数据应该在当前 subtask 上
 		final double overlapFraction = (double) intersectGroup.getNumberOfKeyGroups() / handleKeyGroupRange.getNumberOfKeyGroups();
 
 		// 概率小于 0.75 返回 -1，意味着该 StateHandle 是肯定会被丢弃的
@@ -69,6 +69,7 @@ public class RocksDBIncrementalCheckpointUtils {
 	 * The method to clip the db instance according to the target key group range using
 	 * the {@link RocksDB#delete(ColumnFamilyHandle, byte[])}.
 	 *
+	 * 根据 目标的 KeyGroupRange 和 当前的 KeyGroupRange 按照 key 的前缀进行裁剪
 	 * @param db the RocksDB instance to be clipped.
 	 * @param columnFamilyHandles the column families in the db instance.
 	 * @param targetKeyGroupRange the target key group range.
