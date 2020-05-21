@@ -173,6 +173,7 @@ public class LegacyScheduler implements SchedulerNG {
 		this.blobWriter = checkNotNull(blobWriter);
 		this.slotRequestTimeout = checkNotNull(slotRequestTimeout);
 
+		// createAndRestoreExecutionGraph
 		this.executionGraph = createAndRestoreExecutionGraph(jobManagerJobMetricGroup, checkNotNull(shuffleMaster), checkNotNull(partitionTracker));
 	}
 
@@ -234,6 +235,7 @@ public class LegacyScheduler implements SchedulerNG {
 		if (savepointRestoreSettings.restoreSavepoint()) {
 			final CheckpointCoordinator checkpointCoordinator = executionGraphToRestore.getCheckpointCoordinator();
 			if (checkpointCoordinator != null) {
+				// 恢复
 				checkpointCoordinator.restoreSavepoint(
 					savepointRestoreSettings.getRestorePath(),
 					savepointRestoreSettings.allowNonRestoredState(),

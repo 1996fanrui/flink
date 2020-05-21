@@ -92,6 +92,7 @@ public class DefaultJobMasterServiceFactory implements JobMasterServiceFactory {
 			OnCompletionActions jobCompletionActions,
 			ClassLoader userCodeClassloader) throws Exception {
 
+		// JobMaster 工厂
 		return new JobMaster(
 			rpcService,
 			jobMasterConfiguration,

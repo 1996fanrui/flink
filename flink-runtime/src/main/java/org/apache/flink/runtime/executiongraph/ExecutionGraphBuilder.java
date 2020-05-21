@@ -337,6 +337,7 @@ public class ExecutionGraphBuilder {
 
 			final CheckpointCoordinatorConfiguration chkConfig = snapshotSettings.getCheckpointCoordinatorConfiguration();
 
+			// 构建 ExecutionGraph 时，会开启 Checkpoint
 			executionGraph.enableCheckpointing(
 				chkConfig,
 				triggerVertices,
