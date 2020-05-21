@@ -215,6 +215,8 @@ public class RocksDBStateBackend extends AbstractStateBackend implements Configu
 	 */
 	@SuppressWarnings("deprecation")
 	public RocksDBStateBackend(URI checkpointDataUri) throws IOException {
+		// 使用 RocksDBStateBackend 时，
+		// JM 仍然需要借助 FsStateBackend 连接 dfs 获取元数据等
 		this(new FsStateBackend(checkpointDataUri));
 	}
 

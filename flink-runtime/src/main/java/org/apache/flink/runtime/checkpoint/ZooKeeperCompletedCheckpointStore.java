@@ -118,6 +118,7 @@ public class ZooKeeperCompletedCheckpointStore implements CompletedCheckpointSto
 
 	/**
 	 * Gets the latest checkpoint from ZooKeeper and removes all others.
+	 * 从 zk 获取最近一次 Checkpoint 信息，用于恢复
 	 *
 	 * <p><strong>Important</strong>: Even if there are more than one checkpoint in ZooKeeper,
 	 * this will only recover the latest and discard the others. Otherwise, there is no guarantee

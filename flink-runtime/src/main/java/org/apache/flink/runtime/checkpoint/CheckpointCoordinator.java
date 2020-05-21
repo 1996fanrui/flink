@@ -1044,6 +1044,8 @@ public class CheckpointCoordinator {
 			sharedStateRegistry = sharedStateRegistryFactory.create(executor);
 
 			// Recover the checkpoints, TODO this could be done only when there is a new leader, not on each recovery
+
+			// 从 zk 获取所有可以恢复的 Checkpoint 信息，并从最近一次恢复
 			completedCheckpointStore.recover();
 
 			// Now, we re-register all (shared) states from the checkpoint store with the new registry
@@ -1070,11 +1072,13 @@ public class CheckpointCoordinator {
 			LOG.info("Restoring job {} from latest valid checkpoint: {}.", job, latest);
 
 			// re-assign the task states
+			// Checkpoint 中恢复出来的 State
 			final Map<OperatorID, OperatorState> operatorStates = latest.getOperatorStates();
 
 			StateAssignmentOperation stateAssignmentOperation =
 					new StateAssignmentOperation(latest.getCheckpointID(), tasks, operatorStates, allowNonRestoredState);
 
+			// 重点：JM 给各个 TM 分配 State
 			stateAssignmentOperation.assignStates();
 
 			// call master hooks for restore
@@ -1126,12 +1130,15 @@ public class CheckpointCoordinator {
 		LOG.info("Starting job {} from savepoint {} ({})",
 				job, savepointPointer, (allowNonRestored ? "allowing non restored state" : ""));
 
+		// 从外部存储获取 Checkpoint 元数据，这里的 checkpointStorage 是 FsCheckpointStorage
 		final CompletedCheckpointStorageLocation checkpointLocation = checkpointStorage.resolveCheckpoint(savepointPointer);
 
 		// Load the savepoint as a checkpoint into the system
+		// 加载且校验 Checkpoint：包括 maxParallelism
 		CompletedCheckpoint savepoint = Checkpoints.loadAndValidateCheckpoint(
 				job, tasks, checkpointLocation, userClassLoader, allowNonRestored);
 
+		// 将要恢复的 Checkpoint 信息写入到 zk 中
 		completedCheckpointStore.addCheckpoint(savepoint);
 
 		// Reset the checkpoint ID counter
@@ -1140,6 +1147,7 @@ public class CheckpointCoordinator {
 
 		LOG.info("Reset the checkpoint ID of job {} to {}.", job, nextCheckpointId);
 
+		// 从最近一次 Checkpoint 处恢复 State
 		return restoreLatestCheckpointedState(tasks, true, allowNonRestored);
 	}
 

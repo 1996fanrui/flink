@@ -249,7 +249,9 @@ public abstract class AbstractFsCheckpointStorage implements CheckpointStorage {
 
 		// If this is a directory, we need to find the meta data file
 		if (status.isDir()) {
+			// 去目录里找 _metadata 元数据文件
 			checkpointDir = status.getPath();
+			// Checkpoint 的元数据文件
 			final Path metadataFilePath = new Path(path, METADATA_FILE_NAME);
 			try {
 				metadataFileStatus = fs.getFileStatus(metadataFilePath);
@@ -263,6 +265,7 @@ public abstract class AbstractFsCheckpointStorage implements CheckpointStorage {
 		else {
 			// this points to a file and we either do no name validation, or
 			// the name is actually correct, so we can return the path
+			// 如果是文件，则直接就是元数据文件，parent 就是 Checkpoint 目录
 			metadataFileStatus = status;
 			checkpointDir = status.getPath().getParent();
 		}

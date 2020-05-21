@@ -136,7 +136,7 @@ public class Checkpoints {
 		final StreamStateHandle metadataHandle = location.getMetadataHandle();
 		final String checkpointPointer = location.getExternalPointer();
 
-		// (1) load the savepoint
+		// (1) load the savepoint  反序列化 Checkpoint 元数据文件
 		final Savepoint rawCheckpointMetadata;
 		try (InputStream in = metadataHandle.openInputStream()) {
 			DataInputStream dis = new DataInputStream(in);
@@ -148,6 +148,7 @@ public class Checkpoints {
 				SavepointV2.convertToOperatorStateSavepointV2(tasks, rawCheckpointMetadata);
 
 		// generate mapping from operator to task
+		// 从新的 ExecutionGraph 中生成 OperatorId 与 ExecutionJobVertex 的映射
 		Map<OperatorID, ExecutionJobVertex> operatorToJobVertexMapping = new HashMap<>();
 		for (ExecutionJobVertex task : tasks.values()) {
 			for (OperatorID operatorID : task.getOperatorIDs()) {
@@ -159,6 +160,8 @@ public class Checkpoints {
 		boolean expandedToLegacyIds = false;
 
 		HashMap<OperatorID, OperatorState> operatorStates = new HashMap<>(checkpointMetadata.getOperatorStates().size());
+
+		// 循环检查所有的 OperatorState，这里的 OperatorState 表示 算子级别
 		for (OperatorState operatorState : checkpointMetadata.getOperatorStates()) {
 
 			ExecutionJobVertex executionJobVertex = operatorToJobVertexMapping.get(operatorState.getOperatorID());
@@ -172,8 +175,10 @@ public class Checkpoints {
 				LOG.info("Could not find ExecutionJobVertex. Including user-defined OperatorIDs in search.");
 			}
 
+			// executionJobVertex == null 说明有 OperatorState ，但找不到对应的 executionJobVertex
 			if (executionJobVertex != null) {
 
+				// 只要新旧 maxParallelism 相同，或者 新的 maxParallelism 没有配置，都认为校验通过
 				if (executionJobVertex.getMaxParallelism() == operatorState.getMaxParallelism()
 						|| !executionJobVertex.isMaxParallelismConfigured()) {
 					operatorStates.put(operatorState.getOperatorID(), operatorState);
@@ -191,8 +196,10 @@ public class Checkpoints {
 					throw new IllegalStateException(msg);
 				}
 			} else if (allowNonRestoredState) {
+				// 跳过了恢复流程
 				LOG.info("Skipping savepoint state for operator {}.", operatorState.getOperatorID());
 			} else {
+				// 不允许跳过恢复，则抛异常
 				for (OperatorSubtaskState operatorSubtaskState : operatorState.getStates()) {
 					if (operatorSubtaskState.hasState()) {
 						String msg = String.format("Failed to rollback to checkpoint/savepoint %s. " +

@@ -61,19 +61,22 @@ public class RoundRobinOperatorStateRepartitioner implements OperatorStateRepart
 		List<Map<StreamStateHandle, OperatorStateHandle>> mergeMapList;
 
 		// We only round-robin repartition UNION state if new parallelism equals to the old one.
+		// 并行度不变的情况
 		if (newParallelism == oldParallelism) {
 			Map<String, List<Tuple2<StreamStateHandle, OperatorStateHandle.StateMetaInfo>>> unionStates = collectUnionStates(previousParallelSubtaskStates);
 
+			// unionStates 为空，表示都是 SPLIT_DISTRIBUTE 模式，直接按照老的 State 进行分配
 			if (unionStates.isEmpty()) {
 				return previousParallelSubtaskStates;
 			}
 
 			// Initialize
+			// 初始化 list 成 map 形式
 			mergeMapList = initMergeMapList(previousParallelSubtaskStates);
-
+			// unionState 遍历一遍，将所有 subtask 的 State，添加到所有的 map 中（分发到所有机器上）
 			repartitionUnionState(unionStates, mergeMapList);
 		} else {
-
+			// 并行度改变的情况
 			// Reorganize: group by (State Name -> StreamStateHandle + Offsets)
 			GroupByStateNameResults nameToStateByMode = groupByStateMode(previousParallelSubtaskStates);
 
@@ -86,6 +89,7 @@ public class RoundRobinOperatorStateRepartitioner implements OperatorStateRepart
 				repartition(nameToStateByMode, newParallelism);
 		}
 
+		// map 转为 list，作为 结果
 		for (int i = 0; i < mergeMapList.size(); ++i) {
 			result.add(i, new ArrayList<>(mergeMapList.get(i).values()));
 		}
@@ -95,6 +99,7 @@ public class RoundRobinOperatorStateRepartitioner implements OperatorStateRepart
 
 	/**
 	 * Init the the list of StreamStateHandle -> OperatorStateHandle map with given parallelSubtaskStates when parallelism not changed.
+	 * 并行度没有改变的时候，初始化 list 成 map：StreamStateHandle -> OperatorStateHandle 的形式
 	 */
 	private List<Map<StreamStateHandle, OperatorStateHandle>> initMergeMapList(List<List<OperatorStateHandle>> parallelSubtaskStates) {
 
@@ -112,6 +117,7 @@ public class RoundRobinOperatorStateRepartitioner implements OperatorStateRepart
 
 	/**
 	 * Collect union states from given parallelSubtaskStates.
+	 *
 	 */
 	private Map<String, List<Tuple2<StreamStateHandle, OperatorStateHandle.StateMetaInfo>>> collectUnionStates(
 		List<List<OperatorStateHandle>> parallelSubtaskStates) {
@@ -119,7 +125,9 @@ public class RoundRobinOperatorStateRepartitioner implements OperatorStateRepart
 		Map<String, List<Tuple2<StreamStateHandle, OperatorStateHandle.StateMetaInfo>>> unionStates =
 			new HashMap<>(parallelSubtaskStates.size());
 
+		// 遍历一个个 subtask 的 OperatorStateHandle
 		for (List<OperatorStateHandle> subTaskState : parallelSubtaskStates) {
+			// 遍历具体的 OperatorStateHandle
 			for (OperatorStateHandle operatorStateHandle : subTaskState) {
 				if (operatorStateHandle == null) {
 					continue;
@@ -129,6 +137,8 @@ public class RoundRobinOperatorStateRepartitioner implements OperatorStateRepart
 					operatorStateHandle.getStateNameToPartitionOffsets().entrySet();
 
 				partitionOffsetEntries.stream()
+					// 仅保留 UNION 类型的 State，
+					// todo 疑问：这里是不是 UNION 是根据 State 去判断的吗？不应该根据 ExecutionGraph 判断吗？万一变了呢？
 					.filter(entry -> entry.getValue().getDistributionMode().equals(OperatorStateHandle.Mode.UNION))
 					.forEach(entry -> {
 						List<Tuple2<StreamStateHandle, OperatorStateHandle.StateMetaInfo>> stateLocations =
@@ -328,6 +338,7 @@ public class RoundRobinOperatorStateRepartitioner implements OperatorStateRepart
 			for (Map.Entry<String, List<Tuple2<StreamStateHandle, OperatorStateHandle.StateMetaInfo>>> e :
 					unionState.entrySet()) {
 
+				// unionState 遍历一遍，将所有 subtask 的 State，添加到所有的  map 中
 				for (Tuple2<StreamStateHandle, OperatorStateHandle.StateMetaInfo> handleWithMetaInfo : e.getValue()) {
 					OperatorStateHandle operatorStateHandle = mergeMap.get(handleWithMetaInfo.f0);
 					if (operatorStateHandle == null) {

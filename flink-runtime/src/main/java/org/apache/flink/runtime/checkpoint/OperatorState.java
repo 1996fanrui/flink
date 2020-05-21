@@ -32,6 +32,9 @@ import java.util.Objects;
 /**
  * Simple container class which contains the raw/managed operator state and key-group state handles from all sub
  * tasks of an operator and therefore represents the complete state of a logical operator.
+ *
+ * OperatorState 表示一个 算子级别的，OperatorSubtaskState 是 subtask 级别的。
+ * 如果一个算子有 10 个并行度，那么 OperatorState 有 10 个 OperatorSubtaskState
  */
 public class OperatorState implements CompositeStateHandle {
 
