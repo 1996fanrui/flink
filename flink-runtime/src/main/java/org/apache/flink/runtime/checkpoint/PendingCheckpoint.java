@@ -86,11 +86,14 @@ public class PendingCheckpoint {
 
 	private final Map<OperatorID, OperatorState> operatorStates;
 
+	// notYetAcknowledgedTasks 维护还未确认的 subtask id
 	private final Map<ExecutionAttemptID, ExecutionVertex> notYetAcknowledgedTasks;
 
 	private final List<MasterState> masterState;
 
-	/** Set of acknowledged tasks. */
+	/** Set of acknowledged tasks.
+	 * acknowledgedTasks 中维护了所有 已经确认过的 subtask id
+	 */
 	private final Set<ExecutionAttemptID> acknowledgedTasks;
 
 	/** The checkpoint properties. */
@@ -174,6 +177,7 @@ public class PendingCheckpoint {
 	}
 
 	public boolean isFullyAcknowledged() {
+		// notYetAcknowledgedTasks 为空，表示所有 subtask 都确认完了
 		return this.notYetAcknowledgedTasks.isEmpty() && !discarded;
 	}
 
@@ -252,6 +256,7 @@ public class PendingCheckpoint {
 			// make sure we fulfill the promise with an exception if something fails
 			try {
 				// write out the metadata
+				// 元数据封装到 SavepointV2，写元数据到 Savepoint 目录（dfs）
 				final Savepoint savepoint = new SavepointV2(checkpointId, operatorStates.values(), masterState);
 				final CompletedCheckpointStorageLocation finalizedLocation;
 
@@ -282,6 +287,7 @@ public class PendingCheckpoint {
 					completed.setDiscardCallback(discardCallback);
 				}
 
+				// 标记 pending checkpoint 为 disposed，不删除 State
 				// mark this pending checkpoint as disposed, but do NOT drop the state
 				dispose(false);
 
@@ -309,12 +315,16 @@ public class PendingCheckpoint {
 			CheckpointMetrics metrics) {
 
 		synchronized (lock) {
+			// 如果本地 PendingCheckpoint 已经设置为丢弃，则返回丢弃
 			if (discarded) {
 				return TaskAcknowledgeResult.DISCARDED;
 			}
 
 			final ExecutionVertex vertex = notYetAcknowledgedTasks.remove(executionAttemptId);
 
+			// notYetAcknowledgedTasks 维护还未确认的 subtask id
+			// acknowledgedTasks 中维护了所有 已经确认过的 subtask id，
+			// 如果已经 acknowledgedTasks 有这个 id，表示重复了
 			if (vertex == null) {
 				if (acknowledgedTasks.contains(executionAttemptId)) {
 					return TaskAcknowledgeResult.DUPLICATE;
@@ -331,6 +341,7 @@ public class PendingCheckpoint {
 
 			long stateSize = 0L;
 
+			// 构建当前 subtask 本次 Checkpoint 的一些统计数据
 			if (operatorSubtaskStates != null) {
 				for (OperatorID operatorID : operatorIDs) {
 

@@ -773,6 +773,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 				operatorChain.prepareSnapshotPreBarrier(checkpointId);
 
 				// Step (2): Send the checkpoint barrier downstream
+				// 往数据流中安插 CHeckpoint Barrier
 				operatorChain.broadcastCheckpointBarrier(
 						checkpointId,
 						checkpointMetaData.getTimestamp(),
@@ -780,6 +781,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 
 				// Step (3): Take the state snapshot. This should be largely asynchronous, to not
 				//           impact progress of the streaming topology
+				// 做快照，这个过程尽量是异步的，不要影响数据处理
 				checkpointState(checkpointMetaData, checkpointOptions, checkpointMetrics);
 
 				return true;
@@ -1001,6 +1003,8 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 					OperatorSnapshotFutures snapshotInProgress = entry.getValue();
 
 					// finalize the async part of all by executing all snapshot runnables
+					// OperatorSnapshotFinalizer 的构造器中，会等待所有异步任务执行完成，
+					// 并封装好 JobManager 和 Task 本地的 SnapshotResult
 					OperatorSnapshotFinalizer finalizedSnapshots =
 						new OperatorSnapshotFinalizer(snapshotInProgress);
 
@@ -1013,11 +1017,13 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 						finalizedSnapshots.getTaskLocalState());
 				}
 
+				// 异步阶段执行完成，计算异步阶段耗时，记录到 Metrics
 				final long asyncEndNanos = System.nanoTime();
 				final long asyncDurationMillis = (asyncEndNanos - asyncStartNanos) / 1_000_000L;
 
 				checkpointMetrics.setAsyncDurationMillis(asyncDurationMillis);
 
+				// 当前 subtask 的 Checkpoint 做完了，向 JM 发送 Checkpoint 完成的通知
 				if (asyncCheckpointState.compareAndSet(CheckpointingOperation.AsyncCheckpointState.RUNNING,
 					CheckpointingOperation.AsyncCheckpointState.COMPLETED)) {
 
@@ -1202,9 +1208,11 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 		}
 
 		public void executeCheckpointing() throws Exception {
+			// 同步阶段计时开始
 			startSyncPartNano = System.nanoTime();
 
 			try {
+				// 执行所有 Operator 对应的 AbstractStreamOperator 的 snapshotState 方法
 				for (StreamOperator<?> op : allOperators) {
 					checkpointStreamOperator(op);
 				}
@@ -1214,11 +1222,12 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 						checkpointMetaData.getCheckpointId(), owner.getName());
 				}
 
+				// 异步阶段计时开始，表示同步阶段计时结束，统计记录同步阶段的 Metrics
 				startAsyncPartNano = System.nanoTime();
-
 				checkpointMetrics.setSyncDurationMillis((startAsyncPartNano - startSyncPartNano) / 1_000_000);
 
 				// we are transferring ownership over snapshotInProgressList for cleanup to the thread, active on submit
+				//
 				AsyncCheckpointRunnable asyncCheckpointRunnable = new AsyncCheckpointRunnable(
 					owner,
 					operatorSnapshotsInProgress,

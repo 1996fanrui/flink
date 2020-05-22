@@ -42,6 +42,8 @@ import java.util.ArrayDeque;
  * guarantees. It can, however, be used to gain "at least once" processing guarantees.
  *
  * <p>NOTE: This implementation strictly assumes that newer checkpoints have higher checkpoint IDs.
+ *
+ * CheckpointBarrierTracker 表示 Barrier 不对齐，对应的是 At-Least-Once
  */
 @Internal
 public class CheckpointBarrierTracker extends CheckpointBarrierHandler {
@@ -96,6 +98,7 @@ public class CheckpointBarrierTracker extends CheckpointBarrierHandler {
 
 		// fast path for single channel trackers
 		if (totalNumberOfInputChannels == 1) {
+			// 只有一个 InputChannel，直接触发 Checkpoint
 			notifyCheckpoint(receivedBarrier, 0, 0);
 			return false;
 		}
@@ -120,6 +123,7 @@ public class CheckpointBarrierTracker extends CheckpointBarrierHandler {
 		if (barrierCount != null) {
 			// add one to the count to that barrier and check for completion
 			int numBarriersNew = barrierCount.incrementBarrierCount();
+			// 当接受到的 Barrier 数量为 InputChannel 的数量时，触发 Checkpoint
 			if (numBarriersNew == totalNumberOfInputChannels) {
 				// checkpoint can be triggered (or is aborted and all barriers have been seen)
 				// first, remove this checkpoint and all all prior pending

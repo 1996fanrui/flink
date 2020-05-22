@@ -36,13 +36,19 @@ import java.io.IOException;
  * {@link CheckpointBarrierAligner} keep tracks of received {@link CheckpointBarrier} on given
  * channels and controls the alignment, by deciding which channels should be blocked and when to
  * release blocked channels.
+ *
+ * CheckpointBarrierAligner 表示 Barrier 对齐，对应的是 Exactly-Once
+ *
  */
 @Internal
 public class CheckpointBarrierAligner extends CheckpointBarrierHandler {
 
 	private static final Logger LOG = LoggerFactory.getLogger(CheckpointBarrierAligner.class);
 
-	/** Flags that indicate whether a channel is currently blocked/buffered. */
+	/**
+	 * Flags that indicate whether a channel is currently blocked/buffered.
+	 * 标识哪些 channel 当前阻塞了
+	 */
 	private final boolean[] blockedChannels;
 
 	/** The total number of channels that this buffer handles data from. */
@@ -122,11 +128,13 @@ public class CheckpointBarrierAligner extends CheckpointBarrierHandler {
 		if (numBarriersReceived > 0) {
 			// this is only true if some alignment is already progress and was not canceled
 
+			// 将 当前 channelIndex 设置为 block，用于
 			if (barrierId == currentCheckpointId) {
 				// regular case
 				onBarrier(channelIndex);
 			}
 			else if (barrierId > currentCheckpointId) {
+				// 开启新的 Checkpoint ，把上一次 废弃
 				// we did not complete the current checkpoint, another started before
 				LOG.warn("{}: Received checkpoint barrier for checkpoint {} before completing current checkpoint {}. " +
 						"Skipping current checkpoint.",
@@ -164,6 +172,7 @@ public class CheckpointBarrierAligner extends CheckpointBarrierHandler {
 
 		// check if we have all barriers - since canceled checkpoints always have zero barriers
 		// this can only happen on a non canceled checkpoint
+		// todo 关闭的 InputChannel 数量 + 接受到的 Barrier 数量 ==  InputChannel 数量时，触发 Checkpoint
 		if (numBarriersReceived + numClosedChannels == totalNumberOfInputChannels) {
 			// actually trigger checkpoint
 			if (LOG.isDebugEnabled()) {
@@ -173,6 +182,7 @@ public class CheckpointBarrierAligner extends CheckpointBarrierHandler {
 					receivedBarrier.getTimestamp());
 			}
 
+			// 释放所有 block 的 InputChannel，并开始进行 CHeckpoint
 			releaseBlocksAndResetBarriers();
 			notifyCheckpoint(receivedBarrier, bufferedBytes, latestAlignmentDurationNanos);
 			return true;
@@ -180,6 +190,7 @@ public class CheckpointBarrierAligner extends CheckpointBarrierHandler {
 		return checkpointAborted;
 	}
 
+	// 开始新的一波 Barrier 对齐
 	protected void beginNewAlignment(long checkpointId, int channelIndex) throws IOException {
 		currentCheckpointId = checkpointId;
 		onBarrier(channelIndex);
@@ -193,11 +204,12 @@ public class CheckpointBarrierAligner extends CheckpointBarrierHandler {
 
 	/**
 	 * Blocks the given channel index, from which a barrier has been received.
-	 *
+	 * channelIndex 对应的 InputChannel Barrier 到了，要将其 Channel block
 	 * @param channelIndex The channel index to block.
 	 */
 	protected void onBarrier(int channelIndex) throws IOException {
 		if (!blockedChannels[channelIndex]) {
+			// true 表示 channelIndex 对应的 InputChannel 通道阻塞
 			blockedChannels[channelIndex] = true;
 
 			numBarriersReceived++;

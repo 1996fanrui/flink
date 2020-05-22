@@ -43,6 +43,7 @@ public class OperatorSnapshotFinalizer {
 	public OperatorSnapshotFinalizer(
 		@Nonnull OperatorSnapshotFutures snapshotFutures) throws ExecutionException, InterruptedException {
 
+		// 这里等待四种 Future 都执行结束
 		SnapshotResult<KeyedStateHandle> keyedManaged =
 			FutureUtils.runIfNotDoneAndGet(snapshotFutures.getKeyedStateManagedFuture());
 
@@ -55,6 +56,9 @@ public class OperatorSnapshotFinalizer {
 		SnapshotResult<OperatorStateHandle> operatorRaw =
 			FutureUtils.runIfNotDoneAndGet(snapshotFutures.getOperatorStateRawFuture());
 
+		// 按照 JM 或者 local 分别封装
+		// JM 的状态表示 Checkpoint 相关的远程 StateHandle （保证高可靠性）
+		// Local 的状态表示 local recovery 时需要用到的本地 StateHandle（保证任务恢复时，效率较高）
 		jobManagerOwnedState = new OperatorSubtaskState(
 			operatorManaged.getJobManagerOwnedSnapshot(),
 			operatorRaw.getJobManagerOwnedSnapshot(),

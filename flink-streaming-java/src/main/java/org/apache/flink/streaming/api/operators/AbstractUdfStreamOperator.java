@@ -84,6 +84,8 @@ public abstract class AbstractUdfStreamOperator<OUT, F extends Function>
 
 	}
 
+	// 这里调用 AbstractStreamOperator 类的 snapshotState 方法，
+	// 同时调用 udf 的 snapshotState 方法
 	@Override
 	public void snapshotState(StateSnapshotContext context) throws Exception {
 		super.snapshotState(context);

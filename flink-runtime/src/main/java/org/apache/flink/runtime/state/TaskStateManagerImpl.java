@@ -91,8 +91,10 @@ public class TaskStateManagerImpl implements TaskStateManager {
 
 		long checkpointId = checkpointMetaData.getCheckpointId();
 
+		// 1、保存 LocalState 到本地存储
 		localStateStore.storeLocalState(checkpointId, localState);
 
+		// 2、调用 CheckpointResponder 的 acknowledgeCheckpoint 方法，向 JM 发送 Checkpoint 反馈
 		checkpointResponder.acknowledgeCheckpoint(
 			jobId,
 			executionAttemptID,

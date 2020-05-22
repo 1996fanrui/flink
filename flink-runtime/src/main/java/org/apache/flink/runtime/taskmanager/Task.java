@@ -1152,6 +1152,7 @@ public class Task implements Runnable, TaskActions, PartitionProducerStateProvid
 					FileSystemSafetyNet.setSafetyNetCloseableRegistryForThread(safetyNetCloseableRegistry);
 
 					try {
+						// 调用 StreamTask 的 triggerCheckpoint
 						boolean success = invokable.triggerCheckpoint(checkpointMetaData, checkpointOptions, advanceToEndOfEventTime);
 						if (!success) {
 							checkpointResponder.declineCheckpoint(

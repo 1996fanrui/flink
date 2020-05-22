@@ -81,6 +81,7 @@ public abstract class CheckpointBarrierHandler {
 			CheckpointMetaData checkpointMetaData =
 				new CheckpointMetaData(checkpointBarrier.getId(), checkpointBarrier.getTimestamp());
 
+			// 记录 Barrier 对齐的 Metrics
 			CheckpointMetrics checkpointMetrics = new CheckpointMetrics()
 				.setBytesBufferedInAlignment(bufferedBytes)
 				.setAlignmentDurationNanos(alignmentDurationNanos);

@@ -466,6 +466,7 @@ public class CheckpointCoordinator {
 		}
 
 		// make some eager pre-checks
+		// 做一些前置检查，包括：当前进行的 Checkpoint 数量，两次 Checkpoint 间隔是否过小
 		synchronized (lock) {
 			// abort if the coordinator has been shutdown in the meantime
 			if (shutdown) {
@@ -495,6 +496,8 @@ public class CheckpointCoordinator {
 
 		// check if all tasks that we need to trigger are running.
 		// if not, abort the checkpoint
+		// 检查当前 需要 Trigger 的 Execution 是否处于 RUNNING 状态，
+		// 一旦有 Execution 不是 RUNNING 状态，则废弃本次 Checkpoint
 		Execution[] executions = new Execution[tasksToTrigger.length];
 		for (int i = 0; i < tasksToTrigger.length; i++) {
 			Execution ee = tasksToTrigger[i].getCurrentExecutionAttempt();
@@ -618,6 +621,7 @@ public class CheckpointCoordinator {
 
 					pendingCheckpoints.put(checkpointID, checkpoint);
 
+					// 用 Checkpoint Timeout 的时间定义了一个调度器，用于 Checkpoint 超时清理废弃的 Checkpoint
 					ScheduledFuture<?> cancellerHandle = timer.schedule(
 							canceller,
 							checkpointTimeout, TimeUnit.MILLISECONDS);
@@ -641,6 +645,7 @@ public class CheckpointCoordinator {
 						checkpointStorageLocation.getLocationReference());
 
 				// send the messages to the tasks that trigger their checkpoint
+				// 遍历 所有 Source Execution，触发其 Checkpoint
 				for (Execution execution: executions) {
 					if (props.isSynchronous()) {
 						execution.triggerSynchronousSavepoint(checkpointID, timestamp, checkpointOptions, advanceToEndOfTime);
@@ -780,6 +785,7 @@ public class CheckpointCoordinator {
 						LOG.debug("Received acknowledge message for checkpoint {} from task {} of job {} at {}.",
 							checkpointId, message.getTaskExecutionId(), message.getJob(), taskManagerLocationInfo);
 
+						// 所有 subtask 都确认完成，则完成 PendingCheckpoint
 						if (checkpoint.isFullyAcknowledged()) {
 							completePendingCheckpoint(checkpoint);
 						}
@@ -838,7 +844,7 @@ public class CheckpointCoordinator {
 
 	/**
 	 * Try to complete the given pending checkpoint.
-	 *
+	 * 完成本次 PendingCheckpoint
 	 * <p>Important: This method should only be called in the checkpoint lock scope.
 	 *
 	 * @param pendingCheckpoint to complete
@@ -854,6 +860,9 @@ public class CheckpointCoordinator {
 
 		try {
 			try {
+				// 结束本次 Checkpoint，包括几个步骤：
+				// 1、 元数据序列化写入到 dfs，即完成了 Checkpoint
+				// 2、 标记 pending checkpoint 为 disposed，不删除 State
 				completedCheckpoint = pendingCheckpoint.finalizeCheckpoint();
 				failureManager.handleCheckpointSuccess(pendingCheckpoint.getCheckpointId());
 			}
@@ -871,6 +880,7 @@ public class CheckpointCoordinator {
 			Preconditions.checkState(pendingCheckpoint.isDiscarded() && completedCheckpoint != null);
 
 			try {
+				// 将完成的状态写入到 zk
 				completedCheckpointStore.addCheckpoint(completedCheckpoint);
 			} catch (Exception exception) {
 				// we failed to store the completed checkpoint. Let's clean up
@@ -922,6 +932,7 @@ public class CheckpointCoordinator {
 		// send the "notify complete" call to all vertices
 		final long timestamp = completedCheckpoint.getTimestamp();
 
+		// 向实现了 CheckpointListener 接口的 Operator 发送 Checkpoint 完成的通知
 		for (ExecutionVertex ev : tasksToCommitTo) {
 			Execution ee = ev.getCurrentExecutionAttempt();
 			if (ee != null) {
@@ -1328,6 +1339,7 @@ public class CheckpointCoordinator {
 		@Override
 		public void run() {
 			try {
+				// 定时 trigger Checkpoint
 				triggerCheckpoint(System.currentTimeMillis(), true);
 			}
 			catch (Exception e) {

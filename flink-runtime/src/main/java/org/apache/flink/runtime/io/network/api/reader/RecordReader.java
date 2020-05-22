@@ -55,6 +55,7 @@ public class RecordReader<T extends IOReadableWritable> extends AbstractRecordRe
 		}
 		else {
 			T record = instantiateRecordType();
+			//
 			if (getNextRecord(record)) {
 				currentRecord = record;
 				return true;

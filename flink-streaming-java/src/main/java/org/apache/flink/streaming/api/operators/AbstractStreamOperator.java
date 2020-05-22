@@ -406,6 +406,7 @@ public abstract class AbstractStreamOperator<OUT>
 			snapshotInProgress.setKeyedStateRawFuture(snapshotContext.getKeyedStateStreamFuture());
 			snapshotInProgress.setOperatorStateRawFuture(snapshotContext.getOperatorStateStreamFuture());
 
+			// 调用 operatorStateBackend 和 keyedStateBackend 的 snapshot 方法
 			if (null != operatorStateBackend) {
 				snapshotInProgress.setOperatorStateManagedFuture(
 					operatorStateBackend.snapshot(checkpointId, timestamp, factory, checkpointOptions));

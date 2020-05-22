@@ -296,6 +296,7 @@ public class RocksIncrementalSnapshotStrategy<K> extends RocksDBSnapshotStrategy
 			this.stateMetaInfoSnapshots = stateMetaInfoSnapshots;
 		}
 
+		// 异步执行相关逻辑
 		@Override
 		protected SnapshotResult<KeyedStateHandle> callInternal() throws Exception {
 

@@ -530,6 +530,7 @@ public class LegacyScheduler implements SchedulerNG {
 		}
 	}
 
+	// JM 接收到 Checkpoint 完成的确认通知
 	@Override
 	public void acknowledgeCheckpoint(final JobID jobID, final ExecutionAttemptID executionAttemptID, final long checkpointId, final CheckpointMetrics checkpointMetrics, final TaskStateSnapshot checkpointState) {
 		mainThreadExecutor.assertRunningInMainThread();

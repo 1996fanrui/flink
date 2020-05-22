@@ -437,6 +437,7 @@ public class JobMaster extends FencedRpcEndpoint<JobMasterId> implements JobMast
 	}
 
 	// TODO: This method needs a leader session ID
+	// JM 接收到 Checkpoint 完成的确认通知
 	@Override
 	public void acknowledgeCheckpoint(
 			final JobID jobID,
