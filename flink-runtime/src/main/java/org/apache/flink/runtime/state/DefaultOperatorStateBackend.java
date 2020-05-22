@@ -58,11 +58,13 @@ public class DefaultOperatorStateBackend implements OperatorStateBackend {
 
 	/**
 	 * Map for all registered operator states. Maps state name -> state
+	 * 保存 StateName 和 ListState 的映射关系
 	 */
 	private final Map<String, PartitionableListState<?>> registeredOperatorStates;
 
 	/**
 	 * Map for all registered operator broadcast states. Maps state name -> state
+	 * 保存 StateName 和 BroadcastState 的映射关系
 	 */
 	private final Map<String, BackendWritableBroadcastState<?, ?>> registeredBroadcastStates;
 
@@ -264,6 +266,8 @@ public class DefaultOperatorStateBackend implements OperatorStateBackend {
 		return snapshotRunner;
 	}
 
+	// 无论是 getListState 还是 getUnionListState 方法都会调用这里，
+	// 只不过传递的 Mode 参数不同而已
 	private <S> ListState<S> getListState(
 			ListStateDescriptor<S> stateDescriptor,
 			OperatorStateHandle.Mode mode) throws StateMigrationException {
@@ -271,6 +275,7 @@ public class DefaultOperatorStateBackend implements OperatorStateBackend {
 		Preconditions.checkNotNull(stateDescriptor);
 		String name = Preconditions.checkNotNull(stateDescriptor.getName());
 
+		// 类似于基于 StateName 加了一层缓存，可以忽略这里
 		@SuppressWarnings("unchecked")
 		PartitionableListState<S> previous = (PartitionableListState<S>) accessedStatesByName.get(name);
 		if (previous != null) {
@@ -292,6 +297,9 @@ public class DefaultOperatorStateBackend implements OperatorStateBackend {
 		@SuppressWarnings("unchecked")
 		PartitionableListState<S> partitionableListState = (PartitionableListState<S>) registeredOperatorStates.get(name);
 
+		// registeredOperatorStates 中维护的是 Checkpoint 中恢复的 StateName 和 ListState 的映射关系
+		// 如果 partitionableListState == null 表示从 Checkpoint 中没有恢复出这个 State，
+		// 则新建一个 PartitionableListState，并维护在 Map 中
 		if (null == partitionableListState) {
 			// no restored state for the state name; simply create new state holder
 
@@ -303,8 +311,15 @@ public class DefaultOperatorStateBackend implements OperatorStateBackend {
 
 			registeredOperatorStates.put(name, partitionableListState);
 		} else {
+			// State 已经从 Checkpoint 中恢复了，检查兼容性问题
 			// has restored state; check compatibility of new state access
 
+			// 这里会检查 StateName 和 AssignmentMode 是否可以匹配
+			// StateName 和 name 肯定是匹配的，因为 partitionableListState 是根据 name get 出来的
+			// AssignmentMode 枚举表示应用层使用的 getListState 恢复还是 getUnionListState 恢复
+			// getListState 表示 SPLIT_DISTRIBUTE 模式，getUnionListState 表示 UNION 模式
+			// 如果 State 中存储的是 SPLIT_DISTRIBUTE 模式，但任务恢复时，代码改成了 getUnionListState，
+			// 实际上 State 不能正常恢复的。
 			checkStateNameAndMode(
 					partitionableListState.getStateMetaInfo().getName(),
 					name,
@@ -315,10 +330,12 @@ public class DefaultOperatorStateBackend implements OperatorStateBackend {
 				partitionableListState.getStateMetaInfo();
 
 			// check compatibility to determine if new serializers are incompatible
+			// 检查 序列化是否兼容
 			TypeSerializer<S> newPartitionStateSerializer = partitionStateSerializer.duplicate();
 
 			TypeSerializerSchemaCompatibility<S> stateCompatibility =
 				restoredPartitionableListStateMetaInfo.updatePartitionStateSerializer(newPartitionStateSerializer);
+			//  不兼容德华，抛出异常
 			if (stateCompatibility.isIncompatible()) {
 				throw new StateMigrationException("The new state typeSerializer for operator state must not be incompatible.");
 			}
@@ -327,6 +344,7 @@ public class DefaultOperatorStateBackend implements OperatorStateBackend {
 		}
 
 		accessedStatesByName.put(name, partitionableListState);
+		// 返回 State
 		return partitionableListState;
 	}
 

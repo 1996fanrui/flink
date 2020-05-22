@@ -80,6 +80,7 @@ public class DefaultOperatorStateBackendBuilder implements
 			restoreStateHandles
 		);
 		try {
+			// OperatorState 恢复流程
 			restoreOperation.restore();
 		} catch (Exception e) {
 			IOUtils.closeQuietly(cancelStreamRegistryForBackend);

@@ -49,6 +49,7 @@ public interface OperatorStateHandle extends StreamStateHandle {
 
 	/**
 	 * The modes that determine how an {@link OperatorStreamStateHandle} is assigned to tasks during restore.
+	 * OperatorState 恢复模式
 	 */
 	enum Mode {
 		SPLIT_DISTRIBUTE,	// The operator state partitions in the state handle are split and distributed to one task each.
@@ -58,6 +59,8 @@ public interface OperatorStateHandle extends StreamStateHandle {
 
 	/**
 	 * Meta information about the operator state handle.
+	 * operator state handle 主要是 要恢复数据对应的 offset，
+	 * 然后根据 offset 和指定的反序列化器进行反序列化即可拿到数据
 	 */
 	class StateMetaInfo implements Serializable {
 

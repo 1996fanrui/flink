@@ -41,7 +41,10 @@ import java.util.Map;
 public class OperatorStateRestoreOperation implements RestoreOperation<Void> {
 	private final CloseableRegistry closeStreamOnCancelRegistry;
 	private final ClassLoader userClassloader;
+	// 保存 StateName 和 ListState 的映射关系
 	private final Map<String, PartitionableListState<?>> registeredOperatorStates;
+
+	// 保存 StateName 和 BroadcastState 的映射关系
 	private final Map<String, BackendWritableBroadcastState<?, ?>> registeredBroadcastStates;
 	private final Collection<OperatorStateHandle> stateHandles;
 
@@ -58,12 +61,14 @@ public class OperatorStateRestoreOperation implements RestoreOperation<Void> {
 		this.stateHandles = stateHandles;
 	}
 
+	// Operator State 真正的 restore 流程
 	@Override
 	public Void restore() throws Exception {
 		if (stateHandles.isEmpty()) {
 			return null;
 		}
 
+		// 遍历所有 stateHandles
 		for (OperatorStateHandle stateHandle : stateHandles) {
 
 			if (stateHandle == null) {
@@ -86,6 +91,7 @@ public class OperatorStateRestoreOperation implements RestoreOperation<Void> {
 					backendSerializationProxy.getOperatorStateMetaInfoSnapshots();
 
 				// Recreate all PartitionableListStates from the meta info
+				// 从元数据中创建 PartitionableListStates，并没有恢复真正的 State
 				for (StateMetaInfoSnapshot restoredSnapshot : restoredOperatorMetaInfoSnapshots) {
 
 					final RegisteredOperatorStateBackendMetaInfo<?> restoredMetaInfo =
@@ -107,6 +113,7 @@ public class OperatorStateRestoreOperation implements RestoreOperation<Void> {
 					PartitionableListState<?> listState = registeredOperatorStates.get(restoredSnapshot.getName());
 
 					if (null == listState) {
+						// 这里只是依赖 MetaInfo 创建了 PartitionableListState，并没有恢复真正的 State 数据
 						listState = new PartitionableListState<>(restoredMetaInfo);
 
 						registeredOperatorStates.put(listState.getStateMetaInfo().getName(), listState);
@@ -116,6 +123,7 @@ public class OperatorStateRestoreOperation implements RestoreOperation<Void> {
 				}
 
 				// ... and then get back the broadcast state.
+				// 从元数据中创建 broadcast state.，并没有恢复真正的 State
 				List<StateMetaInfoSnapshot> restoredBroadcastMetaInfoSnapshots =
 					backendSerializationProxy.getBroadcastStateMetaInfoSnapshots();
 
@@ -150,6 +158,7 @@ public class OperatorStateRestoreOperation implements RestoreOperation<Void> {
 				}
 
 				// Restore all the states
+				// 真正恢复 State 的操作
 				for (Map.Entry<String, OperatorStateHandle.StateMetaInfo> nameToOffsets :
 					stateHandle.getStateNameToPartitionOffsets().entrySet()) {
 
@@ -157,11 +166,13 @@ public class OperatorStateRestoreOperation implements RestoreOperation<Void> {
 
 					PartitionableListState<?> listStateForName = registeredOperatorStates.get(stateName);
 					if (listStateForName == null) {
+						// listState 为 null，表示恢复 Broadcast 相关的 State
 						BackendWritableBroadcastState<?, ?> broadcastStateForName = registeredBroadcastStates.get(stateName);
 						Preconditions.checkState(broadcastStateForName != null, "Found state without " +
 							"corresponding meta info: " + stateName);
 						deserializeBroadcastStateValues(broadcastStateForName, in, nameToOffsets.getValue());
 					} else {
+						// 恢复 ListState
 						deserializeOperatorStateValues(listStateForName, in, nameToOffsets.getValue());
 					}
 				}
