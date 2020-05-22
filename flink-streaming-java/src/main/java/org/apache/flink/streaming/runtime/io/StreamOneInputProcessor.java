@@ -163,6 +163,7 @@ public final class StreamOneInputProcessor<IN> implements StreamInputProcessor {
 		if (recordOrMark.isRecord()) {
 			// now we can do the actual processing
 			StreamRecord<IN> record = recordOrMark.asRecord();
+			// 每次数据处理时，都需要对 StreamTask 的 lock 加锁
 			synchronized (lock) {
 				numRecordsIn.inc();
 				// 因为这里是 StreamOneInputProcessor，所以会调用 OneInputStreamOperator 的相关方法

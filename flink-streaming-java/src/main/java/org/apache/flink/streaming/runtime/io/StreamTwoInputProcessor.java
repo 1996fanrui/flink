@@ -257,6 +257,8 @@ public final class StreamTwoInputProcessor<IN1, IN2> implements StreamInputProce
 						}
 						else {
 							StreamRecord<IN1> record = recordOrWatermark.asRecord();
+
+							// 每次数据处理时，都需要对 StreamTask 的 lock 加锁
 							synchronized (lock) {
 								// NumRecordsIn 的 Metric 首先 increment，
 								numRecordsIn.inc();

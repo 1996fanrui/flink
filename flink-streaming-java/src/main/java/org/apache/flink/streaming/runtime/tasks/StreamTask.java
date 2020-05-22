@@ -142,6 +142,8 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 	/**
 	 * All interaction with the {@code StreamOperator} must be synchronized on this lock object to
 	 * ensure that we don't have concurrent method calls that void consistent checkpoints.
+	 *
+	 * 无论是 processElement 还是 Checkpoint，都锁的是这个 lock，保证了 Checkpoint 的同步期间，数据处理被阻塞。
 	 */
 	private final Object lock = new Object();
 

@@ -50,6 +50,7 @@ public class TwoInputStreamTask<IN1, IN2, OUT> extends AbstractTwoInputStreamTas
 			inputDeserializer1, inputDeserializer2,
 			this,
 			getConfiguration().getCheckpointMode(),
+			// getCheckpointLock 获取的是 StreamTask 中的锁
 			getCheckpointLock(),
 			getEnvironment().getIOManager(),
 			getEnvironment().getTaskManagerInfo().getConfiguration(),

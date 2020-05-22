@@ -81,6 +81,7 @@ public class OneInputStreamTask<IN, OUT> extends StreamTask<OUT, OneInputStreamO
 					inSerializer,
 					this,
 					configuration.getCheckpointMode(),
+					// getCheckpointLock 获取的是 StreamTask 中的锁
 					getCheckpointLock(),
 					getEnvironment().getIOManager(),
 					getEnvironment().getTaskManagerInfo().getConfiguration(),
