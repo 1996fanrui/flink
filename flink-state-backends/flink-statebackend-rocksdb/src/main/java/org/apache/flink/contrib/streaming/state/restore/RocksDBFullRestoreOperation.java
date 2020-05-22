@@ -156,6 +156,7 @@ public class RocksDBFullRestoreOperation<K> extends AbstractRocksDBRestoreOperat
 	private void restoreKeyGroupsInStateHandle()
 		throws IOException, StateMigrationException, RocksDBException {
 		try {
+			// KeyGroupsStateHandle 的场景，并不会直接拉回文件，而是建立一个远程的输入流
 			currentStateHandleInStream = currentKeyGroupsStateHandle.openInputStream();
 			cancelStreamRegistry.registerCloseable(currentStateHandleInStream);
 			currentStateHandleInView = new DataInputViewStreamWrapper(currentStateHandleInStream);

@@ -23,6 +23,7 @@ import javax.annotation.Nonnull;
 /**
  * This class is a keyed state handle based on a directory. It combines a {@link DirectoryStateHandle} and a
  * {@link KeyGroupRange}.
+ * RocksDB local recovery 的场景会用到
  */
 public class DirectoryKeyedStateHandle implements KeyedStateHandle {
 

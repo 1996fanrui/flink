@@ -127,6 +127,7 @@ public class HeapRestoreOperation<K> implements RestoreOperation<Void> {
 					", but found: " + keyedStateHandle.getClass());
 			}
 
+			// KeyGroupsStateHandle 的场景，并不会直接拉回文件，而是建立一个远程的输入流
 			KeyGroupsStateHandle keyGroupsStateHandle = (KeyGroupsStateHandle) keyedStateHandle;
 			FSDataInputStream fsDataInputStream = keyGroupsStateHandle.openInputStream();
 			cancelStreamRegistry.registerCloseable(fsDataInputStream);

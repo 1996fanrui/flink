@@ -28,6 +28,7 @@ import java.io.IOException;
 /**
  * This state handle represents a directory. This class is, for example, used to represent the directory of RocksDB's
  * native checkpoint directories for local recovery.
+ * RocksDB local recovery 的场景会用到
  */
 public class DirectoryStateHandle implements StateObject {
 

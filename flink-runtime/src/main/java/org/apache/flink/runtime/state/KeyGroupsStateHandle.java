@@ -84,6 +84,10 @@ public class KeyGroupsStateHandle implements StreamStateHandle, KeyedStateHandle
 	 *          provided key-group range.
 	 */
 	public KeyGroupsStateHandle getIntersection(KeyGroupRange keyGroupRange) {
+		// 疑问：Fs、Savepoint 或 RocksDB 的 Full 模式，KeyGroupsStateHandle 与 KeyGroupRange 求交集时，不会返回 null，
+		//  即：所有的 StateHandle 都会返回，只不过某些 StateHandle 的 KeyGroupRange 对应的 start 和 end 一致，
+		//  即是一个 空的 KeyGroupsStateHandle。
+		//  恢复时并不会拉取整个文件，而是建立一个远程的 输入流
 		return new KeyGroupsStateHandle(groupRangeOffsets.getIntersection(keyGroupRange), stateHandle);
 	}
 
