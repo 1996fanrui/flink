@@ -72,6 +72,8 @@ public abstract class AsyncSnapshotCallable<T> implements Callable<T> {
 
 		if (resourceCleanupOwnershipTaken.compareAndSet(false, true)) {
 			try {
+				// 重点调用了 callInternal 方法，所以继承该类的重点重写 callInternal ，
+				// 最终执行 callInternal 中的代码
 				T result = callInternal();
 				logAsyncSnapshotComplete(startTime);
 				return result;

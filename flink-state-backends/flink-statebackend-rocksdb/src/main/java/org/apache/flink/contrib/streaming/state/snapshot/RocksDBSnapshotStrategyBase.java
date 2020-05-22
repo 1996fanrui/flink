@@ -116,6 +116,8 @@ public abstract class RocksDBSnapshotStrategyBase<K>
 		@Nonnull CheckpointStreamFactory streamFactory,
 		@Nonnull CheckpointOptions checkpointOptions) throws Exception {
 
+		// kvStateInformation 维护的是 StateName 和 具体 State 数据的映射关系
+		// kvStateInformation 为空，表示没有 State，则不需要快照
 		if (kvStateInformation.isEmpty()) {
 			if (LOG.isDebugEnabled()) {
 				LOG.debug("Asynchronous RocksDB snapshot performed on empty keyed state at {}. Returning null.",

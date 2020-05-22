@@ -96,7 +96,12 @@ public class RocksIncrementalSnapshotStrategy<K> extends RocksDBSnapshotStrategy
 	@Nonnull
 	private final UUID backendUID;
 
-	/** Stores the materialized sstable files from all snapshots that build the incremental history. */
+	/**
+	 * Stores the materialized sstable files from all snapshots that build the incremental history.
+	 * 维护的每次 成功的 Checkpoint 对应的 sst 的集合，
+	 *		key 是 CheckpointId
+	 *		value 是 sst 的集合
+	 */
 	@Nonnull
 	private final SortedMap<Long, Set<StateHandleID>> materializedSstFiles;
 
@@ -151,14 +156,26 @@ public class RocksIncrementalSnapshotStrategy<K> extends RocksDBSnapshotStrategy
 		@Nonnull CheckpointStreamFactory checkpointStreamFactory,
 		@Nonnull CheckpointOptions checkpointOptions) throws Exception {
 
+		// 准备一个 snapshot 的目录，localRecovery 模式下会返回 localRecovery 配置的目录
+		// 否则在当前数据目录下，创建一下 chk-checkpointId 的目录
 		final SnapshotDirectory snapshotDirectory = prepareLocalSnapshotDirectory(checkpointId);
 		LOG.trace("Local RocksDB checkpoint goes to backup path {}.", snapshotDirectory);
 
+		// 对 元数据保存一份到 list 中，元数据包括：将 每个 State 类型，对应的序列化规则等
+		// 并将上一次 CheckpointId 对应的 sst 集合保存到 baseSstFiles
 		final List<StateMetaInfoSnapshot> stateMetaInfoSnapshots = new ArrayList<>(kvStateInformation.size());
 		final Set<StateHandleID> baseSstFiles = snapshotMetaData(checkpointId, stateMetaInfoSnapshots);
 
+		// 这里使用 RocksDB 的 Checkpoint 功能，将 当前 db 数据保存一份到 指定的 snapshot 目录
+		// todo 如果目录切换了磁盘，会拷贝一份数据到其他磁盘，导致 IO 超高
 		takeDBNativeCheckpoint(snapshotDirectory);
 
+		// 封装成 RocksDBIncrementalSnapshotOperation，
+		// RocksDBIncrementalSnapshotOperation 继承了 AsyncSnapshotCallable 抽象类
+		// AsyncSnapshotCallable 实现了 Callable 接口，实现了 Callable 接口表示一个有返回值的 任务
+		// 所以详细看一下 AsyncSnapshotCallable 的 call 方法即可，call 方法中便是要执行的任务
+		// call 方法重点调用了 callInternal 进行计算，
+		// 所以重点关注 RocksDBIncrementalSnapshotOperation 类的 callInternal 方法即可
 		final RocksDBIncrementalSnapshotOperation snapshotOperation =
 			new RocksDBIncrementalSnapshotOperation(
 				checkpointId,
@@ -183,6 +200,8 @@ public class RocksIncrementalSnapshotStrategy<K> extends RocksDBSnapshotStrategy
 	@Nonnull
 	private SnapshotDirectory prepareLocalSnapshotDirectory(long checkpointId) throws IOException {
 
+		// localRecovery 模式下会返回 localRecovery 配置的目录
+		// 否则在当前数据目录下，创建一下 chk-checkpointId 的目录
 		if (localRecoveryConfig.isLocalRecoveryEnabled()) {
 			// create a "permanent" snapshot directory for local recovery.
 			LocalRecoveryDirectoryProvider directoryProvider = localRecoveryConfig.getLocalStateDirectoryProvider();
@@ -235,6 +254,7 @@ public class RocksIncrementalSnapshotStrategy<K> extends RocksDBSnapshotStrategy
 			"assuming the following (shared) files as base: {}.", checkpointId, lastCompletedCheckpoint, baseSstFiles);
 
 		// snapshot meta data to save
+		// 将 State 的元数据（每个 State 类型，对应的序列化规则等）保存一份到 list 中
 		for (Map.Entry<String, RocksDbKvStateInfo> stateMetaInfoEntry : kvStateInformation.entrySet()) {
 			stateMetaInfoSnapshots.add(stateMetaInfoEntry.getValue().metaInfo.snapshot());
 		}
@@ -246,6 +266,7 @@ public class RocksIncrementalSnapshotStrategy<K> extends RocksDBSnapshotStrategy
 		try (
 			ResourceGuard.Lease ignored = rocksDBResourceGuard.acquireResource();
 			Checkpoint checkpoint = Checkpoint.create(db)) {
+			// 注：这里的 Checkpoint 是 RocksDB 的 Checkpoint 功能，将 当前 db 数据保存一份到 指定目录
 			checkpoint.createCheckpoint(outputDirectory.getDirectory().getPath());
 		} catch (Exception ex) {
 			try {
@@ -296,9 +317,9 @@ public class RocksIncrementalSnapshotStrategy<K> extends RocksDBSnapshotStrategy
 			this.stateMetaInfoSnapshots = stateMetaInfoSnapshots;
 		}
 
-		// 异步执行相关逻辑
 		@Override
 		protected SnapshotResult<KeyedStateHandle> callInternal() throws Exception {
+			// 这里封装了 Checkpoint 异步阶段需要执行的相关逻辑
 
 			boolean completed = false;
 
@@ -311,6 +332,7 @@ public class RocksIncrementalSnapshotStrategy<K> extends RocksDBSnapshotStrategy
 
 			try {
 
+				// 持久化 元数据，返回其对应的 StateHandle
 				metaStateHandle = materializeMetaData();
 
 				// Sanity checks - they should never fail
@@ -318,12 +340,16 @@ public class RocksIncrementalSnapshotStrategy<K> extends RocksDBSnapshotStrategy
 				Preconditions.checkNotNull(metaStateHandle.getJobManagerOwnedSnapshot(),
 					"Metadata for job manager was not properly created.");
 
+				// 上传 sst 和 元数据文件，
+				// sstFiles, miscFiles 分别保存本次 Checkpoint 对应的所有 sst 文件和 元数据文件的 StateHandle
 				uploadSstFiles(sstFiles, miscFiles);
 
+				// 更新本次 checkpointId 及其对应的 sst 文件集合 到 materializedSstFiles 中
 				synchronized (materializedSstFiles) {
 					materializedSstFiles.put(checkpointId, sstFiles.keySet());
 				}
 
+				// 将当前 subtask 对应的 State 信息封装到 IncrementalRemoteKeyedStateHandle 中
 				final IncrementalRemoteKeyedStateHandle jmIncrementalKeyedStateHandle =
 					new IncrementalRemoteKeyedStateHandle(
 						backendUID,
@@ -335,6 +361,9 @@ public class RocksIncrementalSnapshotStrategy<K> extends RocksDBSnapshotStrategy
 
 				final DirectoryStateHandle directoryStateHandle = localBackupDirectory.completeSnapshotAndGetHandle();
 				final SnapshotResult<KeyedStateHandle> snapshotResult;
+				// 封装 SnapshotResult<KeyedStateHandle>：
+				// 	如果开启了 localRecovery 模式，需要将元数据写本地一份 和 远程一份
+				// 	否则，只需要将元数据写远程一份
 				if (directoryStateHandle != null && metaStateHandle.getTaskLocalSnapshot() != null) {
 
 					IncrementalLocalKeyedStateHandle localDirKeyedStateHandle =
@@ -355,6 +384,7 @@ public class RocksIncrementalSnapshotStrategy<K> extends RocksDBSnapshotStrategy
 
 				return snapshotResult;
 			} finally {
+				// 如果没有完全，清理
 				if (!completed) {
 					final List<StateObject> statesToDiscard =
 						new ArrayList<>(1 + miscFiles.size() + sstFiles.size());
@@ -418,21 +448,37 @@ public class RocksIncrementalSnapshotStrategy<K> extends RocksDBSnapshotStrategy
 			Map<StateHandleID, Path> sstFilePaths = new HashMap<>();
 			Map<StateHandleID, Path> miscFilePaths = new HashMap<>();
 
+			// list 出 backup 目录下所有文件
 			FileStatus[] fileStatuses = localBackupDirectory.listStatus();
 			if (fileStatuses != null) {
+				/**
+				 * 这里主要填充三个 Map：sstFiles、sstFilePaths、miscFilePaths
+				 * @param fileStatuses 当前目录下所有文件
+				 * @param sstFiles 保存之前已经上传到 dfs 的 sst 文件集合
+				 * @param sstFilePaths 保存本次 Checkpoint 新增的 sst 文件集合
+				 * @param miscFilePaths 保存本次 Checkpoint 的元数据文件
+				 */
 				createUploadFilePaths(fileStatuses, sstFiles, sstFilePaths, miscFilePaths);
 
+				// 异步上传本次新增的 sst 文件和元数据文件，并文件的 StateHandle 返回，插入到 集合中
 				sstFiles.putAll(stateUploader.uploadFilesToCheckpointFs(
-					sstFilePaths,
+					sstFilePaths,	// 本次 Checkpoint 新增的 sst 文件集合
 					checkpointStreamFactory,
 					snapshotCloseableRegistry));
 				miscFiles.putAll(stateUploader.uploadFilesToCheckpointFs(
-					miscFilePaths,
+					miscFilePaths,	// 本次 Checkpoint 的元数据文件
 					checkpointStreamFactory,
 					snapshotCloseableRegistry));
 			}
 		}
 
+		/**
+		 *
+		 * @param fileStatuses 当前目录下所有文件
+		 * @param sstFiles 保存之前已经上传到 dfs 的 sst 文件集合
+		 * @param sstFilePaths 保存这一次 Checkpoint 新增的 sst 文件集合
+		 * @param miscFilePaths 保存这一次 Checkpoint 的元数据文件
+		 */
 		private void createUploadFilePaths(
 			FileStatus[] fileStatuses,
 			Map<StateHandleID, StreamStateHandle> sstFiles,
@@ -443,9 +489,12 @@ public class RocksIncrementalSnapshotStrategy<K> extends RocksDBSnapshotStrategy
 				final String fileName = filePath.getName();
 				final StateHandleID stateHandleID = new StateHandleID(fileName);
 
+				// .sst 结尾的认为是数据，其他认为是元数据
 				if (fileName.endsWith(SST_FILE_SUFFIX)) {
-					final boolean existsAlready = baseSstFiles != null && baseSstFiles.contains(stateHandleID);
 
+					//  baseSstFiles 表示上一次 Checkpoint 对应的 sst 集合
+					//  existsAlready == true  表示这个 sst 是上一次的，所以不需要
+					final boolean existsAlready = baseSstFiles != null && baseSstFiles.contains(stateHandleID);
 					if (existsAlready) {
 						// we introduce a placeholder state handle, that is replaced with the
 						// original from the shared state registry (created from a previous checkpoint)

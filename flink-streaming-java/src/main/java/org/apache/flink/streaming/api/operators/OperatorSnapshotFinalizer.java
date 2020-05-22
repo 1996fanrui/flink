@@ -43,7 +43,7 @@ public class OperatorSnapshotFinalizer {
 	public OperatorSnapshotFinalizer(
 		@Nonnull OperatorSnapshotFutures snapshotFutures) throws ExecutionException, InterruptedException {
 
-		// 这里等待四种 Future 都执行结束
+		// 这里等待四种 Future 都执行结束，返回的结果为 SnapshotResult<KeyedStateHandle>
 		SnapshotResult<KeyedStateHandle> keyedManaged =
 			FutureUtils.runIfNotDoneAndGet(snapshotFutures.getKeyedStateManagedFuture());
 

@@ -433,8 +433,10 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 		long startTime = System.currentTimeMillis();
 
 		// flush everything into db before taking a snapshot
+		// 内存里的数据 flush 到 db 中，要保证数据一致性，所以做一份快照，flush 保证数据不可变
 		writeBatchWrapper.flush();
 
+		// 这里有两种 snapshot：Full 模式或 Increment 模式
 		RocksDBSnapshotStrategyBase<K> chosenSnapshotStrategy =
 				checkpointOptions.getCheckpointType().isSavepoint() ? savepointSnapshotStrategy : checkpointSnapshotStrategy;
 
