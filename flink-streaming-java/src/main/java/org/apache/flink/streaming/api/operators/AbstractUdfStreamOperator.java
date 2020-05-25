@@ -94,6 +94,7 @@ public abstract class AbstractUdfStreamOperator<OUT, F extends Function>
 
 	@Override
 	public void initializeState(StateInitializationContext context) throws Exception {
+		// super 表示 AbstractStreamOperator 类
 		super.initializeState(context);
 		// 调用 udf 的 initializeState 方法
 		StreamingFunctionUtils.restoreFunctionState(context, userFunction);

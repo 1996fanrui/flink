@@ -195,6 +195,7 @@ public class StateBackendLoader {
 		final StateBackend backend;
 
 		// (1) the application defined state backend has precedence
+		// 代码中创建了 StateBackend，则按照代码中配置来
 		if (fromApplication != null) {
 			if (logger != null) {
 				logger.info("Using application-defined state backend: {}", fromApplication);
@@ -216,12 +217,14 @@ public class StateBackendLoader {
 		}
 		else {
 			// (2) check if the config defines a state backend
+			// 代码中没有配置，按照 配置文件来：即按照 flink-conf.yaml 文件中的配置来
 			final StateBackend fromConfig = loadStateBackendFromConfig(config, classLoader, logger);
 			if (fromConfig != null) {
 				backend = fromConfig;
 			}
 			else {
 				// (3) use the default
+				// 代码中没有配置，配置文件也没有配置，则创建默认的 MemoryStateBackend
 				backend = new MemoryStateBackendFactory().createFromConfig(config, classLoader);
 				if (logger != null) {
 					logger.info("No state backend has been configured, using default (Memory / JobManager) {}", backend);

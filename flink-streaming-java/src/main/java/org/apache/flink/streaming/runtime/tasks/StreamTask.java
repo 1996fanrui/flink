@@ -377,6 +377,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 			headOperator = operatorChain.getHeadOperator();
 
 			// task specific initialization
+			// task 特定的初始化，例如 当前 StreamTask 有 input 的情况下，会初始化 inputProcessor
 			init();
 
 			// save the work of reloading state, etc, if the task is already canceled

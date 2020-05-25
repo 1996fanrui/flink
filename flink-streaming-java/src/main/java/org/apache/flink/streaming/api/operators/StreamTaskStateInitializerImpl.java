@@ -131,7 +131,7 @@ public class StreamTaskStateInitializerImpl implements StreamTaskStateInitialize
 
 		try {
 
-			// -------------- Keyed State Backend --------------
+			// -------------- 初始化 Keyed State Backend --------------
 			keyedStatedBackend = keyedStatedBackend(
 				keySerializer,
 				operatorIdentifierText,
@@ -139,7 +139,7 @@ public class StreamTaskStateInitializerImpl implements StreamTaskStateInitialize
 				streamTaskCloseableRegistry,
 				metricGroup);
 
-			// -------------- Operator State Backend --------------
+			// -------------- 初始化 Operator State Backend --------------
 			operatorStateBackend = operatorStateBackend(
 				operatorIdentifierText,
 				prioritizedOperatorSubtaskStates,
@@ -278,6 +278,7 @@ public class StreamTaskStateInitializerImpl implements StreamTaskStateInitialize
 		CloseableRegistry backendCloseableRegistry,
 		MetricGroup metricGroup) throws Exception {
 
+		// 如果不是 KeyedStream 直接就返回，即：不创建 keyedStatedBackend
 		if (keySerializer == null) {
 			return null;
 		}
@@ -286,6 +287,7 @@ public class StreamTaskStateInitializerImpl implements StreamTaskStateInitialize
 
 		TaskInfo taskInfo = environment.getTaskInfo();
 
+		// 计算当前 subtask 负责的 KeyGroupRange
 		final KeyGroupRange keyGroupRange = KeyGroupRangeAssignment.computeKeyGroupRangeForOperatorIndex(
 			taskInfo.getMaxNumberOfParallelSubtasks(),
 			taskInfo.getNumberOfParallelSubtasks(),
@@ -298,7 +300,7 @@ public class StreamTaskStateInitializerImpl implements StreamTaskStateInitialize
 		backendCloseableRegistry.registerCloseable(cancelStreamRegistryForRestore);
 		BackendRestorerProcedure<AbstractKeyedStateBackend<K>, KeyedStateHandle> backendRestorer =
 			new BackendRestorerProcedure<>(
-				// 这里是函数式接口，并不是去 create StateBackend
+				// 这里是函数式接口，并不是去 create KeyedStateBackend
 				(stateHandles) -> stateBackend.createKeyedStateBackend(
 					environment,
 					environment.getJobID(),
@@ -315,7 +317,7 @@ public class StreamTaskStateInitializerImpl implements StreamTaskStateInitialize
 				logDescription);
 
 		try {
-			// 这里去 create StateBackend 并恢复状态文件
+			// 这里去 create KeyedStateBackend 并恢复状态文件
 			return backendRestorer.createAndRestore(
 				// 获取 StateHandle 的集合
 				prioritizedOperatorSubtaskStates.getPrioritizedManagedKeyedState());

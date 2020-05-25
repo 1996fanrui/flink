@@ -248,10 +248,13 @@ public abstract class AbstractStreamOperator<OUT>
 			Preconditions.checkNotNull(getContainingTask());
 		final CloseableRegistry streamTaskCloseableRegistry =
 			Preconditions.checkNotNull(containingTask.getCancelables());
+
+		// 创建 StreamTaskStateInitializerImpl
 		final StreamTaskStateInitializer streamTaskStateManager =
 			Preconditions.checkNotNull(containingTask.createStreamTaskStateInitializer());
 
-		// 初始化各种 operatorStateBackend 和 keyedStateBackend
+		// 使用 StreamTaskStateInitializerImpl 初始化各种 operatorStateBackend 和 keyedStateBackend，
+		// 并从 Checkpoint 处恢复 State
 		final StreamOperatorStateContext context =
 			streamTaskStateManager.streamOperatorStateContext(
 				getOperatorID(),
@@ -282,8 +285,8 @@ public abstract class AbstractStreamOperator<OUT>
 				operatorStateInputs); // access to operator state stream
 
 			/**
-			 * 重点关注 AbstractUdfStreamOperator，它重写了 initializeState 方法，
-			 * 去真正调用 各个 udf 的 initializeState 方法，
+			 * 重点关注 AbstractUdfStreamOperator，它重写了 initializeState(context) 方法，
+			 * 去真正调用 各个 udf 的 initializeState(context) 方法，
 			 */
 			initializeState(initializationContext);
 		} finally {
