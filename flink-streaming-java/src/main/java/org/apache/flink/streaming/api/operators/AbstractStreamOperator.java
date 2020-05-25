@@ -81,6 +81,8 @@ import java.util.Locale;
  * Base class for all stream operators. Operators that contain a user function should extend the class
  * {@link AbstractUdfStreamOperator} instead (which is a specialized subclass of this class).
  *
+ * 对于具体的实现类，还必须实现 OneInputStreamOperator 或 TwoInputStreamOperator，
+ * 用于标记算子是 一元还是 二元。
  * <p>For concrete implementations, one of the following two interfaces must also be implemented, to
  * mark the operator as unary or binary:
  * {@link OneInputStreamOperator} or {@link TwoInputStreamOperator}.

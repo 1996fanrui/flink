@@ -26,18 +26,24 @@ import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
  */
 @Internal
 public class StreamMap<IN, OUT>
+		// 继承 AbstractUdfStreamOperator，F 的泛型为 MapFunction
 		extends AbstractUdfStreamOperator<OUT, MapFunction<IN, OUT>>
 		implements OneInputStreamOperator<IN, OUT> {
 
 	private static final long serialVersionUID = 1L;
 
 	public StreamMap(MapFunction<IN, OUT> mapper) {
+		// super 表示将 MapFunction 传递给 AbstractUdfStreamOperator
+		// 将 MapFunction 维护在 AbstractUdfStreamOperator 的 userFunction 中
 		super(mapper);
 		chainingStrategy = ChainingStrategy.ALWAYS;
 	}
 
 	@Override
 	public void processElement(StreamRecord<IN> element) throws Exception {
-		output.collect(element.replace(userFunction.map(element.getValue())));
+		output.collect(element.replace(
+			// 处理数据时，调用的是 userFunction 的 map 方法，
+			// 即：用户在 map 中定义的业务逻辑
+			userFunction.map(element.getValue())));
 	}
 }

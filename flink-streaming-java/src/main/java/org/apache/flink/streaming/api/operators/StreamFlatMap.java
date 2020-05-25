@@ -26,6 +26,7 @@ import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
  */
 @Internal
 public class StreamFlatMap<IN, OUT>
+		// 继承 AbstractUdfStreamOperator，F 的泛型为 FlatMapFunction
 		extends AbstractUdfStreamOperator<OUT, FlatMapFunction<IN, OUT>>
 		implements OneInputStreamOperator<IN, OUT> {
 
@@ -34,6 +35,8 @@ public class StreamFlatMap<IN, OUT>
 	private transient TimestampedCollector<OUT> collector;
 
 	public StreamFlatMap(FlatMapFunction<IN, OUT> flatMapper) {
+		// super 表示将 FlatMapFunction 传递给 AbstractUdfStreamOperator
+		// 将 FlatMapFunction 维护在 AbstractUdfStreamOperator 的 userFunction 中
 		super(flatMapper);
 		chainingStrategy = ChainingStrategy.ALWAYS;
 	}
@@ -47,6 +50,8 @@ public class StreamFlatMap<IN, OUT>
 	@Override
 	public void processElement(StreamRecord<IN> element) throws Exception {
 		collector.setTimestamp(element);
+		// 处理数据时，调用的是 userFunction 的 flatMap 方法，
+		// 即：用户在 flatMap 中定义的业务逻辑
 		userFunction.flatMap(element.getValue(), collector);
 	}
 }

@@ -29,6 +29,7 @@ import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
  */
 @Internal
 public class CoStreamMap<IN1, IN2, OUT>
+		// 继承 AbstractUdfStreamOperator，F 的泛型为 CoMapFunction
 		extends AbstractUdfStreamOperator<OUT, CoMapFunction<IN1, IN2, OUT>>
 		implements TwoInputStreamOperator<IN1, IN2, OUT> {
 
@@ -40,11 +41,15 @@ public class CoStreamMap<IN1, IN2, OUT>
 
 	@Override
 	public void processElement1(StreamRecord<IN1> element) throws Exception {
-		output.collect(element.replace(userFunction.map1(element.getValue())));
+		output.collect(element.replace(
+			// processElement1 调用 userFunction 的 map1 方法
+			userFunction.map1(element.getValue())));
 	}
 
 	@Override
 	public void processElement2(StreamRecord<IN2> element) throws Exception {
-		output.collect(element.replace(userFunction.map2(element.getValue())));
+		output.collect(element.replace(
+			// processElement2 调用 userFunction 的 map2 方法
+			userFunction.map2(element.getValue())));
 	}
 }
