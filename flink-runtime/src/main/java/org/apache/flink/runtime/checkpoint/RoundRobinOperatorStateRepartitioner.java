@@ -63,6 +63,7 @@ public class RoundRobinOperatorStateRepartitioner implements OperatorStateRepart
 		// We only round-robin repartition UNION state if new parallelism equals to the old one.
 		// 并行度不变的情况
 		if (newParallelism == oldParallelism) {
+			// collectUnionStates 方法用于 找出所有 Union 类型的 State
 			Map<String, List<Tuple2<StreamStateHandle, OperatorStateHandle.StateMetaInfo>>> unionStates = collectUnionStates(previousParallelSubtaskStates);
 
 			// unionStates 为空，表示都是 SPLIT_DISTRIBUTE 模式，直接按照老的 State 进行分配

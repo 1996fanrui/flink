@@ -46,11 +46,11 @@ import java.util.UUID;
  * other checkpoints. </li>
  * <li> Backend meta state which includes the information of existing states. </li>
  * </ul>
- *
+ * <p>
  * When this should become a completed checkpoint on the checkpoint coordinator, it must first be
  * registered with a {@link SharedStateRegistry}, so that all placeholder state handles to
  * previously existing state are replaced with the originals.
- *
+ * <p>
  * IMPORTANT: This class currently overrides equals and hash code only for testing purposes. They
  * should not be called from production code. This means this class is also not suited to serve as
  * a key, e.g. in hash maps.
@@ -101,7 +101,7 @@ public class IncrementalRemoteKeyedStateHandle implements IncrementalKeyedStateH
 	 * responsibility to cleanup those shared states.
 	 * But in the cases where the state handle is discarded before performing the registration,
 	 * the handle should delete all the shared states created by it.
-	 *
+	 * <p>
 	 * This variable is not null iff the handles was registered.
 	 */
 	private transient SharedStateRegistry sharedStateRegistry;
@@ -160,10 +160,18 @@ public class IncrementalRemoteKeyedStateHandle implements IncrementalKeyedStateH
 		return sharedStateRegistry;
 	}
 
+
+	// IncrementalRemoteKeyedStateHandle 模式下，存储的完整的 RocksDB 数据，
+	// 所以如果没有交集，返回 null。否则返回 整个 IncrementalRemoteKeyedStateHandle，
+	// 不能返回 IncrementalRemoteKeyedStateHandle 的一部分 KeyGroup 子集
 	@Override
 	public KeyedStateHandle getIntersection(KeyGroupRange keyGroupRange) {
-		return KeyGroupRange.EMPTY_KEY_GROUP_RANGE.equals(this.keyGroupRange.getIntersection(keyGroupRange)) ?
-			null : this;
+		// 求两个 KeyGroupRange 的交集
+		KeyGroupRange intersection = this.keyGroupRange.getIntersection(keyGroupRange);
+		// 交集等于空的 KeyGroupRange，表示没有交集，返回 null。
+		// 有交集时不是返回交集，而是返回 this，即整个 IncrementalRemoteKeyedStateHandle。
+		return KeyGroupRange.EMPTY_KEY_GROUP_RANGE.equals(intersection)
+			? null : this;
 	}
 
 	@Override

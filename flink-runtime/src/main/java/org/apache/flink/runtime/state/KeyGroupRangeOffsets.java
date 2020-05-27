@@ -115,7 +115,10 @@ public class KeyGroupRangeOffsets implements Iterable<Tuple2<Integer, Long>> , S
 	 */
 	public KeyGroupRangeOffsets getIntersection(KeyGroupRange keyGroupRange) {
 		Preconditions.checkNotNull(keyGroupRange);
+		//  对两个 keyGroupRange 求交集，
 		KeyGroupRange intersection = this.keyGroupRange.getIntersection(keyGroupRange);
+		// subOffsets 中维护了每个 KeyGroup 对应的 offset，
+		// 求完交集，可能 keyGroupRange 范围缩小了，这里需要重新构建 subOffsets 数组
 		long[] subOffsets = new long[intersection.getNumberOfKeyGroups()];
 		if(subOffsets.length > 0) {
 			System.arraycopy(

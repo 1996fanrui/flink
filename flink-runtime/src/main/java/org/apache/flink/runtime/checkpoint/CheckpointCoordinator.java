@@ -1145,7 +1145,8 @@ public class CheckpointCoordinator {
 		final CompletedCheckpointStorageLocation checkpointLocation = checkpointStorage.resolveCheckpoint(savepointPointer);
 
 		// Load the savepoint as a checkpoint into the system
-		// 加载且校验 Checkpoint：包括 maxParallelism
+		// 加载 Checkpoint 元数据，并对 Checkpoint 进行校验，
+		// 校验项包括 maxParallelism、allowNonRestoredState
 		CompletedCheckpoint savepoint = Checkpoints.loadAndValidateCheckpoint(
 				job, tasks, checkpointLocation, userClassLoader, allowNonRestored);
 

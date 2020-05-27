@@ -161,9 +161,11 @@ public class Checkpoints {
 
 		HashMap<OperatorID, OperatorState> operatorStates = new HashMap<>(checkpointMetadata.getOperatorStates().size());
 
-		// 循环检查所有的 OperatorState，这里的 OperatorState 表示 算子级别
+		// 循环检查所有的 OperatorState，这里的 OperatorState 不是指 Flink 的 OperatorState,
+		// 而是指 算子级别的 State，这里的 Operator 指代算子
 		for (OperatorState operatorState : checkpointMetadata.getOperatorStates()) {
 
+			// 在新的 ExecutionGraph 中找 Checkpoint 中 OperatorId 对应的算子
 			ExecutionJobVertex executionJobVertex = operatorToJobVertexMapping.get(operatorState.getOperatorID());
 
 			// on the first time we can not find the execution job vertex for an id, we also consider alternative ids,
@@ -183,6 +185,8 @@ public class Checkpoints {
 						|| !executionJobVertex.isMaxParallelismConfigured()) {
 					operatorStates.put(operatorState.getOperatorID(), operatorState);
 				} else {
+					// 相反 新旧 Job 的 maxParallelism 不同，
+					// 且新 Job 的 maxParallelism 是用户手动设定的，则抛出异常，恢复失败
 					String msg = String.format("Failed to rollback to checkpoint/savepoint %s. " +
 									"Max parallelism mismatch between checkpoint/savepoint state and new program. " +
 									"Cannot map operator %s with max parallelism %d to new program with " +
@@ -199,7 +203,8 @@ public class Checkpoints {
 				// 跳过了恢复流程
 				LOG.info("Skipping savepoint state for operator {}.", operatorState.getOperatorID());
 			} else {
-				// 不允许跳过恢复，则抛异常
+				// 不允许跳过恢复，检查当前 算子，是否包含状态，
+				// 如果包含，则抛异常，Job 无法启动
 				for (OperatorSubtaskState operatorSubtaskState : operatorState.getStates()) {
 					if (operatorSubtaskState.hasState()) {
 						String msg = String.format("Failed to rollback to checkpoint/savepoint %s. " +

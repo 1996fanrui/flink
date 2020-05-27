@@ -81,10 +81,12 @@ public class StateAssignmentOperation {
 		// localOperators 保存所有的 恢复出来的 State
 		Map<OperatorID, OperatorState> localOperators = new HashMap<>(operatorStates);
 
+		// step 1: check
 		// 检查 Checkpoint 中恢复的所有 State 是否可以映射到 ExecutionGraph 上。
 		// 如果有 State 匹配不到执行的算子，且用户要求必须能够严格匹配，则抛出异常
 		checkStateMappingCompleteness(allowNonRestoredState, operatorStates, tasks);
 
+		// step 2: 循环遍历一个个 ExecutionJobVertex
 		// 从最新的 ExecutionGraph 中遍历一个个 task ，一个个 task 去进行 assign
 		for (Map.Entry<JobVertexID, ExecutionJobVertex> task : this.tasks.entrySet()) {
 			final ExecutionJobVertex executionJobVertex = task.getValue();
@@ -123,6 +125,7 @@ public class StateAssignmentOperation {
 				continue;
 			}
 
+			// step 3: 真正分配 StateHandle 的逻辑
 			// 给 ExecutionGraph 中各个 subtask 分配 StateHandle，包括 Operator 和 Keyed
 			assignAttemptState(task.getValue(), operatorStates);
 		}
@@ -135,7 +138,7 @@ public class StateAssignmentOperation {
 
 		//1. first compute the new parallelism
 		// check 并行度相关是否符合规则：
-		// 1、 Job 的并行度是否大于 Checkpoint 状态中保存的 最大并行度
+		// 1、 Job 的并行度是否超过 Checkpoint 状态中保存的 最大并行度，如果超过，直接抛出异常，无法恢复
 		// 2、 判断 MaxParallelism 是否改变：没有改变，则直接跳过
 		// 		改变的情况：
 		//			如果用户主动配置了 MaxParallelism 则任务不能恢复，
@@ -143,6 +146,7 @@ public class StateAssignmentOperation {
 		checkParallelismPreconditions(operatorStates, executionJobVertex);
 
 		// 为当前新的 JobVertex 的所有 ExecutionVertex 生成了 KeyGroupRange
+		// ExecutionVertex 也就是 subtask 的概念
 		int newParallelism = executionJobVertex.getParallelism();
 		List<KeyGroupRange> keyGroupPartitions = createKeyGroupPartitions(
 			executionJobVertex.getMaxParallelism(),
@@ -169,7 +173,7 @@ public class StateAssignmentOperation {
 		 * op2   state2,0	  state2,1 	   state2,2		state2,3
 		 * op3   state3,0	  state3,1 	   state3,2		state3,3
 		 */
-		// 给当前 JobVertex 的所有 ExecutionVertex 重新分配 OperatorState
+		// 给当前 ExecutionJobVertex 的所有 ExecutionVertex 重新分配 OperatorState
 		Map<OperatorInstanceID, List<OperatorStateHandle>> newManagedOperatorStates =
 			new HashMap<>(expectedNumberOfSubTasks);
 		Map<OperatorInstanceID, List<OperatorStateHandle>> newRawOperatorStates =
@@ -182,7 +186,7 @@ public class StateAssignmentOperation {
 			newManagedOperatorStates,
 			newRawOperatorStates);
 
-		// 给当前 JobVertex 的所有 ExecutionVertex 重新分配 KeyedState
+		// 给当前 ExecutionJobVertex 的所有 ExecutionVertex 重新分配 KeyedState
 		Map<OperatorInstanceID, List<KeyedStateHandle>> newManagedKeyedState =
 			new HashMap<>(expectedNumberOfSubTasks);
 		Map<OperatorInstanceID, List<KeyedStateHandle>> newRawKeyedState =
@@ -300,12 +304,16 @@ public class StateAssignmentOperation {
 
 		// 遍历一个个 Operator 算子
 		for (int operatorIndex = 0; operatorIndex < newOperatorIDs.size(); operatorIndex++) {
+			// 拿到当前算子所有 subtask 的 State 元信息
 			OperatorState operatorState = oldOperatorStates.get(operatorIndex);
 			int oldParallelism = operatorState.getParallelism();
 			// 遍历一个个新的 subtask，看应该分配哪些 StateHandle 给这些新的 subtask
 			for (int subTaskIndex = 0; subTaskIndex < newParallelism; subTaskIndex++) {
 				OperatorInstanceID instanceID = OperatorInstanceID.of(subTaskIndex, newOperatorIDs.get(operatorIndex));
 
+				// 注：这里虽然遍历的一个个 subtask，给这个 subtask 分配 StateHandle
+				// 但是却将 Checkpoint 处恢复的当前算子所有 subtask 的 State 元信息
+				// 传递给 reAssignSubKeyedStates 方法
 				Tuple2<List<KeyedStateHandle>, List<KeyedStateHandle>> subKeyedStates = reAssignSubKeyedStates(
 					operatorState,
 					newKeyGroupPartitions,
@@ -330,12 +338,14 @@ public class StateAssignmentOperation {
 		List<KeyedStateHandle> subManagedKeyedState;
 		List<KeyedStateHandle> subRawKeyedState;
 
-		// 并行度没有改变，直接按照老的 State 进行分配
+		// 并行度没有改变，直接按照旧 Job 的 State 进行分配
 		if (newParallelism == oldParallelism) {
+			// 旧 Job 的当前 subtask 有 state，直接赋值
 			if (operatorState.getState(subTaskIndex) != null) {
 				subManagedKeyedState = operatorState.getState(subTaskIndex).getManagedKeyedState().asList();
 				subRawKeyedState = operatorState.getState(subTaskIndex).getRawKeyedState().asList();
 			} else {
+				// 旧 Job 的当前 subtask 没有 state，创建两个空的集合返回
 				subManagedKeyedState = Collections.emptyList();
 				subRawKeyedState = Collections.emptyList();
 			}
@@ -515,9 +525,10 @@ public class StateAssignmentOperation {
 		for (KeyedStateHandle keyedStateHandle : originalSubtaskStateHandles) {
 
 			if (keyedStateHandle != null) {
-
+				// 调用 KeyedStateHandle 的 getIntersection 方法与 KeyGroupRange 求交集，
+				// 并返回交集对应的 KeyedStateHandle
 				KeyedStateHandle intersectedKeyedStateHandle = keyedStateHandle.getIntersection(rangeToExtract);
-
+				// 交集不为 null，则加入到结果中
 				if (intersectedKeyedStateHandle != null) {
 					extractedStateCollector.add(intersectedKeyedStateHandle);
 				}
@@ -556,7 +567,7 @@ public class StateAssignmentOperation {
 	private static void checkParallelismPreconditions(OperatorState operatorState, ExecutionJobVertex executionJobVertex) {
 		//----------------------------------------max parallelism preconditions-------------------------------------
 
-		// ExecutionGraph 的并行度大于 State 设置的 MaxParallelism ，任务不能启动
+		// executionJobVertex 的并行度大于 State 设置的 MaxParallelism ，任务不能启动
 		if (operatorState.getMaxParallelism() < executionJobVertex.getParallelism()) {
 			throw new IllegalStateException("The state for task " + executionJobVertex.getJobVertexId() +
 				" can not be restored. The maximum parallelism (" + operatorState.getMaxParallelism() +
