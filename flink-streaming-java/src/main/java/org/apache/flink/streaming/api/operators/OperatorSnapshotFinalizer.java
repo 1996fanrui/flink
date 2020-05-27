@@ -59,6 +59,7 @@ public class OperatorSnapshotFinalizer {
 		// 按照 JM 或者 local 分别封装
 		// JM 的状态表示 Checkpoint 相关的远程 StateHandle （保证高可靠性）
 		// Local 的状态表示 local recovery 时需要用到的本地 StateHandle（保证任务恢复时，效率较高）
+		// 注：这里构建 OperatorSubtaskState 时，构造器全是单个对象，而不是集合，OperatorSubtaskState 类中会封装成集合
 		jobManagerOwnedState = new OperatorSubtaskState(
 			operatorManaged.getJobManagerOwnedSnapshot(),
 			operatorRaw.getJobManagerOwnedSnapshot(),

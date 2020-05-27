@@ -87,6 +87,7 @@ public class CompletedCheckpoint implements Serializable {
 	private final long duration;
 
 	/** States of the different operator groups belonging to this checkpoint. */
+	/** 本次 Checkpoint 中每个算子的 ID 及算子对应 State 信息 */
 	private final Map<OperatorID, OperatorState> operatorStates;
 
 	/** Properties for this checkpoint. */
@@ -96,12 +97,15 @@ public class CompletedCheckpoint implements Serializable {
 	private final Collection<MasterState> masterHookStates;
 
 	/** The location where the checkpoint is stored. */
+	// Checkpoint 存储路径
 	private final CompletedCheckpointStorageLocation storageLocation;
 
 	/** The state handle to the externalized meta data. */
+	// 元数据句柄
 	private final StreamStateHandle metadataHandle;
 
 	/** External pointer to the completed checkpoint (for example file path). */
+	// Checkpoint 目录地址
 	private final String externalPointer;
 
 	/** Optional stats tracker callback for discard. */

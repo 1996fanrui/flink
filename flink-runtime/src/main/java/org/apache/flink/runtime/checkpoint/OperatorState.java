@@ -44,12 +44,18 @@ public class OperatorState implements CompositeStateHandle {
 	private final OperatorID operatorID;
 
 	/** handles to non-partitioned states, subtaskindex -> subtaskstate */
+	// 当前 Operator 算子内，每个 subtask 持有的 State 信息，
+	// 这里 map 对应的 key 为 subtaskId，value 为 subtask 对应的 State,
+	// OperatorState 表示一个 算子级别的，OperatorSubtaskState 是 subtask 级别的。
+	// 如果一个算子有 10 个并行度，那么 OperatorState 有 10 个 OperatorSubtaskState
 	private final Map<Integer, OperatorSubtaskState> operatorSubtaskStates;
 
 	/** parallelism of the operator when it was checkpointed */
+	// checkpoint 时算子的并行度
 	private final int parallelism;
 
 	/** maximum parallelism of the operator when the job was first created */
+	// checkpoint 时算子的 maxParallelism
 	private final int maxParallelism;
 
 	public OperatorState(OperatorID operatorID, int parallelism, int maxParallelism) {

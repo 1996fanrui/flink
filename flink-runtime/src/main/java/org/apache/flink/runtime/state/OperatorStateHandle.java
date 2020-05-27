@@ -49,11 +49,14 @@ public interface OperatorStateHandle extends StreamStateHandle {
 
 	/**
 	 * The modes that determine how an {@link OperatorStreamStateHandle} is assigned to tasks during restore.
-	 * OperatorState 恢复模式
+	 * OperatorState 分布模式的枚举
 	 */
 	enum Mode {
+		// 对应 getListState API
 		SPLIT_DISTRIBUTE,	// The operator state partitions in the state handle are split and distributed to one task each.
+		// 对应 getUnionListState API
 		UNION,				// The operator state partitions are UNION-ed upon restoring and sent to all tasks.
+		// 对应 BroadcastState
 		BROADCAST			// The operator states are identical, as the state is produced from a broadcast stream.
 	}
 
@@ -66,7 +69,9 @@ public interface OperatorStateHandle extends StreamStateHandle {
 
 		private static final long serialVersionUID = 3593817615858941166L;
 
+		// 当前 State 在状态文件所处的 offset 和 Mode
 		private final long[] offsets;
+		// OperatorState 的分布模式
 		private final Mode distributionMode;
 
 		public StateMetaInfo(long[] offsets, Mode distributionMode) {

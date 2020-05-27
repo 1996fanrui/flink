@@ -64,11 +64,13 @@ public class IncrementalRemoteKeyedStateHandle implements IncrementalKeyedStateH
 	/**
 	 * UUID to identify the backend which created this state handle. This is in creating the key for the
 	 * {@link SharedStateRegistry}.
+	 * 每个 RocksDB 数据库的唯一 ID
 	 */
 	private final UUID backendIdentifier;
 
 	/**
 	 * The key-group range covered by this state handle.
+	 * 这个 RocksDB 数据库负责的 KeyGroupRange
 	 */
 	private final KeyGroupRange keyGroupRange;
 
@@ -79,11 +81,13 @@ public class IncrementalRemoteKeyedStateHandle implements IncrementalKeyedStateH
 
 	/**
 	 * Shared state in the incremental checkpoint.
+	 * RocksDB 真正存储数据的 sst 文件
 	 */
 	private final Map<StateHandleID, StreamStateHandle> sharedState;
 
 	/**
 	 * Private state in the incremental checkpoint.
+	 * RocksDB 数据库的一些元数据
 	 */
 	private final Map<StateHandleID, StreamStateHandle> privateState;
 

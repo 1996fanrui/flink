@@ -34,8 +34,12 @@ public class OperatorStreamStateHandle implements OperatorStateHandle {
 
 	/**
 	 * unique state name -> offsets for available partitions in the handle stream
+	 * map 中 key 是 StateName，value 是 StateMetaInfo
+	 * StateMetaInfo 中封装的是 State 的 offset 和 Mode
 	 */
 	private final Map<String, StateMetaInfo> stateNameToPartitionOffsets;
+
+	// OperatorState 状态文件句柄，可以读出状态数据
 	private final StreamStateHandle delegateStateHandle;
 
 	public OperatorStreamStateHandle(

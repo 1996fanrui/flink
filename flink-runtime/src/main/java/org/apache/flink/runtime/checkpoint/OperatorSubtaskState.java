@@ -58,6 +58,7 @@ public class OperatorSubtaskState implements CompositeStateHandle {
 
 	/**
 	 * Snapshot from the {@link org.apache.flink.runtime.state.OperatorStateBackend}.
+	 * 这里为什么是个集合，因为 任务恢复时，可能会被分配多个 OperatorStateHandle
 	 */
 	@Nonnull
 	private final StateObjectCollection<OperatorStateHandle> managedOperatorState;

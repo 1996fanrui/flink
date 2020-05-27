@@ -31,6 +31,7 @@ public class StateHandleID extends StringBasedID {
 
 	private static final long serialVersionUID = 1L;
 
+	// keyString 为 sst 文件名
 	public StateHandleID(String keyString) {
 		super(keyString);
 	}

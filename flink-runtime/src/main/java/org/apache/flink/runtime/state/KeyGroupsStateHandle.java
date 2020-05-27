@@ -34,9 +34,11 @@ public class KeyGroupsStateHandle implements StreamStateHandle, KeyedStateHandle
 	private static final long serialVersionUID = -8070326169926626355L;
 
 	/** Range of key-groups with their respective offsets in the stream state */
+	//
 	private final KeyGroupRangeOffsets groupRangeOffsets;
 
 	/** Inner stream handle to the actual states of the key-groups in the range */
+	// KeyedState 状态文件句柄，可以读出状态数据
 	private final StreamStateHandle stateHandle;
 
 	/**
