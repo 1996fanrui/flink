@@ -64,6 +64,7 @@ public class OperatorStateRestoreOperation implements RestoreOperation<Void> {
 	// Operator State 真正的 restore 流程
 	@Override
 	public Void restore() throws Exception {
+		// stateHandles 为空，表示没有要恢复的 State
 		if (stateHandles.isEmpty()) {
 			return null;
 		}
@@ -75,6 +76,7 @@ public class OperatorStateRestoreOperation implements RestoreOperation<Void> {
 				continue;
 			}
 
+			// 通过 stateHandle 可以获取 InputStream 读取数据
 			FSDataInputStream in = stateHandle.openInputStream();
 			closeStreamOnCancelRegistry.registerCloseable(in);
 
@@ -110,8 +112,9 @@ public class OperatorStateRestoreOperation implements RestoreOperation<Void> {
 							" not be loaded. This is a temporary restriction that will be fixed in future versions.");
 					}
 
+					// registeredOperatorStates 中维护的 StateName 与 ListState 的映射关系
 					PartitionableListState<?> listState = registeredOperatorStates.get(restoredSnapshot.getName());
-
+					// listState == null 表示当前 State 还未创建
 					if (null == listState) {
 						// 这里只是依赖 MetaInfo 创建了 PartitionableListState，并没有恢复真正的 State 数据
 						listState = new PartitionableListState<>(restoredMetaInfo);
@@ -123,7 +126,8 @@ public class OperatorStateRestoreOperation implements RestoreOperation<Void> {
 				}
 
 				// ... and then get back the broadcast state.
-				// 从元数据中创建 broadcast state.，并没有恢复真正的 State
+				// 从元数据中创建 broadcast state，并没有恢复真正的 State
+				// 与 ListState 流程类似，只不过 BroadcastState 维护在 registeredBroadcastStates 中
 				List<StateMetaInfoSnapshot> restoredBroadcastMetaInfoSnapshots =
 					backendSerializationProxy.getBroadcastStateMetaInfoSnapshots();
 
@@ -172,7 +176,7 @@ public class OperatorStateRestoreOperation implements RestoreOperation<Void> {
 							"corresponding meta info: " + stateName);
 						deserializeBroadcastStateValues(broadcastStateForName, in, nameToOffsets.getValue());
 					} else {
-						// 恢复 ListState
+						// 恢复 ListState，将恢复出来的元素 add 到 ListState 中
 						deserializeOperatorStateValues(listStateForName, in, nameToOffsets.getValue());
 					}
 				}
@@ -196,6 +200,7 @@ public class OperatorStateRestoreOperation implements RestoreOperation<Void> {
 			long[] offsets = metaInfo.getOffsets();
 			if (null != offsets) {
 				DataInputView div = new DataInputViewStreamWrapper(in);
+				// State stateListForName
 				TypeSerializer<S> serializer = stateListForName.getStateMetaInfo().getPartitionStateSerializer();
 				for (long offset : offsets) {
 					in.seek(offset);

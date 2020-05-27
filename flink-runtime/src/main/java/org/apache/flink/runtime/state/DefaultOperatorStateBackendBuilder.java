@@ -62,19 +62,24 @@ public class DefaultOperatorStateBackendBuilder implements
 
 	@Override
 	public DefaultOperatorStateBackend build() throws BackendBuildingException {
+		// 保存 StateName 和 ListState 的映射关系
 		Map<String, PartitionableListState<?>> registeredOperatorStates = new HashMap<>();
+		// 保存 StateName 和 BroadcastState 的映射关系
 		Map<String, BackendWritableBroadcastState<?, ?>> registeredBroadcastStates = new HashMap<>();
+
 		CloseableRegistry cancelStreamRegistryForBackend = new CloseableRegistry();
 		AbstractSnapshotStrategy<OperatorStateHandle> snapshotStrategy =
 			new DefaultOperatorStateBackendSnapshotStrategy(
 				userClassloader,
 				asynchronousSnapshots,
+				// 将两个 Map 传递给 DefaultOperatorStateBackendSnapshotStrategy
 				registeredOperatorStates,
 				registeredBroadcastStates,
 				cancelStreamRegistryForBackend);
 		OperatorStateRestoreOperation restoreOperation = new OperatorStateRestoreOperation(
 			cancelStreamRegistry,
 			userClassloader,
+			// 将两个 Map 传递进去，即：restore 过程中，映射关系会存储在这两个 Map 中
 			registeredOperatorStates,
 			registeredBroadcastStates,
 			restoreStateHandles
@@ -89,6 +94,7 @@ public class DefaultOperatorStateBackendBuilder implements
 		return new DefaultOperatorStateBackend(
 			executionConfig,
 			cancelStreamRegistryForBackend,
+			// 再将两个 Map 传递给 DefaultOperatorStateBackend
 			registeredOperatorStates,
 			registeredBroadcastStates,
 			new HashMap<>(),
