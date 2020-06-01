@@ -161,12 +161,14 @@ public class IntervalJoinOperator<K, T1, T2, OUT>
 	public void initializeState(StateInitializationContext context) throws Exception {
 		super.initializeState(context);
 
+		// 左流的 buffer
 		this.leftBuffer = context.getKeyedStateStore().getMapState(new MapStateDescriptor<>(
 			LEFT_BUFFER,
 			LongSerializer.INSTANCE,
 			new ListSerializer<>(new BufferEntrySerializer<>(leftTypeSerializer))
 		));
 
+		// 右流的 buffer
 		this.rightBuffer = context.getKeyedStateStore().getMapState(new MapStateDescriptor<>(
 			RIGHT_BUFFER,
 			LongSerializer.INSTANCE,

@@ -335,7 +335,7 @@ public class DefaultOperatorStateBackend implements OperatorStateBackend {
 
 			TypeSerializerSchemaCompatibility<S> stateCompatibility =
 				restoredPartitionableListStateMetaInfo.updatePartitionStateSerializer(newPartitionStateSerializer);
-			//  不兼容德华，抛出异常
+			//  不兼容，则抛出异常
 			if (stateCompatibility.isIncompatible()) {
 				throw new StateMigrationException("The new state typeSerializer for operator state must not be incompatible.");
 			}

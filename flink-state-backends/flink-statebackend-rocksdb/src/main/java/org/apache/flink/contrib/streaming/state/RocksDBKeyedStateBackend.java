@@ -151,7 +151,7 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 	/**
 	 * Information about the k/v states, maintained in the order as we create them. This is used to retrieve the
 	 * column family that is used for a state and also for sanity checks when restoring.
-	 * 维护的 StateName 与 StateInfo 的
+	 * 维护的 StateName 与 StateInfo 的映射关系
 	 */
 	private final LinkedHashMap<String, RocksDbKvStateInfo> kvStateInformation;
 
@@ -531,6 +531,7 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 			throw new StateMigrationException("The new namespace serializer must be compatible.");
 		}
 
+		// 校验 StateName 和 State 类型
 		restoredKvStateMetaInfo.checkStateMetaInfo(stateDesc);
 
 		TypeSerializerSchemaCompatibility<SV> newStateSerializerCompatibility =
@@ -647,8 +648,11 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 				stateDesc.getClass(), this.getClass());
 			throw new FlinkRuntimeException(message);
 		}
-		Tuple2<ColumnFamilyHandle, RegisteredKeyValueStateBackendMetaInfo<N, SV>> registerResult = tryRegisterKvStateInformation(
+		// 注册和恢复 State 元信息
+		Tuple2<ColumnFamilyHandle, RegisteredKeyValueStateBackendMetaInfo<N, SV>>
+			registerResult = tryRegisterKvStateInformation(
 			stateDesc, namespaceSerializer, snapshotTransformFactory);
+		// 根据 stateDesc、State 元信息 和 RocksDBKeyedStateBackend，创建具体的 State
 		return stateFactory.createState(stateDesc, registerResult, RocksDBKeyedStateBackend.this);
 	}
 

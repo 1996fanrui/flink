@@ -482,12 +482,14 @@ public class RocksDBStateBackend extends AbstractStateBackend implements Configu
 
 		// first, make sure that the RocksDB JNI library is loaded
 		// we do this explicitly here to have better error handling
+		// 加载 RocksDB JNI library
 		String tempDir = env.getTaskManagerInfo().getTmpDirectories()[0];
 		ensureRocksDBIsLoaded(tempDir);
 
 		// replace all characters that are not legal for filenames with underscore
 		String fileCompatibleIdentifier = operatorIdentifier.replaceAll("[^a-zA-Z0-9\\-]", "_");
 
+		// 初始化 RocksDB 的本地数据目录
 		lazyInitializeForJob(env, fileCompatibleIdentifier);
 
 		File instanceBasePath = new File(

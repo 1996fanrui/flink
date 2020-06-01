@@ -145,6 +145,7 @@ public abstract class AbstractRocksDBRestoreOperation<K> implements RocksDBResto
 		return this.db;
 	}
 
+	// 注册 StateName 和 State 在 RocksDB 的 CF 句柄等元数据 映射信息保存到 kvStateInformation 中
 	RocksDbKvStateInfo getOrRegisterStateColumnFamilyHandle(
 		ColumnFamilyHandle columnFamilyHandle,
 		StateMetaInfoSnapshot stateMetaInfoSnapshot) {

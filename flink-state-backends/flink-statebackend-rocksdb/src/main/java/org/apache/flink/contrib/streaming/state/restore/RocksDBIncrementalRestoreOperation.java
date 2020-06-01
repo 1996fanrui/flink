@@ -140,7 +140,7 @@ public class RocksDBIncrementalRestoreOperation<K> extends AbstractRocksDBRestor
 
 		final KeyedStateHandle theFirstStateHandle = restoreStateHandles.iterator().next();
 
-		// restoreStateHandles 数量大于 1，
+		// restoreStateHandles 集合中元素数量大于 1，
 		// 或者 恢复的 keyGroupRange 与当前负责的 keyGroupRange 不同，
 		// 则使用 Rescaling 模式。如果没有改并发，则关闭 Rescaling 模式
 		boolean isRescaling = (restoreStateHandles.size() > 1 ||
@@ -170,14 +170,15 @@ public class RocksDBIncrementalRestoreOperation<K> extends AbstractRocksDBRestor
 			IncrementalRemoteKeyedStateHandle incrementalRemoteKeyedStateHandle =
 				(IncrementalRemoteKeyedStateHandle) keyedStateHandle;
 
-			// 恢复 State 之前, 整理要恢复的文件，即：要知道恢复哪些 文件
+			// 保存 StateHandle 对应的那一次 Checkpoint 对应的文件状态，
+			// 包括 lastCompletedCheckpointId 和 chk id 与 sst 映射关系
 			restorePreviousIncrementalFilesStatus(incrementalRemoteKeyedStateHandle);
 
 			/**
-			 * 从远程恢复 sst 文件：
-			 * 	1、 本地创建 tmp 文件
+			 * 从远程恢复 State 的过程：
+			 * 	1、 本地创建 tmp 目录
 			 * 	2、 从远程拉取 sst 文件到本地，将 远程的 StateHandle 转换为 本地 的 StateHandle
-			 * 	3、 调用 local 恢复 sst 文件的方法
+			 * 	3、 调用 restoreFromLocalState 方法，从 local 恢复 State
 			 * 	4、 清理 tmp 文件
  			 */
 			restoreFromRemoteState(incrementalRemoteKeyedStateHandle);
@@ -187,10 +188,11 @@ public class RocksDBIncrementalRestoreOperation<K> extends AbstractRocksDBRestor
 			IncrementalLocalKeyedStateHandle incrementalLocalKeyedStateHandle =
 				(IncrementalLocalKeyedStateHandle) keyedStateHandle;
 
-			// 恢复 State 之前, 整理要恢复的文件，即：要知道恢复哪些文件
+			// 保存 StateHandle 对应的那一次 Checkpoint 对应的文件状态，
+			// 包括 lastCompletedCheckpointId 和 chk id 与 sst 映射关系
 			restorePreviousIncrementalFilesStatus(incrementalLocalKeyedStateHandle);
 
-			// 从 local 恢复 sst 文件的方法
+			// 从 local 恢复 State 的方法
 			restoreFromLocalState(incrementalLocalKeyedStateHandle);
 		} else {
 			throw new BackendBuildingException("Unexpected state handle type, " +
@@ -199,7 +201,7 @@ public class RocksDBIncrementalRestoreOperation<K> extends AbstractRocksDBRestor
 		}
 	}
 
-	// 恢复 State 之前, 整理要恢复的文件
+	// 保存 StateHandle 对应的那一次 Checkpoint 对应的文件状态，
 	// 将 StateHandle 中 chk id 与 sst 映射关系添加到 restoredSstFiles 中
 	// 并将 StateHandle 的 Checkpoint id 保存到 lastCompletedCheckpointId 中
 	private void restorePreviousIncrementalFilesStatus(IncrementalKeyedStateHandle localKeyedStateHandle) {
@@ -249,8 +251,10 @@ public class RocksDBIncrementalRestoreOperation<K> extends AbstractRocksDBRestor
 		// 准备数据目录
 		restoreInstanceDirectoryFromPath(restoreSourcePath, dbPath);
 
+		// 打开 DB 就可以读到数据了，打开 DB 时会将 columnFamilyHandles 填满
 		openDB();
 
+		// 将 StateName 和 State 在 RocksDB 的 CF 句柄等元数据 映射信息保存到 kvStateInformation 中
 		registerColumnFamilyHandles(stateMetaInfoSnapshots);
 	}
 
@@ -261,7 +265,8 @@ public class RocksDBIncrementalRestoreOperation<K> extends AbstractRocksDBRestor
 		// try with resource 的方式创建 RocksDBStateDownloader
 		try (RocksDBStateDownloader rocksDBStateDownloader = new RocksDBStateDownloader(numberOfTransferringThreads)) {
 
-			// 具体的
+			// 具体的从 dfs 上 Download 数据到本地
+			// 使用线程池，多线程拉取 所有的 sst 文件和 RocksDB 数据库的元数据
 			rocksDBStateDownloader.transferAllStateDataToDirectory(
 				restoreStateHandle,
 				temporaryRestoreInstancePath,
@@ -270,6 +275,7 @@ public class RocksDBIncrementalRestoreOperation<K> extends AbstractRocksDBRestor
 
 		// since we transferred all remote state to a local directory, we can use the same code as for
 		// local recovery.
+		// 将 Remote 的 StateHandle 重新构建成 Local 的 StateHandle
 		return new IncrementalLocalKeyedStateHandle(
 			restoreStateHandle.getBackendIdentifier(),
 			restoreStateHandle.getCheckpointId(),
@@ -312,7 +318,7 @@ public class RocksDBIncrementalRestoreOperation<K> extends AbstractRocksDBRestor
 
 		// Prepare for restore with rescaling
 		// 选取一个最好的 StateHandle 用于数据初始化，会有一个选择标准打分，分数最高，则被选中
-		// 分数的计算规则：主要依赖 StateHandle 的 KeyGroup 与 当前 subtask 处理的 KeyGroup 求一个交集，看重复率
+		// 分数的计算规则：主要依赖 StateHandle 的 KeyGroup 与 当前 subtask 处理的 KeyGroup 求一个交集，看重叠率
 		KeyedStateHandle initialHandle = RocksDBIncrementalCheckpointUtils.chooseTheBestStateHandleForInitial(
 			restoreStateHandles, keyGroupRange);
 
@@ -322,7 +328,7 @@ public class RocksDBIncrementalRestoreOperation<K> extends AbstractRocksDBRestor
 			restoreStateHandles.remove(initialHandle);
 			initDBWithRescaling(initialHandle);
 		} else {
-			// open 一个临时空的 db
+			// open 一个空的 db
 			openDB();
 		}
 
@@ -357,9 +363,12 @@ public class RocksDBIncrementalRestoreOperation<K> extends AbstractRocksDBRestor
 				for (int i = 0; i < tmpColumnFamilyDescriptors.size(); ++i) {
 					ColumnFamilyHandle tmpColumnFamilyHandle = tmpColumnFamilyHandles.get(i);
 
+					// 将 StateName 和 State 在 RocksDB 的 CF 句柄等元数据 映射信息保存到 kvStateInformation 中
 					ColumnFamilyHandle targetColumnFamilyHandle = getOrRegisterStateColumnFamilyHandle(
 						null, tmpRestoreDBInfo.stateMetaInfoSnapshots.get(i))
 						.columnFamilyHandle;
+
+
 
 					try (RocksIteratorWrapper iterator = RocksDBOperationUtils.getRocksIterator(tmpRestoreDBInfo.db, tmpColumnFamilyHandle)) {
 

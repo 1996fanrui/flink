@@ -165,9 +165,12 @@ public class RocksDBIncrementalCheckpointUtils {
 
 		KeyedStateHandle bestStateHandle = null;
 		double bestScore = 0;
+		// 遍历所有 KeyedStateHandle
 		for (KeyedStateHandle rawStateHandle : restoreStateHandles) {
+			// 计算分数
 			double handleScore = STATE_HANDLE_EVALUATOR.apply(rawStateHandle, targetKeyGroupRange);
 			if (handleScore > bestScore) {
+				// 保存最高分 及 对应的 KeyedStateHandle
 				bestStateHandle = rawStateHandle;
 				bestScore = handleScore;
 			}

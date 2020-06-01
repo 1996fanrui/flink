@@ -143,6 +143,7 @@ public class RocksDBFullRestoreOperation<K> extends AbstractRocksDBRestoreOperat
 						", but found: " + keyedStateHandle.getClass());
 				}
 				this.currentKeyGroupsStateHandle = (KeyGroupsStateHandle) keyedStateHandle;
+				// 根据 StateHandle 恢复
 				restoreKeyGroupsInStateHandle();
 			}
 		}
@@ -160,6 +161,7 @@ public class RocksDBFullRestoreOperation<K> extends AbstractRocksDBRestoreOperat
 			currentStateHandleInStream = currentKeyGroupsStateHandle.openInputStream();
 			cancelStreamRegistry.registerCloseable(currentStateHandleInStream);
 			currentStateHandleInView = new DataInputViewStreamWrapper(currentStateHandleInStream);
+			// 注册 StateName 和 State 在 RocksDB 的 CF 句柄等元数据 映射信息保存到 kvStateInformation 中
 			restoreKVStateMetaData();
 			// 将当前 StateHandle 中属于当前 KeyGroupRange 的数据 put 到 db 中
 			restoreKVStateData();

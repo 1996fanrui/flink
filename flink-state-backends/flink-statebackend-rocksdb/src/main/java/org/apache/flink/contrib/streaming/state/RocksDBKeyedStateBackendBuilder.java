@@ -242,6 +242,8 @@ public class RocksDBKeyedStateBackendBuilder<K> extends AbstractKeyedStateBacken
 		CloseableRegistry cancelStreamRegistryForBackend = new CloseableRegistry();
 		//The write options to use in the states. We disable write ahead logging.
 		WriteOptions writeOptions = new WriteOptions().setDisableWAL(true);
+
+		// 维护 StateName 与 StateInfo 的映射关系
 		LinkedHashMap<String, RocksDBKeyedStateBackend.RocksDbKvStateInfo> kvStateInformation = new LinkedHashMap<>();
 		RocksDB db = null;
 		AbstractRocksDBRestoreOperation restoreOperation = null;
@@ -271,7 +273,7 @@ public class RocksDBKeyedStateBackendBuilder<K> extends AbstractKeyedStateBacken
 				nativeMetricMonitor = nativeMetricOptions.isEnabled() ?
 					new RocksDBNativeMetricMonitor(nativeMetricOptions, metricGroup, db) : null;
 			} else {
-				// 准备 instanceBasePath 目录，用于状态存储
+				// 准备 instanceBasePath 目录，用于本地状态存储
 				prepareDirectories();
 
 				// 根据 restoreStateHandles 决定三种恢复模式：
@@ -306,7 +308,7 @@ public class RocksDBKeyedStateBackendBuilder<K> extends AbstractKeyedStateBacken
 				32);
 
 			// init snapshot strategy after db is assured to be initialized
-			//
+			// 初始化 Savepoint 和 Checkpoint 的 snapshot 策略
 			snapshotStrategy = initializeSavepointAndCheckpointStrategies(cancelStreamRegistryForBackend, rocksDBResourceGuard,
 				kvStateInformation, keyGroupPrefixBytes, db, backendUID, materializedSstFiles, lastCompletedCheckpointId);
 
@@ -314,6 +316,7 @@ public class RocksDBKeyedStateBackendBuilder<K> extends AbstractKeyedStateBacken
 			priorityQueueFactory = initPriorityQueueFactory(keyGroupPrefixBytes, kvStateInformation, db,
 				writeBatchWrapper, nativeMetricMonitor);
 		} catch (Throwable e) {
+			// State 初始化异常，做一些清理操作
 			// Do clean up
 			List<ColumnFamilyOptions> columnFamilyOptions = new ArrayList<>(kvStateInformation.values().size());
 			IOUtils.closeQuietly(cancelStreamRegistryForBackend);
@@ -452,6 +455,7 @@ public class RocksDBKeyedStateBackendBuilder<K> extends AbstractKeyedStateBacken
 		UUID backendUID,
 		SortedMap<Long, Set<StateHandleID>> materializedSstFiles,
 		long lastCompletedCheckpointId) {
+		// 创建 Savepoint 的 snapshot 策略类
 		RocksDBSnapshotStrategyBase<K> savepointSnapshotStrategy = new RocksFullSnapshotStrategy<>(
 			db,
 			rocksDBResourceGuard,
@@ -463,6 +467,8 @@ public class RocksDBKeyedStateBackendBuilder<K> extends AbstractKeyedStateBacken
 			cancelStreamRegistry,
 			keyGroupCompressionDecorator);
 		RocksDBSnapshotStrategyBase<K> checkpointSnapshotStrategy;
+		// 如果开启了增量 Checkpoint，
+		// 则 Checkpoint 的 snapshot 类为 Increment Snapshot 策略
 		if (enableIncrementalCheckpointing) {
 			// TODO eventually we might want to separate savepoint and snapshot strategy, i.e. having 2 strategies.
 			checkpointSnapshotStrategy = new RocksIncrementalSnapshotStrategy<>(
@@ -480,6 +486,8 @@ public class RocksDBKeyedStateBackendBuilder<K> extends AbstractKeyedStateBacken
 				lastCompletedCheckpointId,
 				numberOfTransferingThreads);
 		} else {
+			// 未开始增量 Checkpoint，
+			// 则 Checkpoint 的 snapshot 为 Savepoint 的 snapshot 策略
 			checkpointSnapshotStrategy = savepointSnapshotStrategy;
 		}
 		return new SnapshotStrategy<>(checkpointSnapshotStrategy, savepointSnapshotStrategy);

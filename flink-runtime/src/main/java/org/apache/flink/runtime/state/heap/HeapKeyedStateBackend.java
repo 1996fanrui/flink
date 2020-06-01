@@ -205,14 +205,19 @@ public class HeapKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 		StateDescriptor<?, V> stateDesc,
 		@Nonnull StateSnapshotTransformFactory<V> snapshotTransformFactory) throws StateMigrationException {
 
+		// 根据 StateName 从 registeredKVStates 中获取 StateTable
 		@SuppressWarnings("unchecked")
 		StateTable<K, N, V> stateTable = (StateTable<K, N, V>) registeredKVStates.get(stateDesc.getName());
 
 		TypeSerializer<V> newStateSerializer = stateDesc.getSerializer();
 
+		// stateTable 不为空，表示从 Checkpoint 中恢复了当前 State
 		if (stateTable != null) {
 			RegisteredKeyValueStateBackendMetaInfo<N, V> restoredKvMetaInfo = stateTable.getMetaInfo();
 
+			// 主要对 State 的兼容性进行校验，校验包括：StateName、状态类型、序列化校验
+			// 如果创建的 State 与 Checkpoint 恢复的 State 不匹配，
+			// 则抛出异常，不能成功恢复
 			restoredKvMetaInfo.updateSnapshotTransformFactory(snapshotTransformFactory);
 
 			TypeSerializerSchemaCompatibility<N> namespaceCompatibility =
@@ -221,6 +226,7 @@ public class HeapKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 				throw new StateMigrationException("For heap backends, the new namespace serializer must be compatible.");
 			}
 
+			// 检查 State 的 name 和 Type 是否可以匹配
 			restoredKvMetaInfo.checkStateMetaInfo(stateDesc);
 
 			TypeSerializerSchemaCompatibility<V> stateCompatibility =
@@ -232,6 +238,7 @@ public class HeapKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 
 			stateTable.setMetaInfo(restoredKvMetaInfo);
 		} else {
+			// 没有从 Checkpoint 恢复，则创建 StateTable，存放到 registeredKVStates 中
 			RegisteredKeyValueStateBackendMetaInfo<N, V> newMetaInfo = new RegisteredKeyValueStateBackendMetaInfo<>(
 				stateDesc.getType(),
 				stateDesc.getName(),
@@ -270,8 +277,10 @@ public class HeapKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 				stateDesc.getClass(), this.getClass());
 			throw new FlinkRuntimeException(message);
 		}
+		// 注册和恢复 StateTable
 		StateTable<K, N, SV> stateTable = tryRegisterStateTable(
 			namespaceSerializer, stateDesc, getStateSnapshotTransformFactory(stateDesc, snapshotTransformFactory));
+		// 根据 stateDesc、StateTable 和 序列化信息，创建具体的 State
 		return stateFactory.createState(stateDesc, stateTable, getKeySerializer());
 	}
 

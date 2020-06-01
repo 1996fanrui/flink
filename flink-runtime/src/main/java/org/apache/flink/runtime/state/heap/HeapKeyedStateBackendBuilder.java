@@ -111,10 +111,12 @@ public class HeapKeyedStateBackendBuilder<K> extends AbstractKeyedStateBackendBu
 			snapshotStrategy,
 			keyContext);
 		try {
+			// 恢复流程
 			restoreOperation.restore();
 		} catch (Exception e) {
 			throw new BackendBuildingException("Failed when trying to restore heap backend", e);
 		}
+		// 构建 HeapKeyedStateBackend
 		return new HeapKeyedStateBackend<>(
 			kvStateRegistry,
 			keySerializerProvider.currentSchemaSerializer(),
