@@ -32,13 +32,7 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.ConcurrentModificationException;
-import java.util.Iterator;
-import java.util.NoSuchElementException;
-import java.util.Objects;
-import java.util.TreeSet;
+import java.util.*;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
@@ -65,27 +59,43 @@ import static org.apache.flink.util.CollectionUtil.MAX_ARRAY_SIZE;
  * in turn, can again introduce more cache misses because we need to follow the namespace object on all operations to
  * ensure entry identities. Obviously, copy-on-write can also add memory overhead. So does the meta data to track
  * copy-on-write requirement (state and entry versions on {@link StateMapEntry}).
+ * 嵌套 map 和 拍平的 map 的对比：
+ * 1、 嵌套 map：Map<namespace, Map<key, state>>
+ *     拍平的 map： Map<(key, namespace) -> (state)> 。实际上是 一个 Entry 里包含了  key, namespace，state 三个数据字段
+*  2、 拍平的 map 少了一层嵌套，但是每条数据都需要存储 namespace
+ *  而 嵌套模式下， namespace 只需要存储一遍
+ *
+ *  3、 cow 和 StateMapEntry 的 元数据 都需要消耗内存空间
  *
  * <p>2) A flat map structure is a lot easier when it comes to tracking copy-on-write of the map structure.
+ * 			flat map 结构更容易实现 cow
  *
  * <p>3) Nested structure had the (never used) advantage that we can easily drop and iterate whole namespaces. This could
  * give locality advantages for certain access pattern, e.g. iterating a namespace.
+ * 		嵌套结果更容易删除和迭代 整个 namespace。迭代 某一个 namespace 时，嵌套结构是有优势的
  *
  * <p>4) Serialization format is changed from namespace-prefix compressed (as naturally provided from the old nested
  * structure) to making all entries self contained as (key, namespace, state).
  *
  * <p>5) Currently, a state map can only grow, but never shrinks on low load. We could easily add this if required.
+ * 		目前 map 只支持扩容，不支持缩容
  *
  * <p>6) Heap based state backends like this can easily cause a lot of GC activity. Besides using G1 as garbage collector,
  * we should provide an additional state backend that operates on off-heap memory. This would sacrifice peak performance
  * (due to de/serialization of objects) for a lower, but more constant throughput and potentially huge simplifications
  * w.r.t. copy-on-write.
+ * 	基于 Heap 模式的，容易发生 GC。如果不使用 G1，应该提供 off-heap memory 的模式。
+ * 	但是堆外内存的模式增加了序列化和反序列的过程，所以降低了 峰值的性能。
+ * 	但是 off-heap 更容易实现 cow
  *
  * <p>7) We could try a hybrid of a serialized and object based backends, where key and namespace of the entries are both
  * serialized in one byte-array.
  *
+ *
  * <p>9) We could consider smaller types (e.g. short) for the version counting and think about some reset strategy before
  * overflows, when there is no snapshot running. However, this would have to touch all entries in the map.
+ *  可以考虑用更节省空间的 short 类型来保存 version。
+ *  当没有 snapshot 在运行时，可以考虑一些 reset 策略。所谓的 reset 策略就是遍历所有的 entry，将其 version 置为 0
  *
  * <p>This class was initially based on the {@link java.util.HashMap} implementation of the Android JDK, but is now heavily
  * customized towards the use case of map for state entries.
@@ -119,16 +129,19 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 	/**
 	 * Default capacity for a {@link CopyOnWriteStateMap}. Must be a power of two,
 	 * greater than {@code MINIMUM_CAPACITY} and less than {@code MAXIMUM_CAPACITY}.
+	 * 默认容量 128，即： hash 表中桶的个数默认 128
 	 */
 	public static final int DEFAULT_CAPACITY = 128;
 
 	/**
 	 * Minimum number of entries that one step of incremental rehashing migrates from the old to the new sub-map.
+	 * hash 扩容迁移数据时，每次最少要迁移 4 条数据
 	 */
 	private static final int MIN_TRANSFERRED_PER_INCREMENTAL_REHASH = 4;
 
 	/**
 	 * The serializer of the state.
+	 * State 的序列化器
 	 */
 	protected final TypeSerializer<S> stateSerializer;
 
@@ -137,6 +150,7 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 	 * constructor). It is never written to, and replaced on first put. Its size
 	 * is set to half the minimum, so that the first resize will create a
 	 * minimum-sized map.
+	 * 空表：提前创建好
 	 */
 	private static final StateMapEntry<?, ?, ?>[] EMPTY_TABLE = new StateMapEntry[MINIMUM_CAPACITY >>> 1];
 
@@ -148,12 +162,15 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 
 	/**
 	 * Maintains an ordered set of version ids that are still in use by unreleased snapshots.
+	 * 所有 正在进行中的 snapshot 的 version。
+	 * 每次创建出一个 Snapshot 时，都需要将 Snapshot 的 version 保存到该 Set 中
 	 */
 	private final TreeSet<Integer> snapshotVersions;
 
 	/**
 	 * This is the primary entry array (hash directory) of the state map. If no incremental rehash is ongoing, this
 	 * is the only used table.
+	 * 主表：用于存储数据的 table
 	 **/
 	private StateMapEntry<K, N, S>[] primaryTable;
 
@@ -161,31 +178,40 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 	 * We maintain a secondary entry array while performing an incremental rehash. The purpose is to slowly migrate
 	 * entries from the primary table to this resized table array. When all entries are migrated, this becomes the new
 	 * primary table.
+	 * 扩容时的新表，扩容期间数组长度为 primaryTable 的 2 倍。
+	 * 非扩容期间为 空表
 	 */
 	private StateMapEntry<K, N, S>[] incrementalRehashTable;
 
 	/**
 	 * The current number of mappings in the primary talbe.
+	 * primaryTable 中元素个数
 	 */
 	private int primaryTableSize;
 
 	/**
 	 * The current number of mappings in the rehash table.
+	 * incrementalRehashTable 中元素个数
 	 */
 	private int incrementalRehashTableSize;
 
 	/**
 	 * The next index for a step of incremental rehashing in the primary table.
+	 * primary table 中增量 rehash 要迁移的下一个 index
+	 * 即：primaryTable 中 rehashIndex 之前的数据全部搬移完成
 	 */
 	private int rehashIndex;
 
 	/**
 	 * The current version of this map. Used for copy-on-write mechanics.
+	 * 当前 StateMap 的 version，每次创建一个 Snapshot 时，StateMap 的版本号加一
 	 */
 	private int stateMapVersion;
 
 	/**
 	 * The highest version of this map that is still required by any unreleased snapshot.
+	 * 正在进行中的那些 snapshot 的最大版本号
+	 * 这里保存的就是 TreeSet<Integer> snapshotVersions 中最大的版本号
 	 */
 	private int highestRequiredSnapshotVersion;
 
@@ -199,12 +225,15 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 	 * The value of this field is generally .75 * capacity, except when
 	 * the capacity is zero, as described in the EMPTY_TABLE declaration
 	 * above.
+	 * 扩容阈值，与 HashMap 类似，当元素个数大于 threshold 时，就会开始扩容。
+	 * 默认 threshold 为 StateMap 容量 * 0.75
 	 */
 	private int threshold;
 
 	/**
 	 * Incremented by "structural modifications" to allow (best effort)
 	 * detection of concurrent modification.
+	 * 用于记录元素修改的次数，遍历迭代过程中，发现 modCount 修改了，则抛异常
 	 */
 	private int modCount;
 
@@ -276,8 +305,12 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 	@Override
 	public S get(K key, N namespace) {
 
+		// 迁移数据，并且计算 hash 值
 		final int hash = computeHashForOperationAndDoIncrementalRehash(key, namespace);
+		//
 		final int requiredVersion = highestRequiredSnapshotVersion;
+		// rehashIndex 之前的桶全部 rehash 结束，
+		// 所以按照旧桶的 hash 策略，如果 hash 分桶 >= rehashIndex，返回 primary 表，否则返回 Increment 表
 		final StateMapEntry<K, N, S>[] tab = selectActiveTable(hash);
 		int index = hash & (tab.length - 1);
 
@@ -286,9 +319,12 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 			final N eNamespace = e.namespace;
 			if ((e.hash == hash && key.equals(eKey) && namespace.equals(eNamespace))) {
 
+				// 一旦 get 当前数据，外部可能会修改数据内部的属性值，所以必须创建新的 Entry，并更新其 stateVersion
 				// copy-on-write check for state
 				if (e.stateVersion < requiredVersion) {
 					// copy-on-write check for entry
+					// entryVersion 小于 requiredVersion，说明当前 entry 被其他 snapshot 持有，
+					// 为了保证 Snapshot 的数据正确性，这里必须为 e 创建新的副本，且 e 之前的某些元素也需要 copy 副本
 					if (e.entryVersion < requiredVersion) {
 						e = handleChainedEntryCopyOnWrite(tab, hash & (tab.length - 1), e);
 					}
@@ -299,6 +335,12 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 				return e.state;
 			}
 		}
+
+
+
+
+
+
 
 		return null;
 	}
@@ -322,9 +364,13 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 
 	@Override
 	public void put(K key, N namespace, S value) {
+		// putEntry 用于找到对应的 Entry，
+		// 包括了修改数据或插入新数据的场景
 		final StateMapEntry<K, N, S> e = putEntry(key, namespace);
 
+		// 将 value set 到 Entry 中
 		e.state = value;
+		// state 更新了，所以要更新 stateVersion
 		e.stateVersion = stateMapVersion;
 	}
 
@@ -390,30 +436,50 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 
 	/**
 	 * Helper method that is the basis for operations that add mappings.
+	 * 找到 key、namespace 应该要修改的 Entry，但不 set 属性
+	 * 如果当前 key、namespace 对应 Entry 的 version 大于 highestRequiredSnapshotVersion 直接返回该 Entry
+	 *
 	 */
 	private StateMapEntry<K, N, S> putEntry(K key, N namespace) {
 
+		// 计算当前对应的 hash 值，选择 primaryTable 或 incrementalRehashTable
 		final int hash = computeHashForOperationAndDoIncrementalRehash(key, namespace);
 		final StateMapEntry<K, N, S>[] tab = selectActiveTable(hash);
 		int index = hash & (tab.length - 1);
 
+		// 遍历当前桶中链表的一个个 Entry
 		for (StateMapEntry<K, N, S> e = tab[index]; e != null; e = e.next) {
+			// 如果根据 key 和 namespace 找到了对应的 Entry，则认为是修改数据
+			// 普通的 HashMap 结构有一个 Key ，而这里 key 和 namespace 的组合当做 key
 			if (e.hash == hash && key.equals(e.key) && namespace.equals(e.namespace)) {
 
 				// copy-on-write check for entry
+				// entryVersion 表示 entry 创建时的版本号
+				// highestRequiredSnapshotVersion 表示 正在进行中的那些 snapshot 的最大版本号
+				// entryVersion 小于 highestRequiredSnapshotVersion，说明 Entry 的版本小于当前某些 Snapshot 的版本号，
+				// 即：当前 Entry 是旧版本的数据，当前 Entry 被其他 snapshot 持有。
+				// 为了保证 Snapshot 的数据正确性，这里必须为 e 创建新的副本，且 e 之前的某些元素也需要 copy 副本
+				// 然后将返回 handleChainedEntryCopyOnWrite 方法返回的 e 的副本返回给上层，进行数据的修改操作。
 				if (e.entryVersion < highestRequiredSnapshotVersion) {
 					e = handleChainedEntryCopyOnWrite(tab, index, e);
 				}
 
+				// 反之，entryVersion >= highestRequiredSnapshotVersion
+				// 说明当前 Entry 创建时的 version 比所有 Snapshot 的 version 要大
+				// 即：当前 Entry 是新版本的数据，不被任何 Snapshot 持有
+				// 注：Snapshot 不可能引用高版本的数据
+				// 此时，e 是新的 Entry，不存在共享问题，所以直接修改当前 Entry 即可，所以返回当前 e
 				return e;
 			}
 		}
 
+		// 代码走到这里，说明原始的链表中没找到对应 Entry，即：插入新数据的逻辑
 		++modCount;
 		if (size() > threshold) {
 			doubleCapacity();
 		}
 
+		// 链中没有找到 key 和 namespace 的数据
 		return addNewStateMapEntry(tab, key, namespace, hash);
 	}
 
@@ -461,6 +527,7 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 
 	/**
 	 * @see #releaseSnapshot(StateMapSnapshot)
+	 * releaseSnapshot 只是更新 highestRequiredSnapshotVersion，并不删除那些旧版本的数据
 	 */
 	@VisibleForTesting
 	void releaseSnapshot(int snapshotVersion) {
@@ -475,10 +542,19 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 	/**
 	 * Creates (combined) copy of the table arrays for a snapshot. This method must be called by the same Thread that
 	 * does modifications to the {@link CopyOnWriteStateMap}.
+	 * stateSnapshot 方法创建 CopyOnWriteStateMapSnapshot 时会调用该方法，
+	 * 用于对 Map 数据创建一个 副本保存到 Snapshot 中
 	 */
 	@VisibleForTesting
 	@SuppressWarnings("unchecked")
 	StateMapEntry<K, N, S>[] snapshotMapArrays() {
+
+
+		// 1、stateMapVersion 版本 + 1，赋值给 highestRequiredSnapshotVersion，
+		// 并加入snapshotVersions
+		// 这个时候，如果有新的StateTableEntry操作，如果StateTableEntry的版本小于 highestRequiredSnapshotVersion，
+		// highestRequiredSnapshotVersion 之前的数据还要保存旧版本，所以不能修改
+		// 则会拷贝StateTableEntry进行操作，从而达到copy-on-write的效果。
 
 		// we guard against concurrent modifications of highestRequiredSnapshotVersion between snapshot and release.
 		// Only stale reads of from the result of #releaseSnapshot calls are ok. This is why we must call this method
@@ -486,6 +562,7 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 		synchronized (snapshotVersions) {
 
 			// increase the map version for copy-on-write and register the snapshot
+			// stateMapVersion 越界了，抛异常挂掉
 			if (++stateMapVersion < 0) {
 				// this is just a safety net against overflows, but should never happen in practice (i.e., only after 2^31 snapshots)
 				throw new IllegalStateException("Version count overflow in CopyOnWriteStateMap. Enforcing restart.");
@@ -495,6 +572,10 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 			snapshotVersions.add(highestRequiredSnapshotVersion);
 		}
 
+		// 2、 将现在 primary 和 Increment 的元素浅拷贝一份到 copy 中
+		// copy 策略：copy 数组长度为 primary 中剩余的桶数 + Increment 中有数据的桶数
+		// primary 中剩余的数据放在 copy 数组的前面，Increment 中低位数据随后，
+		// Increment 中高位数据放到 copy 数组的最后
 		StateMapEntry<K, N, S>[] table = primaryTable;
 
 		// In order to reuse the copied array as the destination array for the partitioned records in
@@ -581,6 +662,7 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 			namespace,
 			null,
 			hash,
+			// table[index] 当做 next，明显是头插法
 			table[index],
 			stateMapVersion,
 			stateMapVersion);
@@ -599,9 +681,14 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 	 *
 	 * @param hashCode the hash code which we use to decide about the table that is responsible.
 	 * @return the index of the sub-table that is responsible for the entry with the given hash code.
+	 * 选择当前元素到底使用 primaryTable 还是 incrementalRehashTable
 	 */
 	private StateMapEntry<K, N, S>[] selectActiveTable(int hashCode) {
-		return (hashCode & (primaryTable.length - 1)) >= rehashIndex ? primaryTable : incrementalRehashTable;
+		// 计算 hashCode 应该被分到 primaryTable 的哪个桶中
+		int curIndex = hashCode & (primaryTable.length - 1);
+		// 大于等于 rehashIndex 的桶还未迁移，应该去 primaryTable 中去查找。
+		// 小于 rehashIndex 的桶已经迁移完成，应该去 incrementalRehashTable 中去查找。
+		return curIndex >= rehashIndex ? primaryTable : incrementalRehashTable;
 	}
 
 	/**
@@ -638,9 +725,12 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 	/**
 	 * Computes the hash for the composite of key and namespace and performs some steps of incremental rehash if
 	 * incremental rehashing is in progress.
+	 * 计算 key 和 namespace 对应的 hash 值，如果当前 处于 Rehashing ，则 顺便迁移一波
+	 * get、put、containsKey、remove 这四个操作时，会调用 该方法
 	 */
 	private int computeHashForOperationAndDoIncrementalRehash(K key, N namespace) {
 
+		// Increment table 不为 EMPTY_TABLE，则迁移一波
 		if (isRehashing()) {
 			incrementalRehash();
 		}
@@ -661,26 +751,41 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 		int newMask = newMap.length - 1;
 		int requiredVersion = highestRequiredSnapshotVersion;
 		int rhIdx = rehashIndex;
+		// 记录本次迁移了几个元素
 		int transferred = 0;
 
 		// we migrate a certain minimum amount of entries from the old to the new table
+		// 每次至少迁移 MIN_TRANSFERRED_PER_INCREMENTAL_REHASH 个元素到新桶、
+		// MIN_TRANSFERRED_PER_INCREMENTAL_REHASH 默认为 4
 		while (transferred < MIN_TRANSFERRED_PER_INCREMENTAL_REHASH) {
 
+			// 遍历 oldMap 的第 rhIdx 个桶
 			StateMapEntry<K, N, S> e = oldMap[rhIdx];
 
+			// 每次 e 都指向 e.next，e 不为空，表示当前桶中还有元素未遍历，需要继续遍历
+			// 每次迁移必须保证，整个桶被迁移完，不能是某个桶迁移到一半
 			while (e != null) {
 				// copy-on-write check for entry
+				// 遇到版本比 highestRequiredSnapshotVersion 小的元素，则 copy 一份
 				if (e.entryVersion < requiredVersion) {
 					e = new StateMapEntry<>(e, stateMapVersion);
 				}
+				// 保存下一个要迁移的节点节点到 n
 				StateMapEntry<K, N, S> n = e.next;
+
+				// 迁移当前元素 e 到新的 table 中，插入到链表头部
 				int pos = e.hash & newMask;
 				e.next = newMap[pos];
 				newMap[pos] = e;
+
+				// e 指向下一个要迁移的节点
 				e = n;
+				// 迁移元素数 +1
 				++transferred;
 			}
 
+			// oldMap 中 rhIdx 所在的 桶清空
+			// rhIdx 之前的桶已经迁移完，rhIdx == oldCapacity 就表示迁移完成了
 			oldMap[rhIdx] = null;
 			if (++rhIdx == oldCapacity) {
 				//here, the rehash is complete and we release resources and reset fields
@@ -694,6 +799,7 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 		}
 
 		// sync our local bookkeeping the with official bookkeeping fields
+		// primaryTableSize 中减去 transferred，增加 transferred
 		primaryTableSize -= transferred;
 		incrementalRehashTableSize += transferred;
 		rehashIndex = rhIdx;
@@ -702,6 +808,10 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 	/**
 	 * Perform copy-on-write for entry chains. We iterate the (hopefully and probably) still cached chain, replace
 	 * all links up to the 'untilEntry', which we actually wanted to modify.
+	 * 将当前桶中 untilEntry 之前的所有元素中
+	 * current.entryVersion 小于 highestRequiredSnapshotVersion 的元素全部 copy 一份。
+	 * entryVersion 大于等于 highestRequiredSnapshotVersion 的元素原样保留即可。
+	 * 将这个新链表保存到桶中
 	 */
 	private StateMapEntry<K, N, S> handleChainedEntryCopyOnWrite(
 		StateMapEntry<K, N, S>[] tab,
@@ -710,9 +820,12 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 
 		final int required = highestRequiredSnapshotVersion;
 
+		// current 指向当前桶的头结点
 		StateMapEntry<K, N, S> current = tab[mapIdx];
 		StateMapEntry<K, N, S> copy;
 
+		// 判断头结点创建时的版本是否低于 highestRequiredSnapshotVersion
+		// 如果低于，则 current 节点被 Snapshot 引用，所以需要 new 一个新的 Entry
 		if (current.entryVersion < required) {
 			copy = new StateMapEntry<>(current, stateMapVersion);
 			tab[mapIdx] = copy;
@@ -722,13 +835,18 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 		}
 
 		// we iterate the chain up to 'until entry'
+		// 依次遍历当前桶的元素，直到遍历到 untilEntry 节点，也就是我们要修改的 Entry 节点
 		while (current != untilEntry) {
 
 			//advance current
 			current = current.next;
 
+			// current 版本小于 highestRequiredSnapshotVersion，则需要拷贝，
+			// 否则不用拷贝
 			if (current.entryVersion < required) {
 				// copy and advance the current's copy
+				// entryVersion 表示创建 Entry 时的 version，
+				// 所以新创建的 Entry 对应的 entryVersion 要更新为当前 StateMap 的 version
 				copy.next = new StateMapEntry<>(current, stateMapVersion);
 				copy = copy.next;
 			} else {
@@ -750,7 +868,8 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 	 */
 	private static int compositeHash(Object key, Object namespace) {
 		// create composite key through XOR, then apply some bit-mixing for better distribution of skewed keys.
-		return MathUtils.bitMix(key.hashCode() ^ namespace.hashCode());
+//		return MathUtils.bitMix(key.hashCode() ^ namespace.hashCode());
+		return 0;
 	}
 
 	/**
@@ -818,6 +937,7 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 
 		/**
 		 * The state. This is not final to allow exchanging the object for copy-on-write. Can be null.
+		 * state 就是 map 中的 value
 		 */
 		@Nullable
 		S state;
@@ -825,19 +945,20 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 		/**
 		 * Link to another {@link StateMapEntry}. This is used to resolve collisions in the
 		 * {@link CopyOnWriteStateMap} through chaining.
+		 * 桶中链表的 next 指针
 		 */
 		@Nullable
 		StateMapEntry<K, N, S> next;
 
 		/**
 		 * The version of this {@link StateMapEntry}. This is meta data for copy-on-write of the map structure.
-		 * new entry 时的版本号
+		 * entry 创建时的版本号
 		 */
 		int entryVersion;
 
 		/**
 		 * The version of the state object in this entry. This is meta data for copy-on-write of the state object itself.
-		 * 每次数据更新，都要实时更新 版本号
+		 * state （数据）更新时的 版本号
 		 */
 		int stateVersion;
 
@@ -1019,6 +1140,7 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 
 		@Override
 		public StateEntry<K, N, S> next() {
+			// 迭代过程中，数据发生了修改，则 抛出异常。换言之，数据时不允许被修改的
 			if (modCount != expectedModCount) {
 				throw new ConcurrentModificationException();
 			}

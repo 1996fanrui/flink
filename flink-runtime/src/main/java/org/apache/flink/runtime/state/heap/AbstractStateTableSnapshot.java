@@ -114,6 +114,7 @@ abstract class AbstractStateTableSnapshot<K, N, S>
 	 * prefix-compressed format (grouping by namespace, writing the namespace only once per group instead for each
 	 * mapping). We might implement support for different formats later (tailored towards different state table
 	 * implementations).
+	 * 对 keyGroupId 对应的 StateMap 做快照，快照结束后 release
 	 */
 	@Override
 	public void writeStateInKeyGroup(@Nonnull DataOutputView dov, int keyGroupId) throws IOException {

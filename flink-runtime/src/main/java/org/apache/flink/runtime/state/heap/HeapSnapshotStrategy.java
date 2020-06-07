@@ -111,11 +111,17 @@ class HeapSnapshotStrategy<K>
 				". Currently at most " + Short.MAX_VALUE + " states are supported");
 
 		final List<StateMetaInfoSnapshot> metaInfoSnapshots = new ArrayList<>(numStates);
+		// key 为 StateUID（对StateName 和 StateType 的封装），
+		// value 为 State 对应的 id，id 是在 put 过程中根据 map 中的 size 生成的，所以 id 为 0-N
 		final Map<StateUID, Integer> stateNamesToId =
 			new HashMap<>(numStates);
 		final Map<StateUID, StateSnapshot> cowStateStableSnapshots =
 			new HashMap<>(numStates);
 
+		// 会调用所有 StateMap 的 snapshot 方法，基于 COW 结构做一份快照，
+		// 元数据的快照保存到 metaInfoSnapshots 中
+		// cowStateStableSnapshots 会保存所有 State 对应的 Snapshot 对象
+		// 只是做一个快照即可，flush 数据在异步阶段
 		processSnapshotMetaInfoForAllStates(
 			metaInfoSnapshots,
 			cowStateStableSnapshots,
@@ -156,6 +162,7 @@ class HeapSnapshotStrategy<K>
 
 		final AsyncSnapshotCallable<SnapshotResult<KeyedStateHandle>> asyncSnapshotCallable =
 			new AsyncSnapshotCallable<SnapshotResult<KeyedStateHandle>>() {
+				// callInternal 方法内的内容是具体异步执行的操作
 				@Override
 				protected SnapshotResult<KeyedStateHandle> callInternal() throws Exception {
 
@@ -172,11 +179,13 @@ class HeapSnapshotStrategy<K>
 
 					final long[] keyGroupRangeOffsets = new long[keyGroupRange.getNumberOfKeyGroups()];
 
+					// 遍历所有的 keyGroup
 					for (int keyGroupPos = 0; keyGroupPos < keyGroupRange.getNumberOfKeyGroups(); ++keyGroupPos) {
 						int keyGroupId = keyGroupRange.getKeyGroupId(keyGroupPos);
 						keyGroupRangeOffsets[keyGroupPos] = localStream.getPos();
 						outView.writeInt(keyGroupId);
 
+						// 遍历所有 State 的 Snapshot，
 						for (Map.Entry<StateUID, StateSnapshot> stateSnapshot :
 							cowStateStableSnapshots.entrySet()) {
 							StateSnapshot.StateKeyGroupWriter partitionedSnapshot =
@@ -188,6 +197,7 @@ class HeapSnapshotStrategy<K>
 								DataOutputViewStreamWrapper kgCompressionView =
 									new DataOutputViewStreamWrapper(kgCompressionOut);
 								kgCompressionView.writeShort(stateNamesToId.get(stateSnapshot.getKey()));
+								// 这里只会执行某个 State，某个 KeyGroup 的数据
 								partitionedSnapshot.writeStateInKeyGroup(kgCompressionView, keyGroupId);
 							} // this will just close the outer compression stream
 						}
@@ -252,7 +262,9 @@ class HeapSnapshotStrategy<K>
 
 		for (Map.Entry<String, ? extends StateSnapshotRestore> kvState : registeredStates.entrySet()) {
 			final StateUID stateUid = StateUID.of(kvState.getKey(), stateType);
+			// 维护 StateName 和 id 到 stateNamesToId 中
 			stateNamesToId.put(stateUid, stateNamesToId.size());
+			// CopyOnWriteStateTable 实现了 StateSnapshotRestore，会调用 CopyOnWriteStateTable 的 stateSnapshot 方法
 			StateSnapshotRestore state = kvState.getValue();
 			if (null != state) {
 				final StateSnapshot stateSnapshot = state.stateSnapshot();

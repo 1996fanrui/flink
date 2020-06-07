@@ -55,6 +55,7 @@ public class CopyOnWriteStateMapSnapshot<K, N, S>
 
 	/**
 	 * Version of the {@link CopyOnWriteStateMap} when this snapshot was created. This can be used to release the snapshot.
+	 * snapshot 创建时的 StateMap 对应的 version
 	 */
 	private final int snapshotVersion;
 
@@ -62,11 +63,16 @@ public class CopyOnWriteStateMapSnapshot<K, N, S>
 	 * The state map entries, as by the time this snapshot was created. Objects in this array may or may not be deep
 	 * copies of the current entries in the {@link CopyOnWriteStateMap} that created this snapshot. This depends for each entry
 	 * on whether or not it was subject to copy-on-write operations by the {@link CopyOnWriteStateMap}.
+	 * 将快照时的数据全部保存到 snapshotData，之后这些引用关系也不会被打散，
+	 * 因为修改了新数据，也不会改这些数据，除非这个 snapshot release 了
 	 */
 	@Nonnull
 	private final CopyOnWriteStateMap.StateMapEntry<K, N, S>[] snapshotData;
 
-	/** The number of (non-null) entries in snapshotData. */
+	/**
+	 * The number of (non-null) entries in snapshotData
+	 * snapshot 创建时的 StateMap 中包含的元素个数
+	 */
 	@Nonnegative
 	private final int numberOfEntriesInSnapshotData;
 
@@ -78,7 +84,9 @@ public class CopyOnWriteStateMapSnapshot<K, N, S>
 	CopyOnWriteStateMapSnapshot(CopyOnWriteStateMap<K, N, S> owningStateMap) {
 		super(owningStateMap);
 
+		// 对 StateMap 的数据进行浅拷贝，生成 snapshotData
 		this.snapshotData = owningStateMap.snapshotMapArrays();
+		// 记录当前的 StateMap 版本到 snapshotVersion 中
 		this.snapshotVersion = owningStateMap.getStateMapVersion();
 		this.numberOfEntriesInSnapshotData = owningStateMap.size();
 	}
@@ -96,6 +104,7 @@ public class CopyOnWriteStateMapSnapshot<K, N, S>
 		return snapshotVersion;
 	}
 
+	// 这里是具体做 snapshot 的流程
 	@Override
 	public void writeState(
 		TypeSerializer<K> keySerializer,
@@ -109,6 +118,7 @@ public class CopyOnWriteStateMapSnapshot<K, N, S>
 
 		int size = snapshotIterator.size();
 		dov.writeInt(size);
+		// hasNext 和 next 用来遍历一个个 Entry
 		while (snapshotIterator.hasNext()) {
 			StateEntry<K, N, S> stateEntry = snapshotIterator.next();
 			namespaceSerializer.serialize(stateEntry.getNamespace(), dov);

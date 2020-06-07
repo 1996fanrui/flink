@@ -66,6 +66,7 @@ public class CopyOnWriteStateTableSnapshot<K, N, S> extends AbstractStateTableSn
 			stateSnapshotTransformer);
 
 		this.keyGroupOffset = owningStateTable.getKeyGroupOffset();
+		// 获取所有 StateMap 的 Snapshot
 		this.stateMapSnapshots = owningStateTable.getStateMapSnapshotList();
 	}
 

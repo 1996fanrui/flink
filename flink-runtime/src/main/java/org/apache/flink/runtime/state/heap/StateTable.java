@@ -73,6 +73,8 @@ public abstract class StateTable<K, N, S>
 	/**
 	 * Map for holding the actual state objects. The outer array represents the key-groups.
 	 * All array positions will be initialized with an empty state map.
+	 * StateTable 会为每个 KeyGroup 的数据初始化一个 StateMap 来做数据的隔离。
+	 * 所以对状态进行操作时，StateTable 会先根据 key 计算对应的 KeyGroup，拿到相应的 StateMap，才能对状态进行操作。
 	 */
 	protected final StateMap<K, N, S>[] keyGroupedStateMaps;
 

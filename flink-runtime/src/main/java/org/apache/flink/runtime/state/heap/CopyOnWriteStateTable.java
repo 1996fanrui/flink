@@ -75,6 +75,8 @@ public class CopyOnWriteStateTable<K, N, S> extends StateTable<K, N, S> {
 	@SuppressWarnings("unchecked")
 	List<CopyOnWriteStateMapSnapshot<K, N, S>> getStateMapSnapshotList() {
 		List<CopyOnWriteStateMapSnapshot<K, N, S>> snapshotList = new ArrayList<>(keyGroupedStateMaps.length);
+		// 调用所有 CopyOnWriteStateMap 的 stateSnapshot 方法
+		// 生成 CopyOnWriteStateMapSnapshot 保存到 list 中
 		for (int i = 0; i < keyGroupedStateMaps.length; i++) {
 			CopyOnWriteStateMap<K, N, S> stateMap = (CopyOnWriteStateMap<K, N, S>) keyGroupedStateMaps[i];
 			snapshotList.add(stateMap.stateSnapshot());
