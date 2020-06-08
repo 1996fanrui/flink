@@ -319,16 +319,25 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 			final N eNamespace = e.namespace;
 			if ((e.hash == hash && key.equals(eKey) && namespace.equals(eNamespace))) {
 
-				// 一旦 get 当前数据，外部可能会修改数据内部的属性值，所以必须创建新的 Entry，并更新其 stateVersion
+				// 一旦 get 当前数据，为了防止应用层修改数据内部的属性值，
+				// 所以必须保证这是一个最新的 Entry，并更新其 stateVersion
+
+				// 首先检查当前的 State，也就是 value 值是否是旧版本数据，
+				// 如果 value 是旧版本，则必须深拷贝一个 value
+				// 否则 value 是新版本，直接返回给应用层
 				// copy-on-write check for state
 				if (e.stateVersion < requiredVersion) {
 					// copy-on-write check for entry
-					// entryVersion 小于 requiredVersion，说明当前 entry 被其他 snapshot 持有，
-					// 为了保证 Snapshot 的数据正确性，这里必须为 e 创建新的副本，且 e 之前的某些元素也需要 copy 副本
+					// 此时还有两种情况，
+					// 1、如果当前 Entry 是旧版本的，则 Entry 也需要拷贝一份，
+					// 		按照之前分析过的 handleChainedEntryCopyOnWrite 策略拷贝即可
+					// 2、当前 Entry 是新版本数据，则不需要拷贝，直接修改其 State 即可
 					if (e.entryVersion < requiredVersion) {
 						e = handleChainedEntryCopyOnWrite(tab, hash & (tab.length - 1), e);
 					}
+					// 更新其 stateVersion
 					e.stateVersion = stateMapVersion;
+					// 通过序列化器，深拷贝一个数据
 					e.state = getStateSerializer().copy(e.state);
 				}
 
@@ -336,12 +345,7 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 			}
 		}
 
-
-
-
-
-
-
+		// 没有找到相关的 Entry，所以返回 null
 		return null;
 	}
 
@@ -494,15 +498,21 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 
 		for (StateMapEntry<K, N, S> e = tab[index], prev = null; e != null; prev = e, e = e.next) {
 			if (e.hash == hash && key.equals(e.key) && namespace.equals(e.namespace)) {
+				// 如果要删除的 Entry 不存在前继节点，说明要删除的 Entry 是头结点，
+				// 直接将桶直接指向头结点的 next 节点即可。
 				if (prev == null) {
 					tab[index] = e.next;
 				} else {
+					// 如果 remove 的 Entry 不是链表头节点，需要将目标 Entry 之前的所有 Entry 拷贝一份，
+					// 且目标 Entry 前一个节点的副本直接指向目标 Entry 的下一个节点。
+					// 当然如果前继节点已经是新版本了，则不需要拷贝，直接修改前继 Entry 的 next 指针即可。
 					// copy-on-write check for entry
 					if (prev.entryVersion < highestRequiredSnapshotVersion) {
 						prev = handleChainedEntryCopyOnWrite(tab, index, prev);
 					}
 					prev.next = e.next;
 				}
+				// 修改一些计数器
 				++modCount;
 				if (tab == primaryTable) {
 					--primaryTableSize;
@@ -534,7 +544,10 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 		// we guard against concurrent modifications of highestRequiredSnapshotVersion between snapshot and release.
 		// Only stale reads of from the result of #releaseSnapshot calls are ok.
 		synchronized (snapshotVersions) {
+			// 将 相应的 snapshotVersion 从 snapshotVersions 中 remove
 			Preconditions.checkState(snapshotVersions.remove(snapshotVersion), "Attempt to release unknown snapshot version");
+			// 将 snapshotVersions 的最大值更新到 highestRequiredSnapshotVersion，
+			// 如果snapshotVersions 为空，则 highestRequiredSnapshotVersion 更新为 0
 			highestRequiredSnapshotVersion = snapshotVersions.isEmpty() ? 0 : snapshotVersions.last();
 		}
 	}

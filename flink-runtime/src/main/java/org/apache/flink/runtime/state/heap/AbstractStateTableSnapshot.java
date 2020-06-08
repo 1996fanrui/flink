@@ -118,8 +118,11 @@ abstract class AbstractStateTableSnapshot<K, N, S>
 	 */
 	@Override
 	public void writeStateInKeyGroup(@Nonnull DataOutputView dov, int keyGroupId) throws IOException {
+		// 获取 KeyGroupId 对应的 CopyOnWriteStateMapSnapshot
 		StateMapSnapshot<K, N, S, ? extends StateMap<K, N, S>> stateMapSnapshot = getStateMapSnapshotForKeyGroup(keyGroupId);
+		// 将 stateMapSnapshot 中的 State 数据进行序列化输出
 		stateMapSnapshot.writeState(localKeySerializer, localNamespaceSerializer, localStateSerializer, dov, stateSnapshotTransformer);
+		// stateMapSnapshot 对应的数据已经遍历完了，所以可以释放该快照
 		stateMapSnapshot.release();
 	}
 }

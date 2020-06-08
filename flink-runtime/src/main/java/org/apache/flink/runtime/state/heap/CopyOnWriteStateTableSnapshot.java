@@ -74,6 +74,7 @@ public class CopyOnWriteStateTableSnapshot<K, N, S> extends AbstractStateTableSn
 	protected StateMapSnapshot<K, N, S, ? extends StateMap<K, N, S>> getStateMapSnapshotForKeyGroup(int keyGroup) {
 		int indexOffset = keyGroup - keyGroupOffset;
 		CopyOnWriteStateMapSnapshot<K, N, S> stateMapSnapshot = null;
+		// 检查数组越界问题
 		if (indexOffset >= 0 && indexOffset < stateMapSnapshots.size()) {
 			stateMapSnapshot = stateMapSnapshots.get(indexOffset);
 		}
