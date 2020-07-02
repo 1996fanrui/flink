@@ -471,6 +471,7 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 	private <N, S extends State, SV, SEV> Tuple2<ColumnFamilyHandle, RegisteredKeyValueStateBackendMetaInfo<N, SV>> tryRegisterKvStateInformation(
 		StateDescriptor<S, SV> stateDesc,
 		TypeSerializer<N> namespaceSerializer,
+		// 泛型 SV 表示 State 的类型，SEV 表示 State 中 Element 的类型
 		@Nonnull StateSnapshotTransformFactory<SEV> snapshotTransformFactory) throws Exception {
 
 		// oldStateInfo 表示恢复回来的 StateInfo
@@ -508,6 +509,9 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 				stateDesc.getName(), newRocksStateInfo);
 		}
 
+		// snapshotTransformFactory 是外部传进来的 元素的 转换工厂，元素指的是 List 和 map 中 Element
+		// 如果是非 list 和 map，则 Element 就是 State。
+		// 这里就是讲 Element 的转换工厂 包装成 State 的转换工厂
 		StateSnapshotTransformFactory<SV> wrappedSnapshotTransformFactory = wrapStateSnapshotTransformFactory(
 			stateDesc, snapshotTransformFactory, newMetaInfo.getStateSerializer());
 		newMetaInfo.updateSnapshotTransformFactory(wrappedSnapshotTransformFactory);
@@ -525,7 +529,7 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 
 		@SuppressWarnings("unchecked")
 		RegisteredKeyValueStateBackendMetaInfo<N, SV> restoredKvStateMetaInfo = oldStateInfo.f1;
-
+		// 检验 namespace 的序列化兼容性
 		TypeSerializerSchemaCompatibility<N> s = restoredKvStateMetaInfo.updateNamespaceSerializer(namespaceSerializer);
 		if (s.isCompatibleAfterMigration() || s.isIncompatible()) {
 			throw new StateMigrationException("The new namespace serializer must be compatible.");
@@ -536,6 +540,7 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 
 		TypeSerializerSchemaCompatibility<SV> newStateSerializerCompatibility =
 			restoredKvStateMetaInfo.updateStateSerializer(stateSerializer);
+		// 迁移后，State 的序列化规则才能兼容，则进行迁移
 		if (newStateSerializerCompatibility.isCompatibleAfterMigration()) {
 			migrateStateValues(stateDesc, oldStateInfo);
 		} else if (newStateSerializerCompatibility.isIncompatible()) {

@@ -136,6 +136,7 @@ public abstract class AbstractPagedOutputView implements DataOutputView, MemoryS
 	 */
 	public void advance() throws IOException {
 		this.currentSegment = nextSegment(this.currentSegment, this.positionInSegment);
+		// MemorySegment 中首部 headerLength 为头，所以每次 positionInSegment 跳过前 headerLength 个位置
 		this.positionInSegment = this.headerLength;
 	}
 

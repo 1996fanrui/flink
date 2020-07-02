@@ -136,8 +136,10 @@ public class CopyOnWriteStateMapSnapshot<K, N, S>
 
 		CopyOnWriteStateMap.StateMapEntry<K, N, S>[] snapshotData;
 
+		// hashmap 桶级别的迭代器，每次找到下一个有数据的桶
 		Iterator<CopyOnWriteStateMap.StateMapEntry<K, N, S>> chainIterator;
 
+		// 迭代桶中链表元素
 		Iterator<CopyOnWriteStateMap.StateMapEntry<K, N, S>> entryIterator;
 
 		SnapshotIterator(
@@ -182,10 +184,12 @@ public class CopyOnWriteStateMapSnapshot<K, N, S>
 
 		@Override
 		public CopyOnWriteStateMap.StateMapEntry<K, N, S> next() {
+			// 当前桶的链表还有元素，则遍历当前 链表，否则使用 Chain 迭代器遍历下一个有数据的桶
 			if (entryIterator.hasNext()) {
 				return entryIterator.next();
 			}
 
+			// 迭代下一个有数据的桶中的链表，并为其链表搞一个迭代器
 			CopyOnWriteStateMap.StateMapEntry<K, N, S> stateMapEntry = chainIterator.next();
 			entryIterator = getEntryIterator(stateMapEntry);
 			return entryIterator.next();
@@ -217,6 +221,7 @@ public class CopyOnWriteStateMapSnapshot<K, N, S>
 			return Arrays.stream(snapshotData).filter(Objects::nonNull).iterator();
 		}
 
+		//
 		@Override
 		Iterator<CopyOnWriteStateMap.StateMapEntry<K, N, S>> getEntryIterator(
 			final CopyOnWriteStateMap.StateMapEntry<K, N, S> stateMapEntry) {
@@ -257,6 +262,7 @@ public class CopyOnWriteStateMapSnapshot<K, N, S>
 		/**
 		 * Move the chains in snapshotData to the back of the array, and return the
 		 * index of the first chain from the front.
+		 * 将所有非空桶中的整个链，全部移动的数组的尾部，只是移动了位置，并没有将链中的数据依次遍历出来
 		 */
 		int moveChainsToBackOfArray() {
 			int index = snapshotData.length - 1;
@@ -287,8 +293,10 @@ public class CopyOnWriteStateMapSnapshot<K, N, S>
 		@Override
 		void transform(@Nullable StateSnapshotTransformer<S> stateSnapshotTransformer) {
 			Preconditions.checkNotNull(stateSnapshotTransformer);
+			// 将所有非空桶中的整个链，全部移动的数组的尾部，只是移动了位置，并没有将链中的数据依次遍历出来
 			int indexOfFirstChain = moveChainsToBackOfArray();
 			int count = 0;
+			// 从有数据的桶开始遍历元素，将所有元素拍平，放到 数组的头部
 			// reuse the snapshotData to transform and flatten the entries.
 			for (int i = indexOfFirstChain; i < snapshotData.length; i++) {
 				CopyOnWriteStateMap.StateMapEntry<K, N, S> entry = snapshotData[i];

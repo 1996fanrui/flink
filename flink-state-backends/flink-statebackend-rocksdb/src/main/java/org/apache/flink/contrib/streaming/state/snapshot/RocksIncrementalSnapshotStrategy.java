@@ -511,6 +511,7 @@ public class RocksIncrementalSnapshotStrategy<K> extends RocksDBSnapshotStrategy
 		@Nonnull
 		private SnapshotResult<StreamStateHandle> materializeMetaData() throws Exception {
 
+			// 根据 是否开启 LocalRecovery，决定单写还是双写
 			CheckpointStreamWithResultProvider streamWithResultProvider =
 
 				localRecoveryConfig.isLocalRecoveryEnabled() ?

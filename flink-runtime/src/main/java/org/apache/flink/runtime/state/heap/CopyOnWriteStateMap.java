@@ -1073,6 +1073,7 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 
 	/**
 	 * Iterator over state entry chains in a {@link CopyOnWriteStateMap}.
+	 * Chain 迭代器：按照桶去迭代一个个桶的链表头节点
 	 */
 	class StateEntryChainIterator implements Iterator<StateMapEntry<K, N, S>> {
 		StateMapEntry<K, N, S>[] activeTable;
@@ -1132,6 +1133,7 @@ public class CopyOnWriteStateMap<K, N, S> extends StateMap<K, N, S> {
 
 	/**
 	 * Iterator over state entries in a {@link CopyOnWriteStateMap} which does not tolerate concurrent modifications.
+	 * 基于 StateEntryChainIterator 实现的，迭代 StateMap 中一个个元素
 	 */
 	class StateEntryIterator implements Iterator<StateEntry<K, N, S>> {
 

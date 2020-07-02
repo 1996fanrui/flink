@@ -42,6 +42,7 @@ public abstract class RegisteredStateMetaInfoBase {
 		return name;
 	}
 
+	// Checkpoint 时，会调用 snapshot 方法生成 StateMetaInfoSnapshot
 	@Nonnull
 	public abstract StateMetaInfoSnapshot snapshot();
 
