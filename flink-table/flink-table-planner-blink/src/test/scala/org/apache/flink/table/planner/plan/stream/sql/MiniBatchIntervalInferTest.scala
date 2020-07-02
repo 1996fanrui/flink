@@ -20,13 +20,13 @@ package org.apache.flink.table.planner.plan.stream.sql
 
 import org.apache.flink.api.common.time.Time
 import org.apache.flink.api.scala._
-import org.apache.flink.table.api.TableConfig
+import org.apache.flink.table.api._
 import org.apache.flink.table.api.config.ExecutionConfigOptions
 import org.apache.flink.table.api.internal.TableEnvironmentInternal
-import org.apache.flink.table.api.scala._
 import org.apache.flink.table.planner.plan.utils.WindowEmitStrategy.{TABLE_EXEC_EMIT_EARLY_FIRE_DELAY, TABLE_EXEC_EMIT_EARLY_FIRE_ENABLED}
 import org.apache.flink.table.planner.utils.{TableConfigUtils, TableTestBase}
 import org.apache.flink.table.types.logical.{BigIntType, IntType, VarCharType}
+
 import org.junit.{Before, Test}
 
 class MiniBatchIntervalInferTest extends TableTestBase {
@@ -108,7 +108,7 @@ class MiniBatchIntervalInferTest extends TableTestBase {
   }
 
   @Test
-  def testWindowJoinWithMiniBatch(): Unit = {
+  def testIntervalJoinWithMiniBatch(): Unit = {
     util.addTableWithWatermark("LeftT", util.tableEnv.from("MyTable1"), "rowtime", 0)
     util.addTableWithWatermark("RightT", util.tableEnv.from("MyTable2"), "rowtime", 0)
     util.tableEnv.getConfig.getConfiguration.setString(
@@ -390,7 +390,7 @@ class MiniBatchIntervalInferTest extends TableTestBase {
       throw new RuntimeException("Currently not support different earlyFireInterval configs in " +
         "one job")
     }
-    tableConfig.getConfiguration.setBoolean(TABLE_EXEC_EMIT_EARLY_FIRE_ENABLED, true)
+    tableConfig.getConfiguration.setBoolean(TABLE_EXEC_EMIT_EARLY_FIRE_ENABLED, Boolean.box(true))
     tableConfig.getConfiguration.setString(
       TABLE_EXEC_EMIT_EARLY_FIRE_DELAY, intervalInMillis + " ms")
   }

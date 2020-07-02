@@ -22,6 +22,7 @@ import org.apache.flink.runtime.checkpoint.CheckpointException;
 import org.apache.flink.runtime.checkpoint.CheckpointFailureReason;
 import org.apache.flink.runtime.checkpoint.CheckpointMetaData;
 import org.apache.flink.runtime.checkpoint.CheckpointMetrics;
+import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.runtime.io.network.api.CancelCheckpointMarker;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
 import org.apache.flink.runtime.io.network.buffer.BufferReceivedListener;
@@ -51,21 +52,24 @@ public abstract class CheckpointBarrierHandler implements Closeable {
 		this.toNotifyOnCheckpoint = checkNotNull(toNotifyOnCheckpoint);
 	}
 
-	public abstract void releaseBlocksAndResetBarriers();
+	public void releaseBlocksAndResetBarriers() throws IOException {
+	}
 
 	/**
 	 * Checks whether the channel with the given index is blocked.
 	 *
-	 * @param channelIndex The channel index to check.
+	 * @param channelInfo The channel index to check.
 	 * @return True if the channel is blocked, false if not.
 	 */
-	public abstract boolean isBlocked(int channelIndex);
+	public boolean isBlocked(InputChannelInfo channelInfo) {
+		return false;
+	}
 
 	@Override
 	public void close() throws IOException {
 	}
 
-	public abstract void processBarrier(CheckpointBarrier receivedBarrier, int channelIndex) throws Exception;
+	public abstract void processBarrier(CheckpointBarrier receivedBarrier, InputChannelInfo channelInfo) throws Exception;
 
 	public abstract void processCancellationBarrier(CancelCheckpointMarker cancelBarrier) throws Exception;
 
@@ -73,7 +77,9 @@ public abstract class CheckpointBarrierHandler implements Closeable {
 
 	public abstract long getLatestCheckpointId();
 
-	public abstract long getAlignmentDurationNanos();
+	public long getAlignmentDurationNanos() {
+		return 0;
+	}
 
 	public long getCheckpointStartDelayNanos() {
 		return latestCheckpointStartDelayNanos;
@@ -88,7 +94,7 @@ public abstract class CheckpointBarrierHandler implements Closeable {
 	 * this method returns true iff the unaligner still expects the respective barrier to be <i>consumed</i> on the
 	 * that channel.
 	 */
-	public boolean hasInflightData(long checkpointId, int channelIndex) {
+	public boolean hasInflightData(long checkpointId, InputChannelInfo channelInfo) {
 		return false;
 	}
 
@@ -133,4 +139,7 @@ public abstract class CheckpointBarrierHandler implements Closeable {
 	}
 
 	protected abstract boolean isCheckpointPending();
+
+	protected void abortPendingCheckpoint(long checkpointId, CheckpointException exception) throws IOException {
+	}
 }

@@ -38,8 +38,10 @@ import static org.apache.flink.connector.jdbc.JdbcTestFixture.INPUT_TABLE;
 import static org.apache.flink.connector.jdbc.JdbcTestFixture.INSERT_TEMPLATE;
 import static org.apache.flink.connector.jdbc.JdbcTestFixture.OUTPUT_TABLE;
 import static org.apache.flink.connector.jdbc.JdbcTestFixture.OUTPUT_TABLE_2;
+import static org.apache.flink.connector.jdbc.JdbcTestFixture.OUTPUT_TABLE_3;
 import static org.apache.flink.connector.jdbc.JdbcTestFixture.SELECT_ALL_NEWBOOKS;
 import static org.apache.flink.connector.jdbc.JdbcTestFixture.SELECT_ALL_NEWBOOKS_2;
+import static org.apache.flink.connector.jdbc.JdbcTestFixture.SELECT_ALL_NEWBOOKS_3;
 import static org.apache.flink.connector.jdbc.JdbcTestFixture.TEST_DATA;
 import static org.apache.flink.connector.jdbc.JdbcTestFixture.TestEntry;
 import static org.apache.flink.util.ExceptionUtils.findThrowable;
@@ -104,7 +106,7 @@ public class JdbcOutputFormatTest extends JdbcDataTestBase {
 				.setDBUrl(DERBY_EBOOKSHOP_DB.getUrl())
 				.setQuery("iamnotsql")
 				.finish();
-			setRuntimeContext(jdbcOutputFormat);
+			setRuntimeContext(jdbcOutputFormat, true);
 			jdbcOutputFormat.open(0, 1);
 		} catch (Exception e) {
 			assertTrue(findThrowable(e, IOException.class).isPresent());
@@ -135,7 +137,7 @@ public class JdbcOutputFormatTest extends JdbcDataTestBase {
 				.setDBUrl(DERBY_EBOOKSHOP_DB.getUrl())
 				.setQuery(String.format(INSERT_TEMPLATE, INPUT_TABLE))
 				.finish();
-			setRuntimeContext(jdbcOutputFormat);
+			setRuntimeContext(jdbcOutputFormat, true);
 			jdbcOutputFormat.open(0, 1);
 
 			Row row = new Row(5);
@@ -168,7 +170,7 @@ public class JdbcOutputFormatTest extends JdbcDataTestBase {
 					Types.DOUBLE,
 					Types.INTEGER})
 				.finish();
-			setRuntimeContext(jdbcOutputFormat);
+			setRuntimeContext(jdbcOutputFormat, true);
 			jdbcOutputFormat.open(0, 1);
 
 			TestEntry entry = TEST_DATA[0];
@@ -201,7 +203,7 @@ public class JdbcOutputFormatTest extends JdbcDataTestBase {
 					Types.DOUBLE,
 					Types.INTEGER})
 				.finish();
-			setRuntimeContext(jdbcOutputFormat);
+			setRuntimeContext(jdbcOutputFormat, true);
 			jdbcOutputFormat.open(0, 1);
 
 			TestEntry entry = TEST_DATA[0];
@@ -228,7 +230,7 @@ public class JdbcOutputFormatTest extends JdbcDataTestBase {
 				.setDBUrl(DERBY_EBOOKSHOP_DB.getUrl())
 				.setQuery(String.format(INSERT_TEMPLATE, OUTPUT_TABLE))
 				.finish();
-		setRuntimeContext(jdbcOutputFormat);
+		setRuntimeContext(jdbcOutputFormat, true);
 		jdbcOutputFormat.open(0, 1);
 
 		for (TestEntry entry : TEST_DATA) {
@@ -264,7 +266,7 @@ public class JdbcOutputFormatTest extends JdbcDataTestBase {
 			.setQuery(String.format(INSERT_TEMPLATE, OUTPUT_TABLE_2))
 			.setBatchSize(3)
 			.finish();
-		setRuntimeContext(jdbcOutputFormat);
+		setRuntimeContext(jdbcOutputFormat, true);
 		try (
 			Connection dbConn = DriverManager.getConnection(DERBY_EBOOKSHOP_DB.getUrl());
 			PreparedStatement statement = dbConn.prepareStatement(SELECT_ALL_NEWBOOKS_2)
@@ -291,6 +293,49 @@ public class JdbcOutputFormatTest extends JdbcDataTestBase {
 			}
 		} finally {
 			jdbcOutputFormat.close();
+		}
+	}
+
+	@Test
+	public void testInvalidConnectionInJdbcOutputFormat() throws IOException, SQLException {
+		jdbcOutputFormat = JdbcOutputFormat.buildJdbcOutputFormat()
+			.setDrivername(DERBY_EBOOKSHOP_DB.getDriverClass())
+			.setDBUrl(DERBY_EBOOKSHOP_DB.getUrl())
+			.setQuery(String.format(INSERT_TEMPLATE, OUTPUT_TABLE_3))
+			.finish();
+		setRuntimeContext(jdbcOutputFormat, true);
+		jdbcOutputFormat.open(0, 1);
+
+		// write records
+		for (int i = 0; i < 3; i++) {
+			jdbcOutputFormat.writeRecord(toRow(TEST_DATA[i]));
+		}
+
+		// close connection
+		jdbcOutputFormat.getConnection().close();
+
+		for (int i = 3; i < TEST_DATA.length; i++) {
+			jdbcOutputFormat.writeRecord(toRow(TEST_DATA[i]));
+		}
+
+		jdbcOutputFormat.close();
+
+		try (
+			Connection dbConn = DriverManager.getConnection(DERBY_EBOOKSHOP_DB.getUrl());
+			PreparedStatement statement = dbConn.prepareStatement(SELECT_ALL_NEWBOOKS_3);
+			ResultSet resultSet = statement.executeQuery()
+		) {
+			int recordCount = 0;
+			while (resultSet.next()) {
+				assertEquals(TEST_DATA[recordCount].id, resultSet.getObject("id"));
+				assertEquals(TEST_DATA[recordCount].title, resultSet.getObject("title"));
+				assertEquals(TEST_DATA[recordCount].author, resultSet.getObject("author"));
+				assertEquals(TEST_DATA[recordCount].price, resultSet.getObject("price"));
+				assertEquals(TEST_DATA[recordCount].qty, resultSet.getObject("qty"));
+
+				recordCount++;
+			}
+			assertEquals(TEST_DATA.length, recordCount);
 		}
 	}
 

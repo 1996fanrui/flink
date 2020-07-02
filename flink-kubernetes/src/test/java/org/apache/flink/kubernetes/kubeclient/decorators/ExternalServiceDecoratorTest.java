@@ -21,13 +21,11 @@ package org.apache.flink.kubernetes.kubeclient.decorators;
 import org.apache.flink.kubernetes.configuration.KubernetesConfigOptions;
 import org.apache.flink.kubernetes.kubeclient.KubernetesJobManagerTestBase;
 import org.apache.flink.kubernetes.utils.Constants;
-import org.apache.flink.kubernetes.utils.KubernetesUtils;
 
 import io.fabric8.kubernetes.api.model.HasMetadata;
 import io.fabric8.kubernetes.api.model.Service;
 import io.fabric8.kubernetes.api.model.ServicePort;
 import io.fabric8.kubernetes.api.model.ServicePortBuilder;
-import org.junit.Before;
 import org.junit.Test;
 
 import java.io.IOException;
@@ -55,9 +53,9 @@ public class ExternalServiceDecoratorTest extends KubernetesJobManagerTestBase {
 		}
 	};
 
-	@Before
-	public void setup() throws Exception {
-		super.setup();
+	@Override
+	protected void onSetup() throws Exception {
+		super.onSetup();
 
 		this.flinkConfig.set(KubernetesConfigOptions.REST_SERVICE_ANNOTATIONS, customizedAnnotations);
 		this.externalServiceDecorator = new ExternalServiceDecorator(this.kubernetesJobManagerParameters);
@@ -72,7 +70,7 @@ public class ExternalServiceDecoratorTest extends KubernetesJobManagerTestBase {
 
 		assertEquals(Constants.API_VERSION, restService.getApiVersion());
 
-		assertEquals(KubernetesUtils.getRestServiceName(CLUSTER_ID), restService.getMetadata().getName());
+		assertEquals(ExternalServiceDecorator.getExternalServiceName(CLUSTER_ID), restService.getMetadata().getName());
 
 		final Map<String, String> expectedLabels = getCommonLabels();
 		assertEquals(expectedLabels, restService.getMetadata().getLabels());

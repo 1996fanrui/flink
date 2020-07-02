@@ -22,12 +22,13 @@ import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.configuration.ConfigOption;
-import org.apache.flink.configuration.ConfigOptions;
 import org.apache.flink.configuration.ReadableConfig;
+import org.apache.flink.formats.json.JsonOptions;
+import org.apache.flink.formats.json.TimestampFormat;
 import org.apache.flink.table.connector.ChangelogMode;
-import org.apache.flink.table.connector.format.ScanFormat;
-import org.apache.flink.table.connector.format.SinkFormat;
-import org.apache.flink.table.connector.source.ScanTableSource;
+import org.apache.flink.table.connector.format.DecodingFormat;
+import org.apache.flink.table.connector.format.EncodingFormat;
+import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.factories.DeserializationFormatFactory;
 import org.apache.flink.table.factories.DynamicTableFactory;
@@ -48,31 +49,31 @@ public class CanalJsonFormatFactory implements DeserializationFormatFactory, Ser
 
 	public static final String IDENTIFIER = "canal-json";
 
-	public static final ConfigOption<Boolean> IGNORE_PARSE_ERRORS = ConfigOptions
-		.key("ignore-parse-errors")
-		.booleanType()
-		.defaultValue(false)
-		.withDescription("Optional flag to skip fields and rows with parse errors instead of failing, " +
-			"fields are set to null in case of errors. Default is false.");
+	public static final ConfigOption<Boolean> IGNORE_PARSE_ERRORS = JsonOptions.IGNORE_PARSE_ERRORS;
+
+	public static final ConfigOption<String> TIMESTAMP_FORMAT = JsonOptions.TIMESTAMP_FORMAT;
 
 	@SuppressWarnings("unchecked")
 	@Override
-	public ScanFormat<DeserializationSchema<RowData>> createScanFormat(
+	public DecodingFormat<DeserializationSchema<RowData>> createDecodingFormat(
 			DynamicTableFactory.Context context,
 			ReadableConfig formatOptions) {
 		FactoryUtil.validateFactoryOptions(this, formatOptions);
 		final boolean ignoreParseErrors = formatOptions.get(IGNORE_PARSE_ERRORS);
+		TimestampFormat timestampFormatOption = JsonOptions.getTimestampFormat(formatOptions);
 
-		return new ScanFormat<DeserializationSchema<RowData>>() {
+		return new DecodingFormat<DeserializationSchema<RowData>>() {
 			@Override
-			public DeserializationSchema<RowData> createScanFormat(ScanTableSource.Context context, DataType producedDataType) {
+			public DeserializationSchema<RowData> createRuntimeDecoder(
+					DynamicTableSource.Context context, DataType producedDataType) {
 				final RowType rowType = (RowType) producedDataType.getLogicalType();
 				final TypeInformation<RowData> rowDataTypeInfo =
 					(TypeInformation<RowData>) context.createTypeInformation(producedDataType);
 				return new CanalJsonDeserializationSchema(
 					rowType,
 					rowDataTypeInfo,
-					ignoreParseErrors);
+					ignoreParseErrors,
+					timestampFormatOption);
 			}
 
 			@Override
@@ -88,7 +89,7 @@ public class CanalJsonFormatFactory implements DeserializationFormatFactory, Ser
 	}
 
 	@Override
-	public SinkFormat<SerializationSchema<RowData>> createSinkFormat(
+	public EncodingFormat<SerializationSchema<RowData>> createEncodingFormat(
 			DynamicTableFactory.Context context,
 			ReadableConfig formatOptions) {
 		throw new UnsupportedOperationException("Canal format doesn't support as a sink format yet.");
@@ -108,6 +109,7 @@ public class CanalJsonFormatFactory implements DeserializationFormatFactory, Ser
 	public Set<ConfigOption<?>> optionalOptions() {
 		Set<ConfigOption<?>> options = new HashSet<>();
 		options.add(IGNORE_PARSE_ERRORS);
+		options.add(TIMESTAMP_FORMAT);
 		return options;
 	}
 

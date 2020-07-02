@@ -73,6 +73,8 @@ public class TaskManagerConfiguration implements TaskManagerRuntimeInfo {
 	@Nullable
 	private final String taskManagerLogDir;
 
+	private final String taskManagerExternalAddress;
+
 	private final RetryingRegistrationConfiguration retryingRegistrationConfiguration;
 
 	public TaskManagerConfiguration(
@@ -87,6 +89,7 @@ public class TaskManagerConfiguration implements TaskManagerRuntimeInfo {
 			@Nullable String taskManagerLogPath,
 			@Nullable String taskManagerStdoutPath,
 			@Nullable String taskManagerLogDir,
+			String taskManagerExternalAddress,
 			RetryingRegistrationConfiguration retryingRegistrationConfiguration) {
 
 		this.numberSlots = numberSlots;
@@ -100,6 +103,7 @@ public class TaskManagerConfiguration implements TaskManagerRuntimeInfo {
 		this.taskManagerLogPath = taskManagerLogPath;
 		this.taskManagerStdoutPath = taskManagerStdoutPath;
 		this.taskManagerLogDir = taskManagerLogDir;
+		this.taskManagerExternalAddress = taskManagerExternalAddress;
 		this.retryingRegistrationConfiguration = retryingRegistrationConfiguration;
 	}
 
@@ -154,6 +158,11 @@ public class TaskManagerConfiguration implements TaskManagerRuntimeInfo {
 		return taskManagerLogDir;
 	}
 
+	@Override
+	public String getTaskManagerExternalAddress() {
+		return taskManagerExternalAddress;
+	}
+
 	public RetryingRegistrationConfiguration getRetryingRegistrationConfiguration() {
 		return retryingRegistrationConfiguration;
 	}
@@ -164,7 +173,8 @@ public class TaskManagerConfiguration implements TaskManagerRuntimeInfo {
 
 	public static TaskManagerConfiguration fromConfiguration(
 			Configuration configuration,
-			TaskExecutorResourceSpec taskExecutorResourceSpec) {
+			TaskExecutorResourceSpec taskExecutorResourceSpec,
+			String externalAddress) {
 		int numberSlots = configuration.getInteger(TaskManagerOptions.NUM_TASK_SLOTS, 1);
 
 		if (numberSlots == -1) {
@@ -182,7 +192,7 @@ public class TaskManagerConfiguration implements TaskManagerRuntimeInfo {
 					"'.Use formats like '50 s' or '1 min' to specify the timeout.");
 		}
 
-		LOG.info("Messages have a max timeout of " + timeout);
+		LOG.debug("Messages have a max timeout of " + timeout);
 
 		Time finiteRegistrationDuration;
 		try {
@@ -228,6 +238,7 @@ public class TaskManagerConfiguration implements TaskManagerRuntimeInfo {
 			taskManagerLogPath,
 			taskManagerStdoutPath,
 			taskManagerLogDir,
+			externalAddress,
 			retryingRegistrationConfiguration);
 	}
 }

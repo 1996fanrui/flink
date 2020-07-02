@@ -21,6 +21,7 @@ package org.apache.flink.table.sinks;
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.JobExecutionResult;
 import org.apache.flink.api.common.accumulators.SerializedListAccumulator;
+import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.java.DataSet;
 import org.apache.flink.api.java.Utils;
@@ -28,26 +29,25 @@ import org.apache.flink.api.java.operators.DataSink;
 import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.api.TableSchema;
-import org.apache.flink.table.api.internal.SelectTableSink;
+import org.apache.flink.table.api.internal.SelectResultProvider;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.AbstractID;
+import org.apache.flink.util.CloseableIterator;
 import org.apache.flink.util.Preconditions;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
 
 /**
- * A {@link SelectTableSink} for batch select job.
+ * A {@link BatchTableSink} for batch select job to collect the result to local.
  */
-public class BatchSelectTableSink implements BatchTableSink<Row>, SelectTableSink {
+public class BatchSelectTableSink implements BatchTableSink<Row> {
 	private final TableSchema tableSchema;
 	private final String accumulatorName;
 	private final TypeSerializer<Row> typeSerializer;
-	private JobClient jobClient;
 
 	public BatchSelectTableSink(TableSchema tableSchema) {
 		this.tableSchema =
@@ -67,6 +67,11 @@ public class BatchSelectTableSink implements BatchTableSink<Row>, SelectTableSin
 	}
 
 	@Override
+	public TableSink<Row> configure(String[] fieldNames, TypeInformation<?>[] fieldTypes) {
+		throw new UnsupportedOperationException();
+	}
+
+	@Override
 	public DataSink<?> consumeDataSet(DataSet<Row> dataSet) {
 		return dataSet.output(
 				new Utils.CollectHelper<>(accumulatorName, typeSerializer))
@@ -74,14 +79,24 @@ public class BatchSelectTableSink implements BatchTableSink<Row>, SelectTableSin
 				.setParallelism(1);
 	}
 
-	@Override
-	public void setJobClient(JobClient jobClient) {
-		this.jobClient = Preconditions.checkNotNull(jobClient, "jobClient should not be null");
+	public SelectResultProvider getSelectResultProvider() {
+		return new SelectResultProvider() {
+			private JobClient jobClient;
+
+			@Override
+			public void setJobClient(JobClient jobClient) {
+				this.jobClient = Preconditions.checkNotNull(jobClient, "jobClient should not be null");
+			}
+
+			@Override
+			public CloseableIterator<Row> getResultIterator() {
+				Preconditions.checkNotNull(jobClient, "jobClient is null, please call setJobClient first.");
+				return collectResult(jobClient);
+			}
+		};
 	}
 
-	@Override
-	public Iterator<Row> getResultIterator() {
-		Preconditions.checkNotNull(jobClient, "jobClient is null, please call setJobClient first.");
+	private CloseableIterator<Row> collectResult(JobClient jobClient) {
 		JobExecutionResult jobExecutionResult;
 		try {
 			jobExecutionResult = jobClient.getJobExecutionResult(
@@ -100,7 +115,7 @@ public class BatchSelectTableSink implements BatchTableSink<Row>, SelectTableSin
 		} catch (IOException | ClassNotFoundException e) {
 			throw new TableException("Failed to deserialize the result.", e);
 		}
-		return rowList.iterator();
+		return CloseableIterator.adapterForIterator(rowList.iterator());
 	}
 
 }

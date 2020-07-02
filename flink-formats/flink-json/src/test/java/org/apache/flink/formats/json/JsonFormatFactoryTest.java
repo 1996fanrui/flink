@@ -45,7 +45,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Consumer;
 
-import static org.apache.flink.util.CoreMatchers.containsCause;
+import static org.apache.flink.core.testutils.FlinkMatchers.containsCause;
 import static org.junit.Assert.assertEquals;
 
 /**
@@ -91,6 +91,25 @@ public class JsonFormatFactoryTest extends TestLogger {
 		testSchemaDeserializationSchema(tableOptions);
 	}
 
+	@Test
+	public void testInvalidOptionForTimestampFormat() {
+		final Map<String, String> tableOptions = getModifyOptions(
+			options -> options.put("json.timestamp-format.standard", "test"));
+
+		thrown.expect(ValidationException.class);
+		thrown.expect(containsCause(new ValidationException("Unsupported value 'test' for timestamp-format.standard. Supported values are [SQL, ISO-8601].")));
+		testSchemaDeserializationSchema(tableOptions);
+	}
+
+	@Test
+	public void testLowerCaseOptionForTimestampFormat() {
+		final Map<String, String> tableOptions = getModifyOptions(
+			options -> options.put("json.timestamp-format.standard", "iso-8601"));
+
+		thrown.expect(ValidationException.class);
+		thrown.expect(containsCause(new ValidationException("Unsupported value 'iso-8601' for timestamp-format.standard. Supported values are [SQL, ISO-8601].")));
+		testSchemaDeserializationSchema(tableOptions);
+	}
 	// ------------------------------------------------------------------------
 	//  Utilities
 	// ------------------------------------------------------------------------
@@ -101,15 +120,16 @@ public class JsonFormatFactoryTest extends TestLogger {
 						ROW_TYPE,
 						new RowDataTypeInfo(ROW_TYPE),
 						false,
-						true);
+						true,
+						TimestampFormat.ISO_8601);
 
 		final DynamicTableSource actualSource = createTableSource(options);
 		assert actualSource instanceof TestDynamicTableFactory.DynamicTableSourceMock;
 		TestDynamicTableFactory.DynamicTableSourceMock scanSourceMock =
 				(TestDynamicTableFactory.DynamicTableSourceMock) actualSource;
 
-		DeserializationSchema<RowData> actualDeser = scanSourceMock.sourceValueFormat
-				.createScanFormat(
+		DeserializationSchema<RowData> actualDeser = scanSourceMock.valueFormat
+				.createRuntimeDecoder(
 						ScanRuntimeProviderContext.INSTANCE,
 						SCHEMA.toRowDataType());
 
@@ -117,15 +137,16 @@ public class JsonFormatFactoryTest extends TestLogger {
 	}
 
 	private void testSchemaSerializationSchema(Map<String, String> options) {
-		final JsonRowDataSerializationSchema expectedSer = new JsonRowDataSerializationSchema(ROW_TYPE);
+		final JsonRowDataSerializationSchema expectedSer = new JsonRowDataSerializationSchema(ROW_TYPE,
+			TimestampFormat.ISO_8601);
 
 		final DynamicTableSink actualSink = createTableSink(options);
 		assert actualSink instanceof TestDynamicTableFactory.DynamicTableSinkMock;
 		TestDynamicTableFactory.DynamicTableSinkMock sinkMock =
 				(TestDynamicTableFactory.DynamicTableSinkMock) actualSink;
 
-		SerializationSchema<RowData> actualSer = sinkMock.sinkValueFormat
-				.createSinkFormat(
+		SerializationSchema<RowData> actualSer = sinkMock.valueFormat
+				.createRuntimeEncoder(
 						new SinkRuntimeProviderContext(false),
 						SCHEMA.toRowDataType());
 
@@ -152,6 +173,7 @@ public class JsonFormatFactoryTest extends TestLogger {
 		options.put("format", JsonFormatFactory.IDENTIFIER);
 		options.put("json.fail-on-missing-field", "false");
 		options.put("json.ignore-parse-errors", "true");
+		options.put("json.timestamp-format.standard", "ISO-8601");
 		return options;
 	}
 

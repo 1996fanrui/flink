@@ -20,8 +20,8 @@ package org.apache.flink.table.planner.runtime.stream.table
 
 import org.apache.flink.api.scala._
 import org.apache.flink.table.api.Expressions.$
-import org.apache.flink.table.api.scala._
-import org.apache.flink.table.api.{DataTypes, Expressions, Over}
+import org.apache.flink.table.api._
+import org.apache.flink.table.api.bridge.scala._
 import org.apache.flink.table.planner.plan.utils.JavaUserDefinedAggFunctions.{CountDistinct, CountDistinctWithRetractAndReset, WeightedAvg}
 import org.apache.flink.table.planner.runtime.utils.JavaUserDefinedScalarFunctions.JavaFunc0
 import org.apache.flink.table.planner.runtime.utils.StreamingWithStateTestBase.StateBackendMode
@@ -39,6 +39,13 @@ import scala.collection.mutable
 
 @RunWith(classOf[Parameterized])
 class OverWindowITCase(mode: StateBackendMode) extends StreamingWithStateTestBase(mode) {
+
+  @Before
+  def setupEnv(): Unit = {
+    // unaligned checkpoints are regenerating watermarks after recovery of in-flight data
+    // https://issues.apache.org/jira/browse/FLINK-18405
+    env.getCheckpointConfig.enableUnalignedCheckpoints(false)
+  }
 
   @Test
   def testProcTimeUnBoundedPartitionedRowOver(): Unit = {

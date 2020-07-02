@@ -21,7 +21,6 @@ package org.apache.flink.yarn;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.cache.DistributedCache;
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.client.cli.CliFrontend;
 import org.apache.flink.client.deployment.ClusterDeploymentException;
 import org.apache.flink.client.deployment.ClusterDescriptor;
 import org.apache.flink.client.deployment.ClusterRetrieveException;
@@ -50,7 +49,6 @@ import org.apache.flink.runtime.jobmanager.HighAvailabilityMode;
 import org.apache.flink.runtime.jobmanager.JobManagerProcessSpec;
 import org.apache.flink.runtime.jobmanager.JobManagerProcessUtils;
 import org.apache.flink.runtime.util.HadoopUtils;
-import org.apache.flink.runtime.util.config.memory.ProcessMemoryUtils;
 import org.apache.flink.util.FlinkException;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.ShutdownHookUtil;
@@ -405,9 +403,6 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
 		final List<String> pipelineJars = flinkConfiguration.getOptional(PipelineOptions.JARS).orElse(Collections.emptyList());
 		Preconditions.checkArgument(pipelineJars.size() == 1, "Should only have one jar");
 
-		final String configurationDirectory = CliFrontend.getConfigurationDirectoryFromEnv();
-		YarnLogConfigUtil.setLogConfigFileInConfig(flinkConfiguration, configurationDirectory);
-
 		try {
 			return deployInternal(
 					clusterSpecification,
@@ -472,15 +467,11 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
 			@Nullable JobGraph jobGraph,
 			boolean detached) throws Exception {
 
-		if (UserGroupInformation.isSecurityEnabled()) {
-			// note: UGI::hasKerberosCredentials inaccurately reports false
-			// for logins based on a keytab (fixed in Hadoop 2.6.1, see HADOOP-10786),
-			// so we check only in ticket cache scenario.
+		final UserGroupInformation currentUser = UserGroupInformation.getCurrentUser();
+		if (HadoopUtils.isKerberosSecurityEnabled(currentUser)) {
 			boolean useTicketCache = flinkConfiguration.getBoolean(SecurityOptions.KERBEROS_LOGIN_USETICKETCACHE);
 
-			boolean isCredentialsConfigured = HadoopUtils.isCredentialsConfigured(
-				UserGroupInformation.getCurrentUser(), useTicketCache);
-			if (!isCredentialsConfigured) {
+			if (!HadoopUtils.areKerberosCredentialsValid(currentUser, useTicketCache)) {
 				throw new RuntimeException("Hadoop security with Kerberos is enabled but the login user " +
 					"does not have Kerberos credentials or delegation tokens!");
 			}
@@ -508,7 +499,14 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
 			throw new YarnDeploymentException("Could not retrieve information about free cluster resources.", e);
 		}
 
-		final int yarnMinAllocationMB = yarnConfiguration.getInt(YarnConfiguration.RM_SCHEDULER_MINIMUM_ALLOCATION_MB, 0);
+		final int yarnMinAllocationMB = yarnConfiguration.getInt(
+				YarnConfiguration.RM_SCHEDULER_MINIMUM_ALLOCATION_MB,
+				YarnConfiguration.DEFAULT_RM_SCHEDULER_MINIMUM_ALLOCATION_MB);
+		if (yarnMinAllocationMB <= 0) {
+			throw new YarnDeploymentException("The minimum allocation memory "
+					+ "(" + yarnMinAllocationMB + " MB) configured via '" + YarnConfiguration.RM_SCHEDULER_MINIMUM_ALLOCATION_MB
+					+ "' should be greater than 0.");
+		}
 
 		final ClusterSpecification validClusterSpecification;
 		try {
@@ -628,7 +626,8 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
 			if (queues.size() > 0 && this.yarnQueue != null) { // check only if there are queues configured in yarn and for this session.
 				boolean queueFound = false;
 				for (QueueInfo queue : queues) {
-					if (queue.getQueueName().equals(this.yarnQueue)) {
+					if (queue.getQueueName().equals(this.yarnQueue)
+						|| queue.getQueueName().equals("root." + this.yarnQueue)) {
 						queueFound = true;
 						break;
 					}
@@ -744,7 +743,7 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
 		if (jobGraph != null) {
 			for (Map.Entry<String, DistributedCache.DistributedCacheEntry> entry : jobGraph.getUserArtifacts().entrySet()) {
 				// only upload local files
-				if (Utils.isRemotePath(entry.getValue().filePath)) {
+				if (!Utils.isRemotePath(entry.getValue().filePath)) {
 					Path localPath = new Path(entry.getValue().filePath);
 					Tuple2<Path, Long> remoteFileInfo =
 							fileUploader.uploadLocalFileToRemote(localPath, entry.getKey());
@@ -1454,7 +1453,7 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
 		final  Map<String, String> startCommandValues = new HashMap<>();
 		startCommandValues.put("java", "$JAVA_HOME/bin/java");
 
-		String jvmHeapMem = ProcessMemoryUtils.generateJvmParametersStr(processSpec);
+		String jvmHeapMem = JobManagerProcessUtils.generateJvmParametersStr(processSpec, flinkConfiguration);
 		startCommandValues.put("jvmmem", jvmHeapMem);
 
 		startCommandValues.put("jvmopts", javaOpts);

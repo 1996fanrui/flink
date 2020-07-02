@@ -29,6 +29,7 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -70,7 +71,7 @@ import static org.apache.flink.util.Preconditions.checkState;
 public class UnionInputGate extends InputGate {
 
 	/** The input gates to union. */
-	private final InputGate[] inputGates;
+	private final Map<Integer, InputGate> inputGatesByGateIndex;
 
 	private final Set<IndexedInputGate> inputGatesWithRemainingData;
 
@@ -89,7 +90,7 @@ public class UnionInputGate extends InputGate {
 	private final int[] inputGateChannelIndexOffsets;
 
 	public UnionInputGate(IndexedInputGate... inputGates) {
-		this.inputGates = checkNotNull(inputGates);
+		inputGatesByGateIndex = Arrays.stream(inputGates).collect(Collectors.toMap(IndexedInputGate::getGateIndex, ig -> ig));
 		checkArgument(inputGates.length > 1, "Union input gate should union at least two input gates.");
 
 		if (Arrays.stream(inputGates).map(IndexedInputGate::getGateIndex).distinct().count() != inputGates.length) {
@@ -100,8 +101,9 @@ public class UnionInputGate extends InputGate {
 		this.inputGatesWithRemainingData = Sets.newHashSetWithExpectedSize(inputGates.length);
 
 		final int maxGateIndex = Arrays.stream(inputGates).mapToInt(IndexedInputGate::getGateIndex).max().orElse(0);
-		inputGateChannelIndexOffsets = new int[maxGateIndex + 1];
 		int totalNumberOfInputChannels = Arrays.stream(inputGates).mapToInt(IndexedInputGate::getNumberOfInputChannels).sum();
+
+		inputGateChannelIndexOffsets = new int[maxGateIndex + 1];
 		inputChannelToInputGateIndex = new int[totalNumberOfInputChannels];
 
 		int currentNumberOfInputChannels = 0;
@@ -141,8 +143,9 @@ public class UnionInputGate extends InputGate {
 
 	@Override
 	public InputChannel getChannel(int channelIndex) {
-		int gateIndex = this.inputChannelToInputGateIndex[channelIndex];
-		return inputGates[gateIndex].getChannel(channelIndex - inputGateChannelIndexOffsets[gateIndex]);
+		int gateIndex = inputChannelToInputGateIndex[channelIndex];
+		return inputGatesByGateIndex.get(gateIndex)
+			.getChannel(channelIndex - inputGateChannelIndexOffsets[gateIndex]);
 	}
 
 	@Override
@@ -173,10 +176,11 @@ public class UnionInputGate extends InputGate {
 		InputWithData<IndexedInputGate, BufferOrEvent> inputWithData = next.get();
 
 		handleEndOfPartitionEvent(inputWithData.data, inputWithData.input);
-		return Optional.of(adjustForUnionInputGate(
-			inputWithData.data,
-			inputWithData.input,
-			inputWithData.moreAvailable));
+		if (!inputWithData.data.moreAvailable()) {
+			inputWithData.data.setMoreAvailable(inputWithData.moreAvailable);
+		}
+
+		return Optional.of(inputWithData.data);
 	}
 
 	private Optional<InputWithData<IndexedInputGate, BufferOrEvent>> waitAndGetNextData(boolean blocking)
@@ -214,19 +218,6 @@ public class UnionInputGate extends InputGate {
 		}
 	}
 
-	private BufferOrEvent adjustForUnionInputGate(
-			BufferOrEvent bufferOrEvent,
-			IndexedInputGate inputGate,
-			boolean moreInputGatesAvailable) {
-		// Set the channel index to identify the input channel (across all unioned input gates)
-		final int channelIndexOffset = inputGateChannelIndexOffsets[inputGate.getGateIndex()];
-
-		bufferOrEvent.setChannelIndex(channelIndexOffset + bufferOrEvent.getChannelIndex());
-		bufferOrEvent.setMoreAvailable(bufferOrEvent.moreAvailable() || moreInputGatesAvailable);
-
-		return bufferOrEvent;
-	}
-
 	private void handleEndOfPartitionEvent(BufferOrEvent bufferOrEvent, InputGate inputGate) {
 		if (bufferOrEvent.isEvent()
 			&& bufferOrEvent.getEvent().getClass() == EndOfPartitionEvent.class
@@ -253,13 +244,13 @@ public class UnionInputGate extends InputGate {
 
 	@Override
 	public void sendTaskEvent(TaskEvent event) throws IOException {
-		for (InputGate inputGate : inputGates) {
+		for (InputGate inputGate : inputGatesByGateIndex.values()) {
 			inputGate.sendTaskEvent(event);
 		}
 	}
 
 	@Override
-	public void resumeConsumption(int channelIndex) {
+	public void resumeConsumption(int channelIndex) throws IOException {
 		// BEWARE: consumption resumption only happens for streaming jobs in which all
 		// slots are allocated together so there should be no UnknownInputChannel. We
 		// will refactor the code to not rely on this assumption in the future.
@@ -277,7 +268,7 @@ public class UnionInputGate extends InputGate {
 
 	@Override
 	public void requestPartitions() throws IOException {
-		for (InputGate inputGate : inputGates) {
+		for (InputGate inputGate : inputGatesByGateIndex.values()) {
 			inputGate.requestPartitions();
 		}
 	}
@@ -332,7 +323,7 @@ public class UnionInputGate extends InputGate {
 
 	@Override
 	public void registerBufferReceivedListener(BufferReceivedListener listener) {
-		for (InputGate inputGate : inputGates) {
+		for (InputGate inputGate : inputGatesByGateIndex.values()) {
 			inputGate.registerBufferReceivedListener(listener);
 		}
 	}

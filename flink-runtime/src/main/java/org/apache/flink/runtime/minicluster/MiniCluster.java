@@ -46,6 +46,7 @@ import org.apache.flink.runtime.entrypoint.component.DefaultDispatcherResourceMa
 import org.apache.flink.runtime.entrypoint.component.DispatcherResourceManagerComponent;
 import org.apache.flink.runtime.entrypoint.component.DispatcherResourceManagerComponentFactory;
 import org.apache.flink.runtime.executiongraph.AccessExecutionGraph;
+import org.apache.flink.runtime.externalresource.ExternalResourceInfoProvider;
 import org.apache.flink.runtime.heartbeat.HeartbeatServices;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServicesUtils;
@@ -72,8 +73,8 @@ import org.apache.flink.runtime.rpc.RpcUtils;
 import org.apache.flink.runtime.rpc.akka.AkkaRpcServiceUtils;
 import org.apache.flink.runtime.taskexecutor.TaskExecutor;
 import org.apache.flink.runtime.taskexecutor.TaskManagerRunner;
+import org.apache.flink.runtime.util.ClusterEntrypointUtils;
 import org.apache.flink.runtime.util.ExecutorThreadFactory;
-import org.apache.flink.runtime.util.Hardware;
 import org.apache.flink.runtime.webmonitor.retriever.LeaderRetriever;
 import org.apache.flink.runtime.webmonitor.retriever.MetricQueryServiceRetriever;
 import org.apache.flink.runtime.webmonitor.retriever.impl.RpcGatewayRetriever;
@@ -311,7 +312,7 @@ public class MiniCluster implements JobExecutorService, AutoCloseableAsync {
 					ConfigurationUtils.getSystemResourceMetricsProbingInterval(configuration));
 
 				ioExecutor = Executors.newFixedThreadPool(
-					Hardware.getNumberCPUCores(),
+					ClusterEntrypointUtils.getPoolSize(configuration),
 					new ExecutorThreadFactory("mini-cluster-io"));
 				haServices = createHighAvailabilityServices(configuration, ioExecutor);
 
@@ -536,6 +537,7 @@ public class MiniCluster implements JobExecutorService, AutoCloseableAsync {
 				metricRegistry,
 				blobCacheService,
 				useLocalCommunication(),
+				ExternalResourceInfoProvider.NO_EXTERNAL_RESOURCES,
 				taskManagerTerminatingFatalErrorHandlerFactory.create(taskManagers.size()));
 
 			taskExecutor.start();

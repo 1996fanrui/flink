@@ -35,7 +35,6 @@ import io.fabric8.kubernetes.api.model.ResourceRequirements;
 import java.util.List;
 import java.util.stream.Collectors;
 
-import static org.apache.flink.kubernetes.utils.Constants.ENV_FLINK_POD_NAME;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
@@ -79,7 +78,8 @@ public class InitTaskManagerDecorator extends AbstractKubernetesStepDecorator {
 	private Container decorateMainContainer(Container container) {
 		final ResourceRequirements resourceRequirements = KubernetesUtils.getResourceRequirements(
 				kubernetesTaskManagerParameters.getTaskManagerMemoryMB(),
-				kubernetesTaskManagerParameters.getTaskManagerCPU());
+				kubernetesTaskManagerParameters.getTaskManagerCPU(),
+				kubernetesTaskManagerParameters.getTaskManagerExternalResources());
 
 		return new ContainerBuilder(container)
 				.withName(kubernetesTaskManagerParameters.getTaskManagerMainContainerName())
@@ -91,10 +91,6 @@ public class InitTaskManagerDecorator extends AbstractKubernetesStepDecorator {
 					.withContainerPort(kubernetesTaskManagerParameters.getRPCPort())
 					.build())
 				.withEnv(getCustomizedEnvs())
-				.addNewEnv()
-					.withName(ENV_FLINK_POD_NAME)
-					.withValue(kubernetesTaskManagerParameters.getPodName())
-					.endEnv()
 				.build();
 	}
 

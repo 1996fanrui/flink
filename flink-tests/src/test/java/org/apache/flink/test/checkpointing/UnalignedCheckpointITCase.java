@@ -182,7 +182,7 @@ public class UnalignedCheckpointITCase extends TestLogger {
 		env.enableCheckpointing(100);
 		// keep in sync with FailingMapper in #createDAG
 		env.setRestartStrategy(RestartStrategies.fixedDelayRestart(5, Time.milliseconds(100)));
-		env.getCheckpointConfig().enableUnalignedCheckpoints();
+		env.getCheckpointConfig().enableUnalignedCheckpoints(true);
 		return env;
 	}
 
@@ -243,6 +243,10 @@ public class UnalignedCheckpointITCase extends TestLogger {
 		@Override
 		public void notifyCheckpointComplete(long checkpointId) {
 			state.numCompletedCheckpoints++;
+		}
+
+		@Override
+		public void notifyCheckpointAborted(long checkpointId) {
 		}
 
 		@Override
@@ -441,6 +445,10 @@ public class UnalignedCheckpointITCase extends TestLogger {
 		@Override
 		public void notifyCheckpointComplete(long checkpointId) {
 			state.completedCheckpoints++;
+		}
+
+		@Override
+		public void notifyCheckpointAborted(long checkpointId) {
 		}
 
 		@Override

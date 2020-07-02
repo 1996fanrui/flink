@@ -169,9 +169,30 @@ public class JobManagerOptions {
 		key("jobmanager.memory.off-heap.size")
 			.memoryType()
 			.defaultValue(MemorySize.ofMebiBytes(128))
-			.withDescription("Off-heap Memory size for JobManager. The JVM direct memory limit of the Job Manager " +
-				"process (-XX:MaxDirectMemorySize) will be set to this value. This option covers all off-heap memory " +
-				"usage including direct and native memory allocation.");
+			.withDescription(Description
+				.builder()
+				.text(
+					"Off-heap Memory size for JobManager. This option covers all off-heap memory usage including " +
+						"direct and native memory allocation. The JVM direct memory limit of the JobManager process " +
+						"(-XX:MaxDirectMemorySize) will be set to this value if the limit is enabled by " +
+						"'jobmanager.memory.enable-jvm-direct-memory-limit'. ")
+				.build());
+
+	/**
+	 * Off-heap Memory size for the JobManager.
+	 */
+	@Documentation.Section(Documentation.Sections.COMMON_MEMORY)
+	public static final ConfigOption<Boolean> JVM_DIRECT_MEMORY_LIMIT_ENABLED =
+		key("jobmanager.memory.enable-jvm-direct-memory-limit")
+			.booleanType()
+			.defaultValue(false)
+			.withDescription(Description
+				.builder()
+				.text(
+					"Whether to enable the JVM direct memory limit of the JobManager process " +
+						"(-XX:MaxDirectMemorySize). The limit will be set to the value of '%s' option. ",
+					text(OFF_HEAP_MEMORY.key()))
+				.build());
 
 	/**
 	 * JVM Metaspace Size for the JobManager.
@@ -232,17 +253,12 @@ public class JobManagerOptions {
 
 	/**
 	 * This option specifies the failover strategy, i.e. how the job computation recovers from task failures.
-	 *
-	 * <p>The option "individual" is intentionally not included for its known limitations.
-	 * It only works when all tasks are not connected, in which case the "region"
-	 * failover strategy would also restart failed tasks individually.
-	 * The new "region" strategy supersedes "individual" strategy and should always work.
 	 */
 	@Documentation.Section({Documentation.Sections.ALL_JOB_MANAGER, Documentation.Sections.EXPERT_FAULT_TOLERANCE})
-	@Documentation.OverrideDefault("region")
 	public static final ConfigOption<String> EXECUTION_FAILOVER_STRATEGY =
 		key("jobmanager.execution.failover-strategy")
-			.defaultValue("full")
+			.stringType()
+			.defaultValue("region")
 			.withDescription(Description.builder()
 				.text("This option specifies how the job computation recovers from task failures. " +
 					"Accepted values are:")
@@ -321,7 +337,6 @@ public class JobManagerOptions {
 			.withDescription(Description.builder()
 				.text("Determines which scheduler implementation is used to schedule tasks. Accepted values are:")
 				.list(
-					text("'legacy': legacy scheduler"),
 					text("'ng': new generation scheduler"))
 				.build());
 	/**

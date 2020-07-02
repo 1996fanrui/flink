@@ -76,20 +76,28 @@ public abstract class ProcessMemoryUtilsTestBase<T extends ProcessMemorySpec> ex
 
 	@Test
 	public void testGenerateJvmParameters() {
-		MemorySize heap = MemorySize.ofMebiBytes(1);
-		MemorySize directMemory = MemorySize.ofMebiBytes(2);
-		MemorySize metaspace = MemorySize.ofMebiBytes(3);
-		String jvmParamsStr = ProcessMemoryUtils.generateJvmParametersStr(new JvmArgTestingProcessMemorySpec(
-			heap,
-			directMemory,
-			metaspace
-		));
+		ProcessMemorySpec spec = JvmArgTestingProcessMemorySpec.generate();
+		String jvmParamsStr = ProcessMemoryUtils.generateJvmParametersStr(spec, true);
 		Map<String, String> configs = ConfigurationUtils.parseJvmArgString(jvmParamsStr);
 
-		assertThat(MemorySize.parse(configs.get("-Xmx")), is(heap));
-		assertThat(MemorySize.parse(configs.get("-Xms")), is(heap));
-		assertThat(MemorySize.parse(configs.get("-XX:MaxDirectMemorySize=")), is(directMemory));
-		assertThat(MemorySize.parse(configs.get("-XX:MaxMetaspaceSize=")), is(metaspace));
+		assertThat(configs.size(), is(4));
+		assertThat(MemorySize.parse(configs.get("-Xmx")), is(spec.getJvmHeapMemorySize()));
+		assertThat(MemorySize.parse(configs.get("-Xms")), is(spec.getJvmHeapMemorySize()));
+		assertThat(MemorySize.parse(configs.get("-XX:MaxMetaspaceSize=")), is(spec.getJvmMetaspaceSize()));
+		assertThat(MemorySize.parse(configs.get("-XX:MaxDirectMemorySize=")), is(spec.getJvmDirectMemorySize()));
+	}
+
+	@Test
+	public void testGenerateJvmParametersWithoutDirectMemoryLimit() {
+		ProcessMemorySpec spec = JvmArgTestingProcessMemorySpec.generate();
+		String jvmParamsStr = ProcessMemoryUtils.generateJvmParametersStr(spec, false);
+		Map<String, String> configs = ConfigurationUtils.parseJvmArgString(jvmParamsStr);
+
+		assertThat(configs.size(), is(3));
+		assertThat(MemorySize.parse(configs.get("-Xmx")), is(spec.getJvmHeapMemorySize()));
+		assertThat(MemorySize.parse(configs.get("-Xms")), is(spec.getJvmHeapMemorySize()));
+		assertThat(MemorySize.parse(configs.get("-XX:MaxMetaspaceSize=")), is(spec.getJvmMetaspaceSize()));
+		assertThat(configs.containsKey("-XX:MaxDirectMemorySize="), is(false));
 	}
 
 	@Test
@@ -123,6 +131,35 @@ public abstract class ProcessMemoryUtilsTestBase<T extends ProcessMemorySpec> ex
 			assertThat(e.getMessage(), containsString(options.getTotalFlinkMemoryOption().key()));
 			assertThat(e.getMessage(), containsString(options.getTotalProcessMemoryOption().key()));
 		}
+	}
+
+	@Test
+	public void testDerivedTotalProcessMemoryGreaterThanConfiguredFailureWithFineGrainedOptions() {
+		Configuration conf = getConfigurationWithJvmMetaspaceAndTotalFlinkMemory(100, 200);
+		// Total Flink memory + JVM Metaspace > Total Process Memory (no space for JVM overhead)
+		MemorySize totalFlinkMemorySize = MemorySize.ofMebiBytes(150);
+		configWithFineGrainedOptions(conf, totalFlinkMemorySize);
+		validateFail(conf);
+	}
+
+	@Test
+	public void testDerivedTotalProcessMemoryGreaterThanConfiguredFailureWithTotalFlinkMemory() {
+		Configuration conf = getConfigurationWithJvmMetaspaceAndTotalFlinkMemory(100, 200);
+		// Total Flink memory + JVM Metaspace > Total Process Memory (no space for JVM overhead)
+		MemorySize totalFlinkMemorySize = MemorySize.ofMebiBytes(150);
+		conf.set(options.getTotalFlinkMemoryOption(), totalFlinkMemorySize);
+		validateFail(conf);
+	}
+
+	private Configuration getConfigurationWithJvmMetaspaceAndTotalFlinkMemory(
+			long jvmMetaspaceSizeMb,
+			long totalProcessMemorySizeMb) {
+		MemorySize jvmMetaspaceSize = MemorySize.ofMebiBytes(jvmMetaspaceSizeMb);
+		MemorySize totalProcessMemorySize = MemorySize.ofMebiBytes(totalProcessMemorySizeMb);
+		Configuration conf = new Configuration();
+		conf.set(options.getJvmOptions().getJvmMetaspaceOption(), jvmMetaspaceSize);
+		conf.set(options.getTotalProcessMemoryOption(), totalProcessMemorySize);
+		return conf;
 	}
 
 	@Test
@@ -303,6 +340,8 @@ public abstract class ProcessMemoryUtilsTestBase<T extends ProcessMemorySpec> ex
 
 	protected abstract Configuration getConfigurationWithLegacyHeapSizeMappedToNewConfigOption(Configuration config);
 
+	protected abstract void configWithFineGrainedOptions(Configuration configuration, MemorySize totalFlinkMemorySize);
+
 	protected ConfigOption<MemorySize> getNewOptionForLegacyHeapOption() {
 		return newOptionForLegacyHeapOption;
 	}
@@ -348,6 +387,14 @@ public abstract class ProcessMemoryUtilsTestBase<T extends ProcessMemorySpec> ex
 		@Override
 		public MemorySize getTotalProcessMemorySize() {
 			throw new UnsupportedOperationException();
+		}
+
+		public static JvmArgTestingProcessMemorySpec generate() {
+			return new JvmArgTestingProcessMemorySpec(
+				MemorySize.ofMebiBytes(1),
+				MemorySize.ofMebiBytes(2),
+				MemorySize.ofMebiBytes(3)
+			);
 		}
 	}
 }

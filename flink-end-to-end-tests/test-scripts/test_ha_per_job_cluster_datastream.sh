@@ -20,7 +20,6 @@
 source "$(dirname "$0")"/common.sh
 source "$(dirname "$0")"/common_ha.sh
 
-TEST_TIMEOUT_SECONDS=540
 TEST_PROGRAM_JAR_NAME=DataStreamAllroundTestProgram.jar
 TEST_PROGRAM_JAR=${END_TO_END_DIR}/flink-datastream-allround-test/target/${TEST_PROGRAM_JAR_NAME}
 FLINK_LIB_DIR=${FLINK_DIR}/lib
@@ -99,6 +98,7 @@ function run_ha_test() {
     local BACKEND=$2
     local ASYNC=$3
     local INCREM=$4
+    local ZOOKEEPER_VERSION=$5
 
     local JM_KILLS=3
 
@@ -114,9 +114,10 @@ function run_ha_test() {
     # jm killing loop
     set_config_key "env.pid.dir" "${TEST_DATA_DIR}"
 
+    setup_flink_shaded_zookeeper ${ZOOKEEPER_VERSION}
     start_local_zk
 
-    echo "Running on HA mode: parallelism=${PARALLELISM}, backend=${BACKEND}, asyncSnapshots=${ASYNC}, and incremSnapshots=${INCREM}."
+    echo "Running on HA mode: parallelism=${PARALLELISM}, backend=${BACKEND}, asyncSnapshots=${ASYNC}, incremSnapshots=${INCREM} and zk=${ZOOKEEPER_VERSION}."
 
     # submit a job in detached mode and let it run
     run_job ${PARALLELISM} ${BACKEND} ${ASYNC} ${INCREM}
@@ -152,24 +153,6 @@ function run_ha_test() {
 STATE_BACKEND_TYPE=${1:-file}
 STATE_BACKEND_FILE_ASYNC=${2:-true}
 STATE_BACKEND_ROCKS_INCREMENTAL=${3:-false}
+ZOOKEEPER_VERSION=${4:-3.4}
 
-function kill_test_watchdog() {
-    local watchdog_pid=`cat $TEST_DATA_DIR/job_watchdog.pid`
-    echo "Stopping job timeout watchdog (with pid=$watchdog_pid)"
-    kill $watchdog_pid
-}
-on_exit kill_test_watchdog
-
-( 
-    cmdpid=$BASHPID; 
-    (sleep $TEST_TIMEOUT_SECONDS; # set a timeout of 10 minutes for this test
-    echo "Test (pid: $cmdpid) did not finish after $TEST_TIMEOUT_SECONDS seconds."
-    echo "Printing Flink logs and killing it:"
-    cat ${FLINK_DIR}/log/* 
-    kill "$cmdpid") & watchdog_pid=$!
-    echo $watchdog_pid > $TEST_DATA_DIR/job_watchdog.pid
-    
-    run_ha_test 4 ${STATE_BACKEND_TYPE} ${STATE_BACKEND_FILE_ASYNC} ${STATE_BACKEND_ROCKS_INCREMENTAL}
-)
-
-
+run_test_with_timeout 900 run_ha_test 4 ${STATE_BACKEND_TYPE} ${STATE_BACKEND_FILE_ASYNC} ${STATE_BACKEND_ROCKS_INCREMENTAL} ${ZOOKEEPER_VERSION}

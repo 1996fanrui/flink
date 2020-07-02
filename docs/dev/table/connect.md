@@ -1,7 +1,5 @@
 ---
-title: "Table API Connectors"
-nav-parent_id: connectors-root
-nav-pos: 2
+title: "Table API Legacy Connectors"
 ---
 <!--
 Licensed to the Apache Software Foundation (ASF) under one
@@ -56,11 +54,9 @@ The following tables list all available connectors and formats. Their mutual com
 | Name                       | Maven dependency             | SQL Client JAR         |
 | :------------------------- | :--------------------------- | :--------------------- |
 | Old CSV (for files)        | Built-in                     | Built-in               |
-| CSV (for Kafka)            | `flink-csv`                  | [Download](https://repo.maven.apache.org/maven2/org/apache/flink/flink-csv/{{site.version}}/flink-csv-{{site.version}}-sql-jar.jar) |
-| JSON                       | `flink-json`                 | [Download](https://repo.maven.apache.org/maven2/org/apache/flink/flink-json/{{site.version}}/flink-json-{{site.version}}-sql-jar.jar) |
+| CSV (for Kafka)            | `flink-csv`                  | Built-in               |
+| JSON                       | `flink-json`                 | Built-in               |
 | Apache Avro                | `flink-avro`                 | [Download](https://repo.maven.apache.org/maven2/org/apache/flink/flink-avro/{{site.version}}/flink-avro-{{site.version}}-sql-jar.jar) |
-| Apache ORC                 | `flink-orc`                  | [Download](https://repo.maven.apache.org/maven2/org/apache/flink/flink-orc{{site.scala_version_suffix}}/{{site.version}}/flink-orc{{site.scala_version_suffix}}-{{site.version}}-jar-with-dependencies.jar) |
-| Apache Parquet             | `flink-parquet`              | [Download](https://repo.maven.apache.org/maven2/org/apache/flink/flink-parquet{{site.scala_version_suffix}}/{{site.version}}/flink-parquet{{site.scala_version_suffix}}-{{site.version}}-jar-with-dependencies.jar) |
 
 {% else %}
 
@@ -95,7 +91,7 @@ The subsequent sections will cover each definition part ([connector](connect.htm
 <div class="codetabs" markdown="1">
 <div data-lang="DDL" markdown="1">
 {% highlight sql %}
-tableEnvironment.sqlUpdate(
+tableEnvironment.executeSql(
     "CREATE TABLE MyTable (\n" +
     "  ...    -- declare table schema \n" +
     ") WITH (\n" +
@@ -1102,7 +1098,7 @@ connector:
       max-size: 42 mb           # optional: maximum size of buffered actions in bytes per bulk request
                                 #   (only MB granularity is supported)
       interval: 60000           # optional: bulk flush interval (in milliseconds)
-      back-off:                 # optional: backoff strategy ("disabled" by default)
+      backoff:                 # optional: backoff strategy ("disabled" by default)
         type: ...               #   valid strategies are "disabled", "constant", or "exponential"
         max-retries: 3          # optional: maximum number of retries
         delay: 30000            # optional: delay between each backoff attempt (in milliseconds)
@@ -1307,7 +1303,11 @@ CREATE TABLE MyUserTable (
   'connector.username' = 'name',
   'connector.password' = 'password',
   
-  -- **followings are scan options, optional, used when reading from table**
+  -- **followings are scan options, optional, used when reading from a table**
+
+  -- optional: SQL query / prepared statement.
+  -- If set, this will take precedence over the 'connector.table' setting
+  'connector.read.query' = 'SELECT * FROM sometable',
 
   -- These options must all be specified if any of them is specified. In addition,
   -- partition.num must be specified. They describe how to partition the table when
@@ -1405,7 +1405,7 @@ connector:
 
 **Upsert sink:** Flink automatically extracts valid keys from a query. For example, a query `SELECT a, b, c FROM t GROUP BY a, b` defines a composite key of the fields `a` and `b`. If a JDBC table is used as upsert sink, please make sure keys of the query is one of the unique key sets or primary key of the underlying database. This can guarantee the output result is as expected.
 
-**Temporary Join:**  JDBC connector can be used in temporal join as a lookup source. Currently, only sync lookup mode is supported. The lookup cache options (`connector.lookup.cache.max-rows` and `connector.lookup.cache.ttl`) must all be specified if any of them is specified. The lookup cache is used to improve performance of temporal join JDBC connector by querying the cache first instead of send all requests to remote database. But the returned value might not be the latest if it is from the cache. So it's a balance between throughput and correctness. 
+**Temporal Join:**  JDBC connector can be used in temporal join as a lookup source. Currently, only sync lookup mode is supported. The lookup cache options (`connector.lookup.cache.max-rows` and `connector.lookup.cache.ttl`) must all be specified if any of them is specified. The lookup cache is used to improve performance of temporal join JDBC connector by querying the cache first instead of send all requests to remote database. But the returned value might not be the latest if it is from the cache. So it's a balance between throughput and correctness. 
 
 **Writing:** As default, the `connector.write.flush.interval` is `0s` and `connector.write.flush.max-rows` is `5000`, which means for low traffic queries, the buffered output rows may not be flushed to database for a long time. So the interval configuration is recommended to set.
 
@@ -2078,7 +2078,7 @@ tableEnv.registerTableSink(
   sink);
 
 Table table = ...
-table.insertInto("csvOutputTable");
+table.executeInsert("csvOutputTable");
 {% endhighlight %}
 </div>
 
@@ -2099,7 +2099,7 @@ tableEnv.registerTableSink(
   sink)
 
 val table: Table = ???
-table.insertInto("csvOutputTable")
+table.executeInsert("csvOutputTable")
 {% endhighlight %}
 </div>
 

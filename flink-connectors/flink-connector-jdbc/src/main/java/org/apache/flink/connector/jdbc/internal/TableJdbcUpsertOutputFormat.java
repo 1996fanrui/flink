@@ -54,7 +54,7 @@ class TableJdbcUpsertOutputFormat extends JdbcBatchingOutputFormat<Tuple2<Boolea
 		super.open(taskNumber, numTasks);
 		deleteExecutor = createDeleteExecutor();
 		try {
-			deleteExecutor.open(connection);
+			deleteExecutor.prepareStatements(connection);
 		} catch (SQLException e) {
 			throw new IOException(e);
 		}
@@ -69,7 +69,7 @@ class TableJdbcUpsertOutputFormat extends JdbcBatchingOutputFormat<Tuple2<Boolea
 	}
 
 	@Override
-	void addToBatch(Tuple2<Boolean, Row> original, Row extracted) throws SQLException {
+	protected void addToBatch(Tuple2<Boolean, Row> original, Row extracted) throws SQLException {
 		if (original.f0) {
 			super.addToBatch(original, extracted);
 		} else {
@@ -83,7 +83,9 @@ class TableJdbcUpsertOutputFormat extends JdbcBatchingOutputFormat<Tuple2<Boolea
 			super.close();
 		} finally {
 			try {
-				deleteExecutor.close();
+				if (deleteExecutor != null){
+					deleteExecutor.closeStatements();
+				}
 			} catch (SQLException e) {
 				LOG.warn("unable to close delete statement runner", e);
 			}
@@ -91,7 +93,7 @@ class TableJdbcUpsertOutputFormat extends JdbcBatchingOutputFormat<Tuple2<Boolea
 	}
 
 	@Override
-	void attemptFlush() throws SQLException {
+	protected void attemptFlush() throws SQLException {
 		super.attemptFlush();
 		deleteExecutor.executeBatch();
 	}

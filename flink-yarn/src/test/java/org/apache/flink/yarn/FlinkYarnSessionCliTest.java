@@ -22,7 +22,7 @@ import org.apache.flink.client.cli.CliArgsException;
 import org.apache.flink.client.cli.CliFrontend;
 import org.apache.flink.client.cli.CliFrontendParser;
 import org.apache.flink.client.cli.CustomCommandLine;
-import org.apache.flink.client.cli.ExecutorCLI;
+import org.apache.flink.client.cli.GenericCLI;
 import org.apache.flink.client.deployment.ClusterClientFactory;
 import org.apache.flink.client.deployment.ClusterClientServiceLoader;
 import org.apache.flink.client.deployment.ClusterSpecification;
@@ -193,8 +193,8 @@ public class FlinkYarnSessionCliTest extends TestLogger {
 				argsUnderTest,
 				true);
 
-		final CustomCommandLine customCommandLine = cli.getActiveCustomCommandLine(commandLine);
-		assertTrue(customCommandLine instanceof ExecutorCLI);
+		final CustomCommandLine customCommandLine = cli.validateAndGetActiveCommandLine(commandLine);
+		assertTrue(customCommandLine instanceof GenericCLI);
 	}
 
 	private void validateYarnCLIisActive(Configuration configuration) throws FlinkException, CliArgsException {

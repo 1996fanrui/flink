@@ -46,7 +46,6 @@ For the Expression DSL it is also necessary to import static `org.apache.flink.t
 
 {% highlight java %}
 import org.apache.flink.table.api.*
-import org.apache.flink.table.api.java.*
 
 import static org.apache.flink.table.api.Expressions.*
 
@@ -73,14 +72,14 @@ result.print();
 
 <div data-lang="scala" markdown="1">
 
-The Scala Table API is enabled by importing `org.apache.flink.api.scala._` and `org.apache.flink.table.api.scala._`.
+The Scala Table API is enabled by importing `org.apache.flink.table.api._`, `org.apache.flink.api.scala._`, and `org.apache.flink.table.api.bridge.scala._` (for bridging to/from DataStream).
 
 The following example shows how a Scala Table API program is constructed. Table fields are referenced using Scala's String interpolation using a dollar character (`$`).
 
 {% highlight scala %}
 import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
-import org.apache.flink.table.api.scala._
+import org.apache.flink.table.api.bridge.scala._
 
 // environment configuration
 val env = ExecutionEnvironment.getExecutionEnvironment
@@ -149,7 +148,7 @@ Table result = orders
                 $("c").isNotNull()
             ))
         .select($("a").lowerCase().as("a"), $("b"), $("rowtime"))
-        .window(Tumble.over(interval(Duration.ofHours(1))).on($("rowtime")).as("hourlyWindow"))
+        .window(Tumble.over(lit(1).hours()).on($("rowtime")).as("hourlyWindow"))
         .groupBy($("hourlyWindow"), $("a"))
         .select($("a"), $("hourlyWindow").end().as("hour"), $("b").avg().as("avgBillingAmount"));
 {% endhighlight %}
@@ -228,6 +227,50 @@ Table orders = tableEnv.from("Orders");
 {% endhighlight %}
       </td>
   	</tr>
+  	<tr>
+      <td>
+            <strong>Values</strong><br>
+            <span class="label label-primary">Batch</span> <span class="label label-primary">Streaming</span>
+      </td>
+      <td>
+          <p>Similar to the VALUES clause in a SQL query. Produces an inline table out of the provided rows.</p>
+          <p>You can use a `row(...)` expression to create composite rows:</p>
+{% highlight java %}
+Table table = tEnv.fromValues(
+   row(1, "ABC"),
+   row(2L, "ABCDE")
+);
+{% endhighlight %}
+          <p>will produce a Table with a schema as follows:</p>
+{% highlight text %}
+root
+|-- f0: BIGINT NOT NULL     // original types INT and BIGINT are generalized to BIGINT
+|-- f1: VARCHAR(5) NOT NULL // original types CHAR(3) and CHAR(5) are generalized
+                            // to VARCHAR(5). VARCHAR is used instead of CHAR so that
+                            // no padding is applied
+{% endhighlight %}
+          <p>The method will derive the types automatically from the input expressions. If types
+          at a certain position differ, the method will try to find a common super type for all types. If a common
+          super type does not exist, an exception will be thrown.</p> 
+          <p>You can also specify the requested type explicitly. It might be helpful for assigning more generic types like  e.g. DECIMAL or naming the columns.</p>
+{% highlight java %}
+Table table = tEnv.fromValues(
+    DataTypes.ROW(
+        DataTypes.FIELD("id", DataTypes.DECIMAL(10, 2)),
+        DataTypes.FIELD("name", DataTypes.STRING())
+    ),
+    row(1, "ABC"),
+    row(2L, "ABCDE")
+);
+{% endhighlight %}
+                    <p>will produce a Table with a schema as follows:</p>
+{% highlight text %}
+root
+|-- id: DECIMAL(10, 2)
+|-- name: STRING
+{% endhighlight %}
+      </td>
+    </tr>
     <tr>
       <td>
         <strong>Select</strong><br>
@@ -303,6 +346,50 @@ val orders: Table = tableEnv.from("Orders")
 {% endhighlight %}
       </td>
   	</tr>
+  	<tr>
+      <td>
+            <strong>Values</strong><br>
+            <span class="label label-primary">Batch</span> <span class="label label-primary">Streaming</span>
+      </td>
+      <td>
+          <p>Similar to the VALUES clause in a SQL query. Produces an inline table out of the provided rows.</p>
+          <p>You can use a `row(...)` expression to create composite rows:</p>
+{% highlight scala %}
+val table = tEnv.fromValues(
+   row(1, "ABC"),
+   row(2L, "ABCDE")
+)
+{% endhighlight %}
+          <p>will produce a Table with a schema as follows:</p>
+{% highlight text %}
+root
+|-- f0: BIGINT NOT NULL     // original types INT and BIGINT are generalized to BIGINT
+|-- f1: VARCHAR(5) NOT NULL // original types CHAR(3) and CHAR(5) are generalized
+                            // to VARCHAR(5). VARCHAR is used instead of CHAR so that
+                            // no padding is applied
+{% endhighlight %}
+          <p>The method will derive the types automatically from the input expressions. If types
+          at a certain position differ, the method will try to find a common super type for all types. If a common
+          super type does not exist, an exception will be thrown.</p> 
+          <p>You can also specify the requested type explicitly. It might be helpful for assigning more generic types like  e.g. DECIMAL or naming the columns.</p>
+{% highlight scala %}
+val table = tEnv.fromValues(
+    DataTypes.ROW(
+        DataTypes.FIELD("id", DataTypes.DECIMAL(10, 2)),
+        DataTypes.FIELD("name", DataTypes.STRING())
+    ),
+    row(1, "ABC"),
+    row(2L, "ABCDE")
+)
+{% endhighlight %}
+                    <p>will produce a Table with a schema as follows:</p>
+{% highlight text %}
+root
+|-- id: DECIMAL(10, 2)
+|-- name: STRING
+{% endhighlight %}
+      </td>
+    </tr>
   	<tr>
       <td>
         <strong>Select</strong><br>
@@ -677,7 +764,7 @@ Table result = orders.groupBy($("a")).select($("a"), $("b").sum().as("d"));
 {% highlight java %}
 Table orders = tableEnv.from("Orders");
 Table result = orders
-    .window(Tumble.over(interval(Duration.ofMinutes(5))).on($("rowtime")).as("w")) // define window
+    .window(Tumble.over(lit(5).minutes())).on($("rowtime")).as("w")) // define window
     .groupBy($("a"), $("w")) // group by key and window
     // access window properties and aggregate
     .select(
@@ -736,7 +823,7 @@ Table groupByDistinctResult = orders
 // Distinct aggregation on time window group by
 Table groupByWindowDistinctResult = orders
     .window(Tumble
-            .over(interval(Duration.ofMinutes(5)))
+            .over(lit(5).minutes()))
             .on($("rowtime"))
             .as("w")
     )
@@ -1075,15 +1162,15 @@ Table fullOuterResult = left.fullOuterJoin(right, $("a").isEqual($("d")))
       </td>
     </tr>
     <tr>
-      <td><strong>Time-windowed Join</strong><br>
+      <td><strong>Interval Join</strong><br>
         <span class="label label-primary">Batch</span>
         <span class="label label-primary">Streaming</span>
       </td>
       <td>
-        <p><b>Note:</b> Time-windowed joins are a subset of regular joins that can be processed in a streaming fashion.</p>
+        <p><b>Note:</b> Interval joins are a subset of regular joins that can be processed in a streaming fashion.</p>
 
-        <p>A time-windowed join requires at least one equi-join predicate and a join condition that bounds the time on both sides. Such a condition can be defined by two appropriate range predicates (<code>&lt;, &lt;=, &gt;=, &gt;</code>) or a single equality predicate that compares <a href="streaming/time_attributes.html">time attributes</a> of the same type (i.e., processing time or event time) of both input tables.</p> 
-        <p>For example, the following predicates are valid window join conditions:</p>
+        <p>An interval join requires at least one equi-join predicate and a join condition that bounds the time on both sides. Such a condition can be defined by two appropriate range predicates (<code>&lt;, &lt;=, &gt;=, &gt;</code>) or a single equality predicate that compares <a href="streaming/time_attributes.html">time attributes</a> of the same type (i.e., processing time or event time) of both input tables.</p>
+        <p>For example, the following predicates are valid interval join conditions:</p>
 
         <ul>
           <li><code>ltime === rtime</code></li>
@@ -1098,8 +1185,8 @@ Table result = left.join(right)
   .where(
     and(
         $("a").isEqual($("d")),
-        $("ltime").isGreaterEqual($("rtime").minus(interval(Duration.ofMinutes(5)))),
-        $("ltime").isLess($("rtime").plus(interval(Duration.ofMinutes(10))))
+        $("ltime").isGreaterEqual($("rtime").minus(lit(5).minutes())),
+        $("ltime").isLess($("rtime").plus(lit(10).minutes()))
     ))
   .select($("a"), $("b"), $("e"), $("ltime"));
 {% endhighlight %}
@@ -1228,15 +1315,15 @@ val fullOuterResult = left.fullOuterJoin(right, $"a" === $"d").select($"a", $"b"
       </td>
     </tr>
     <tr>
-      <td><strong>Time-windowed Join</strong><br>
+      <td><strong>Interval Join</strong><br>
         <span class="label label-primary">Batch</span>
         <span class="label label-primary">Streaming</span>
       </td>
       <td>
-        <p><b>Note:</b> Time-windowed joins are a subset of regular joins that can be processed in a streaming fashion.</p>
+        <p><b>Note:</b> Interval joins are a subset of regular joins that can be processed in a streaming fashion.</p>
 
-        <p>A time-windowed join requires at least one equi-join predicate and a join condition that bounds the time on both sides. Such a condition can be defined by two appropriate range predicates (<code>&lt;, &lt;=, &gt;=, &gt;</code>) or a single equality predicate that compares <a href="streaming/time_attributes.html">time attributes</a> of the same type (i.e., processing time or event time) of both input tables.</p>
-        <p>For example, the following predicates are valid window join conditions:</p>
+        <p>An interval join requires at least one equi-join predicate and a join condition that bounds the time on both sides. Such a condition can be defined by two appropriate range predicates (<code>&lt;, &lt;=, &gt;=, &gt;</code>) or a single equality predicate that compares <a href="streaming/time_attributes.html">time attributes</a> of the same type (i.e., processing time or event time) of both input tables.</p>
+        <p>For example, the following predicates are valid interval join conditions:</p>
 
         <ul>
           <li><code>$"ltime" === $"rtime"</code></li>
@@ -1368,13 +1455,31 @@ full_outer_result = left.full_outer_join(right, "a = d").select("a, b, e")
       </td>
     </tr>
     <tr>
-      <td><strong>Time-windowed Join</strong><br>
+      <td><strong>Interval Join</strong><br>
         <span class="label label-primary">Batch</span>
         <span class="label label-primary">Streaming</span>
       </td>
+      
       <td>
-        <p>Currently not supported in python API.</p>
+              <p><b>Note:</b> Interval joins are a subset of regular joins that can be processed in a streaming fashion.</p>
+      
+              <p>An interval join requires at least one equi-join predicate and a join condition that bounds the time on both sides. Such a condition can be defined by two appropriate range predicates (<code>&lt;, &lt;=, &gt;=, &gt;</code>) or a single equality predicate that compares <a href="streaming/time_attributes.html">time attributes</a> of the same type (i.e., processing time or event time) of both input tables.</p>
+              <p>For example, the following predicates are valid interval join conditions:</p>
+      
+              <ul>
+                <li><code>ltime = rtime</code></li>
+                <li><code>ltime &gt;= rtime &amp;&amp; ltime &lt; rtime + 2.second</code></li>
+              </ul>
+      
+      {% highlight python %}
+left = table_env.from_path("Source1").select("a, b, c, rowtime1")
+right = table_env.from_path("Source2").select("d, e, f, rowtime2")
+  
+result = left.join(right).where("a = d && rowtime1 >= rowtime2 - 1.second 
+                       && rowtime1 <= rowtime2 + 2.second").select("a, b, e, rowtime1")
+      {% endhighlight %}
       </td>
+      
     </tr>
     <tr>
     	<td>
@@ -1973,13 +2078,13 @@ result3 = in.order_by("a.asc").offset(10).fetch(5)
         <span class="label label-primary">Batch</span> <span class="label label-primary">Streaming</span>
       </td>
       <td>
-        <p>Similar to the INSERT INTO clause in a SQL query. Performs a insertion into a registered output table.</p>
+        <p>Similar to the `INSERT INTO` clause in a SQL query, the method performs an insertion into a registered output table. The `executeInsert()` method will immediately submit a Flink job which execute the insert operation.</p>
 
         <p>Output tables must be registered in the TableEnvironment (see <a href="common.html#connector-tables">Connector tables</a>). Moreover, the schema of the registered table must match the schema of the query.</p>
 
 {% highlight java %}
 Table orders = tableEnv.from("Orders");
-orders.insertInto("OutOrders");
+orders.executeInsert("OutOrders");
 {% endhighlight %}
       </td>
     </tr>
@@ -2003,13 +2108,13 @@ orders.insertInto("OutOrders");
         <span class="label label-primary">Batch</span> <span class="label label-primary">Streaming</span>
       </td>
       <td>
-        <p>Similar to the INSERT INTO clause in a SQL query. Performs a insertion into a registered output table.</p>
+        <p>Similar to the `INSERT INTO` clause in a SQL query, the method performs an insertion into a registered output table. The `executeInsert()` method will immediately submit a Flink job which execute the insert operation.</p>
 
         <p>Output tables must be registered in the TableEnvironment (see <a href="common.html#connector-tables">Connector tables</a>). Moreover, the schema of the registered table must match the schema of the query.</p>
 
 {% highlight scala %}
 val orders: Table = tableEnv.from("Orders")
-orders.insertInto("OutOrders")
+orders.executeInsert("OutOrders")
 {% endhighlight %}
       </td>
     </tr>
@@ -2033,13 +2138,13 @@ orders.insertInto("OutOrders")
         <span class="label label-primary">Batch</span> <span class="label label-primary">Streaming</span>
       </td>
       <td>
-        <p>Similar to the INSERT INTO clause in a SQL query. Performs a insertion into a registered output table.</p>
+        <p>Similar to the INSERT INTO clause in a SQL query. Performs a insertion into a registered output table. The executeInsert method will immediately submit a flink job which execute the insert operation.</p>
 
         <p>Output tables must be registered in the TableEnvironment (see <a href="common.html#register-a-tablesink">Register a TableSink</a>). Moreover, the schema of the registered table must match the schema of the query.</p>
 
 {% highlight python %}
-orders = table_env.from_path("Orders");
-orders.insert_into("OutOrders");
+orders = table_env.from_path("Orders")
+orders.execute_insert("OutOrders")
 {% endhighlight %}
       </td>
     </tr>
@@ -2186,10 +2291,10 @@ Tumbling windows are defined by using the `Tumble` class as follows:
 <div data-lang="java" markdown="1">
 {% highlight java %}
 // Tumbling Event-time Window
-.window(Tumble.over(interval(Duration.ofMinutes(10))).on($("rowtime")).as("w"));
+.window(Tumble.over(lit(10).minutes()).on($("rowtime")).as("w"));
 
 // Tumbling Processing-time Window (assuming a processing-time attribute "proctime")
-.window(Tumble.over(interval(Duration.ofMinutes(10))).on($("proctime")).as("w"));
+.window(Tumble.over(lit(10).minutes()).on($("proctime")).as("w"));
 
 // Tumbling Row-count Window (assuming a processing-time attribute "proctime")
 .window(Tumble.over(rowInterval(10)).on($("proctime")).as("w"));
@@ -2261,14 +2366,14 @@ Sliding windows are defined by using the `Slide` class as follows:
 <div data-lang="java" markdown="1">
 {% highlight java %}
 // Sliding Event-time Window
-.window(Slide.over(interval(Duration.ofMinutes(10)))
-            .every(interval(Duration.ofMinutes(5)))
+.window(Slide.over(lit(10).minutes())
+            .every(lit(5).minutes())
             .on($("rowtime"))
             .as("w"));
 
 // Sliding Processing-time window (assuming a processing-time attribute "proctime")
-.window(Slide.over(interval(Duration.ofMinutes(10)))
-            .every(interval(Duration.ofMinutes(5)))
+.window(Slide.over(lit(10).minutes())
+            .every(lit(5).minutes())
             .on($("proctime"))
             .as("w"));
 
@@ -2338,10 +2443,10 @@ A session window is defined by using the `Session` class as follows:
 <div data-lang="java" markdown="1">
 {% highlight java %}
 // Session Event-time Window
-.window(Session.withGap(interval(Duration.ofMinutes(10))).on($("rowtime")).as("w"));
+.window(Session.withGap(lit(10).minutes()).on($("rowtime")).as("w"));
 
 // Session Processing-time Window (assuming a processing-time attribute "proctime")
-.window(Session.withGap(interval(Duration.ofMinutes(10))).on($("proctime")).as("w"));
+.window(Session.withGap(lit(10).minutes()).on($("proctime")).as("w"));
 {% endhighlight %}
 </div>
 
@@ -2527,10 +2632,10 @@ The `OverWindow` defines a range of rows over which aggregates are computed. `Ov
 <div data-lang="java" markdown="1">
 {% highlight java %}
 // Bounded Event-time over window (assuming an event-time attribute "rowtime")
-.window(Over.partitionBy($("a")).orderBy($("rowtime")).preceding(interval(Duration.ofMinutes(1))).as("w"))
+.window(Over.partitionBy($("a")).orderBy($("rowtime")).preceding(lit(1).minutes()).as("w"))
 
 // Bounded Processing-time over window (assuming a processing-time attribute "proctime")
-.window(Over.partitionBy($("a")).orderBy($("proctime")).preceding(interval(Duration.ofMinutes(1))).as("w"))
+.window(Over.partitionBy($("a")).orderBy($("proctime")).preceding(lit(1).minutes()).as("w"))
 
 // Bounded Event-time Row-count over window (assuming an event-time attribute "rowtime")
 .window(Over.partitionBy($("a")).orderBy($("rowtime")).preceding(rowInterval(10)).as("w"))
@@ -2718,7 +2823,7 @@ AggregateFunction myAggFunc = new MyMinMax();
 tableEnv.registerFunction("myAggFunc", myAggFunc);
 
 Table table = input
-    .window(Tumble.over(interval(Duration.ofMinutes(5)))
+    .window(Tumble.over(lit(5).minutes())
                   .on($("rowtime"))
                   .as("w")) // define window
     .groupBy($("key"), $("w")) // group by key and window
@@ -2810,7 +2915,7 @@ Table result = orders
 tableEnv.registerFunction("top2", new Top2());
 Table orders = tableEnv.from("Orders");
 Table result = orders
-    .window(Tumble.over(interval(Duration.ofMinutes(5)))
+    .window(Tumble.over(lit(5).minutes())
                   .on($("rowtime"))
                   .as("w")) // define window
     .groupBy($("a"), $("w")) // group by key and window
@@ -3158,6 +3263,6 @@ timeIndicator = fieldReference , "." , ( "proctime" | "rowtime" ) ;
 
 **Temporal intervals:** Temporal intervals can be represented as number of months (`Types.INTERVAL_MONTHS`) or number of milliseconds (`Types.INTERVAL_MILLIS`). Intervals of same type can be added or subtracted (e.g. `1.hour + 10.minutes`). Intervals of milliseconds can be added to time points (e.g. `"2016-08-10".toDate + 5.days`).
 
-**Scala expressions:** Scala expressions use implicit conversions. Therefore, make sure to add the wildcard import `org.apache.flink.table.api.scala._` to your programs. In case a literal is not treated as an expression, use `.toExpr` such as `3.toExpr` to force a literal to be converted.
+**Scala expressions:** Scala expressions use implicit conversions. Therefore, make sure to add the wildcard import `org.apache.flink.table.api._` to your programs. In case a literal is not treated as an expression, use `.toExpr` such as `3.toExpr` to force a literal to be converted.
 
 {% top %}

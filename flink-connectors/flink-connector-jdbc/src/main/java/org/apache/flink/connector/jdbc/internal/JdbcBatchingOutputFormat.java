@@ -47,6 +47,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
+import static org.apache.flink.connector.jdbc.internal.options.JdbcOptions.CONNECTION_CHECK_TIMEOUT_SECONDS;
 import static org.apache.flink.connector.jdbc.utils.JdbcUtils.setRecordToStatement;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
@@ -129,7 +130,7 @@ public class JdbcBatchingOutputFormat<In, JdbcIn, JdbcExec extends JdbcBatchStat
 	private JdbcExec createAndOpenStatementExecutor(StatementExecutorFactory<JdbcExec> statementExecutorFactory) throws IOException {
 		JdbcExec exec = statementExecutorFactory.apply(getRuntimeContext());
 		try {
-			exec.open(connection);
+			exec.prepareStatements(connection);
 		} catch (SQLException e) {
 			throw new IOException("unable to open JDBC writer", e);
 		}
@@ -157,7 +158,7 @@ public class JdbcBatchingOutputFormat<In, JdbcIn, JdbcExec extends JdbcBatchStat
 		}
 	}
 
-	void addToBatch(In original, JdbcIn extracted) throws SQLException {
+	protected void addToBatch(In original, JdbcIn extracted) throws SQLException {
 		jdbcStatementExecutor.addToBatch(extracted);
 	}
 
@@ -176,6 +177,16 @@ public class JdbcBatchingOutputFormat<In, JdbcIn, JdbcExec extends JdbcBatchStat
 					throw new IOException(e);
 				}
 				try {
+					if (!connection.isValid(CONNECTION_CHECK_TIMEOUT_SECONDS)) {
+						connection = connectionProvider.reestablishConnection();
+						jdbcStatementExecutor.closeStatements();
+						jdbcStatementExecutor.prepareStatements(connection);
+					}
+				} catch (Exception excpetion) {
+					LOG.error("JDBC connection is not valid, and reestablish connection failed.", excpetion);
+					throw new IOException("Reestablish JDBC connection failed", excpetion);
+				}
+				try {
 					Thread.sleep(1000 * i);
 				} catch (InterruptedException ex) {
 					Thread.currentThread().interrupt();
@@ -185,7 +196,7 @@ public class JdbcBatchingOutputFormat<In, JdbcIn, JdbcExec extends JdbcBatchStat
 		}
 	}
 
-	void attemptFlush() throws SQLException {
+	protected void attemptFlush() throws SQLException {
 		jdbcStatementExecutor.executeBatch();
 	}
 
@@ -198,8 +209,6 @@ public class JdbcBatchingOutputFormat<In, JdbcIn, JdbcExec extends JdbcBatchStat
 		if (!closed) {
 			closed = true;
 
-			checkFlushException();
-
 			if (this.scheduledFuture != null) {
 				scheduledFuture.cancel(false);
 				this.scheduler.shutdown();
@@ -209,19 +218,20 @@ public class JdbcBatchingOutputFormat<In, JdbcIn, JdbcExec extends JdbcBatchStat
 				try {
 					flush();
 				} catch (Exception e) {
-					throw new RuntimeException("Writing records to JDBC failed.", e);
+					LOG.warn("Writing records to JDBC failed.", e);
 				}
 			}
 
 			try {
 				if (jdbcStatementExecutor != null) {
-					jdbcStatementExecutor.close();
+					jdbcStatementExecutor.closeStatements();
 				}
 			} catch (SQLException e) {
 				LOG.warn("Close JDBC writer failed.", e);
 			}
 		}
 		super.close();
+		checkFlushException();
 	}
 
 	public static Builder builder() {
@@ -337,5 +347,4 @@ public class JdbcBatchingOutputFormat<In, JdbcIn, JdbcExec extends JdbcBatchStat
 	static JdbcStatementBuilder<Row> createRowJdbcStatementBuilder(int[] types) {
 		return (st, record) -> setRecordToStatement(st, types, record);
 	}
-
 }

@@ -19,6 +19,12 @@
 package org.apache.flink.table.client.gateway.local;
 
 import org.apache.flink.api.common.ExecutionConfig;
+import org.apache.flink.api.common.restartstrategy.RestartStrategies.FailureRateRestartStrategyConfiguration;
+import org.apache.flink.api.common.restartstrategy.RestartStrategies.FallbackRestartStrategyConfiguration;
+import org.apache.flink.api.common.restartstrategy.RestartStrategies.FixedDelayRestartStrategyConfiguration;
+import org.apache.flink.api.common.restartstrategy.RestartStrategies.NoRestartStrategyConfiguration;
+import org.apache.flink.api.common.restartstrategy.RestartStrategies.RestartStrategyConfiguration;
+import org.apache.flink.api.common.time.Time;
 import org.apache.flink.api.dag.Pipeline;
 import org.apache.flink.api.java.ExecutionEnvironment;
 import org.apache.flink.client.ClientUtils;
@@ -31,19 +37,23 @@ import org.apache.flink.client.deployment.ClusterClientServiceLoader;
 import org.apache.flink.client.deployment.ClusterDescriptor;
 import org.apache.flink.client.deployment.ClusterSpecification;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.CoreOptions;
+import org.apache.flink.configuration.PipelineOptions;
+import org.apache.flink.configuration.RestartStrategyOptions;
 import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.environment.StreamPipelineOptions;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.TableConfig;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.api.ValidationException;
+import org.apache.flink.table.api.bridge.java.BatchTableEnvironment;
+import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
+import org.apache.flink.table.api.bridge.java.internal.BatchTableEnvironmentImpl;
+import org.apache.flink.table.api.bridge.java.internal.StreamTableEnvironmentImpl;
 import org.apache.flink.table.api.internal.TableEnvironmentInternal;
-import org.apache.flink.table.api.java.BatchTableEnvironment;
-import org.apache.flink.table.api.java.StreamTableEnvironment;
-import org.apache.flink.table.api.java.internal.BatchTableEnvironmentImpl;
-import org.apache.flink.table.api.java.internal.StreamTableEnvironmentImpl;
 import org.apache.flink.table.catalog.Catalog;
 import org.apache.flink.table.catalog.CatalogManager;
 import org.apache.flink.table.catalog.CatalogTableImpl;
@@ -52,6 +62,7 @@ import org.apache.flink.table.catalog.GenericInMemoryCatalog;
 import org.apache.flink.table.catalog.ObjectIdentifier;
 import org.apache.flink.table.client.config.Environment;
 import org.apache.flink.table.client.config.entries.DeploymentEntry;
+import org.apache.flink.table.client.config.entries.ExecutionEntry;
 import org.apache.flink.table.client.config.entries.SinkTableEntry;
 import org.apache.flink.table.client.config.entries.SourceSinkTableEntry;
 import org.apache.flink.table.client.config.entries.SourceTableEntry;
@@ -99,6 +110,7 @@ import java.lang.reflect.Method;
 import java.net.URISyntaxException;
 import java.net.URL;
 import java.nio.file.Paths;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -452,11 +464,7 @@ public class ExecutionContext<ClusterID> {
 		final EnvironmentSettings settings = environment.getExecution().getEnvironmentSettings();
 		final boolean noInheritedState = sessionState == null;
 		// Step 0.0 Initialize the table configuration.
-		final TableConfig config = new TableConfig();
-		config.addConfiguration(flinkConfig);
-		environment.getConfiguration().asMap().forEach((k, v) ->
-				config.getConfiguration().setString(k, v));
-		config.setSqlDialect(environment.getExecution().getSqlDialect());
+		final TableConfig config = createTableConfig();
 
 		if (noInheritedState) {
 			//--------------------------------------------------------------------------------------------------------------
@@ -523,6 +531,55 @@ public class ExecutionContext<ClusterID> {
 		}
 	}
 
+	private TableConfig createTableConfig() {
+		final TableConfig config = new TableConfig();
+		config.addConfiguration(flinkConfig);
+		Configuration conf = config.getConfiguration();
+		environment.getConfiguration().asMap().forEach(conf::setString);
+		ExecutionEntry execution = environment.getExecution();
+		config.setIdleStateRetentionTime(
+				Time.milliseconds(execution.getMinStateRetention()),
+				Time.milliseconds(execution.getMaxStateRetention()));
+
+		conf.set(CoreOptions.DEFAULT_PARALLELISM, execution.getParallelism());
+		conf.set(PipelineOptions.MAX_PARALLELISM, execution.getMaxParallelism());
+		conf.set(StreamPipelineOptions.TIME_CHARACTERISTIC, execution.getTimeCharacteristic());
+		if (execution.getTimeCharacteristic() == TimeCharacteristic.EventTime) {
+			conf.set(PipelineOptions.AUTO_WATERMARK_INTERVAL,
+					Duration.ofMillis(execution.getPeriodicWatermarksInterval()));
+		}
+
+		setRestartStrategy(conf);
+		return config;
+	}
+
+	private void setRestartStrategy(Configuration conf) {
+		RestartStrategyConfiguration restartStrategy = environment.getExecution().getRestartStrategy();
+		if (restartStrategy instanceof NoRestartStrategyConfiguration) {
+			conf.set(RestartStrategyOptions.RESTART_STRATEGY, "none");
+		} else if (restartStrategy instanceof FixedDelayRestartStrategyConfiguration) {
+			conf.set(RestartStrategyOptions.RESTART_STRATEGY, "fixed-delay");
+			FixedDelayRestartStrategyConfiguration fixedDelay = ((FixedDelayRestartStrategyConfiguration) restartStrategy);
+			conf.set(RestartStrategyOptions.RESTART_STRATEGY_FIXED_DELAY_ATTEMPTS,
+					fixedDelay.getRestartAttempts());
+			conf.set(RestartStrategyOptions.RESTART_STRATEGY_FIXED_DELAY_DELAY,
+					Duration.ofMillis(fixedDelay.getDelayBetweenAttemptsInterval().toMilliseconds()));
+		} else if (restartStrategy instanceof FailureRateRestartStrategyConfiguration) {
+			conf.set(RestartStrategyOptions.RESTART_STRATEGY, "failure-rate");
+			FailureRateRestartStrategyConfiguration failureRate = (FailureRateRestartStrategyConfiguration) restartStrategy;
+			conf.set(RestartStrategyOptions.RESTART_STRATEGY_FAILURE_RATE_MAX_FAILURES_PER_INTERVAL,
+					failureRate.getMaxFailureRate());
+			conf.set(RestartStrategyOptions.RESTART_STRATEGY_FAILURE_RATE_FAILURE_RATE_INTERVAL,
+					Duration.ofMillis(failureRate.getFailureInterval().toMilliseconds()));
+			conf.set(RestartStrategyOptions.RESTART_STRATEGY_FAILURE_RATE_DELAY,
+					Duration.ofMillis(failureRate.getDelayBetweenAttemptsInterval().toMilliseconds()));
+		} else if (restartStrategy instanceof FallbackRestartStrategyConfiguration) {
+			// default is FallbackRestartStrategyConfiguration
+			// see ExecutionConfig.restartStrategyConfiguration
+			conf.removeConfig(RestartStrategyOptions.RESTART_STRATEGY);
+		}
+	}
+
 	private void createTableEnvironment(
 			EnvironmentSettings settings,
 			TableConfig config,
@@ -545,7 +602,7 @@ public class ExecutionContext<ClusterID> {
 					functionCatalog);
 		} else if (environment.getExecution().isBatchPlanner()) {
 			streamExecEnv = null;
-			execEnv = createExecutionEnvironment();
+			execEnv = ExecutionEnvironment.getExecutionEnvironment();
 			executor = null;
 			tableEnv = new BatchTableEnvironmentImpl(
 					execEnv,
@@ -604,7 +661,7 @@ public class ExecutionContext<ClusterID> {
 			// it means that it accesses tables that are not available anymore
 			if (entry instanceof ViewEntry) {
 				final ViewEntry viewEntry = (ViewEntry) entry;
-				registerView(viewEntry);
+				registerTemporaryView(viewEntry);
 			}
 		});
 
@@ -620,18 +677,9 @@ public class ExecutionContext<ClusterID> {
 		database.ifPresent(tableEnv::useDatabase);
 	}
 
-	private ExecutionEnvironment createExecutionEnvironment() {
-		final ExecutionEnvironment execEnv = ExecutionEnvironment.getExecutionEnvironment();
-		execEnv.setRestartStrategy(environment.getExecution().getRestartStrategy());
-		execEnv.setParallelism(environment.getExecution().getParallelism());
-		return execEnv;
-	}
-
 	private StreamExecutionEnvironment createStreamExecutionEnvironment() {
 		final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-		env.setRestartStrategy(environment.getExecution().getRestartStrategy());
-		env.setParallelism(environment.getExecution().getParallelism());
-		env.setMaxParallelism(environment.getExecution().getMaxParallelism());
+		// for TimeCharacteristic validation in StreamTableEnvironmentImpl
 		env.setStreamTimeCharacteristic(environment.getExecution().getTimeCharacteristic());
 		if (env.getStreamTimeCharacteristic() == TimeCharacteristic.EventTime) {
 			env.getConfig().setAutoWatermarkInterval(environment.getExecution().getPeriodicWatermarksInterval());
@@ -656,14 +704,28 @@ public class ExecutionContext<ClusterID> {
 		if (tableEnv instanceof StreamTableEnvironment) {
 			StreamTableEnvironment streamTableEnvironment = (StreamTableEnvironment) tableEnv;
 			functions.forEach((k, v) -> {
-				if (v instanceof ScalarFunction) {
-					streamTableEnvironment.registerFunction(k, (ScalarFunction) v);
-				} else if (v instanceof AggregateFunction) {
-					streamTableEnvironment.registerFunction(k, (AggregateFunction<?, ?>) v);
-				} else if (v instanceof TableFunction) {
-					streamTableEnvironment.registerFunction(k, (TableFunction<?>) v);
-				} else {
-					throw new SqlExecutionException("Unsupported function type: " + v.getClass().getName());
+				// Blink planner uses FLIP-65 functions for scalar and table functions
+				// aggregate functions still use the old type inference
+				if (environment.getExecution().isBlinkPlanner()) {
+					if (v instanceof ScalarFunction || v instanceof TableFunction) {
+						streamTableEnvironment.createTemporarySystemFunction(k, (UserDefinedFunction) v);
+					} else if (v instanceof AggregateFunction) {
+						streamTableEnvironment.registerFunction(k, (AggregateFunction<?, ?>) v);
+					} else {
+						throw new SqlExecutionException("Unsupported function type: " + v.getClass().getName());
+					}
+				}
+				// legacy
+				else {
+					if (v instanceof ScalarFunction) {
+						streamTableEnvironment.registerFunction(k, (ScalarFunction) v);
+					} else if (v instanceof AggregateFunction) {
+						streamTableEnvironment.registerFunction(k, (AggregateFunction<?, ?>) v);
+					} else if (v instanceof TableFunction) {
+						streamTableEnvironment.registerFunction(k, (TableFunction<?>) v);
+					} else {
+						throw new SqlExecutionException("Unsupported function type: " + v.getClass().getName());
+					}
 				}
 			});
 		} else {
@@ -682,9 +744,9 @@ public class ExecutionContext<ClusterID> {
 		}
 	}
 
-	private void registerView(ViewEntry viewEntry) {
+	private void registerTemporaryView(ViewEntry viewEntry) {
 		try {
-			tableEnv.registerTable(viewEntry.getName(), tableEnv.sqlQuery(viewEntry.getQuery()));
+			tableEnv.createTemporaryView(viewEntry.getName(), tableEnv.sqlQuery(viewEntry.getQuery()));
 		} catch (Exception e) {
 			throw new SqlExecutionException(
 				"Invalid view '" + viewEntry.getName() + "' with query:\n" + viewEntry.getQuery()

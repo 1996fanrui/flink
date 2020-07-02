@@ -669,7 +669,7 @@ public class SingleInputGate extends IndexedInputGate {
 	}
 
 	private BufferOrEvent transformBuffer(Buffer buffer, boolean moreAvailable, InputChannel currentChannel) {
-		return new BufferOrEvent(decompressBufferIfNeeded(buffer), currentChannel.getChannelIndex(), moreAvailable);
+		return new BufferOrEvent(decompressBufferIfNeeded(buffer), currentChannel.getChannelInfo(), moreAvailable);
 	}
 
 	private BufferOrEvent transformEvent(
@@ -700,7 +700,7 @@ public class SingleInputGate extends IndexedInputGate {
 			currentChannel.releaseAllResources();
 		}
 
-		return new BufferOrEvent(event, currentChannel.getChannelIndex(), moreAvailable, buffer.getSize());
+		return new BufferOrEvent(event, currentChannel.getChannelInfo(), moreAvailable, buffer.getSize());
 	}
 
 	private Buffer decompressBufferIfNeeded(Buffer buffer) {
@@ -737,7 +737,7 @@ public class SingleInputGate extends IndexedInputGate {
 	}
 
 	@Override
-	public void resumeConsumption(int channelIndex) {
+	public void resumeConsumption(int channelIndex) throws IOException {
 		// BEWARE: consumption resumption only happens for streaming jobs in which all slots
 		// are allocated together so there should be no UnknownInputChannel. As a result, it
 		// is safe to not synchronize the requestLock here. We will refactor the code to not

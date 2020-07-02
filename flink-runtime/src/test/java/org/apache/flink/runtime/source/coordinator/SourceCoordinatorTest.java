@@ -20,6 +20,7 @@ package org.apache.flink.runtime.source.coordinator;
 
 import org.apache.flink.api.connector.source.SourceEvent;
 import org.apache.flink.api.connector.source.mocks.MockSourceSplit;
+import org.apache.flink.api.connector.source.mocks.MockSourceSplitSerializer;
 import org.apache.flink.api.connector.source.mocks.MockSplitEnumerator;
 import org.apache.flink.runtime.operators.coordination.OperatorEvent;
 import org.apache.flink.runtime.source.event.AddSplitEvent;
@@ -28,10 +29,12 @@ import org.apache.flink.runtime.source.event.SourceEventWrapper;
 
 import org.junit.Test;
 
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 import static org.apache.flink.runtime.source.coordinator.CoordinatorTestUtils.verifyAssignment;
 import static org.apache.flink.runtime.source.coordinator.CoordinatorTestUtils.verifyException;
@@ -53,9 +56,9 @@ public class SourceCoordinatorTest extends SourceCoordinatorTestBase {
 				failureMessage, "The coordinator has not started yet.");
 		verifyException(() -> sourceCoordinator.handleEventFromOperator(0, null),
 				failureMessage, "The coordinator has not started yet.");
-		verifyException(() -> sourceCoordinator.subtaskFailed(0),
+		verifyException(() -> sourceCoordinator.subtaskFailed(0, null),
 				failureMessage, "The coordinator has not started yet.");
-		verifyException(() -> sourceCoordinator.checkpointCoordinator(100L),
+		verifyException(() -> sourceCoordinator.checkpointCoordinator(100L, new CompletableFuture<>()),
 				failureMessage, "The coordinator has not started yet.");
 	}
 
@@ -114,7 +117,10 @@ public class SourceCoordinatorTest extends SourceCoordinatorTestBase {
 		sourceCoordinator.start();
 		sourceCoordinator.handleEventFromOperator(
 				0, new ReaderRegistrationEvent(0, "location_0"));
-		byte[] bytes = sourceCoordinator.checkpointCoordinator(100L).get();
+
+		final CompletableFuture<byte[]> checkpointFuture = new CompletableFuture<>();
+		sourceCoordinator.checkpointCoordinator(100L, checkpointFuture);
+		final byte[] bytes = checkpointFuture.get();
 
 		// restore from the checkpoints.
 		SourceCoordinator<?, ?> restoredCoordinator = getNewSourceCoordinator();
@@ -136,11 +142,17 @@ public class SourceCoordinatorTest extends SourceCoordinatorTestBase {
 		// Assign some splits to reader 0 then take snapshot 100.
 		sourceCoordinator.handleEventFromOperator(
 				0, new ReaderRegistrationEvent(0, "location_0"));
-		sourceCoordinator.checkpointCoordinator(100L).get();
+
+		final CompletableFuture<byte[]> checkpointFuture1 = new CompletableFuture<>();
+		sourceCoordinator.checkpointCoordinator(100L, checkpointFuture1);
+		checkpointFuture1.get();
 
 		// Add split 6, assign it to reader 0 and take another snapshot 101.
 		enumerator.addNewSplits(Collections.singletonList(new MockSourceSplit(6)));
-		sourceCoordinator.checkpointCoordinator(101L).get();
+
+		final CompletableFuture<byte[]> checkpointFuture2 = new CompletableFuture<>();
+		sourceCoordinator.checkpointCoordinator(101L, checkpointFuture2);
+		checkpointFuture2.get();
 
 		// check the state.
 		check(() -> {
@@ -155,12 +167,18 @@ public class SourceCoordinatorTest extends SourceCoordinatorTestBase {
 
 			List<OperatorEvent> eventsToReader0 = operatorCoordinatorContext.getEventsToOperator().get(0);
 			assertEquals(2, eventsToReader0.size());
-			verifyAssignment(Arrays.asList("0", "3"), ((AddSplitEvent<MockSourceSplit>) eventsToReader0.get(0)).splits());
-			verifyAssignment(Arrays.asList("6"), ((AddSplitEvent<MockSourceSplit>) eventsToReader0.get(1)).splits());
+			try {
+				verifyAssignment(Arrays.asList("0", "3"),
+						((AddSplitEvent<MockSourceSplit>) eventsToReader0.get(0)).splits(new MockSourceSplitSerializer()));
+				verifyAssignment(Arrays.asList("6"),
+						((AddSplitEvent<MockSourceSplit>) eventsToReader0.get(1)).splits(new MockSourceSplitSerializer()));
+			} catch (IOException e) {
+				fail("Failed to deserialize splits.");
+			}
 		});
 
 		// Fail reader 0.
-		sourceCoordinator.subtaskFailed(0);
+		sourceCoordinator.subtaskFailed(0, null);
 
 		// check the state again.
 		check(() -> {
@@ -185,12 +203,16 @@ public class SourceCoordinatorTest extends SourceCoordinatorTestBase {
 		// Assign some splits to reader 0 then take snapshot 100.
 		sourceCoordinator.handleEventFromOperator(
 				0, new ReaderRegistrationEvent(0, "location_0"));
-		sourceCoordinator.checkpointCoordinator(100L).get();
+
+		final CompletableFuture<byte[]> checkpointFuture = new CompletableFuture<>();
+		sourceCoordinator.checkpointCoordinator(100L, checkpointFuture);
+		checkpointFuture.get();
+
 		// Complete checkpoint 100.
 		sourceCoordinator.checkpointComplete(100L);
 
 		// Fail reader 0.
-		sourceCoordinator.subtaskFailed(0);
+		sourceCoordinator.subtaskFailed(0, null);
 
 		check(() -> {
 			// Reader 0 hase been unregistered.

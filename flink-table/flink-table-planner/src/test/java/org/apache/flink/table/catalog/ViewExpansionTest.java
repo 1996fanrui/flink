@@ -21,7 +21,7 @@ package org.apache.flink.table.catalog;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.TableSchema;
-import org.apache.flink.table.api.java.internal.StreamTableEnvironmentImpl;
+import org.apache.flink.table.api.bridge.java.internal.StreamTableEnvironmentImpl;
 import org.apache.flink.table.utils.StreamTableTestUtil;
 
 import org.junit.Rule;
@@ -87,7 +87,7 @@ public class ViewExpansionTest {
 			).build();
 
 		StreamTableTestUtil util = new StreamTableTestUtil(new Some<>(catalogManager));
-		final String expected = "DataStreamCalc(select=[a, b, CAST(EXPR$2) AS c])\n"
+		final String expected = "DataStreamCalc(select=[CAST(a) AS a, b, CAST(EXPR$2) AS c])\n"
 			+ "DataStreamGroupAggregate(groupBy=[a, b], select=[a, b, COUNT(c) AS EXPR$2])\n"
 			+ "StreamTableSourceScan(table=[[builtin, default, tab1]], fields=[a, b, c], source=[isTemporary=[false]])";
 		util.verifyJavaSql(
@@ -140,7 +140,7 @@ public class ViewExpansionTest {
 
 		StreamTableTestUtil util = new StreamTableTestUtil(new Some<>(catalogManager));
 		Table tab = util.javaTableEnv().scan("builtin", "default", "view").select($("*"));
-		final String expected = "DataStreamCalc(select=[a, b, CAST(EXPR$2) AS c])\n"
+		final String expected = "DataStreamCalc(select=[CAST(a) AS a, b, CAST(EXPR$2) AS c])\n"
 			+ "DataStreamGroupAggregate(groupBy=[a, b], select=[a, b, COUNT(c) AS EXPR$2])\n"
 			+ "StreamTableSourceScan(table=[[builtin, default, tab1]], fields=[a, b, c], source=[isTemporary=[false]])";
 		util.verifyJavaTable(

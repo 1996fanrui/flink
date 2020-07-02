@@ -20,8 +20,10 @@ package org.apache.flink.runtime.source.coordinator;
 
 import org.apache.flink.api.connector.source.Source;
 import org.apache.flink.api.connector.source.SourceSplit;
+import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.operators.coordination.OperatorCoordinator;
+import org.apache.flink.runtime.operators.coordination.RecreateOnResetOperatorCoordinator;
 import org.apache.flink.runtime.util.FatalExitExceptionHandler;
 
 import java.util.concurrent.Callable;
@@ -33,10 +35,9 @@ import java.util.function.BiConsumer;
 /**
  * The provider of {@link SourceCoordinator}.
  */
-public class SourceCoordinatorProvider<SplitT extends SourceSplit>
-		implements OperatorCoordinator.Provider {
+public class SourceCoordinatorProvider<SplitT extends SourceSplit> extends RecreateOnResetOperatorCoordinator.Provider {
+	private static final long serialVersionUID = -1921681440009738462L;
 	private final String operatorName;
-	private final OperatorID operatorID;
 	private final Source<?, SplitT, ?> source;
 	private final int numWorkerThreads;
 
@@ -56,25 +57,22 @@ public class SourceCoordinatorProvider<SplitT extends SourceSplit>
 			OperatorID operatorID,
 			Source<?, SplitT, ?> source,
 			int numWorkerThreads) {
+		super(operatorID);
 		this.operatorName = operatorName;
-		this.operatorID = operatorID;
 		this.source = source;
 		this.numWorkerThreads = numWorkerThreads;
 	}
 
 	@Override
-	public OperatorID getOperatorId() {
-		return operatorID;
-	}
-
-	@Override
-	public OperatorCoordinator create(OperatorCoordinator.Context context) {
+	public OperatorCoordinator getCoordinator(OperatorCoordinator.Context context) {
 		final String coordinatorThreadName = "SourceCoordinator-" + operatorName;
 		CoordinatorExecutorThreadFactory coordinatorThreadFactory =
 				new CoordinatorExecutorThreadFactory(coordinatorThreadName);
 		ExecutorService coordinatorExecutor = Executors.newSingleThreadExecutor(coordinatorThreadFactory);
+		SimpleVersionedSerializer<SplitT> splitSerializer = source.getSplitSerializer();
 		SourceCoordinatorContext<SplitT> sourceCoordinatorContext =
-				new SourceCoordinatorContext<>(coordinatorExecutor, coordinatorThreadFactory, numWorkerThreads, context);
+				new SourceCoordinatorContext<>(coordinatorExecutor, coordinatorThreadFactory, numWorkerThreads,
+						context, splitSerializer);
 		return new SourceCoordinator<>(operatorName, coordinatorExecutor, source, sourceCoordinatorContext);
 	}
 

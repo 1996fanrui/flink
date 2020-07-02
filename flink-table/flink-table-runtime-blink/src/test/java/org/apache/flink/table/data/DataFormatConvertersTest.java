@@ -48,6 +48,7 @@ import org.apache.flink.table.types.logical.LogicalTypeRoot;
 import org.apache.flink.table.types.logical.VarCharType;
 import org.apache.flink.table.types.utils.TypeConversions;
 import org.apache.flink.types.Row;
+import org.apache.flink.types.RowKind;
 
 import org.junit.Assert;
 import org.junit.Test;
@@ -147,9 +148,18 @@ public class DataFormatConvertersTest {
 	}
 
 	private static void test(TypeInformation typeInfo, Object value) {
+		test(typeInfo, value, null);
+	}
+
+	private static void test(TypeInformation typeInfo, Object value, Object anotherValue) {
 		DataFormatConverter converter = getConverter(typeInfo);
+		final Object innerValue = converter.toInternal(value);
+		if (anotherValue != null) {
+			converter.toInternal(anotherValue);
+		}
+
 		Assert.assertTrue(Arrays.deepEquals(
-				new Object[] {converter.toExternal(converter.toInternal(value))}, new Object[] {value}));
+			new Object[] {converter.toExternal(innerValue)}, new Object[]{value}));
 	}
 
 	private static DataFormatConverter getConverter(DataType dataType) {
@@ -169,7 +179,7 @@ public class DataFormatConvertersTest {
 			test(simpleTypes[i], simpleValues[i]);
 		}
 		test(new RowTypeInfo(simpleTypes), new Row(simpleTypes.length));
-		test(new RowTypeInfo(simpleTypes), Row.of(simpleValues));
+		test(new RowTypeInfo(simpleTypes), Row.ofKind(RowKind.DELETE, simpleValues));
 		test(new RowDataTypeInfo(new VarCharType(VarCharType.MAX_LENGTH), new IntType()),
 				GenericRowData.of(StringData.fromString("hehe"), 111));
 		test(new RowDataTypeInfo(new VarCharType(VarCharType.MAX_LENGTH), new IntType()), GenericRowData.of(null, null));
@@ -192,6 +202,7 @@ public class DataFormatConvertersTest {
 		test(BasicArrayTypeInfo.DOUBLE_ARRAY_TYPE_INFO, new Double[] {null, null});
 		test(ObjectArrayTypeInfo.getInfoFor(Types.STRING), new String[] {null, null});
 		test(ObjectArrayTypeInfo.getInfoFor(Types.STRING), new String[] {"haha", "hehe"});
+		test(ObjectArrayTypeInfo.getInfoFor(Types.STRING), new String[] {"haha", "hehe"}, new String[] {"aa", "bb"});
 		test(new MapTypeInfo<>(Types.STRING, Types.INT), null);
 
 		HashMap<String, Integer> map = new HashMap<>();

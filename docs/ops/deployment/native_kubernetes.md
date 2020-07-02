@@ -30,7 +30,7 @@ This page describes how to deploy a Flink session cluster natively on [Kubernete
 {:toc}
 
 <div class="alert alert-warning">
-Flink's native Kubernetes integration is still experimental. There may be changes in the configuration and CLI flags in latter versions. Job clusters are not yet supported.
+Flink's native Kubernetes integration is still experimental. There may be changes in the configuration and CLI flags in latter versions.
 </div>
 
 ## Requirements
@@ -63,7 +63,7 @@ Although this setting may cause more cloud cost it has the effect that starting 
 faster and during development you have more time to inspect the logfiles of your job.
 
 {% highlight bash %}
-./bin/kubernetes-session.sh \
+$ ./bin/kubernetes-session.sh \
   -Dkubernetes.cluster-id=<ClusterId> \
   -Dtaskmanager.memory.process.size=4096m \
   -Dkubernetes.taskmanager.cpu=2 \
@@ -79,17 +79,17 @@ If you do not specify a particular name for your session by `kubernetes.cluster-
 ### Custom Flink Docker image
 
 If you want to use a custom Docker image to deploy Flink containers, check [the Flink Docker image documentation](docker.html),
-[its tags](#image-tags), [how to customize the Flink Docker image](docker.html#customize-flink-image) and [enable plugins](docker.html#using-plugins).
+[its tags](docker.html#image-tags), [how to customize the Flink Docker image](docker.html#customize-flink-image) and [enable plugins](docker.html#using-plugins).
 If you created a custom Docker image you can provide it by setting the [`kubernetes.container.image`](../config.html#kubernetes-container-image) configuration option:
 
 {% highlight bash %}
-./bin/kubernetes-session.sh \
+$ ./bin/kubernetes-session.sh \
   -Dkubernetes.cluster-id=<ClusterId> \
   -Dtaskmanager.memory.process.size=4096m \
   -Dkubernetes.taskmanager.cpu=2 \
   -Dtaskmanager.numberOfTaskSlots=4 \
   -Dresourcemanager.taskmanager-timeout=3600000 \
-  -Dkubernetes.container.image=<custom_image_name>
+  -Dkubernetes.container.image=<CustomImageName>
 {% endhighlight %}
 
 ### Submitting jobs to an existing Session
@@ -97,13 +97,13 @@ If you created a custom Docker image you can provide it by setting the [`kuberne
 Use the following command to submit a Flink Job to the Kubernetes cluster.
 
 {% highlight bash %}
-$ ./bin/flink run -d -e kubernetes-session -Dkubernetes.cluster-id=<ClusterId> examples/streaming/WindowJoin.jar
+$ ./bin/flink run -d -t kubernetes-session -Dkubernetes.cluster-id=<ClusterId> examples/streaming/WindowJoin.jar
 {% endhighlight %}
 
 ### Accessing Job Manager UI
 
 There are several ways to expose a Service onto an external (outside of your cluster) IP address.
-This can be configured using `kubernetes.service.exposed.type`.
+This can be configured using [`kubernetes.rest-service.exposed.type`]({% link ops/config.md %}#kubernetes-rest-service-exposed-type).
 
 - `ClusterIP`: Exposes the service on a cluster-internal IP.
 The Service is only reachable within the cluster. If you want to access the Job Manager ui or submit job to the existing session, you need to start a local proxy.
@@ -116,9 +116,11 @@ $ kubectl port-forward service/<ServiceName> 8081
 - `NodePort`: Exposes the service on each Node’s IP at a static port (the `NodePort`). `<NodeIP>:<NodePort>` could be used to contact the Job Manager Service. `NodeIP` could be easily replaced with Kubernetes ApiServer address.
 You could find it in your kube config file.
 
-- `LoadBalancer`: Default value, exposes the service externally using a cloud provider’s load balancer.
+- `LoadBalancer`: Exposes the service externally using a cloud provider’s load balancer.
 Since the cloud provider and Kubernetes needs some time to prepare the load balancer, you may get a `NodePort` JobManager Web Interface in the client log.
 You can use `kubectl get services/<ClusterId>` to get EXTERNAL-IP and then construct the load balancer JobManager Web Interface manually `http://<EXTERNAL-IP>:8081`.
+
+  <span class="label label-warning">Warning!</span> Your JobManager (which can run arbitary jar files) might be exposed to the public internet, without authentication.
 
 - `ExternalName`: Map a service to a DNS name, not supported in current version.
 
@@ -170,6 +172,42 @@ appender.console.layout.pattern = %d{yyyy-MM-dd HH:mm:ss,SSS} %-5p %-60c %x - %m
 
 If the pod is running, you can use `kubectl exec -it <PodName> bash` to tunnel in and view the logs or debug the process.
 
+## Flink Kubernetes Application
+
+### Start Flink Application
+
+Application mode allows users to create a single image containing their Job and the Flink runtime, which will automatically create and destroy cluster components as needed. The Flink community provides base docker images [customized](docker.html#customize-flink-image) for any use case.
+
+{% highlight dockerfile %}
+FROM flink
+RUN mkdir -p $FLINK_HOME/usrlib
+COPY /path/of/my-flink-job-*.jar $FLINK_HOME/usrlib/my-flink-job.jar
+{% endhighlight %}
+
+Use the following command to start a Flink application.
+{% highlight bash %}
+$ ./bin/flink run-application -p 8 -t kubernetes-application \
+  -Dkubernetes.cluster-id=<ClusterId> \
+  -Dtaskmanager.memory.process.size=4096m \
+  -Dkubernetes.taskmanager.cpu=2 \
+  -Dtaskmanager.numberOfTaskSlots=4 \
+  -Dkubernetes.container.image=<CustomImageName> \
+  local:///opt/flink/usrlib/my-flink-job.jar
+{% endhighlight %}
+
+Note: Only "local" is supported as schema for application mode. This assumes that the jar is located in the image, not the Flink client.
+
+Note: All the jars in the "$FLINK_HOME/usrlib" directory in the image will be added to user classpath.
+
+### Stop Flink Application
+
+When an application is stopped, all Flink cluster resources are automatically destroyed.
+As always, Jobs may stop when manually canceled or, in the case of bounded Jobs, complete.
+
+{% highlight bash %}
+$ ./bin/flink cancel -t kubernetes-application -Dkubernetes.cluster-id=<ClusterID> <JobID>
+{% endhighlight %}
+
 ## Kubernetes concepts
 
 ### Namespaces
@@ -184,7 +222,7 @@ It can limit the quantity of objects that can be created in a namespace by type,
 ### RBAC
 
 Role-based access control ([RBAC](https://kubernetes.io/docs/reference/access-authn-authz/rbac/)) is a method of regulating access to compute or network resources based on the roles of individual users within an enterprise.
-Users can configure RBAC roles and service accounts used by Flink JobManager to access the Kubernetes API server within the Kubernetes cluster. 
+Users can configure RBAC roles and service accounts used by JobManager to access the Kubernetes API server within the Kubernetes cluster. 
 
 Every namespace has a default service account, however, the `default` service account may not have the permission to create or delete pods within the Kubernetes cluster.
 Users may need to update the permission of `default` service account or specify another service account that has the right role bound.
@@ -210,13 +248,12 @@ This section briefly explains how Flink and Kubernetes interact.
 <img src="{{ site.baseurl }}/fig/FlinkOnK8s.svg" class="img-responsive">
 
 When creating a Flink Kubernetes session cluster, the Flink client will first connect to the Kubernetes ApiServer to submit the cluster description, including ConfigMap spec, Job Manager Service spec, Job Manager Deployment spec and Owner Reference.
-Kubernetes will then create the Flink master deployment, during which time the Kubelet will pull the image, prepare and mount the volume, and then execute the start command.
-After the master pod has launched, the Dispatcher and KubernetesResourceManager are available and the cluster is ready to accept one or more jobs.
+Kubernetes will then create the JobManager deployment, during which time the Kubelet will pull the image, prepare and mount the volume, and then execute the start command.
+After the JobManager pod has launched, the Dispatcher and KubernetesResourceManager are available and the cluster is ready to accept one or more jobs.
 
 When users submit jobs through the Flink client, the job graph will be generated by the client and uploaded along with users jars to the Dispatcher.
-A JobMaster for that Job will be then be spawned.
 
-The JobMaster requests resources, known as slots, from the KubernetesResourceManager.
+The JobManager requests resources, known as slots, from the KubernetesResourceManager.
 If no slots are available, the resource manager will bring up TaskManager pods and registering them with the cluster.
 
 {% top %}

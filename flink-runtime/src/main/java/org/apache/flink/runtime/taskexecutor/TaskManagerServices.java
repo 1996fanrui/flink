@@ -19,6 +19,7 @@
 package org.apache.flink.runtime.taskexecutor;
 
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.configuration.CoreOptions;
 import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.runtime.blob.PermanentBlobService;
 import org.apache.flink.runtime.broadcast.BroadcastVariableManager;
@@ -29,6 +30,7 @@ import org.apache.flink.runtime.io.disk.iomanager.IOManager;
 import org.apache.flink.runtime.io.disk.iomanager.IOManagerAsync;
 import org.apache.flink.runtime.io.network.TaskEventDispatcher;
 import org.apache.flink.runtime.memory.MemoryManager;
+import org.apache.flink.runtime.rpc.FatalErrorHandler;
 import org.apache.flink.runtime.shuffle.ShuffleEnvironment;
 import org.apache.flink.runtime.shuffle.ShuffleEnvironmentContext;
 import org.apache.flink.runtime.shuffle.ShuffleServiceLoader;
@@ -38,7 +40,6 @@ import org.apache.flink.runtime.taskexecutor.slot.TaskSlotTableImpl;
 import org.apache.flink.runtime.taskexecutor.slot.TimerService;
 import org.apache.flink.runtime.taskmanager.Task;
 import org.apache.flink.runtime.taskmanager.UnresolvedTaskManagerLocation;
-import org.apache.flink.runtime.util.ExecutorThreadFactory;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.FlinkException;
 import org.apache.flink.util.Preconditions;
@@ -50,7 +51,6 @@ import java.io.File;
 import java.io.IOException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 
 /**
@@ -247,7 +247,8 @@ public class TaskManagerServices {
 	 * @param taskManagerServicesConfiguration task manager configuration
 	 * @param permanentBlobService permanentBlobService used by the services
 	 * @param taskManagerMetricGroup metric group of the task manager
-	 * @param taskIOExecutor executor for async IO operations
+	 * @param ioExecutor executor for async IO operations
+	 * @param fatalErrorHandler to handle class loading OOMs
 	 * @return task manager components
 	 * @throws Exception
 	 */
@@ -255,7 +256,8 @@ public class TaskManagerServices {
 			TaskManagerServicesConfiguration taskManagerServicesConfiguration,
 			PermanentBlobService permanentBlobService,
 			MetricGroup taskManagerMetricGroup,
-			Executor taskIOExecutor) throws Exception {
+			ExecutorService ioExecutor,
+			FatalErrorHandler fatalErrorHandler) throws Exception {
 
 		// pre-start checks
 		checkTempDirs(taskManagerServicesConfiguration.getTmpDirPaths());
@@ -268,7 +270,8 @@ public class TaskManagerServices {
 		final ShuffleEnvironment<?, ?> shuffleEnvironment = createShuffleEnvironment(
 			taskManagerServicesConfiguration,
 			taskEventDispatcher,
-			taskManagerMetricGroup);
+			taskManagerMetricGroup,
+			ioExecutor);
 		final int listeningDataPort = shuffleEnvironment.start();
 
 		final KvStateService kvStateService = KvStateService.fromConfiguration(taskManagerServicesConfiguration);
@@ -306,15 +309,16 @@ public class TaskManagerServices {
 		final TaskExecutorLocalStateStoresManager taskStateManager = new TaskExecutorLocalStateStoresManager(
 			taskManagerServicesConfiguration.isLocalRecoveryEnabled(),
 			stateRootDirectoryFiles,
-			taskIOExecutor);
+			ioExecutor);
 
-		final ExecutorService ioExecutor = Executors.newSingleThreadExecutor(new ExecutorThreadFactory("taskexecutor-io"));
-
+		final boolean failOnJvmMetaspaceOomError =
+			taskManagerServicesConfiguration.getConfiguration().getBoolean(CoreOptions.FAIL_ON_USER_CLASS_LOADING_METASPACE_OOM);
 		final LibraryCacheManager libraryCacheManager = new BlobLibraryCacheManager(
 			permanentBlobService,
 			BlobLibraryCacheManager.defaultClassLoaderFactory(
 				taskManagerServicesConfiguration.getClassLoaderResolveOrder(),
-				taskManagerServicesConfiguration.getAlwaysParentFirstLoaderPatterns()));
+				taskManagerServicesConfiguration.getAlwaysParentFirstLoaderPatterns(),
+				failOnJvmMetaspaceOomError ? fatalErrorHandler : null));
 
 		return new TaskManagerServices(
 			unresolvedTaskManagerLocation,
@@ -351,7 +355,8 @@ public class TaskManagerServices {
 	private static ShuffleEnvironment<?, ?> createShuffleEnvironment(
 			TaskManagerServicesConfiguration taskManagerServicesConfiguration,
 			TaskEventDispatcher taskEventDispatcher,
-			MetricGroup taskManagerMetricGroup) throws FlinkException {
+			MetricGroup taskManagerMetricGroup,
+			Executor ioExecutor) throws FlinkException {
 
 		final ShuffleEnvironmentContext shuffleEnvironmentContext = new ShuffleEnvironmentContext(
 			taskManagerServicesConfiguration.getConfiguration(),
@@ -360,7 +365,8 @@ public class TaskManagerServices {
 			taskManagerServicesConfiguration.isLocalCommunicationOnly(),
 			taskManagerServicesConfiguration.getBindAddress(),
 			taskEventDispatcher,
-			taskManagerMetricGroup);
+			taskManagerMetricGroup,
+			ioExecutor);
 
 		return ShuffleServiceLoader
 			.loadShuffleServiceFactory(taskManagerServicesConfiguration.getConfiguration())

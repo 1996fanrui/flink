@@ -18,6 +18,7 @@
 
 package org.apache.flink.yarn;
 
+import org.apache.flink.api.common.cache.DistributedCache;
 import org.apache.flink.client.deployment.ClusterSpecification;
 import org.apache.flink.client.program.ClusterClient;
 import org.apache.flink.configuration.AkkaOptions;
@@ -31,7 +32,7 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.DiscardingSink;
 import org.apache.flink.yarn.configuration.YarnConfigOptions;
 import org.apache.flink.yarn.testjob.YarnTestCacheJob;
-import org.apache.flink.yarn.util.YarnTestUtils;
+import org.apache.flink.yarn.util.TestUtils;
 
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -116,7 +117,7 @@ public class YARNITCase extends YarnTestBase {
 				.setSlotsPerTaskManager(1)
 				.createClusterSpecification();
 
-			File testingJar = YarnTestBase.findFile("..", new YarnTestUtils.TestJarFinder("flink-yarn-tests"));
+			File testingJar = TestUtils.findFile("..", new TestUtils.TestJarFinder("flink-yarn-tests"));
 
 			jobGraph.addJar(new org.apache.flink.core.fs.Path(testingJar.toURI()));
 			try (ClusterClient<ApplicationId> clusterClient = yarnClusterDescriptor
@@ -125,6 +126,12 @@ public class YARNITCase extends YarnTestBase {
 							jobGraph,
 							false)
 					.getClusterClient()) {
+
+				for (DistributedCache.DistributedCacheEntry entry : jobGraph.getUserArtifacts().values()) {
+					assertTrue(
+						String.format("The user artifacts(%s) should be remote or uploaded to remote filesystem.", entry.filePath),
+						Utils.isRemotePath(entry.filePath));
+				}
 
 				ApplicationId applicationId = clusterClient.getClusterId();
 

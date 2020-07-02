@@ -66,6 +66,7 @@ import org.apache.flink.runtime.shuffle.NettyShuffleDescriptor;
 import org.apache.flink.runtime.shuffle.ShuffleDescriptor;
 import org.apache.flink.runtime.shuffle.UnknownShuffleDescriptor;
 import org.apache.flink.runtime.state.CheckpointStorageLocationReference;
+import org.apache.flink.util.CloseableIterator;
 import org.apache.flink.util.ExceptionUtils;
 
 import org.junit.Test;
@@ -74,7 +75,6 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
@@ -84,6 +84,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
@@ -94,6 +95,7 @@ import static org.apache.flink.runtime.io.network.partition.InputGateFairnessTes
 import static org.apache.flink.runtime.io.network.partition.consumer.RemoteInputChannelTest.submitTasksAndWaitForResults;
 import static org.apache.flink.runtime.io.network.util.TestBufferFactory.createBuffer;
 import static org.apache.flink.runtime.util.NettyShuffleDescriptorBuilder.createRemoteWithIdAndLocation;
+import static org.apache.flink.util.ExceptionUtils.rethrow;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
@@ -235,9 +237,12 @@ public class SingleInputGateTest extends InputGateTestBase {
 			};
 
 			submitTasksAndWaitForResults(executor, new Callable[] {closeTask, readRecoveredStateTask, processStateTask});
-			assertEquals(totalBuffers, environment.getNetworkBufferPool().getNumberOfAvailableMemorySegments());
 		} finally {
 			executor.shutdown();
+			// wait until the internal channel state recover task finishes
+			executor.awaitTermination(60, TimeUnit.SECONDS);
+			assertEquals(totalBuffers, environment.getNetworkBufferPool().getNumberOfAvailableMemorySegments());
+
 			environment.close();
 		}
 	}
@@ -816,14 +821,13 @@ public class SingleInputGateTest extends InputGateTestBase {
 		// Setup
 		final SingleInputGate inputGate = createInputGate(network, 2, ResultPartitionType.PIPELINED);
 
-		final int channelIndex1 = 0, channelIndex2 = 1;
 		final RemoteInputChannel remoteInputChannel1 = InputChannelBuilder.newBuilder()
-			.setChannelIndex(channelIndex1)
+			.setChannelIndex(0)
 			.setupFromNettyShuffleEnvironment(network)
 			.setConnectionManager(new TestingConnectionManager())
 			.buildRemoteChannel(inputGate);
 		final RemoteInputChannel remoteInputChannel2 = InputChannelBuilder.newBuilder()
-			.setChannelIndex(channelIndex2)
+			.setChannelIndex(1)
 			.setupFromNettyShuffleEnvironment(network)
 			.setConnectionManager(new TestingConnectionManager())
 			.buildRemoteChannel(inputGate);
@@ -833,12 +837,12 @@ public class SingleInputGateTest extends InputGateTestBase {
 		inputGate.registerBufferReceivedListener(new BufferReceivedListener() {
 			@Override
 			public void notifyBufferReceived(Buffer buffer, InputChannelInfo channelInfo) {
-				notifications.add(new BufferOrEvent(buffer, channelInfo.getInputChannelIdx()));
+				notifications.add(new BufferOrEvent(buffer, channelInfo));
 			}
 
 			@Override
 			public void notifyBarrierReceived(CheckpointBarrier barrier, InputChannelInfo channelInfo) {
-				notifications.add(new BufferOrEvent(barrier, channelInfo.getInputChannelIdx()));
+				notifications.add(new BufferOrEvent(barrier, channelInfo));
 			}
 		});
 		setupInputGate(inputGate, remoteInputChannel1, remoteInputChannel2);
@@ -868,10 +872,10 @@ public class SingleInputGateTest extends InputGateTestBase {
 		}
 
 		assertEquals(getIds(asList(
-			new BufferOrEvent(new CheckpointBarrier(0, 0, options), channelIndex2),
-			new BufferOrEvent(createBuffer(11), channelIndex1),
-			new BufferOrEvent(new CheckpointBarrier(1, 0, options), channelIndex1),
-			new BufferOrEvent(createBuffer(22), channelIndex2)
+			new BufferOrEvent(new CheckpointBarrier(0, 0, options), remoteInputChannel2.getChannelInfo()),
+			new BufferOrEvent(createBuffer(11), remoteInputChannel1.getChannelInfo()),
+			new BufferOrEvent(new CheckpointBarrier(1, 0, options), remoteInputChannel1.getChannelInfo()),
+			new BufferOrEvent(createBuffer(22), remoteInputChannel2.getChannelInfo())
 		)), getIds(notifications));
 	}
 
@@ -989,8 +993,15 @@ public class SingleInputGateTest extends InputGateTestBase {
 
 		inputChannel.spillInflightBuffers(0, new ChannelStateWriterImpl.NoOpChannelStateWriter() {
 			@Override
-			public void addInputData(long checkpointId, InputChannelInfo info, int startSeqNum, Buffer... data) {
-				inflightBuffers.addAll(Arrays.asList(data));
+			public void addInputData(long checkpointId, InputChannelInfo info, int startSeqNum, CloseableIterator<Buffer> iterator) {
+				List<Buffer> list = new ArrayList<>();
+				iterator.forEachRemaining(list::add);
+				inflightBuffers.addAll(list);
+				try {
+					iterator.close();
+				} catch (Exception e) {
+					rethrow(e);
+				}
 			}
 		});
 
@@ -1059,7 +1070,7 @@ public class SingleInputGateTest extends InputGateTestBase {
 		final Optional<BufferOrEvent> bufferOrEvent = inputGate.getNext();
 		assertTrue(bufferOrEvent.isPresent());
 		assertEquals(expectedIsBuffer, bufferOrEvent.get().isBuffer());
-		assertEquals(expectedChannelIndex, bufferOrEvent.get().getChannelIndex());
+		assertEquals(inputGate.getChannel(expectedChannelIndex).getChannelInfo(), bufferOrEvent.get().getChannelInfo());
 		assertEquals(expectedMoreAvailable, bufferOrEvent.get().moreAvailable());
 		if (!expectedMoreAvailable) {
 			assertFalse(inputGate.pollNext().isPresent());

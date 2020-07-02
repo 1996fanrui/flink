@@ -19,14 +19,17 @@
 package org.apache.flink.table.catalog.hive;
 
 import org.apache.flink.sql.parser.hive.ddl.SqlAlterHiveDatabase.AlterHiveDatabaseOp;
+import org.apache.flink.sql.parser.hive.ddl.SqlAlterHiveTable;
 import org.apache.flink.table.HiveVersionTestUtil;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.api.constraints.UniqueConstraint;
 import org.apache.flink.table.catalog.CatalogDatabase;
+import org.apache.flink.table.catalog.CatalogPartition;
 import org.apache.flink.table.catalog.CatalogPartitionSpec;
 import org.apache.flink.table.catalog.CatalogTable;
 import org.apache.flink.table.catalog.CatalogTableImpl;
+import org.apache.flink.table.catalog.CatalogTestUtil;
 import org.apache.flink.table.catalog.config.CatalogConfig;
 import org.apache.flink.table.catalog.hive.client.HiveShimLoader;
 import org.apache.flink.table.catalog.stats.CatalogColumnStatistics;
@@ -55,6 +58,7 @@ import java.util.Map;
 import static org.apache.flink.sql.parser.hive.ddl.SqlAlterHiveDatabase.ALTER_DATABASE_OP;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -119,9 +123,11 @@ public class HiveCatalogHiveMetadataTest extends HiveCatalogMetadataTestBase {
 				.field("third", DataTypes.BOOLEAN())
 				.field("fourth", DataTypes.DOUBLE())
 				.field("fifth", DataTypes.BIGINT())
-				.field("sixth", DataTypes.BYTES());
+				.field("sixth", DataTypes.BYTES())
+				.field("seventh", DataTypes.DECIMAL(10, 3))
+				.field("eighth", DataTypes.DECIMAL(30, 3));
 		if (supportDateStats) {
-			builder.field("seventh", DataTypes.DATE());
+			builder.field("ninth", DataTypes.DATE());
 		}
 		TableSchema tableSchema = builder.build();
 		CatalogTable catalogTable = new CatalogTableImpl(tableSchema, getBatchTableProperties(), TEST_COMMENT);
@@ -133,8 +139,10 @@ public class HiveCatalogHiveMetadataTest extends HiveCatalogMetadataTestBase {
 		columnStatisticsDataBaseMap.put("fourth", new CatalogColumnStatisticsDataDouble(15.02, 20.01, 3L, 10L));
 		columnStatisticsDataBaseMap.put("fifth", new CatalogColumnStatisticsDataLong(0L, 20L, 3L, 2L));
 		columnStatisticsDataBaseMap.put("sixth", new CatalogColumnStatisticsDataBinary(150L, 20D, 3L));
+		columnStatisticsDataBaseMap.put("seventh", new CatalogColumnStatisticsDataDouble(1.23, 99.456, 100L, 0L));
+		columnStatisticsDataBaseMap.put("eighth", new CatalogColumnStatisticsDataDouble(0.123, 123456.789, 5723L, 19L));
 		if (supportDateStats) {
-			columnStatisticsDataBaseMap.put("seventh", new CatalogColumnStatisticsDataDate(
+			columnStatisticsDataBaseMap.put("ninth", new CatalogColumnStatisticsDataDate(
 					new Date(71L), new Date(17923L), 132L, 0L));
 		}
 		CatalogColumnStatistics catalogColumnStatistics = new CatalogColumnStatistics(columnStatisticsDataBaseMap);
@@ -187,6 +195,32 @@ public class HiveCatalogHiveMetadataTest extends HiveCatalogMetadataTestBase {
 		assertTrue(catalogTable.getSchema().getFieldDataTypes()[2].getLogicalType().isNullable());
 
 		hiveCatalog.dropDatabase(db1, false, true);
+	}
+
+	@Override
+	@Test
+	public void testAlterPartition() throws Exception {
+		catalog.createDatabase(db1, createDb(), false);
+		catalog.createTable(path1, createPartitionedTable(), false);
+		catalog.createPartition(path1, createPartitionSpec(), createPartition(), false);
+
+		assertEquals(Collections.singletonList(createPartitionSpec()), catalog.listPartitions(path1));
+		CatalogPartition cp = catalog.getPartition(path1, createPartitionSpec());
+		CatalogTestUtil.checkEquals(createPartition(), cp);
+		assertNull(cp.getProperties().get("k"));
+
+		CatalogPartition another = createPartition();
+		another.getProperties().put("k", "v");
+		another.getProperties().put(SqlAlterHiveTable.ALTER_TABLE_OP, SqlAlterHiveTable.AlterTableOp.CHANGE_TBL_PROPS.name());
+
+		catalog.alterPartition(path1, createPartitionSpec(), another, false);
+
+		assertEquals(Collections.singletonList(createPartitionSpec()), catalog.listPartitions(path1));
+
+		cp = catalog.getPartition(path1, createPartitionSpec());
+
+		CatalogTestUtil.checkEquals(another, cp);
+		assertEquals("v", cp.getProperties().get("k"));
 	}
 
 	private void checkStatistics(int inputStat, int expectStat) throws Exception {

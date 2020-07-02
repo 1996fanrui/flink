@@ -18,6 +18,7 @@
 
 package org.apache.flink.connector.jdbc.internal;
 
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.io.RichOutputFormat;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.connector.jdbc.internal.connection.JdbcConnectionProvider;
@@ -38,11 +39,11 @@ public abstract class AbstractJdbcOutputFormat<T> extends RichOutputFormat<T> im
 
 	private static final long serialVersionUID = 1L;
 	public static final int DEFAULT_FLUSH_MAX_SIZE = 5000;
-	public static final long DEFAULT_FLUSH_INTERVAL_MILLS = 0;
+	public static final long DEFAULT_FLUSH_INTERVAL_MILLS = 0L;
 
 	private static final Logger LOG = LoggerFactory.getLogger(AbstractJdbcOutputFormat.class);
 	protected transient Connection connection;
-	private final JdbcConnectionProvider connectionProvider;
+	protected final JdbcConnectionProvider connectionProvider;
 
 	public AbstractJdbcOutputFormat(JdbcConnectionProvider connectionProvider) {
 		this.connectionProvider = Preconditions.checkNotNull(connectionProvider);
@@ -84,5 +85,10 @@ public abstract class AbstractJdbcOutputFormat<T> extends RichOutputFormat<T> im
 
 	@Override
 	public void flush() throws IOException {
+	}
+
+	@VisibleForTesting
+	public Connection getConnection() {
+		return connection;
 	}
 }

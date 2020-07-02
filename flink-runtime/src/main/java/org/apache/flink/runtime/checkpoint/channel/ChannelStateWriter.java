@@ -22,6 +22,7 @@ import org.apache.flink.runtime.checkpoint.CheckpointOptions;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.state.InputChannelStateHandle;
 import org.apache.flink.runtime.state.ResultSubpartitionStateHandle;
+import org.apache.flink.util.CloseableIterator;
 
 import java.io.Closeable;
 import java.util.Collection;
@@ -99,11 +100,10 @@ public interface ChannelStateWriter extends Closeable {
 	 *                    It is intended to use for incremental snapshots.
 	 *                    If no data is passed it is ignored.
 	 * @param data zero or more <b>data</b> buffers ordered by their sequence numbers
-	 * @throws IllegalArgumentException if one or more passed buffers {@link Buffer#isBuffer()  isn't a buffer}
 	 * @see org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter#SEQUENCE_NUMBER_RESTORED
 	 * @see org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter#SEQUENCE_NUMBER_UNKNOWN
 	 */
-	void addInputData(long checkpointId, InputChannelInfo info, int startSeqNum, Buffer... data) throws IllegalArgumentException;
+	void addInputData(long checkpointId, InputChannelInfo info, int startSeqNum, CloseableIterator<Buffer> data);
 
 	/**
 	 * Add in-flight buffers from the {@link org.apache.flink.runtime.io.network.partition.ResultSubpartition ResultSubpartition}.
@@ -123,7 +123,7 @@ public interface ChannelStateWriter extends Closeable {
 	 * Finalize write of channel state data for the given checkpoint id.
 	 * Must be called after {@link #start(long, CheckpointOptions)} and all of the input data of the given checkpoint added.
 	 * When both {@link #finishInput} and {@link #finishOutput} were called the results can be (eventually) obtained
-	 * using {@link #getWriteResult}
+	 * using {@link #getAndRemoveWriteResult}
 	 */
 	void finishInput(long checkpointId);
 
@@ -131,24 +131,21 @@ public interface ChannelStateWriter extends Closeable {
 	 * Finalize write of channel state data for the given checkpoint id.
 	 * Must be called after {@link #start(long, CheckpointOptions)} and all of the output data of the given checkpoint added.
 	 * When both {@link #finishInput} and {@link #finishOutput} were called the results can be (eventually) obtained
-	 * using {@link #getWriteResult}
+	 * using {@link #getAndRemoveWriteResult}
 	 */
 	void finishOutput(long checkpointId);
 
 	/**
 	 * Aborts the checkpoint and fails pending result for this checkpoint.
+	 * @param cleanup true if {@link #getAndRemoveWriteResult(long)} is not supposed to be called afterwards.
 	 */
-	void abort(long checkpointId, Throwable cause);
+	void abort(long checkpointId, Throwable cause, boolean cleanup);
 
 	/**
-	 * Must be called after {@link #start(long, CheckpointOptions)}.
+	 * Must be called after {@link #start(long, CheckpointOptions)} once.
+	 * @throws IllegalArgumentException if the passed checkpointId is not known.
 	 */
-	ChannelStateWriteResult getWriteResult(long checkpointId);
-
-	/**
-	 * Cleans up the internal state for the given checkpoint.
-	 */
-	void stop(long checkpointId);
+	ChannelStateWriteResult getAndRemoveWriteResult(long checkpointId) throws IllegalArgumentException;
 
 	ChannelStateWriter NO_OP = new NoOpChannelStateWriter();
 
@@ -161,7 +158,7 @@ public interface ChannelStateWriter extends Closeable {
 		}
 
 		@Override
-		public void addInputData(long checkpointId, InputChannelInfo info, int startSeqNum, Buffer... data) {
+		public void addInputData(long checkpointId, InputChannelInfo info, int startSeqNum, CloseableIterator<Buffer> data) {
 		}
 
 		@Override
@@ -177,20 +174,18 @@ public interface ChannelStateWriter extends Closeable {
 		}
 
 		@Override
-		public void abort(long checkpointId, Throwable cause) {
+		public void abort(long checkpointId, Throwable cause, boolean cleanup) {
 		}
 
 		@Override
-		public ChannelStateWriteResult getWriteResult(long checkpointId) {
-			return ChannelStateWriteResult.EMPTY;
+		public ChannelStateWriteResult getAndRemoveWriteResult(long checkpointId) {
+			return new ChannelStateWriteResult(
+				CompletableFuture.completedFuture(Collections.emptyList()),
+				CompletableFuture.completedFuture(Collections.emptyList()));
 		}
 
 		@Override
 		public void close() {
-		}
-
-		@Override
-		public void stop(long checkpointId) {
 		}
 	}
 }

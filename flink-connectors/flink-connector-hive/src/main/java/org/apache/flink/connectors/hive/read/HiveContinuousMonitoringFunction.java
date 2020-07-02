@@ -171,13 +171,13 @@ public class HiveContinuousMonitoringFunction
 	public void initializeState(FunctionInitializationContext context) throws Exception {
 		this.currReadTimeState = context.getOperatorStateStore().getListState(
 			new ListStateDescriptor<>(
-				"partition-monitoring-state",
+				"current-read-time-state",
 				LongSerializer.INSTANCE
 			)
 		);
 		this.distinctPartsState = context.getOperatorStateStore().getListState(
 			new ListStateDescriptor<>(
-				"partition-monitoring-state",
+				"distinct-partitions-state",
 				new ListSerializer<>(new ListSerializer<>(StringSerializer.INSTANCE))
 			)
 		);
@@ -293,6 +293,8 @@ public class HiveContinuousMonitoringFunction
 				if (timestamp > maxTimestamp) {
 					maxTimestamp = timestamp;
 				}
+				LOG.info("Found new partition {} of table {}, forwarding splits to downstream readers",
+						partSpec, tablePath.getFullName());
 				HiveTableInputSplit[] splits = HiveTableInputFormat.createInputSplits(
 						this.readerParallelism,
 						Collections.singletonList(toHiveTablePartition(partition)),
