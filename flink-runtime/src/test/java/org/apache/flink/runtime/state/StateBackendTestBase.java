@@ -1878,8 +1878,20 @@ public abstract class StateBackendTestBase<B extends AbstractStateBackend> exten
 	@Test
 	public void testReducingStateAddAndGet() throws Exception {
 
+		ReduceFunction<Long> sumFunction = new ReduceFunction<Long>() {
+			@Override
+			public Long reduce(Long previousState, Long newValue) throws Exception {
+				// if newValue ==null,
+				// consider newValue to be 0 and return previousState directly
+				if (newValue == null) {
+					return previousState;
+				}
+				return previousState + newValue;
+			}
+		};
+
 		final ReducingStateDescriptor<Long> stateDescr =
-			new ReducingStateDescriptor<>("my-state", (a, b) -> a + b, Long.class);
+			new ReducingStateDescriptor<>("my-state", sumFunction, Long.class);
 
 		AbstractKeyedStateBackend<String> keyedBackend = createKeyedBackend(StringSerializer.INSTANCE);
 
@@ -1893,6 +1905,7 @@ public abstract class StateBackendTestBase<B extends AbstractStateBackend> exten
 			keyedBackend.setCurrentKey("def");
 			assertNull(state.get());
 			state.add(17L);
+			state.add(null);
 			state.add(11L);
 			assertEquals(28L, state.get().longValue());
 
