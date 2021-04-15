@@ -81,6 +81,11 @@ public class FileStateHandle implements StreamStateHandle {
      */
     @Override
     public void discardState() throws Exception {
+        String parentName = filePath.getParent().getName();
+        boolean exclusive = parentName.startsWith(AbstractFsCheckpointStorageAccess.CHECKPOINT_DIR_PREFIX);
+        if (exclusive) {
+            return;
+        }
         FileSystem fs = getFileSystem();
         fs.delete(filePath, false);
     }

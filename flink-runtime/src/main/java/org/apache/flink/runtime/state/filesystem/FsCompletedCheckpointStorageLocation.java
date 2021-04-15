@@ -71,6 +71,6 @@ public class FsCompletedCheckpointStorageLocation implements CompletedCheckpoint
         if (fs == null) {
             fs = exclusiveCheckpointDir.getFileSystem();
         }
-        fs.delete(exclusiveCheckpointDir, false);
+        fs.delete(exclusiveCheckpointDir, true);
     }
 }

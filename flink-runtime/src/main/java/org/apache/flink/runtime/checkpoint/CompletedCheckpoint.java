@@ -244,18 +244,11 @@ public class CompletedCheckpoint implements Serializable, Checkpoint {
             // collect exceptions and continue cleanup
             Exception exception = null;
 
-            // drop the metadata
-            try {
-                metadataHandle.discardState();
-            } catch (Exception e) {
-                exception = e;
-            }
-
             // discard private state objects
             try {
                 StateUtil.bestEffortDiscardAllStateObjects(operatorStates.values());
             } catch (Exception e) {
-                exception = ExceptionUtils.firstOrSuppressed(e, exception);
+                exception = e;
             }
 
             // discard location as a whole
