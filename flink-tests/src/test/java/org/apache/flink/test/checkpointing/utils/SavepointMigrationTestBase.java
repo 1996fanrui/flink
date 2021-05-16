@@ -20,31 +20,26 @@ package org.apache.flink.test.checkpointing.utils;
 
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.JobStatus;
-import org.apache.flink.api.common.JobSubmissionResult;
 import org.apache.flink.api.common.time.Deadline;
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.client.ClientUtils;
 import org.apache.flink.client.program.ClusterClient;
 import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.HeartbeatManagerOptions;
+import org.apache.flink.configuration.MemorySize;
+import org.apache.flink.configuration.StateBackendOptions;
 import org.apache.flink.configuration.TaskManagerOptions;
-import org.apache.flink.runtime.checkpoint.savepoint.SavepointSerializers;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobgraph.SavepointRestoreSettings;
 import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.test.util.MiniClusterWithClientResource;
 import org.apache.flink.test.util.TestBaseUtils;
-import org.apache.flink.testutils.junit.category.AlsoRunWithLegacyScheduler;
 
 import org.apache.commons.io.FileUtils;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
 import org.junit.ClassRule;
 import org.junit.Rule;
-import org.junit.experimental.categories.Category;
 import org.junit.rules.TemporaryFolder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -61,196 +56,194 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.fail;
 
-/**
- * Test savepoint migration.
- */
-@Category(AlsoRunWithLegacyScheduler.class)
+/** Test savepoint migration. */
 public abstract class SavepointMigrationTestBase extends TestBaseUtils {
 
-	@ClassRule
-	public static final TemporaryFolder TEMP_FOLDER = new TemporaryFolder();
+    @ClassRule public static final TemporaryFolder TEMP_FOLDER = new TemporaryFolder();
 
-	@Rule
-	public final MiniClusterWithClientResource miniClusterResource;
+    @Rule public final MiniClusterWithClientResource miniClusterResource;
 
-	private static final Logger LOG = LoggerFactory.getLogger(SavepointMigrationTestBase.class);
+    private static final Logger LOG = LoggerFactory.getLogger(SavepointMigrationTestBase.class);
 
-	protected static final int DEFAULT_PARALLELISM = 4;
+    protected static final int DEFAULT_PARALLELISM = 4;
 
-	@BeforeClass
-	public static void before() {
-		SavepointSerializers.setFailWhenLegacyStateDetected(false);
-	}
+    protected static String getResourceFilename(String filename) {
+        ClassLoader cl = SavepointMigrationTestBase.class.getClassLoader();
+        URL resource = cl.getResource(filename);
+        if (resource == null) {
+            throw new NullPointerException("Missing snapshot resource.");
+        }
+        return resource.getFile();
+    }
 
-	@AfterClass
-	public static void after() {
-		SavepointSerializers.setFailWhenLegacyStateDetected(true);
-	}
+    protected SavepointMigrationTestBase() throws Exception {
+        miniClusterResource =
+                new MiniClusterWithClientResource(
+                        new MiniClusterResourceConfiguration.Builder()
+                                .setConfiguration(getConfiguration())
+                                .setNumberTaskManagers(1)
+                                .setNumberSlotsPerTaskManager(DEFAULT_PARALLELISM)
+                                .build());
+    }
 
-	protected static String getResourceFilename(String filename) {
-		ClassLoader cl = SavepointMigrationTestBase.class.getClassLoader();
-		URL resource = cl.getResource(filename);
-		if (resource == null) {
-			throw new NullPointerException("Missing snapshot resource.");
-		}
-		return resource.getFile();
-	}
+    private Configuration getConfiguration() throws Exception {
+        // Flink configuration
+        final Configuration config = new Configuration();
 
-	protected SavepointMigrationTestBase() throws Exception {
-		miniClusterResource = new MiniClusterWithClientResource(
-			new MiniClusterResourceConfiguration.Builder()
-				.setConfiguration(getConfiguration())
-				.setNumberTaskManagers(1)
-				.setNumberSlotsPerTaskManager(DEFAULT_PARALLELISM)
-				.build());
-	}
+        config.setInteger(ConfigConstants.LOCAL_NUMBER_TASK_MANAGER, 1);
+        config.setInteger(TaskManagerOptions.NUM_TASK_SLOTS, DEFAULT_PARALLELISM);
 
-	private Configuration getConfiguration() throws Exception {
-		// Flink configuration
-		final Configuration config = new Configuration();
+        UUID id = UUID.randomUUID();
+        final File checkpointDir = TEMP_FOLDER.newFolder("checkpoints_" + id).getAbsoluteFile();
+        final File savepointDir = TEMP_FOLDER.newFolder("savepoints_" + id).getAbsoluteFile();
 
-		config.setInteger(ConfigConstants.LOCAL_NUMBER_TASK_MANAGER, 1);
-		config.setInteger(TaskManagerOptions.NUM_TASK_SLOTS, DEFAULT_PARALLELISM);
+        if (!checkpointDir.exists() || !savepointDir.exists()) {
+            throw new Exception("Test setup failed: failed to create (temporary) directories.");
+        }
 
-		UUID id = UUID.randomUUID();
-		final File checkpointDir = TEMP_FOLDER.newFolder("checkpoints_" + id).getAbsoluteFile();
-		final File savepointDir = TEMP_FOLDER.newFolder("savepoints_" + id).getAbsoluteFile();
+        LOG.info("Created temporary checkpoint directory: " + checkpointDir + ".");
+        LOG.info("Created savepoint directory: " + savepointDir + ".");
 
-		if (!checkpointDir.exists() || !savepointDir.exists()) {
-			throw new Exception("Test setup failed: failed to create (temporary) directories.");
-		}
+        config.setString(StateBackendOptions.STATE_BACKEND, "memory");
+        config.setString(
+                CheckpointingOptions.CHECKPOINTS_DIRECTORY, checkpointDir.toURI().toString());
+        config.set(CheckpointingOptions.FS_SMALL_FILE_THRESHOLD, MemorySize.ZERO);
+        config.setString(CheckpointingOptions.SAVEPOINT_DIRECTORY, savepointDir.toURI().toString());
+        config.setLong(HeartbeatManagerOptions.HEARTBEAT_INTERVAL, 300L);
 
-		LOG.info("Created temporary checkpoint directory: " + checkpointDir + ".");
-		LOG.info("Created savepoint directory: " + savepointDir + ".");
+        return config;
+    }
 
-		config.setString(CheckpointingOptions.STATE_BACKEND, "memory");
-		config.setString(CheckpointingOptions.CHECKPOINTS_DIRECTORY, checkpointDir.toURI().toString());
-		config.setInteger(CheckpointingOptions.FS_SMALL_FILE_THRESHOLD, 0);
-		config.setString(CheckpointingOptions.SAVEPOINT_DIRECTORY, savepointDir.toURI().toString());
-		config.setLong(HeartbeatManagerOptions.HEARTBEAT_INTERVAL, 300L);
+    @SafeVarargs
+    protected final void executeAndSavepoint(
+            StreamExecutionEnvironment env,
+            String savepointPath,
+            Tuple2<String, Integer>... expectedAccumulators)
+            throws Exception {
 
-		return config;
-	}
+        final Deadline deadLine = Deadline.fromNow(Duration.ofMinutes(5));
 
-	@SafeVarargs
-	protected final void executeAndSavepoint(
-			StreamExecutionEnvironment env,
-			String savepointPath,
-			Tuple2<String, Integer>... expectedAccumulators) throws Exception {
+        ClusterClient<?> client = miniClusterResource.getClusterClient();
 
-		final Deadline deadLine = Deadline.fromNow(Duration.ofMinutes(5));
+        // Submit the job
+        JobGraph jobGraph = env.getStreamGraph().getJobGraph();
 
-		ClusterClient<?> client = miniClusterResource.getClusterClient();
+        JobID jobID = client.submitJob(jobGraph).get();
 
-		// Submit the job
-		JobGraph jobGraph = env.getStreamGraph().getJobGraph();
+        LOG.info("Submitted job {} and waiting...", jobID);
 
-		JobSubmissionResult jobSubmissionResult = ClientUtils.submitJob(client, jobGraph);
+        boolean done = false;
+        while (deadLine.hasTimeLeft()) {
+            Thread.sleep(100);
+            Map<String, Object> accumulators = client.getAccumulators(jobID).get();
 
-		LOG.info("Submitted job {} and waiting...", jobSubmissionResult.getJobID());
+            boolean allDone = true;
+            for (Tuple2<String, Integer> acc : expectedAccumulators) {
+                Object accumOpt = accumulators.get(acc.f0);
+                if (accumOpt == null) {
+                    allDone = false;
+                    break;
+                }
 
-		boolean done = false;
-		while (deadLine.hasTimeLeft()) {
-			Thread.sleep(100);
-			Map<String, Object> accumulators = client.getAccumulators(jobSubmissionResult.getJobID()).get();
+                Integer numFinished = (Integer) accumOpt;
+                if (!numFinished.equals(acc.f1)) {
+                    allDone = false;
+                    break;
+                }
+            }
+            if (allDone) {
+                done = true;
+                break;
+            }
+        }
 
-			boolean allDone = true;
-			for (Tuple2<String, Integer> acc : expectedAccumulators) {
-				Object accumOpt = accumulators.get(acc.f0);
-				if (accumOpt == null) {
-					allDone = false;
-					break;
-				}
+        if (!done) {
+            fail("Did not see the expected accumulator results within time limit.");
+        }
 
-				Integer numFinished = (Integer) accumOpt;
-				if (!numFinished.equals(acc.f1)) {
-					allDone = false;
-					break;
-				}
-			}
-			if (allDone) {
-				done = true;
-				break;
-			}
-		}
+        LOG.info("Triggering savepoint.");
 
-		if (!done) {
-			fail("Did not see the expected accumulator results within time limit.");
-		}
+        CompletableFuture<String> savepointPathFuture = client.triggerSavepoint(jobID, null);
 
-		LOG.info("Triggering savepoint.");
+        String jobmanagerSavepointPath =
+                savepointPathFuture.get(deadLine.timeLeft().toMillis(), TimeUnit.MILLISECONDS);
 
-		CompletableFuture<String> savepointPathFuture = client.triggerSavepoint(jobSubmissionResult.getJobID(), null);
+        File jobManagerSavepoint = new File(new URI(jobmanagerSavepointPath).getPath());
+        // savepoints were changed to be directories in Flink 1.3
+        if (jobManagerSavepoint.isDirectory()) {
+            FileUtils.moveDirectory(jobManagerSavepoint, new File(savepointPath));
+        } else {
+            FileUtils.moveFile(jobManagerSavepoint, new File(savepointPath));
+        }
+    }
 
-		String jobmanagerSavepointPath = savepointPathFuture.get(deadLine.timeLeft().toMillis(), TimeUnit.MILLISECONDS);
+    @SafeVarargs
+    protected final void restoreAndExecute(
+            StreamExecutionEnvironment env,
+            String savepointPath,
+            Tuple2<String, Integer>... expectedAccumulators)
+            throws Exception {
 
-		File jobManagerSavepoint = new File(new URI(jobmanagerSavepointPath).getPath());
-		// savepoints were changed to be directories in Flink 1.3
-		if (jobManagerSavepoint.isDirectory()) {
-			FileUtils.moveDirectory(jobManagerSavepoint, new File(savepointPath));
-		} else {
-			FileUtils.moveFile(jobManagerSavepoint, new File(savepointPath));
-		}
-	}
+        final Deadline deadLine = Deadline.fromNow(Duration.ofMinutes(5));
 
-	@SafeVarargs
-	protected final void restoreAndExecute(
-			StreamExecutionEnvironment env,
-			String savepointPath,
-			Tuple2<String, Integer>... expectedAccumulators) throws Exception {
+        ClusterClient<?> client = miniClusterResource.getClusterClient();
 
-		final Deadline deadLine = Deadline.fromNow(Duration.ofMinutes(5));
+        // Submit the job
+        JobGraph jobGraph = env.getStreamGraph().getJobGraph();
 
-		ClusterClient<?> client = miniClusterResource.getClusterClient();
+        jobGraph.setSavepointRestoreSettings(SavepointRestoreSettings.forPath(savepointPath));
 
-		// Submit the job
-		JobGraph jobGraph = env.getStreamGraph().getJobGraph();
+        JobID jobID = client.submitJob(jobGraph).get();
 
-		jobGraph.setSavepointRestoreSettings(SavepointRestoreSettings.forPath(savepointPath));
+        boolean done = false;
+        while (deadLine.hasTimeLeft()) {
 
-		JobSubmissionResult jobSubmissionResult = ClientUtils.submitJob(client, jobGraph);
+            // try and get a job result, this will fail if the job already failed. Use this
+            // to get out of this loop
 
-		boolean done = false;
-		while (deadLine.hasTimeLeft()) {
+            try {
+                CompletableFuture<JobStatus> jobStatusFuture = client.getJobStatus(jobID);
 
-			// try and get a job result, this will fail if the job already failed. Use this
-			// to get out of this loop
-			JobID jobId = jobSubmissionResult.getJobID();
+                JobStatus jobStatus = jobStatusFuture.get(5, TimeUnit.SECONDS);
 
-			try {
-				CompletableFuture<JobStatus> jobStatusFuture = client.getJobStatus(jobSubmissionResult.getJobID());
+                if (jobStatus == JobStatus.FAILED) {
+                    LOG.warn(
+                            "Job reached status failed",
+                            client.requestJobResult(jobID)
+                                    .get()
+                                    .getSerializedThrowable()
+                                    .get()
+                                    .deserializeError(ClassLoader.getSystemClassLoader()));
+                }
+                assertNotEquals(JobStatus.FAILED, jobStatus);
+            } catch (Exception e) {
+                fail("Could not connect to job: " + e);
+            }
 
-				JobStatus jobStatus = jobStatusFuture.get(5, TimeUnit.SECONDS);
+            Thread.sleep(100);
+            Map<String, Object> accumulators = client.getAccumulators(jobID).get();
 
-				assertNotEquals(JobStatus.FAILED, jobStatus);
-			} catch (Exception e) {
-				fail("Could not connect to job: " + e);
-			}
+            boolean allDone = true;
+            for (Tuple2<String, Integer> acc : expectedAccumulators) {
+                Object numFinished = accumulators.get(acc.f0);
+                if (numFinished == null) {
+                    allDone = false;
+                    break;
+                }
+                if (!numFinished.equals(acc.f1)) {
+                    allDone = false;
+                    break;
+                }
+            }
 
-			Thread.sleep(100);
-			Map<String, Object> accumulators = client.getAccumulators(jobId).get();
+            if (allDone) {
+                done = true;
+                break;
+            }
+        }
 
-			boolean allDone = true;
-			for (Tuple2<String, Integer> acc : expectedAccumulators) {
-				Object numFinished = accumulators.get(acc.f0);
-				if (numFinished == null) {
-					allDone = false;
-					break;
-				}
-				if (!numFinished.equals(acc.f1)) {
-					allDone = false;
-					break;
-				}
-			}
-
-			if (allDone) {
-				done = true;
-				break;
-			}
-		}
-
-		if (!done) {
-			fail("Did not see the expected accumulator results within time limit.");
-		}
-	}
+        if (!done) {
+            fail("Did not see the expected accumulator results within time limit.");
+        }
+    }
 }
