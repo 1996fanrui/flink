@@ -349,6 +349,12 @@ public class DefaultJobLeaderServiceTest extends TestLogger {
         }
 
         @Override
+        public void jobManagerTemporaryLostLeadership(JobID jobId) {}
+
+        @Override
+        public void jobManagerRecoveredAfterTemporaryLost(JobID jobId) {}
+
+        @Override
         public void jobManagerLostLeadership(JobID jobId, JobMasterId jobMasterId) {
             jobManagerLostLeadership.countDown();
         }

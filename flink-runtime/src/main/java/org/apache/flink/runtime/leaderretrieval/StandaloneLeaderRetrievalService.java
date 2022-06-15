@@ -82,7 +82,7 @@ public class StandaloneLeaderRetrievalService implements LeaderRetrievalService 
 
             // directly notify the listener, because we already know the leading JobManager's
             // address
-            listener.notifyLeaderAddress(leaderAddress, leaderId);
+            listener.notifyLeaderAddress(leaderAddress, leaderId, false);
         }
     }
 

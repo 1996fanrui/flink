@@ -336,6 +336,26 @@ public class DefaultJobLeaderService implements JobLeaderService {
                             jobLeaderListener.jobManagerLostLeadership(jobId, oldJobMasterId));
         }
 
+        @Override
+        public void notifyLeaderAddress(
+                @Nullable final String leaderAddress,
+                @Nullable final UUID leaderId,
+                boolean isTemporaryNoLeader) {
+            synchronized (lock) {
+                if (isTemporaryNoLeader) {
+                    if (!stopped) {
+                        if (leaderAddress == null || leaderAddress.isEmpty()) {
+                            jobLeaderListener.jobManagerTemporaryLostLeadership(jobId);
+                        } else {
+                            jobLeaderListener.jobManagerRecoveredAfterTemporaryLost(jobId);
+                        }
+                    }
+                    return;
+                }
+            }
+            notifyLeaderAddress(leaderAddress, leaderId);
+        }
+
         @GuardedBy("lock")
         private void openRpcConnectionTo(String leaderAddress, JobMasterId jobMasterId) {
             Preconditions.checkState(

@@ -40,6 +40,26 @@ public interface LeaderRetrievalListener {
     void notifyLeaderAddress(@Nullable String leaderAddress, @Nullable UUID leaderSessionID);
 
     /**
+     * This method is called by the {@link LeaderRetrievalService} when a new leader is elected.
+     *
+     * <p>If both arguments are null then it signals that leadership was revoked without a new
+     * leader having been elected.
+     *
+     * @param leaderAddress The address of the new leader
+     * @param leaderSessionID The new leader session ID
+     * @param isTemporaryNoLeader Whether is temporary NoLeader.
+     */
+    default void notifyLeaderAddress(
+            @Nullable String leaderAddress,
+            @Nullable UUID leaderSessionID,
+            boolean isTemporaryNoLeader) {
+        if (isTemporaryNoLeader) {
+            return;
+        }
+        notifyLeaderAddress(leaderAddress, leaderSessionID);
+    }
+
+    /**
      * This method is called by the {@link LeaderRetrievalService} in case of an exception. This
      * assures that the {@link LeaderRetrievalListener} is aware of any problems occurring in the
      * {@link LeaderRetrievalService} thread.

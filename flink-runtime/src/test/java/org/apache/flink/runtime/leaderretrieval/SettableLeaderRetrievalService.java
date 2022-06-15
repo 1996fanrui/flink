@@ -50,7 +50,7 @@ public class SettableLeaderRetrievalService implements LeaderRetrievalService {
         this.listener = Preconditions.checkNotNull(listener);
 
         if (leaderSessionID != null && leaderAddress != null) {
-            listener.notifyLeaderAddress(leaderAddress, leaderSessionID);
+            listener.notifyLeaderAddress(leaderAddress, leaderSessionID, false);
         }
     }
 
@@ -63,7 +63,7 @@ public class SettableLeaderRetrievalService implements LeaderRetrievalService {
         this.leaderSessionID = leaderSessionID;
 
         if (listener != null) {
-            listener.notifyLeaderAddress(address, leaderSessionID);
+            listener.notifyLeaderAddress(address, leaderSessionID, false);
         }
     }
 }

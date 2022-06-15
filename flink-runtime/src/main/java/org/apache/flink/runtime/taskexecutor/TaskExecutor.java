@@ -51,6 +51,7 @@ import org.apache.flink.runtime.heartbeat.HeartbeatListener;
 import org.apache.flink.runtime.heartbeat.HeartbeatManager;
 import org.apache.flink.runtime.heartbeat.HeartbeatReceiver;
 import org.apache.flink.runtime.heartbeat.HeartbeatServices;
+import org.apache.flink.runtime.heartbeat.NoOpHeartbeatTarget;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
 import org.apache.flink.runtime.instance.HardwareDescription;
 import org.apache.flink.runtime.instance.InstanceID;
@@ -252,6 +253,12 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
     private final HeartbeatManager<AllocatedSlotReport, TaskExecutorToJobManagerHeartbeatPayload>
             jobManagerHeartbeatManager;
 
+    /**
+     * The suspended heartbeat manager for job manager in the task manager. It will take effect when
+     * suspended is tolerated and suspended occurs.
+     */
+    private final HeartbeatManager<Void, Void> jobManagerSuspendedHeartbeatManager;
+
     /** The heartbeat manager for resource manager in the task manager. */
     private final HeartbeatManager<Void, TaskExecutorHeartbeatPayload>
             resourceManagerHeartbeatManager;
@@ -328,6 +335,8 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
                 taskExecutorServices.getUnresolvedTaskManagerLocation().getResourceID();
         this.jobManagerHeartbeatManager =
                 createJobManagerHeartbeatManager(heartbeatServices, resourceId);
+        this.jobManagerSuspendedHeartbeatManager =
+                createSuspendedJobManagerHeartbeatManager(heartbeatServices, resourceId);
         this.resourceManagerHeartbeatManager =
                 createResourceManagerHeartbeatManager(heartbeatServices, resourceId);
 
@@ -355,6 +364,15 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
                     HeartbeatServices heartbeatServices, ResourceID resourceId) {
         return heartbeatServices.createHeartbeatManager(
                 resourceId, new JobManagerHeartbeatListener(), getMainThreadExecutor(), log);
+    }
+
+    private HeartbeatManager<Void, Void> createSuspendedJobManagerHeartbeatManager(
+            HeartbeatServices heartbeatServices, ResourceID resourceId) {
+        return heartbeatServices.createSuspendedHeartbeatManager(
+                resourceId,
+                new SuspendedJobManagerHeartbeatListener(),
+                getMainThreadExecutor(),
+                log);
     }
 
     @Override
@@ -932,6 +950,7 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
     @Override
     public CompletableFuture<Void> heartbeatFromJobManager(
             ResourceID resourceID, AllocatedSlotReport allocatedSlotReport) {
+        jobManagerSuspendedHeartbeatManager.requestHeartbeat(resourceID, null);
         return jobManagerHeartbeatManager.requestHeartbeat(resourceID, allocatedSlotReport);
     }
 
@@ -2261,6 +2280,7 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
                 final JobID jobId,
                 final JobMasterGateway jobManagerGateway,
                 final JMTMRegistrationSuccess registrationMessage) {
+            log.info("JobManager for job {} gained leadership.", jobId);
             runAsync(
                     () ->
                             jobTable.getJob(jobId)
@@ -2270,6 +2290,34 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
                                                             job,
                                                             jobManagerGateway,
                                                             registrationMessage)));
+        }
+
+        @Override
+        public void jobManagerTemporaryLostLeadership(JobID jobId) {
+            log.info("JobManager for job {} temporary lost leadership.", jobId);
+            runAsync(
+                    () ->
+                            jobTable.getConnection(jobId)
+                                    .ifPresent(
+                                            connection ->
+                                                    jobManagerSuspendedHeartbeatManager
+                                                            .monitorTarget(
+                                                                    connection.getResourceId(),
+                                                                    NoOpHeartbeatTarget
+                                                                            .getInstance())));
+        }
+
+        @Override
+        public void jobManagerRecoveredAfterTemporaryLost(JobID jobId) {
+            log.info("JobManager for job {} recovered after temporary lost leadership.", jobId);
+            runAsync(
+                    () ->
+                            jobTable.getConnection(jobId)
+                                    .ifPresent(
+                                            connection ->
+                                                    jobManagerSuspendedHeartbeatManager
+                                                            .unmonitorTarget(
+                                                                    connection.getResourceId())));
         }
 
         @Override
@@ -2407,6 +2455,40 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
         @Override
         public void timeoutSlot(final AllocationID allocationId, final UUID ticket) {
             runAsync(() -> TaskExecutor.this.timeoutSlot(allocationId, ticket));
+        }
+    }
+
+    private class SuspendedJobManagerHeartbeatListener implements HeartbeatListener<Void, Void> {
+
+        @Override
+        public void notifyHeartbeatTimeout(ResourceID resourceID) {
+            validateRunsInMainThread();
+            log.info(
+                    "The heartbeat of JobManager with id {} timed out after zookeeper suspended.",
+                    resourceID);
+            runAsync(
+                    () -> {
+                        notifyOfNewResourceManagerLeader(
+                                null, ResourceManagerId.fromUuidOrNull(null));
+
+                        jobTable.getConnection(resourceID)
+                                .ifPresent(
+                                        jobManagerConnection ->
+                                                disconnectJobManagerConnection(
+                                                        jobManagerConnection,
+                                                        new Exception(
+                                                                "The heartbeat after suspended of JobManager with id "
+                                                                        + resourceID
+                                                                        + " timed out.")));
+                    });
+        }
+
+        @Override
+        public void reportPayload(ResourceID resourceID, Void payload) {}
+
+        @Override
+        public Void retrievePayload(ResourceID resourceID) {
+            return null;
         }
     }
 

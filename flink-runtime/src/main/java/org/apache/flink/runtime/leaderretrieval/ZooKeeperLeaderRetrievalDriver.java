@@ -156,6 +156,8 @@ public class ZooKeeperLeaderRetrievalDriver implements LeaderRetrievalDriver {
                 if (leaderInformationClearancePolicy
                         == LeaderInformationClearancePolicy.ON_SUSPENDED_CONNECTION) {
                     notifyNoLeader();
+                } else {
+                    notifyTemporaryNoLeader();
                 }
                 break;
             case RECONNECTED:
@@ -174,6 +176,10 @@ public class ZooKeeperLeaderRetrievalDriver implements LeaderRetrievalDriver {
 
     private void notifyNoLeader() {
         leaderRetrievalEventHandler.notifyLeaderAddress(LeaderInformation.empty());
+    }
+
+    private void notifyTemporaryNoLeader() {
+        leaderRetrievalEventHandler.notifyLeaderAddress(LeaderInformation.temporarySuspended());
     }
 
     private void onReconnectedConnectionState() {

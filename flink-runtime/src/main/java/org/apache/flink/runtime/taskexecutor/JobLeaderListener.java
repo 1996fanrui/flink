@@ -45,6 +45,10 @@ public interface JobLeaderListener {
             JobMasterGateway jobManagerGateway,
             JMTMRegistrationSuccess registrationMessage);
 
+    void jobManagerTemporaryLostLeadership(JobID jobId);
+
+    void jobManagerRecoveredAfterTemporaryLost(JobID jobId);
+
     /**
      * Callback if the job leader for the job with the given job id lost its leadership.
      *

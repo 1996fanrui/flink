@@ -35,11 +35,24 @@ public class LeaderInformation implements Serializable {
 
     @Nullable private final String leaderAddress;
 
+    private final boolean isTemporaryNoLeader;
+
     private static final LeaderInformation EMPTY = new LeaderInformation(null, null);
 
+    private static final LeaderInformation TEMPORARY_SUSPENDED =
+            new LeaderInformation(null, null, true);
+
     private LeaderInformation(@Nullable UUID leaderSessionID, @Nullable String leaderAddress) {
+        this(leaderSessionID, leaderAddress, false);
+    }
+
+    private LeaderInformation(
+            @Nullable UUID leaderSessionID,
+            @Nullable String leaderAddress,
+            boolean isTemporaryNoLeader) {
         this.leaderSessionID = leaderSessionID;
         this.leaderAddress = leaderAddress;
+        this.isTemporaryNoLeader = isTemporaryNoLeader;
     }
 
     @Nullable
@@ -52,8 +65,16 @@ public class LeaderInformation implements Serializable {
         return leaderAddress;
     }
 
+    public boolean isTemporaryNoLeader() {
+        return isTemporaryNoLeader;
+    }
+
     public boolean isEmpty() {
         return this == EMPTY;
+    }
+
+    public boolean isTemporarySuspended() {
+        return this == TEMPORARY_SUSPENDED;
     }
 
     @Override
@@ -63,7 +84,8 @@ public class LeaderInformation implements Serializable {
         } else if (obj != null && obj.getClass() == LeaderInformation.class) {
             final LeaderInformation that = (LeaderInformation) obj;
             return Objects.equals(this.leaderSessionID, that.leaderSessionID)
-                    && Objects.equals(this.leaderAddress, that.leaderAddress);
+                    && Objects.equals(this.leaderAddress, that.leaderAddress)
+                    && this.isTemporaryNoLeader == that.isTemporaryNoLeader;
         } else {
             return false;
         }
@@ -73,6 +95,7 @@ public class LeaderInformation implements Serializable {
     public int hashCode() {
         int result = Objects.hashCode(leaderSessionID);
         result = 31 * result + Objects.hashCode(leaderAddress);
+        result = 31 * result + Objects.hashCode(isTemporaryNoLeader);
         return result;
     }
 
@@ -84,6 +107,10 @@ public class LeaderInformation implements Serializable {
         return EMPTY;
     }
 
+    public static LeaderInformation temporarySuspended() {
+        return TEMPORARY_SUSPENDED;
+    }
+
     @Override
     public String toString() {
         return "LeaderInformation{"
@@ -92,6 +119,8 @@ public class LeaderInformation implements Serializable {
                 + '\''
                 + ", leaderAddress="
                 + leaderAddress
+                + ", isTemporaryNoLeader="
+                + isTemporaryNoLeader
                 + '}';
     }
 }

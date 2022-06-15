@@ -57,6 +57,10 @@ public class DefaultLeaderRetrievalService
     private UUID lastLeaderSessionID;
 
     @GuardedBy("lock")
+    @Nullable
+    private Boolean lastIsTemporaryNoLeader;
+
+    @GuardedBy("lock")
     private volatile boolean running;
 
     /** Listener which will be notified about leader changes. */
@@ -77,6 +81,7 @@ public class DefaultLeaderRetrievalService
 
         this.lastLeaderAddress = null;
         this.lastLeaderSessionID = null;
+        this.lastIsTemporaryNoLeader = null;
 
         this.leaderRetrievalDriver = null;
 
@@ -126,14 +131,19 @@ public class DefaultLeaderRetrievalService
     public void notifyLeaderAddress(LeaderInformation leaderInformation) {
         final UUID newLeaderSessionID = leaderInformation.getLeaderSessionID();
         final String newLeaderAddress = leaderInformation.getLeaderAddress();
+        final boolean newIsTemporaryNoLeader = leaderInformation.isTemporaryNoLeader();
         synchronized (lock) {
             if (running) {
                 if (!Objects.equals(newLeaderAddress, lastLeaderAddress)
-                        || !Objects.equals(newLeaderSessionID, lastLeaderSessionID)) {
+                        || !Objects.equals(newLeaderSessionID, lastLeaderSessionID)
+                        || !Objects.equals(newIsTemporaryNoLeader, lastIsTemporaryNoLeader)) {
                     if (LOG.isDebugEnabled()) {
-                        if (newLeaderAddress == null && newLeaderSessionID == null) {
+                        if (leaderInformation.isEmpty()) {
                             LOG.debug(
                                     "Leader information was lost: The listener will be notified accordingly.");
+                        } else if (leaderInformation.isTemporarySuspended()) {
+                            LOG.debug(
+                                    "Leader information was temporary lost: The listener will be notified accordingly.");
                         } else {
                             LOG.debug(
                                     "New leader information: Leader={}, session ID={}.",
@@ -142,11 +152,26 @@ public class DefaultLeaderRetrievalService
                         }
                     }
 
-                    lastLeaderAddress = newLeaderAddress;
-                    lastLeaderSessionID = newLeaderSessionID;
+                    // The isTemporaryNoLeader will be true, when ConnectionState is suspended or
+                    // ConnectionState from suspended to reconnect and leader isn't changed.
+                    boolean isTemporaryNoLeader =
+                            newIsTemporaryNoLeader
+                                    || (lastIsTemporaryNoLeader != null
+                                            && lastIsTemporaryNoLeader
+                                            && Objects.equals(newLeaderAddress, lastLeaderAddress)
+                                            && Objects.equals(
+                                                    newLeaderSessionID, lastLeaderSessionID));
+                    // Don't change leaderAddress when suspended due to it may be network unstable
+                    // and leader isn't changed.
+                    if (!leaderInformation.isTemporarySuspended()) {
+                        lastLeaderAddress = newLeaderAddress;
+                        lastLeaderSessionID = newLeaderSessionID;
+                    }
+                    lastIsTemporaryNoLeader = newIsTemporaryNoLeader;
 
                     // Notify the listener only when the leader is truly changed.
-                    leaderListener.notifyLeaderAddress(newLeaderAddress, newLeaderSessionID);
+                    leaderListener.notifyLeaderAddress(
+                            newLeaderAddress, newLeaderSessionID, isTemporaryNoLeader);
                 }
             } else {
                 if (LOG.isDebugEnabled()) {

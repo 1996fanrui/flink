@@ -528,7 +528,7 @@ public class EmbeddedLeaderService {
         @Override
         public void run() {
             try {
-                listener.notifyLeaderAddress(address, leaderSessionId);
+                listener.notifyLeaderAddress(address, leaderSessionId, false);
             } catch (Throwable t) {
                 logger.warn("Error notifying leader listener about new leader", t);
                 listener.handleError(t instanceof Exception ? (Exception) t : new Exception(t));

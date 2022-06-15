@@ -105,12 +105,16 @@ public class StandaloneHaServicesTest extends TestLogger {
         rmLeaderRetrievalService.start(rmListener);
 
         verify(jmListener1)
-                .notifyLeaderAddress(eq("UNKNOWN"), eq(HighAvailabilityServices.DEFAULT_LEADER_ID));
+                .notifyLeaderAddress(
+                        eq("UNKNOWN"), eq(HighAvailabilityServices.DEFAULT_LEADER_ID), eq(false));
         verify(jmListener2)
-                .notifyLeaderAddress(eq("UNKNOWN"), eq(HighAvailabilityServices.DEFAULT_LEADER_ID));
+                .notifyLeaderAddress(
+                        eq("UNKNOWN"), eq(HighAvailabilityServices.DEFAULT_LEADER_ID), eq(false));
         verify(rmListener)
                 .notifyLeaderAddress(
-                        eq(resourceManagerAddress), eq(HighAvailabilityServices.DEFAULT_LEADER_ID));
+                        eq(resourceManagerAddress),
+                        eq(HighAvailabilityServices.DEFAULT_LEADER_ID),
+                        eq(false));
     }
 
     /**
@@ -136,9 +140,13 @@ public class StandaloneHaServicesTest extends TestLogger {
 
         verify(jmListener1)
                 .notifyLeaderAddress(
-                        eq(jobManagerAddress1), eq(HighAvailabilityServices.DEFAULT_LEADER_ID));
+                        eq(jobManagerAddress1),
+                        eq(HighAvailabilityServices.DEFAULT_LEADER_ID),
+                        eq(false));
         verify(jmListener2)
                 .notifyLeaderAddress(
-                        eq(jobManagerAddress2), eq(HighAvailabilityServices.DEFAULT_LEADER_ID));
+                        eq(jobManagerAddress2),
+                        eq(HighAvailabilityServices.DEFAULT_LEADER_ID),
+                        eq(false));
     }
 }

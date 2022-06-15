@@ -71,6 +71,14 @@ public class HeartbeatManagerOptions {
                                             TextElement.code("-1"))
                                     .build());
 
+    /** Timeout for TM receive JobMaster heartbeat when zk suspended. */
+    public static final ConfigOption<Long> HEARTBEAT_TIMEOUT_AFTER_SUSPENDED =
+            key("heartbeat.suspended.timeout")
+                    .longType()
+                    .defaultValue(21000L)
+                    .withDescription(
+                            "Timeout for TM receive JobMaster heartbeat when zk suspended.");
+
     // ------------------------------------------------------------------------
 
     /** Not intended to be instantiated. */
