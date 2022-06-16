@@ -2490,6 +2490,9 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
         public Void retrievePayload(ResourceID resourceID) {
             return null;
         }
+
+        @Override
+        public void notifyTargetUnreachable(ResourceID resourceID) {}
     }
 
     private class JobManagerHeartbeatListener

@@ -211,8 +211,10 @@ public class JobMasterTest extends TestLogger {
         rpcService = new TestingRpcService();
 
         fastHeartbeatServices =
-                new HeartbeatServices(fastHeartbeatInterval, fastHeartbeatTimeout, -1);
-        heartbeatServices = new HeartbeatServices(heartbeatInterval, heartbeatTimeout, 1);
+                new HeartbeatServices(
+                        fastHeartbeatInterval, fastHeartbeatTimeout, -1, fastHeartbeatTimeout);
+        heartbeatServices =
+                new HeartbeatServices(heartbeatInterval, heartbeatTimeout, 1, heartbeatTimeout);
     }
 
     @Before

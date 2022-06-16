@@ -201,7 +201,7 @@ public class TaskExecutorTest extends TestLogger {
     private static final Time timeout = Time.milliseconds(10000L);
 
     private static final HeartbeatServices failedRpcEnabledHeartbeatServices =
-            new HeartbeatServices(1L, 10000000L, 1);
+            new HeartbeatServices(1L, 10000000L, 1, 10000000L);
 
     private TestingRpcService rpc;
 

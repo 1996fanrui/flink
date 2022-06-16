@@ -152,7 +152,7 @@ public class ProcessFailureCancelingITCase extends TestLogger {
                             rpcService,
                             haServices,
                             blobServerResource.getBlobServer(),
-                            new HeartbeatServices(100L, 10000L, 2),
+                            new HeartbeatServices(100L, 10000L, 2, 10000L),
                             new NoOpDelegationTokenManager(),
                             NoOpMetricRegistry.INSTANCE,
                             new MemoryExecutionGraphInfoStore(),

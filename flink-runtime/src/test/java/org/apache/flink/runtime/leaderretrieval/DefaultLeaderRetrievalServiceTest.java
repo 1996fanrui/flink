@@ -28,12 +28,10 @@ import org.apache.flink.util.function.RunnableWithException;
 import org.junit.Test;
 
 import java.util.UUID;
-import java.util.concurrent.TimeUnit;
 
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
-import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThat;
 
 /** Tests for {@link DefaultLeaderElectionService}. */
@@ -76,111 +74,6 @@ public class DefaultLeaderRetrievalServiceTest extends TestLogger {
                             testingListener.waitForEmptyLeaderInformation();
                             assertThat(testingListener.getLeaderSessionID(), is(nullValue()));
                             assertThat(testingListener.getAddress(), is(nullValue()));
-                        });
-            }
-        };
-    }
-
-    @Test
-    public void testNotifyLeaderAddressTemporaryLostAndReconnect() throws Exception {
-        new Context() {
-            {
-                runTest(
-                        () -> {
-                            final LeaderInformation newLeader =
-                                    LeaderInformation.known(UUID.randomUUID(), TEST_URL);
-                            testingLeaderRetrievalDriver.onUpdate(newLeader);
-                            testingListener.waitForNewLeader(timeout);
-
-                            testingLeaderRetrievalDriver.onUpdate(
-                                    LeaderInformation.temporarySuspended());
-                            TimeUnit.MILLISECONDS.sleep(timeout);
-                            assertEquals(0, testingListener.getLeaderEventQueueSize());
-                            assertThat(
-                                    testingListener.getLeaderSessionID(),
-                                    is(newLeader.getLeaderSessionID()));
-                            assertThat(
-                                    testingListener.getAddress(), is(newLeader.getLeaderAddress()));
-
-                            // Reconnect and leader isn't changed after suspended
-                            testingLeaderRetrievalDriver.onUpdate(newLeader);
-                            TimeUnit.MILLISECONDS.sleep(timeout);
-                            assertEquals(0, testingListener.getLeaderEventQueueSize());
-                            assertThat(
-                                    testingListener.getLeaderSessionID(),
-                                    is(newLeader.getLeaderSessionID()));
-                            assertThat(
-                                    testingListener.getAddress(), is(newLeader.getLeaderAddress()));
-                        });
-            }
-        };
-    }
-
-    @Test
-    public void testNotifyLeaderAddressTemporaryLostAndLost() throws Exception {
-        new Context() {
-            {
-                runTest(
-                        () -> {
-                            final LeaderInformation newLeader =
-                                    LeaderInformation.known(UUID.randomUUID(), TEST_URL);
-                            testingLeaderRetrievalDriver.onUpdate(newLeader);
-                            testingListener.waitForNewLeader(timeout);
-
-                            testingLeaderRetrievalDriver.onUpdate(
-                                    LeaderInformation.temporarySuspended());
-                            TimeUnit.MILLISECONDS.sleep(timeout);
-                            assertEquals(0, testingListener.getLeaderEventQueueSize());
-                            assertThat(
-                                    testingListener.getLeaderSessionID(),
-                                    is(newLeader.getLeaderSessionID()));
-                            assertThat(
-                                    testingListener.getAddress(), is(newLeader.getLeaderAddress()));
-
-                            // Lost after suspended
-                            testingLeaderRetrievalDriver.onUpdate(LeaderInformation.empty());
-                            testingListener.waitForEmptyLeaderInformation(timeout);
-                            assertThat(testingListener.getLeaderSessionID(), is(nullValue()));
-                            assertThat(testingListener.getAddress(), is(nullValue()));
-                        });
-            }
-        };
-    }
-
-    @Test
-    public void testNotifyLeaderAddressTemporaryLostAndLeaderChanged() throws Exception {
-        new Context() {
-            {
-                runTest(
-                        () -> {
-                            final LeaderInformation newLeader1 =
-                                    LeaderInformation.known(UUID.randomUUID(), TEST_URL);
-                            testingLeaderRetrievalDriver.onUpdate(newLeader1);
-                            testingListener.waitForNewLeader(timeout);
-
-                            testingLeaderRetrievalDriver.onUpdate(
-                                    LeaderInformation.temporarySuspended());
-                            TimeUnit.MILLISECONDS.sleep(timeout);
-                            assertEquals(0, testingListener.getLeaderEventQueueSize());
-                            assertThat(
-                                    testingListener.getLeaderSessionID(),
-                                    is(newLeader1.getLeaderSessionID()));
-                            assertThat(
-                                    testingListener.getAddress(),
-                                    is(newLeader1.getLeaderAddress()));
-
-                            // Change the leader address after suspended
-                            final LeaderInformation newLeader2 =
-                                    LeaderInformation.known(
-                                            UUID.randomUUID(), "new_leader_address");
-                            testingLeaderRetrievalDriver.onUpdate(newLeader2);
-                            testingListener.waitForNewLeader(timeout);
-                            assertThat(
-                                    testingListener.getLeaderSessionID(),
-                                    is(newLeader2.getLeaderSessionID()));
-                            assertThat(
-                                    testingListener.getAddress(),
-                                    is(newLeader2.getLeaderAddress()));
                         });
             }
         };

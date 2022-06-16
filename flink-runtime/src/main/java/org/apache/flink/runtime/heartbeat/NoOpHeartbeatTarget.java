@@ -19,6 +19,9 @@
 package org.apache.flink.runtime.heartbeat;
 
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
+import org.apache.flink.util.concurrent.FutureUtils;
+
+import java.util.concurrent.CompletableFuture;
 
 /**
  * {@link HeartbeatTarget} implementation which does nothing.
@@ -31,10 +34,15 @@ public class NoOpHeartbeatTarget<I> implements HeartbeatTarget<I> {
     private NoOpHeartbeatTarget() {}
 
     @Override
-    public void receiveHeartbeat(ResourceID heartbeatOrigin, I heartbeatPayload) {}
+    public CompletableFuture<Void> receiveHeartbeat(
+            ResourceID heartbeatOrigin, I heartbeatPayload) {
+        return FutureUtils.completedVoidFuture();
+    }
 
     @Override
-    public void requestHeartbeat(ResourceID requestOrigin, I heartbeatPayload) {}
+    public CompletableFuture<Void> requestHeartbeat(ResourceID requestOrigin, I heartbeatPayload) {
+        return FutureUtils.completedVoidFuture();
+    }
 
     @SuppressWarnings("unchecked")
     public static <I> NoOpHeartbeatTarget<I> getInstance() {

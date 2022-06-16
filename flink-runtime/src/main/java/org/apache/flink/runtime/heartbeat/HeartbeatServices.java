@@ -43,7 +43,7 @@ public class HeartbeatServices {
     protected final long suspendedHeartbeatTimeout;
 
     public HeartbeatServices(long heartbeatInterval, long heartbeatTimeout) {
-        this(heartbeatInterval, heartbeatTimeout, -1);
+        this(heartbeatInterval, heartbeatTimeout, -1, heartbeatTimeout);
     }
 
     public HeartbeatServices(
@@ -104,7 +104,12 @@ public class HeartbeatServices {
             ScheduledExecutor mainThreadExecutor,
             Logger log) {
         return new HeartbeatManagerImpl<>(
-                suspendedHeartbeatTimeout, resourceId, heartbeatListener, mainThreadExecutor, log);
+                suspendedHeartbeatTimeout,
+                failedRpcRequestsUntilUnreachable,
+                resourceId,
+                heartbeatListener,
+                mainThreadExecutor,
+                log);
     }
 
     /**
