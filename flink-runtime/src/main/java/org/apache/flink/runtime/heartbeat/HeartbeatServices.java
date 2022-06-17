@@ -156,6 +156,9 @@ public class HeartbeatServices {
                 configuration.get(HeartbeatManagerOptions.HEARTBEAT_RPC_FAILURE_THRESHOLD);
         long suspendedHeartbeatTimeout =
                 configuration.getLong(HeartbeatManagerOptions.HEARTBEAT_TIMEOUT_AFTER_SUSPENDED);
+        if (suspendedHeartbeatTimeout > heartbeatTimeout) {
+            suspendedHeartbeatTimeout = heartbeatTimeout;
+        }
 
         return new HeartbeatServices(
                 heartbeatInterval,

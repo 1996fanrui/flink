@@ -72,6 +72,7 @@ public class HeartbeatManagerOptions {
                                     .build());
 
     /** Timeout for TM receive JobMaster heartbeat when zk suspended. */
+    @Documentation.Section(Documentation.Sections.EXPERT_FAULT_TOLERANCE)
     public static final ConfigOption<Long> HEARTBEAT_TIMEOUT_AFTER_SUSPENDED =
             key("heartbeat.suspended.timeout")
                     .longType()
