@@ -45,8 +45,10 @@ import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
@@ -96,10 +98,79 @@ public class RocksDBStateUploaderTest extends TestLogger {
                     filePaths,
                     checkpointStreamFactory,
                     CheckpointedStateScope.SHARED,
+                    new CloseableRegistry(),
                     new CloseableRegistry());
             fail();
         } catch (Exception e) {
             assertEquals(expectedException, e);
+        }
+    }
+
+    @Test
+    public void testUploadedSstCanBeCleanedUp() throws Exception {
+        SpecifiedException expectedException =
+                new SpecifiedException("throw exception while multi thread upload states.");
+
+        File checkpointPrivateFolder = temporaryFolder.newFolder("private");
+        org.apache.flink.core.fs.Path checkpointPrivateDirectory =
+                org.apache.flink.core.fs.Path.fromLocalFile(checkpointPrivateFolder);
+
+        File checkpointSharedFolder = temporaryFolder.newFolder("shared");
+        org.apache.flink.core.fs.Path checkpointSharedDirectory =
+                org.apache.flink.core.fs.Path.fromLocalFile(checkpointSharedFolder);
+
+        FileSystem fileSystem = checkpointPrivateDirectory.getFileSystem();
+
+        int sstFileCount = 6;
+        int fileStateSizeThreshold = 1024;
+        int writeBufferSize = 4096;
+        CheckpointStreamFactory checkpointStreamFactory =
+                new FsCheckpointStreamFactory(
+                        fileSystem,
+                        checkpointPrivateDirectory,
+                        checkpointSharedDirectory,
+                        fileStateSizeThreshold,
+                        writeBufferSize);
+
+        String localFolder = "local";
+        temporaryFolder.newFolder(localFolder);
+
+        Map<StateHandleID, Path> filePaths =
+                generateRandomSstFiles(localFolder, sstFileCount, fileStateSizeThreshold);
+        CloseableRegistry tmpResourcesRegistry = new CloseableRegistry();
+        try (RocksDBStateUploader rocksDBStateUploader = new RocksDBStateUploader(sstFileCount)) {
+            rocksDBStateUploader.uploadFilesToCheckpointFs(
+                    filePaths,
+                    checkpointStreamFactory,
+                    CheckpointedStateScope.SHARED,
+                    new CloseableRegistry(),
+                    tmpResourcesRegistry);
+            try {
+                rocksDBStateUploader.uploadFilesToCheckpointFs(
+                        filePaths,
+                        new LastFailingCheckpointStateOutputStreamFactory(
+                                checkpointStreamFactory, sstFileCount, expectedException),
+                        CheckpointedStateScope.SHARED,
+                        new CloseableRegistry(),
+                        tmpResourcesRegistry);
+                fail();
+            } catch (Exception e) {
+                tmpResourcesRegistry.close();
+                // Check whether the temporary file before the exception can be cleaned up
+                assertEquals(0, Objects.requireNonNull(checkpointPrivateFolder.list()).length);
+                assertEquals(0, Objects.requireNonNull(checkpointSharedFolder.list()).length);
+                assertEquals(expectedException, e);
+            }
+            rocksDBStateUploader.uploadFilesToCheckpointFs(
+                    filePaths,
+                    checkpointStreamFactory,
+                    CheckpointedStateScope.SHARED,
+                    new CloseableRegistry(),
+                    tmpResourcesRegistry);
+        } finally {
+            // Check whether the temporary file after the exception can be cleaned up.
+            assertEquals(0, Objects.requireNonNull(checkpointPrivateFolder.list()).length);
+            assertEquals(0, Objects.requireNonNull(checkpointSharedFolder.list()).length);
         }
     }
 
@@ -138,6 +209,7 @@ public class RocksDBStateUploaderTest extends TestLogger {
                             sstFilePaths,
                             checkpointStreamFactory,
                             CheckpointedStateScope.SHARED,
+                            new CloseableRegistry(),
                             new CloseableRegistry());
 
             for (Map.Entry<StateHandleID, Path> entry : sstFilePaths.entrySet()) {
@@ -147,7 +219,7 @@ public class RocksDBStateUploaderTest extends TestLogger {
         }
     }
 
-    private CheckpointStateOutputStream createFailingCheckpointStateOutputStream(
+    private static CheckpointStateOutputStream createFailingCheckpointStateOutputStream(
             IOException failureException) {
         return new CheckpointStateOutputStream() {
             @Nullable
@@ -211,6 +283,47 @@ public class RocksDBStateUploaderTest extends TestLogger {
     private static class SpecifiedException extends IOException {
         SpecifiedException(String message) {
             super(message);
+        }
+    }
+
+    /** The last stream will be broken stream. */
+    private static class LastFailingCheckpointStateOutputStreamFactory
+            implements CheckpointStreamFactory {
+
+        private final CheckpointStreamFactory checkpointStreamFactory;
+        private final int streamTotalCount;
+        private final AtomicInteger streamCount;
+        private final IOException expectedException;
+
+        private LastFailingCheckpointStateOutputStreamFactory(
+                CheckpointStreamFactory checkpointStreamFactory,
+                int streamTotalCount,
+                IOException expectedException) {
+            this.checkpointStreamFactory = checkpointStreamFactory;
+            this.streamTotalCount = streamTotalCount;
+            this.expectedException = expectedException;
+            this.streamCount = new AtomicInteger();
+        }
+
+        @Override
+        public CheckpointStateOutputStream createCheckpointStateOutputStream(
+                CheckpointedStateScope scope) throws IOException {
+            if (streamCount.incrementAndGet() == streamTotalCount) {
+                return createFailingCheckpointStateOutputStream(expectedException);
+            }
+            return checkpointStreamFactory.createCheckpointStateOutputStream(scope);
+        }
+
+        @Override
+        public boolean canFastDuplicate(StreamStateHandle stateHandle, CheckpointedStateScope scope) {
+            return false;
+        }
+
+        @Override
+        public List<StreamStateHandle> duplicate(
+                List<StreamStateHandle> stateHandles, CheckpointedStateScope scope)
+                throws IOException {
+            throw new UnsupportedOperationException("We can not duplicate handles in memory.");
         }
     }
 }

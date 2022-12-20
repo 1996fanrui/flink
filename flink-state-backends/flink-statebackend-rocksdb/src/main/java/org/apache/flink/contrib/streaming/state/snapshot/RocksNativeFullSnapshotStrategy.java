@@ -174,6 +174,7 @@ public class RocksNativeFullSnapshotStrategy<K>
                 metaStateHandle =
                         materializeMetaData(
                                 snapshotCloseableRegistry,
+                                tmpResourcesRegistry,
                                 stateMetaInfoSnapshots,
                                 checkpointId,
                                 checkpointStreamFactory);
@@ -184,7 +185,7 @@ public class RocksNativeFullSnapshotStrategy<K>
                         metaStateHandle.getJobManagerOwnedSnapshot(),
                         "Metadata for job manager was not properly created.");
 
-                uploadSstFiles(privateFiles, snapshotCloseableRegistry);
+                uploadSstFiles(privateFiles, snapshotCloseableRegistry, tmpResourcesRegistry);
                 long checkpointedSize = metaStateHandle.getStateSize();
                 checkpointedSize += getUploadedStateSize(privateFiles.values());
 
@@ -217,16 +218,15 @@ public class RocksNativeFullSnapshotStrategy<K>
                 if (!completed) {
                     final List<StateObject> statesToDiscard =
                             new ArrayList<>(1 + privateFiles.size());
-                    statesToDiscard.add(metaStateHandle);
-                    statesToDiscard.addAll(privateFiles.values());
-                    cleanupIncompleteSnapshot(statesToDiscard, localBackupDirectory);
+                    cleanupIncompleteSnapshot(tmpResourcesRegistry, localBackupDirectory);
                 }
             }
         }
 
         private void uploadSstFiles(
                 @Nonnull Map<StateHandleID, StreamStateHandle> privateFiles,
-                @Nonnull CloseableRegistry snapshotCloseableRegistry)
+                @Nonnull CloseableRegistry snapshotCloseableRegistry,
+                @Nonnull CloseableRegistry tmpResourcesRegistry)
                 throws Exception {
 
             // write state data
@@ -248,7 +248,8 @@ public class RocksNativeFullSnapshotStrategy<K>
                                 privateFilePaths,
                                 checkpointStreamFactory,
                                 CheckpointedStateScope.EXCLUSIVE,
-                                snapshotCloseableRegistry));
+                                snapshotCloseableRegistry,
+                                tmpResourcesRegistry));
             }
         }
     }
