@@ -37,6 +37,7 @@ public class ExecutionGraphInfo implements Serializable {
     private final ArchivedExecutionGraph executionGraph;
     private final Iterable<RootExceptionHistoryEntry> exceptionHistory;
 
+    // TODO support history server.
     public ExecutionGraphInfo(ArchivedExecutionGraph executionGraph) {
         this(
                 executionGraph,

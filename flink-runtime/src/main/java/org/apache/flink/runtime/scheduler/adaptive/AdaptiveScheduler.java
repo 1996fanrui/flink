@@ -107,6 +107,7 @@ import org.apache.flink.runtime.scheduler.adaptive.allocator.JobInformation;
 import org.apache.flink.runtime.scheduler.adaptive.allocator.ReservedSlots;
 import org.apache.flink.runtime.scheduler.adaptive.allocator.SlotAllocator;
 import org.apache.flink.runtime.scheduler.adaptive.allocator.VertexParallelism;
+import org.apache.flink.runtime.scheduler.adaptive.rescalehistory.RescaleHistoryEntry;
 import org.apache.flink.runtime.scheduler.adaptive.scalingpolicy.EnforceMinimalIncreaseRescalingController;
 import org.apache.flink.runtime.scheduler.adaptive.scalingpolicy.RescalingController;
 import org.apache.flink.runtime.scheduler.exceptionhistory.ExceptionHistoryEntry;
@@ -226,6 +227,8 @@ public class AdaptiveScheduler
     private final DeploymentStateTimeMetrics deploymentTimeMetrics;
 
     private final BoundedFIFOQueue<RootExceptionHistoryEntry> exceptionHistory;
+
+    private final BoundedFIFOQueue<RescaleHistoryEntry> rescaleHistory;
     private JobGraphJobInformation jobInformation;
     private ResourceCounter desiredResources = ResourceCounter.empty();
 
@@ -325,6 +328,9 @@ public class AdaptiveScheduler
         this.exceptionHistory =
                 new BoundedFIFOQueue<>(
                         configuration.getInteger(WebOptions.MAX_EXCEPTION_HISTORY_SIZE));
+        this.rescaleHistory =
+                new BoundedFIFOQueue<>(
+                        configuration.getInteger(WebOptions.MAX_RESCALE_HISTORY_SIZE));
         this.jobManagerJobMetricGroup = jobManagerJobMetricGroup;
         this.slotIdleTimeout =
                 Duration.ofMillis(configuration.get(JobManagerOptions.SLOT_IDLE_TIMEOUT));
@@ -885,6 +891,7 @@ public class AdaptiveScheduler
     public ArchivedExecutionGraph getArchivedExecutionGraph(
             JobStatus jobStatus, @Nullable Throwable cause) {
         return ArchivedExecutionGraph.createSparseArchivedExecutionGraphWithJobVertices(
+
                 jobInformation.getJobID(),
                 jobInformation.getName(),
                 jobStatus,
