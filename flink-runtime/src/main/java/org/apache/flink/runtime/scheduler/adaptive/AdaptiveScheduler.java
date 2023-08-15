@@ -611,6 +611,11 @@ public class AdaptiveScheduler
     }
 
     @Override
+    public void archiveRescale(RescaleHistoryEntry rescale) {
+        rescaleHistory.add(rescale);
+    }
+
+    @Override
     public JobStatus requestJobStatus() {
         return state.getJobStatus();
     }
@@ -873,7 +878,9 @@ public class AdaptiveScheduler
     }
 
     private JobSchedulingPlan determineParallelism(
-            SlotAllocator slotAllocator, @Nullable ExecutionGraph previousExecutionGraph)
+            SlotAllocator slotAllocator,
+            JobGraphJobInformation jobInformation,
+            @Nullable ExecutionGraph previousExecutionGraph)
             throws NoResourceAvailableException {
 
         return slotAllocator
@@ -891,7 +898,6 @@ public class AdaptiveScheduler
     public ArchivedExecutionGraph getArchivedExecutionGraph(
             JobStatus jobStatus, @Nullable Throwable cause) {
         return ArchivedExecutionGraph.createSparseArchivedExecutionGraphWithJobVertices(
-
                 jobInformation.getJobID(),
                 jobInformation.getName(),
                 jobStatus,
@@ -1062,7 +1068,11 @@ public class AdaptiveScheduler
         final VertexParallelismStore adjustedParallelismStore;
 
         try {
-            schedulingPlan = determineParallelism(slotAllocator, previousExecutionGraph);
+            final JobGraphJobInformation jobInformation = this.jobInformation;
+            schedulingPlan = determineParallelism(
+                    slotAllocator,
+                    jobInformation,
+                    previousExecutionGraph);
             JobGraph adjustedJobGraph = jobInformation.copyJobGraph();
 
             for (JobVertex vertex : adjustedJobGraph.getVertices()) {

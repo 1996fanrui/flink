@@ -33,6 +33,7 @@ import org.apache.flink.runtime.scheduler.ExecutionGraphHandler;
 import org.apache.flink.runtime.scheduler.GlobalFailureHandler;
 import org.apache.flink.runtime.scheduler.OperatorCoordinatorHandler;
 import org.apache.flink.runtime.scheduler.adaptive.allocator.VertexParallelism;
+import org.apache.flink.runtime.scheduler.adaptive.rescalehistory.RescaleHistoryEntry;
 import org.apache.flink.util.IterableUtils;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.concurrent.FutureUtils;
@@ -138,6 +139,7 @@ public class CreatingExecutionGraph implements State {
                                                 .iterator(),
                                 executionGraphWithVertexParallelism.getVertexParallelism());
                 executionGraph.setJsonPlan(updatedPlan);
+                archiveRescaleIfNeeded();
                 context.goToExecuting(
                         result.getExecutionGraph(),
                         executionGraphHandler,
@@ -149,6 +151,11 @@ public class CreatingExecutionGraph implements State {
                 context.goToWaitingForResources(previousExecutionGraph);
             }
         }
+    }
+
+    private void archiveRescaleIfNeeded(ExecutionGraph executionGraph) {
+        executionGraph.getSchedulingTopology();
+        context.archiveRescale(new RescaleHistoryEntry());
     }
 
     @Override
@@ -243,6 +250,9 @@ public class CreatingExecutionGraph implements State {
          * @return the metric group
          */
         JobManagerJobMetricGroup getMetricGroup();
+
+        /** Archive rescale entry. */
+        void archiveRescale(RescaleHistoryEntry rescale);
     }
 
     @FunctionalInterface
