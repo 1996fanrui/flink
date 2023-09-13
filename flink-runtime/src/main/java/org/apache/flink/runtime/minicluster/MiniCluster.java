@@ -138,6 +138,8 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -239,6 +241,8 @@ public class MiniCluster implements AutoCloseableAsync {
 
     @GuardedBy("lock")
     private Reference<RpcSystem> rpcSystem;
+
+    private final ScheduledExecutorService scheduledExecutorService = new ScheduledThreadPoolExecutor(1);
 
     // ------------------------------------------------------------------------
 
@@ -739,10 +743,25 @@ public class MiniCluster implements AutoCloseableAsync {
     private void startTaskManagers() throws Exception {
         final int numTaskManagers = miniClusterConfiguration.getNumTaskManagers();
 
-        LOG.info("Starting {} TaskManager(s)", numTaskManagers);
+        startOneTmAndSchedule();
+//        LOG.info("Starting {} TaskManager(s)", numTaskManagers);
+//
+//        for (int i = 0; i < numTaskManagers; i++) {
+//            startTaskManager();
+//        }
+    }
 
-        for (int i = 0; i < numTaskManagers; i++) {
-            startTaskManager();
+    private void startOneTmAndSchedule() {
+        synchronized (lock) {
+            if (taskManagers.size() < miniClusterConfiguration.getNumTaskManagers()) {
+                try {
+                    startTaskManager();
+                } catch (Exception e) {
+                    LOG.error("Start tm error", e);
+                    System.exit(1);
+                }
+                scheduledExecutorService.schedule(this::startOneTmAndSchedule, 60, TimeUnit.SECONDS);
+            }
         }
     }
 

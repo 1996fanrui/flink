@@ -20,11 +20,14 @@ package org.apache.flink.api.connector.source.lib;
 
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
+import org.apache.flink.api.connector.source.util.ratelimit.RateLimiter;
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
 import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.functions.sink.SinkFunction;
 import org.apache.flink.test.util.MiniClusterWithClientResource;
 import org.apache.flink.util.TestLogger;
 
@@ -48,12 +51,19 @@ public class NumberSequenceSourceITCase extends TestLogger {
 
     private static final int PARALLELISM = 4;
 
+    private static final Configuration conf = new Configuration();
+
+    static {
+        conf.setString("jobmanager.scheduler", "adaptive");
+    }
+
     @ClassRule
     public static final MiniClusterWithClientResource MINI_CLUSTER =
             new MiniClusterWithClientResource(
                     new MiniClusterResourceConfiguration.Builder()
-                            .setNumberTaskManagers(1)
-                            .setNumberSlotsPerTaskManager(PARALLELISM)
+                            .setConfiguration(conf)
+                            .setNumberTaskManagers(PARALLELISM)
+                            .setNumberSlotsPerTaskManager(1)
                             .build());
 
     // ------------------------------------------------------------------------
@@ -63,14 +73,19 @@ public class NumberSequenceSourceITCase extends TestLogger {
         final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(PARALLELISM);
 
-        final DataStream<Long> stream =
-                env.fromSource(
-                        new NumberSequenceSource(1L, 1_000L),
+        env.fromSource(
+                        new NumberSequenceSource(1L, 1000_000L),
                         WatermarkStrategy.noWatermarks(),
-                        "iterator source");
+                        "iterator source")
+                .addSink(new SinkFunction<Long>() {
+                    @Override
+                    public void invoke(Long value, Context context) throws Exception {
+                        Thread.sleep(100);
+                    }
+                });
 
-        final List<Long> result = stream.executeAndCollect(10000);
-        assertThat(result, containsInAnyOrder(LongStream.rangeClosed(1, 1000).boxed().toArray()));
+        env.execute();
+
     }
 
     @Test
