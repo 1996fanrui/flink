@@ -90,6 +90,9 @@ public class JobConfigHandler
         }
 
         return new JobConfigInfo(
-                executionGraph.getJobID(), executionGraph.getJobName(), executionConfigInfo);
+                executionGraph.getJobID(),
+                executionGraph.getJobName(),
+                executionConfigInfo,
+                executionGraph.getJobMasterConfiguration());
     }
 }

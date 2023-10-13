@@ -161,6 +161,7 @@ public class ArchivedExecutionGraphBuilder {
                 "stateBackendName",
                 "checkpointStorageName",
                 TernaryBoolean.UNDEFINED,
-                "changelogStorageName");
+                "changelogStorageName",
+                null);
     }
 }

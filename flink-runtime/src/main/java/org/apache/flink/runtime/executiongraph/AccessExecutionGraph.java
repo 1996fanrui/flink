@@ -190,4 +190,6 @@ public interface AccessExecutionGraph extends JobStatusProvider {
      * @return The changelog storage name, or an empty Optional in the case of batch jobs
      */
     Optional<String> getChangelogStorageName();
+
+    Map<String, String> getJobMasterConfiguration();
 }

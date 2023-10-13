@@ -160,7 +160,8 @@ public class DefaultExecutionGraphBuilder {
                         executionJobVertexFactory,
                         jobGraph.getJobStatusHooks(),
                         markPartitionFinishedStrategy,
-                        taskDeploymentDescriptorFactory);
+                        taskDeploymentDescriptorFactory,
+                        jobManagerConfig.toMap());
 
         // set the basic properties
 

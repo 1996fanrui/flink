@@ -271,6 +271,8 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
 
     @Nullable private TernaryBoolean stateChangelogEnabled;
 
+    @Nullable private final Map<String, String> jobMasterConfiguration;
+
     private String jsonPlan;
 
     /** Shuffle master to register partitions for task deployment. */
@@ -320,7 +322,8 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
             ExecutionJobVertex.Factory executionJobVertexFactory,
             List<JobStatusHook> jobStatusHooks,
             MarkPartitionFinishedStrategy markPartitionFinishedStrategy,
-            TaskDeploymentDescriptorFactory taskDeploymentDescriptorFactory) {
+            TaskDeploymentDescriptorFactory taskDeploymentDescriptorFactory,
+            Map<String, String> jobMasterConfiguration) {
 
         this.executionGraphId = new ExecutionGraphID();
 
@@ -389,6 +392,7 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
         this.markPartitionFinishedStrategy = markPartitionFinishedStrategy;
 
         this.taskDeploymentDescriptorFactory = checkNotNull(taskDeploymentDescriptorFactory);
+        this.jobMasterConfiguration = jobMasterConfiguration;
 
         LOG.info(
                 "Created execution graph {} for job {}.",
@@ -1722,5 +1726,10 @@ public class DefaultExecutionGraph implements ExecutionGraph, InternalExecutionG
     @Override
     public TaskDeploymentDescriptorFactory getTaskDeploymentDescriptorFactory() {
         return taskDeploymentDescriptorFactory;
+    }
+
+    @Override
+    public Map<String, String> getJobMasterConfiguration() {
+        return jobMasterConfiguration;
     }
 }

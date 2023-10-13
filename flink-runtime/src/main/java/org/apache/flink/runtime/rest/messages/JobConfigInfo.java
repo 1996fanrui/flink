@@ -52,6 +52,7 @@ public class JobConfigInfo implements ResponseBody {
     public static final String FIELD_NAME_JOB_ID = "jid";
     public static final String FIELD_NAME_JOB_NAME = "name";
     public static final String FIELD_NAME_EXECUTION_CONFIG = "execution-config";
+    public static final String FIELD_NAME_JOB_CONFIG = "job-config";
 
     private final JobID jobId;
 
@@ -59,11 +60,17 @@ public class JobConfigInfo implements ResponseBody {
 
     @Nullable private final ExecutionConfigInfo executionConfigInfo;
 
+    @Nullable private final Map<String, String> jobConfig;
+
     public JobConfigInfo(
-            JobID jobId, String jobName, @Nullable ExecutionConfigInfo executionConfigInfo) {
+            JobID jobId,
+            String jobName,
+            @Nullable ExecutionConfigInfo executionConfigInfo,
+            @Nullable Map<String, String> jobConfig) {
         this.jobId = Preconditions.checkNotNull(jobId);
         this.jobName = Preconditions.checkNotNull(jobName);
         this.executionConfigInfo = executionConfigInfo;
+        this.jobConfig = jobConfig;
     }
 
     public JobID getJobId() {
@@ -77,6 +84,11 @@ public class JobConfigInfo implements ResponseBody {
     @Nullable
     public ExecutionConfigInfo getExecutionConfigInfo() {
         return executionConfigInfo;
+    }
+
+    @Nullable
+    public Map<String, String> getJobConfig() {
+        return jobConfig;
     }
 
     @Override
@@ -127,6 +139,10 @@ public class JobConfigInfo implements ResponseBody {
                         FIELD_NAME_EXECUTION_CONFIG, jobConfigInfo.getExecutionConfigInfo());
             }
 
+            if (jobConfigInfo.getJobConfig() != null) {
+                jsonGenerator.writeObjectField(FIELD_NAME_JOB_CONFIG, jobConfigInfo.getJobConfig());
+            }
+
             jsonGenerator.writeEndObject();
         }
     }
@@ -161,7 +177,8 @@ public class JobConfigInfo implements ResponseBody {
                 executionConfigInfo = null;
             }
 
-            return new JobConfigInfo(jobId, jobName, executionConfigInfo);
+            // todo
+            return new JobConfigInfo(jobId, jobName, executionConfigInfo, null);
         }
     }
 

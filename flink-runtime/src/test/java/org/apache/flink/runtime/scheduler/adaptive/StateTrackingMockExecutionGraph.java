@@ -408,4 +408,9 @@ class StateTrackingMockExecutionGraph implements ExecutionGraph {
     public Optional<AccessExecution> findExecution(ExecutionAttemptID attemptId) {
         return Optional.ofNullable(executions.get(attemptId));
     }
+
+    @Override
+    public Map<String, String> getJobMasterConfiguration() {
+        return new HashMap<>();
+    }
 }
