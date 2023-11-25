@@ -258,6 +258,7 @@ under the License.
 							<goal>install-node-and-npm</goal>
 						</goals>
 						<configuration>
+							<nodeDownloadRoot>https://registry.npm.taobao.org/dist/</nodeDownloadRoot>
 							<nodeVersion>v16.13.2</nodeVersion>
 							<npmVersion>8.1.2</npmVersion>
 						</configuration>
@@ -268,7 +269,7 @@ under the License.
 							<goal>npm</goal>
 						</goals>
 						<configuration>
-							<arguments>ci --cache-max=0 --no-save ${npm.proxy}</arguments>
+							<arguments>install -registry=https://registry.npm.taobao.org --cache-max=0 --no-save</arguments>
 							<environmentVariables>
 								<HUSKY_SKIP_INSTALL>true</HUSKY_SKIP_INSTALL>
 							</environmentVariables>
@@ -280,7 +281,7 @@ under the License.
 							<goal>npm</goal>
 						</goals>
 						<configuration>
-							<arguments>run ci-check</arguments>
+							<arguments>run ci-check -registry=https://registry.npm.taobao.org</arguments>
 						</configuration>
 					</execution>
 				</executions>
