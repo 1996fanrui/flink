@@ -40,6 +40,7 @@ import org.apache.flink.util.concurrent.FutureUtils;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -79,8 +80,17 @@ public class DeclarativeSlotPoolBridge extends DeclarativeSlotPoolService implem
             Time rpcTimeout,
             Time idleSlotTimeout,
             Time batchSlotTimeout,
-            RequestSlotMatchingStrategy requestSlotMatchingStrategy) {
-        super(jobId, declarativeSlotPoolFactory, clock, idleSlotTimeout, rpcTimeout);
+            RequestSlotMatchingStrategy requestSlotMatchingStrategy,
+            Duration slotRequestMaxInterval,
+            @Nonnull ComponentMainThreadExecutor componentMainThreadExecutor) {
+        super(
+                jobId,
+                declarativeSlotPoolFactory,
+                clock,
+                idleSlotTimeout,
+                rpcTimeout,
+                slotRequestMaxInterval,
+                componentMainThreadExecutor);
 
         this.idleSlotTimeout = idleSlotTimeout;
         this.batchSlotTimeout = Preconditions.checkNotNull(batchSlotTimeout);
