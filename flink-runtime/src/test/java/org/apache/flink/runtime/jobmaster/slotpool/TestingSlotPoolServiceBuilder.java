@@ -32,7 +32,9 @@ import org.apache.flink.util.function.TriConsumer;
 import org.apache.flink.util.function.TriFunction;
 
 import javax.annotation.Nonnull;
+import javax.annotation.Nullable;
 
+import java.time.Duration;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Optional;
@@ -71,7 +73,10 @@ public class TestingSlotPoolServiceBuilder implements SlotPoolServiceFactory {
     @Nonnull
     @Override
     public SlotPoolService createSlotPoolService(
-            @Nonnull JobID jobId, DeclarativeSlotPoolFactory declarativeSlotPoolFactory) {
+            @Nonnull JobID jobId,
+            DeclarativeSlotPoolFactory declarativeSlotPoolFactory,
+            @Nullable Duration slotRequestMaxInterval,
+            @Nonnull ComponentMainThreadExecutor componentMainThreadExecutor) {
         return new TestingSlotPoolService(
                 jobId,
                 startConsumer,

@@ -33,6 +33,8 @@ import javax.annotation.Nullable;
 
 import java.util.concurrent.CompletableFuture;
 
+import static org.apache.flink.runtime.concurrent.ComponentMainThreadExecutorServiceAdapter.forMainThread;
+
 /** Builder for a {@link DeclarativeSlotPoolBridge}. */
 public class DeclarativeSlotPoolBridgeBuilder {
 
@@ -88,7 +90,9 @@ public class DeclarativeSlotPoolBridgeBuilder {
                 TestingUtils.infiniteTime(),
                 idleSlotTimeout,
                 batchSlotTimeout,
-                requestSlotMatchingStrategy);
+                requestSlotMatchingStrategy,
+                null,
+                forMainThread());
     }
 
     public DeclarativeSlotPoolBridge buildAndStart(

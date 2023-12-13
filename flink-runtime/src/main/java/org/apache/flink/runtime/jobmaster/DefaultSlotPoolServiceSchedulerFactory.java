@@ -57,6 +57,9 @@ import org.apache.flink.util.clock.SystemClock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nonnull;
+import javax.annotation.Nullable;
+
 import java.time.Duration;
 import java.util.Collection;
 import java.util.concurrent.Executor;
@@ -86,8 +89,15 @@ public final class DefaultSlotPoolServiceSchedulerFactory
 
     @Override
     public SlotPoolService createSlotPoolService(
-            JobID jid, DeclarativeSlotPoolFactory declarativeSlotPoolFactory) {
-        return slotPoolServiceFactory.createSlotPoolService(jid, declarativeSlotPoolFactory);
+            JobID jid,
+            DeclarativeSlotPoolFactory declarativeSlotPoolFactory,
+            @Nullable Duration slotRequestMaxInterval,
+            @Nonnull ComponentMainThreadExecutor componentMainThreadExecutor) {
+        return slotPoolServiceFactory.createSlotPoolService(
+                jid,
+                declarativeSlotPoolFactory,
+                slotRequestMaxInterval,
+                componentMainThreadExecutor);
     }
 
     @Override

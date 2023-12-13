@@ -19,13 +19,20 @@
 package org.apache.flink.runtime.jobmaster.slotpool;
 
 import org.apache.flink.api.common.JobID;
+import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutor;
 
 import javax.annotation.Nonnull;
+import javax.annotation.Nullable;
+
+import java.time.Duration;
 
 /** Factory interface for {@link SlotPoolService}. */
 public interface SlotPoolServiceFactory {
 
     @Nonnull
     SlotPoolService createSlotPoolService(
-            @Nonnull JobID jobId, DeclarativeSlotPoolFactory declarativeSlotPoolFactory);
+            @Nonnull JobID jobId,
+            DeclarativeSlotPoolFactory declarativeSlotPoolFactory,
+            @Nullable Duration slotRequestMaxInterval,
+            @Nonnull ComponentMainThreadExecutor componentMainThreadExecutor);
 }

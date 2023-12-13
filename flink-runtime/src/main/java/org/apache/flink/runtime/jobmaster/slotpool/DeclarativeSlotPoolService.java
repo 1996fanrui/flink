@@ -41,8 +41,10 @@ import org.apache.flink.util.clock.Clock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -81,7 +83,9 @@ public class DeclarativeSlotPoolService implements SlotPoolService {
             DeclarativeSlotPoolFactory declarativeSlotPoolFactory,
             Clock clock,
             Time idleSlotTimeout,
-            Time rpcTimeout) {
+            Time rpcTimeout,
+            @Nullable Duration slotRequestMaxInterval,
+            @Nonnull ComponentMainThreadExecutor componentMainThreadExecutor) {
         this.jobId = jobId;
         this.clock = clock;
         this.rpcTimeout = rpcTimeout;
@@ -89,7 +93,12 @@ public class DeclarativeSlotPoolService implements SlotPoolService {
 
         this.declarativeSlotPool =
                 declarativeSlotPoolFactory.create(
-                        jobId, this::declareResourceRequirements, idleSlotTimeout, rpcTimeout);
+                        jobId,
+                        this::declareResourceRequirements,
+                        idleSlotTimeout,
+                        rpcTimeout,
+                        slotRequestMaxInterval,
+                        componentMainThreadExecutor);
     }
 
     protected DeclarativeSlotPool getDeclarativeSlotPool() {
