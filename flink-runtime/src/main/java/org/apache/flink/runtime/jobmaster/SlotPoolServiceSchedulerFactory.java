@@ -57,13 +57,15 @@ public interface SlotPoolServiceSchedulerFactory {
      * @param declarativeSlotPoolFactory the declarative slot pool factory
      * @param slotRequestMaxInterval max request interval for slots.
      * @param componentMainThreadExecutor component main thread executor.
+     * @param slotBatchAllocatable whether enabled slot allocation by batch.
      * @return created SlotPoolService
      */
     SlotPoolService createSlotPoolService(
             JobID jid,
             DeclarativeSlotPoolFactory declarativeSlotPoolFactory,
             @Nullable Duration slotRequestMaxInterval,
-            @Nonnull ComponentMainThreadExecutor componentMainThreadExecutor);
+            @Nonnull ComponentMainThreadExecutor componentMainThreadExecutor,
+            boolean slotBatchAllocatable);
 
     /**
      * Returns the scheduler type this factory is creating.

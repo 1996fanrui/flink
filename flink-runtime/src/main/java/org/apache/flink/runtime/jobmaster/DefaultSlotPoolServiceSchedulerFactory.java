@@ -92,12 +92,14 @@ public final class DefaultSlotPoolServiceSchedulerFactory
             JobID jid,
             DeclarativeSlotPoolFactory declarativeSlotPoolFactory,
             @Nullable Duration slotRequestMaxInterval,
-            @Nonnull ComponentMainThreadExecutor componentMainThreadExecutor) {
+            @Nonnull ComponentMainThreadExecutor componentMainThreadExecutor,
+            boolean slotBatchAllocatable) {
         return slotPoolServiceFactory.createSlotPoolService(
                 jid,
                 declarativeSlotPoolFactory,
                 slotRequestMaxInterval,
-                componentMainThreadExecutor);
+                componentMainThreadExecutor,
+                slotBatchAllocatable);
     }
 
     @Override

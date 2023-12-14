@@ -34,5 +34,6 @@ public interface SlotPoolServiceFactory {
             @Nonnull JobID jobId,
             DeclarativeSlotPoolFactory declarativeSlotPoolFactory,
             @Nullable Duration slotRequestMaxInterval,
-            @Nonnull ComponentMainThreadExecutor componentMainThreadExecutor);
+            @Nonnull ComponentMainThreadExecutor componentMainThreadExecutor,
+            boolean slotBatchAllocatable);
 }
