@@ -72,6 +72,7 @@ public class FailureHandlingResultSnapshot {
                             rootCauseExecution.getAttemptId()));
         }
 
+
         final Set<Execution> concurrentlyFailedExecutions =
                 failureHandlingResult.getVerticesToRestart().stream()
                         .flatMap(id -> currentExecutionsLookup.apply(id).stream())

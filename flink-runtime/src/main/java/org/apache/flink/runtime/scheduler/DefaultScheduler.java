@@ -367,6 +367,7 @@ public class DefaultScheduler extends SchedulerBase implements SchedulerOperatio
 
         final CompletableFuture<?> cancelFuture = cancelTasksAsync(verticesToRestart);
 
+
         final FailureHandlingResultSnapshot failureHandlingResultSnapshot =
                 createFailureHandlingResultSnapshot(failureHandlingResult);
         delayExecutor.schedule(
@@ -374,6 +375,7 @@ public class DefaultScheduler extends SchedulerBase implements SchedulerOperatio
                         FutureUtils.assertNoException(
                                 cancelFuture.thenRunAsync(
                                         () -> {
+
                                             archiveFromFailureHandlingResult(
                                                     failureHandlingResultSnapshot);
                                             restartTasks(executionVertexVersions, globalRecovery);
