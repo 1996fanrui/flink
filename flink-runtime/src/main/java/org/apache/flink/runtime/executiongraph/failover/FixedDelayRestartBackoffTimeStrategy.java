@@ -65,8 +65,9 @@ public class FixedDelayRestartBackoffTimeStrategy implements RestartBackoffTimeS
     }
 
     @Override
-    public void notifyFailure(Throwable cause) {
+    public boolean notifyFailure(Throwable cause) {
         currentRestartAttempt++;
+        return true;
     }
 
     @Override

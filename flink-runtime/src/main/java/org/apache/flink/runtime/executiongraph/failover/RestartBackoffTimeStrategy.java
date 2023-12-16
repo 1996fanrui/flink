@@ -38,8 +38,11 @@ public interface RestartBackoffTimeStrategy {
      * Notify the strategy about the task failure cause.
      *
      * @param cause of the task failure
+     * @return Whether the current failure is a new attempt. True means that the current failure is
+     *     a new attempt, false means that there has been a failure before and has not been tried
+     *     yet, and the current failure will be merged into the previous attempt.
      */
-    void notifyFailure(Throwable cause);
+    boolean notifyFailure(Throwable cause);
 
     // ------------------------------------------------------------------------
     //  factory
