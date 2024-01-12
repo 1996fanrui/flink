@@ -380,7 +380,7 @@ class BootstrapToolsTest {
                                 redirects));
 
         // logback + log4j, with/out krb5, different JVM opts
-        cfg.setString(CoreOptions.FLINK_JVM_OPTIONS, jvmOpts);
+        cfg.set(CoreOptions.FLINK_JVM_OPTIONS, jvmOpts);
         assertThat(
                         BootstrapTools.getTaskManagerShellCommand(
                                 cfg,
@@ -433,7 +433,7 @@ class BootstrapToolsTest {
                                 redirects));
 
         // logback + log4j, with/out krb5, different JVM opts
-        cfg.setString(CoreOptions.FLINK_TM_JVM_OPTIONS, tmJvmOpts);
+        cfg.set(CoreOptions.FLINK_TM_JVM_OPTIONS, tmJvmOpts);
         assertThat(
                         BootstrapTools.getTaskManagerShellCommand(
                                 cfg,
@@ -562,24 +562,23 @@ class BootstrapToolsTest {
 
         // test that default value is taken
         BootstrapTools.updateTmpDirectoriesInConfiguration(config, "default/directory/path");
-        assertThat(config.getString(CoreOptions.TMP_DIRS)).isEqualTo("default/directory/path");
+        assertThat(config.get(CoreOptions.TMP_DIRS)).isEqualTo("default/directory/path");
 
         // test that we ignore default value is value is set before
         BootstrapTools.updateTmpDirectoriesInConfiguration(config, "not/default/directory/path");
-        assertThat(config.getString(CoreOptions.TMP_DIRS)).isEqualTo("default/directory/path");
+        assertThat(config.get(CoreOptions.TMP_DIRS)).isEqualTo("default/directory/path");
 
         // test that empty value is not a magic string
-        config.setString(CoreOptions.TMP_DIRS, "");
+        config.set(CoreOptions.TMP_DIRS, "");
         BootstrapTools.updateTmpDirectoriesInConfiguration(config, "some/new/path");
-        assertThat(config.getString(CoreOptions.TMP_DIRS)).isEmpty();
+        assertThat(config.get(CoreOptions.TMP_DIRS)).isEmpty();
     }
 
     @Test
     void testShouldNotUpdateTmpDirectoriesInConfigurationIfNoValueConfigured() {
         Configuration config = new Configuration();
         BootstrapTools.updateTmpDirectoriesInConfiguration(config, null);
-        assertThat(CoreOptions.TMP_DIRS.defaultValue())
-                .isEqualTo(config.getString(CoreOptions.TMP_DIRS));
+        assertThat(CoreOptions.TMP_DIRS.defaultValue()).isEqualTo(config.get(CoreOptions.TMP_DIRS));
     }
 
     @Test

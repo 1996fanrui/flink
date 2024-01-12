@@ -137,7 +137,7 @@ class YarnClusterDescriptorTest {
     void testConfigOverwrite() throws ClusterDeploymentException {
         Configuration configuration = new Configuration();
         // overwrite vcores in config
-        configuration.setInteger(YarnConfigOptions.VCORES, Integer.MAX_VALUE);
+        configuration.set(YarnConfigOptions.VCORES, Integer.MAX_VALUE);
 
         YarnClusterDescriptor clusterDescriptor = createYarnClusterDescriptor(configuration);
 
@@ -369,7 +369,7 @@ class YarnClusterDescriptorTest {
             // YarnClusterDescriptor,
             // because we have a reference to the ClusterDescriptor's configuration which we modify
             // continuously
-            cfg.setString(CoreOptions.FLINK_JVM_OPTIONS, jvmOpts);
+            cfg.set(CoreOptions.FLINK_JVM_OPTIONS, jvmOpts);
             cfg.set(
                     YarnConfigOptionsInternal.APPLICATION_LOG_CONFIG_FILE,
                     YarnLogConfigUtil.CONFIG_FILE_LOGBACK_NAME);
@@ -418,7 +418,7 @@ class YarnClusterDescriptorTest {
             // log4j, with/out krb5, different JVM opts
             // IMPORTANT: Be aware that we are using side effects here to modify the created
             // YarnClusterDescriptor
-            cfg.setString(CoreOptions.FLINK_JM_JVM_OPTIONS, jmJvmOpts);
+            cfg.set(CoreOptions.FLINK_JM_JVM_OPTIONS, jmJvmOpts);
             cfg.set(
                     YarnConfigOptionsInternal.APPLICATION_LOG_CONFIG_FILE,
                     YarnLogConfigUtil.CONFIG_FILE_LOG4J_NAME);

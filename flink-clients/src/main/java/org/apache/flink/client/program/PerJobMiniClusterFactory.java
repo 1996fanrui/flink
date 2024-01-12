@@ -121,7 +121,7 @@ public final class PerJobMiniClusterFactory {
         Configuration configuration = new Configuration(this.configuration);
 
         if (!configuration.contains(RestOptions.BIND_PORT)) {
-            configuration.setString(RestOptions.BIND_PORT, "0");
+            configuration.set(RestOptions.BIND_PORT, "0");
         }
 
         int numTaskManagers =

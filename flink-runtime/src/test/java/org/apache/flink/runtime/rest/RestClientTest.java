@@ -73,7 +73,7 @@ class RestClientTest {
     @Test
     void testConnectionTimeout() throws Exception {
         final Configuration config = new Configuration();
-        config.setLong(RestOptions.CONNECTION_TIMEOUT, 1);
+        config.set(RestOptions.CONNECTION_TIMEOUT, 1);
         try (final RestClient restClient = new RestClient(config, Executors.directExecutor())) {
             CompletableFuture<?> future =
                     restClient.sendRequest(
@@ -114,7 +114,7 @@ class RestClientTest {
     @Test
     void testConnectionClosedHandling() throws Exception {
         final Configuration config = new Configuration();
-        config.setLong(RestOptions.IDLENESS_TIMEOUT, 5000L);
+        config.set(RestOptions.IDLENESS_TIMEOUT, 5000L);
         try (final ServerSocket serverSocket = new ServerSocket(0);
                 final RestClient restClient =
                         new RestClient(config, EXECUTOR_EXTENSION.getExecutor())) {
@@ -161,7 +161,7 @@ class RestClientTest {
     @Test
     void testRestClientClosedHandling() throws Exception {
         final Configuration config = new Configuration();
-        config.setLong(RestOptions.IDLENESS_TIMEOUT, 5000L);
+        config.set(RestOptions.IDLENESS_TIMEOUT, 5000L);
 
         Socket connectionSocket = null;
 

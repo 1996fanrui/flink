@@ -63,7 +63,7 @@ public class ResourceManagerRuntimeServicesConfiguration {
             Configuration configuration, WorkerResourceSpecFactory defaultWorkerResourceSpecFactory)
             throws ConfigurationException {
 
-        final String strJobTimeout = configuration.getString(ResourceManagerOptions.JOB_TIMEOUT);
+        final String strJobTimeout = configuration.get(ResourceManagerOptions.JOB_TIMEOUT);
         final Time jobTimeout;
 
         try {
@@ -84,7 +84,7 @@ public class ResourceManagerRuntimeServicesConfiguration {
                         configuration, defaultWorkerResourceSpec);
 
         final boolean enableFineGrainedResourceManagement =
-                configuration.getBoolean(ClusterOptions.ENABLE_FINE_GRAINED_RESOURCE_MANAGEMENT);
+                configuration.get(ClusterOptions.ENABLE_FINE_GRAINED_RESOURCE_MANAGEMENT);
 
         return new ResourceManagerRuntimeServicesConfiguration(
                 jobTimeout, slotManagerConfiguration, enableFineGrainedResourceManagement);

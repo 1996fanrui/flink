@@ -124,7 +124,7 @@ public final class RestartBackoffTimeStrategyFactoryLoader {
             final Configuration clusterConfiguration) {
 
         final String restartStrategyName =
-                clusterConfiguration.getString(RestartStrategyOptions.RESTART_STRATEGY);
+                clusterConfiguration.get(RestartStrategyOptions.RESTART_STRATEGY);
         if (restartStrategyName == null) {
             return Optional.empty();
         }

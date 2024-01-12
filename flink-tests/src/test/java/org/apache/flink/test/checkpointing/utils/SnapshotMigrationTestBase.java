@@ -234,7 +234,7 @@ public abstract class SnapshotMigrationTestBase extends TestLogger {
         final Configuration config = new Configuration();
 
         config.setInteger(ConfigConstants.LOCAL_NUMBER_TASK_MANAGER, 1);
-        config.setInteger(TaskManagerOptions.NUM_TASK_SLOTS, DEFAULT_PARALLELISM);
+        config.set(TaskManagerOptions.NUM_TASK_SLOTS, DEFAULT_PARALLELISM);
 
         UUID id = UUID.randomUUID();
         final File checkpointDir = TEMP_FOLDER.newFolder("checkpoints_" + id).getAbsoluteFile();
@@ -247,12 +247,11 @@ public abstract class SnapshotMigrationTestBase extends TestLogger {
         LOG.info("Created temporary checkpoint directory: " + checkpointDir + ".");
         LOG.info("Created savepoint directory: " + savepointDir + ".");
 
-        config.setString(StateBackendOptions.STATE_BACKEND, "memory");
-        config.setString(
-                CheckpointingOptions.CHECKPOINTS_DIRECTORY, checkpointDir.toURI().toString());
+        config.set(StateBackendOptions.STATE_BACKEND, "memory");
+        config.set(CheckpointingOptions.CHECKPOINTS_DIRECTORY, checkpointDir.toURI().toString());
         config.set(CheckpointingOptions.FS_SMALL_FILE_THRESHOLD, MemorySize.ZERO);
-        config.setString(CheckpointingOptions.SAVEPOINT_DIRECTORY, savepointDir.toURI().toString());
-        config.setLong(HeartbeatManagerOptions.HEARTBEAT_INTERVAL, 300L);
+        config.set(CheckpointingOptions.SAVEPOINT_DIRECTORY, savepointDir.toURI().toString());
+        config.set(HeartbeatManagerOptions.HEARTBEAT_INTERVAL, 300L);
 
         return config;
     }

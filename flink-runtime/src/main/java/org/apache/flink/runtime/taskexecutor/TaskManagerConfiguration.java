@@ -186,7 +186,7 @@ public class TaskManagerConfiguration implements TaskManagerRuntimeInfo {
             TaskExecutorResourceSpec taskExecutorResourceSpec,
             String externalAddress,
             File tmpWorkingDirectory) {
-        int numberSlots = configuration.getInteger(TaskManagerOptions.NUM_TASK_SLOTS, 1);
+        int numberSlots = configuration.get(TaskManagerOptions.NUM_TASK_SLOTS, 1);
 
         if (numberSlots == -1) {
             numberSlots = 1;
@@ -210,8 +210,7 @@ public class TaskManagerConfiguration implements TaskManagerRuntimeInfo {
             finiteRegistrationDuration = null;
         }
 
-        final boolean exitOnOom =
-                configuration.getBoolean(TaskManagerOptions.KILL_ON_OUT_OF_MEMORY);
+        final boolean exitOnOom = configuration.get(TaskManagerOptions.KILL_ON_OUT_OF_MEMORY);
 
         final String taskManagerLogPath =
                 configuration.getString(

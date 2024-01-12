@@ -185,7 +185,7 @@ public class SavepointEnvironment implements Environment {
     public Configuration getJobConfiguration() {
         Configuration jobConfiguration = new Configuration();
         // This means leaving this stateBackend unwrapped.
-        jobConfiguration.setBoolean(
+        jobConfiguration.set(
                 StateChangelogOptionsInternal.ENABLE_CHANGE_LOG_FOR_APPLICATION, false);
         return jobConfiguration;
     }

@@ -77,7 +77,7 @@ public class LocalExecutor implements PipelineExecutor {
         effectiveConfig.addAll(configuration);
 
         // we only support attached execution with the local executor.
-        checkState(configuration.getBoolean(DeploymentOptions.ATTACHED));
+        checkState(configuration.get(DeploymentOptions.ATTACHED));
 
         final JobGraph jobGraph = getJobGraph(pipeline, effectiveConfig, userCodeClassloader);
 
@@ -94,7 +94,7 @@ public class LocalExecutor implements PipelineExecutor {
         if (pipeline instanceof Plan) {
             Plan plan = (Plan) pipeline;
             final int slotsPerTaskManager =
-                    configuration.getInteger(
+                    configuration.get(
                             TaskManagerOptions.NUM_TASK_SLOTS, plan.getMaximumParallelism());
             final int numTaskManagers =
                     configuration.getInteger(ConfigConstants.LOCAL_NUMBER_TASK_MANAGER, 1);

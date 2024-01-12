@@ -39,7 +39,7 @@ class RestartBackoffTimeStrategyFactoryLoaderTest {
     @Test
     void testNoRestartStrategySpecifiedInJobConfig() {
         final Configuration conf = new Configuration();
-        conf.setString(RestartStrategyOptions.RESTART_STRATEGY, "failure-rate");
+        conf.set(RestartStrategyOptions.RESTART_STRATEGY, "failure-rate");
 
         final RestartBackoffTimeStrategy.Factory factory =
                 RestartBackoffTimeStrategyFactoryLoader.createRestartBackoffTimeStrategyFactory(
@@ -52,7 +52,7 @@ class RestartBackoffTimeStrategyFactoryLoaderTest {
     @Test
     void testFixedDelayRestartStrategySpecifiedInJobConfig() {
         final Configuration conf = new Configuration();
-        conf.setString(RestartStrategyOptions.RESTART_STRATEGY, "failure-rate");
+        conf.set(RestartStrategyOptions.RESTART_STRATEGY, "failure-rate");
 
         final RestartBackoffTimeStrategy.Factory factory =
                 RestartBackoffTimeStrategyFactoryLoader.createRestartBackoffTimeStrategyFactory(
@@ -69,7 +69,7 @@ class RestartBackoffTimeStrategyFactoryLoaderTest {
     @Test
     void testExponentialDelayRestartStrategySpecifiedInJobConfig() {
         final Configuration conf = new Configuration();
-        conf.setString(RestartStrategyOptions.RESTART_STRATEGY, "failure-rate");
+        conf.set(RestartStrategyOptions.RESTART_STRATEGY, "failure-rate");
 
         final RestartBackoffTimeStrategy.Factory factory =
                 RestartBackoffTimeStrategyFactoryLoader.createRestartBackoffTimeStrategyFactory(
@@ -91,7 +91,7 @@ class RestartBackoffTimeStrategyFactoryLoaderTest {
     @Test
     void testFailureRateRestartStrategySpecifiedInJobConfig() {
         final Configuration conf = new Configuration();
-        conf.setString(RestartStrategyOptions.RESTART_STRATEGY, "fixed-delay");
+        conf.set(RestartStrategyOptions.RESTART_STRATEGY, "fixed-delay");
 
         final RestartBackoffTimeStrategy.Factory factory =
                 RestartBackoffTimeStrategyFactoryLoader.createRestartBackoffTimeStrategyFactory(
@@ -109,7 +109,7 @@ class RestartBackoffTimeStrategyFactoryLoaderTest {
     @Test
     void testNoRestartStrategySpecifiedInClusterConfig() {
         final Configuration conf = new Configuration();
-        conf.setString(RestartStrategyOptions.RESTART_STRATEGY, "none");
+        conf.set(RestartStrategyOptions.RESTART_STRATEGY, "none");
 
         final RestartBackoffTimeStrategy.Factory factory =
                 RestartBackoffTimeStrategyFactoryLoader.createRestartBackoffTimeStrategyFactory(
@@ -122,7 +122,7 @@ class RestartBackoffTimeStrategyFactoryLoaderTest {
     @Test
     void testFixedDelayStrategySpecifiedInClusterConfig() {
         final Configuration conf = new Configuration();
-        conf.setString(RestartStrategyOptions.RESTART_STRATEGY, "fixed-delay");
+        conf.set(RestartStrategyOptions.RESTART_STRATEGY, "fixed-delay");
 
         final RestartBackoffTimeStrategy.Factory factory =
                 RestartBackoffTimeStrategyFactoryLoader.createRestartBackoffTimeStrategyFactory(
@@ -137,7 +137,7 @@ class RestartBackoffTimeStrategyFactoryLoaderTest {
     @Test
     void testExponentialDelayStrategySpecifiedInClusterConfig() {
         final Configuration conf = new Configuration();
-        conf.setString(RestartStrategyOptions.RESTART_STRATEGY, "exponential-delay");
+        conf.set(RestartStrategyOptions.RESTART_STRATEGY, "exponential-delay");
 
         final RestartBackoffTimeStrategy.Factory factory =
                 RestartBackoffTimeStrategyFactoryLoader.createRestartBackoffTimeStrategyFactory(
@@ -152,7 +152,7 @@ class RestartBackoffTimeStrategyFactoryLoaderTest {
     @Test
     void testFailureRateStrategySpecifiedInClusterConfig() {
         final Configuration conf = new Configuration();
-        conf.setString(RestartStrategyOptions.RESTART_STRATEGY, "failure-rate");
+        conf.set(RestartStrategyOptions.RESTART_STRATEGY, "failure-rate");
 
         final RestartBackoffTimeStrategy.Factory factory =
                 RestartBackoffTimeStrategyFactoryLoader.createRestartBackoffTimeStrategyFactory(
@@ -167,7 +167,7 @@ class RestartBackoffTimeStrategyFactoryLoaderTest {
     @Test
     void testInvalidStrategySpecifiedInClusterConfig() {
         final Configuration conf = new Configuration();
-        conf.setString(RestartStrategyOptions.RESTART_STRATEGY, "invalid-strategy");
+        conf.set(RestartStrategyOptions.RESTART_STRATEGY, "invalid-strategy");
 
         assertThatThrownBy(
                         () ->

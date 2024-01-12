@@ -649,7 +649,7 @@ public class JobGraph implements Serializable {
                 || TernaryBoolean.UNDEFINED.equals(changelogStateBackendEnabled)) {
             return;
         }
-        this.jobConfiguration.setBoolean(
+        this.jobConfiguration.set(
                 StateChangelogOptionsInternal.ENABLE_CHANGE_LOG_FOR_APPLICATION,
                 changelogStateBackendEnabled.getAsBoolean());
     }

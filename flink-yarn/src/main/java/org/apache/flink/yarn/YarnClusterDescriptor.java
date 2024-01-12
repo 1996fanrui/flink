@@ -209,10 +209,10 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
         decodeFilesToShipToCluster(flinkConfiguration, YarnConfigOptions.SHIP_ARCHIVES)
                 .ifPresent(this::addShipArchives);
 
-        this.yarnQueue = flinkConfiguration.getString(YarnConfigOptions.APPLICATION_QUEUE);
-        this.customName = flinkConfiguration.getString(YarnConfigOptions.APPLICATION_NAME);
-        this.applicationType = flinkConfiguration.getString(YarnConfigOptions.APPLICATION_TYPE);
-        this.nodeLabel = flinkConfiguration.getString(YarnConfigOptions.NODE_LABEL);
+        this.yarnQueue = flinkConfiguration.get(YarnConfigOptions.APPLICATION_QUEUE);
+        this.customName = flinkConfiguration.get(YarnConfigOptions.APPLICATION_NAME);
+        this.applicationType = flinkConfiguration.get(YarnConfigOptions.APPLICATION_TYPE);
+        this.nodeLabel = flinkConfiguration.get(YarnConfigOptions.NODE_LABEL);
     }
 
     private Optional<List<Path>> decodeFilesToShipToCluster(
@@ -235,7 +235,7 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
     }
 
     private Optional<Path> getLocalFlinkDistPath(final Configuration configuration) {
-        final String localJarPath = configuration.getString(YarnConfigOptions.FLINK_DIST_JAR);
+        final String localJarPath = configuration.get(YarnConfigOptions.FLINK_DIST_JAR);
         if (localJarPath != null) {
             return Optional.of(new Path(localJarPath));
         }
@@ -374,7 +374,7 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
         // Check if we don't exceed YARN's maximum virtual cores.
         final int numYarnMaxVcores = yarnClusterInformationRetriever.getMaxVcores();
 
-        int configuredAmVcores = flinkConfiguration.getInteger(YarnConfigOptions.APP_MASTER_VCORES);
+        int configuredAmVcores = flinkConfiguration.get(YarnConfigOptions.APP_MASTER_VCORES);
         if (configuredAmVcores > numYarnMaxVcores) {
             throw new IllegalConfigurationException(
                     String.format(
@@ -384,7 +384,7 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
         }
 
         int configuredVcores =
-                flinkConfiguration.getInteger(
+                flinkConfiguration.get(
                         YarnConfigOptions.VCORES, clusterSpecification.getSlotsPerTaskManager());
         // don't configure more than the maximum configured number of vcores
         if (configuredVcores > numYarnMaxVcores) {
@@ -583,7 +583,7 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
         final UserGroupInformation currentUser = UserGroupInformation.getCurrentUser();
         if (HadoopUtils.isKerberosSecurityEnabled(currentUser)) {
             boolean useTicketCache =
-                    flinkConfiguration.getBoolean(SecurityOptions.KERBEROS_LOGIN_USETICKETCACHE);
+                    flinkConfiguration.get(SecurityOptions.KERBEROS_LOGIN_USETICKETCACHE);
 
             if (!HadoopUtils.areKerberosCredentialsValid(currentUser, useTicketCache)) {
                 throw new RuntimeException(
@@ -592,7 +592,7 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
             }
 
             final boolean fetchToken =
-                    flinkConfiguration.getBoolean(SecurityOptions.KERBEROS_FETCH_DELEGATION_TOKEN);
+                    flinkConfiguration.get(SecurityOptions.KERBEROS_FETCH_DELEGATION_TOKEN);
             final boolean yarnAccessFSEnabled =
                     !CollectionUtil.isNullOrEmpty(
                             flinkConfiguration.get(
@@ -661,7 +661,7 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
                         ? ClusterEntrypoint.ExecutionMode.DETACHED
                         : ClusterEntrypoint.ExecutionMode.NORMAL;
 
-        flinkConfiguration.setString(
+        flinkConfiguration.set(
                 ClusterEntrypoint.INTERNAL_CLUSTER_EXECUTION_MODE, executionMode.toString());
 
         ApplicationReport report =
@@ -875,7 +875,7 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
         Set<Path> systemShipFiles = new HashSet<>(shipFiles);
 
         final String logConfigFilePath =
-                configuration.getString(YarnConfigOptionsInternal.APPLICATION_LOG_CONFIG_FILE);
+                configuration.get(YarnConfigOptionsInternal.APPLICATION_LOG_CONFIG_FILE);
         if (logConfigFilePath != null) {
             systemShipFiles.add(getPathFromLocalFilePathStr(logConfigFilePath));
         }
@@ -1041,7 +1041,7 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
                 }
 
                 final String jobGraphFilename = "job.graph";
-                configuration.setString(JOB_GRAPH_FILE_PATH, jobGraphFilename);
+                configuration.set(JOB_GRAPH_FILE_PATH, jobGraphFilename);
 
                 fileUploader.registerSingleLocalResource(
                         jobGraphFilename,
@@ -1150,12 +1150,10 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
 
         Path remotePathKeytab = null;
         String localizedKeytabPath = null;
-        String keytab = configuration.getString(SecurityOptions.KERBEROS_LOGIN_KEYTAB);
+        String keytab = configuration.get(SecurityOptions.KERBEROS_LOGIN_KEYTAB);
         if (keytab != null) {
-            boolean localizeKeytab =
-                    flinkConfiguration.getBoolean(YarnConfigOptions.SHIP_LOCAL_KEYTAB);
-            localizedKeytabPath =
-                    flinkConfiguration.getString(YarnConfigOptions.LOCALIZED_KEYTAB_PATH);
+            boolean localizeKeytab = flinkConfiguration.get(YarnConfigOptions.SHIP_LOCAL_KEYTAB);
+            localizedKeytabPath = flinkConfiguration.get(YarnConfigOptions.LOCALIZED_KEYTAB_PATH);
             if (localizeKeytab) {
                 // Localize the keytab to YARN containers via local resource.
                 LOG.info("Adding keytab {} to the AM container local resource bucket", keytab);
@@ -1172,7 +1170,7 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
             } else {
                 // // Assume Keytab is pre-installed in the container.
                 localizedKeytabPath =
-                        flinkConfiguration.getString(YarnConfigOptions.LOCALIZED_KEYTAB_PATH);
+                        flinkConfiguration.get(YarnConfigOptions.LOCALIZED_KEYTAB_PATH);
             }
         }
 
@@ -1182,7 +1180,7 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
         final ContainerLaunchContext amContainer =
                 setupApplicationMasterContainer(yarnClusterEntrypoint, hasKrb5, processSpec);
 
-        boolean fetchToken = configuration.getBoolean(SecurityOptions.DELEGATION_TOKENS_ENABLED);
+        boolean fetchToken = configuration.get(SecurityOptions.DELEGATION_TOKENS_ENABLED);
         KerberosLoginProvider kerberosLoginProvider = new KerberosLoginProvider(configuration);
         if (kerberosLoginProvider.isLoginPossible(true)) {
             setTokensFor(amContainer, fetchToken);
@@ -1206,7 +1204,7 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
 
         if (localizedKeytabPath != null) {
             appMasterEnv.put(YarnConfigKeys.LOCAL_KEYTAB_PATH, localizedKeytabPath);
-            String principal = configuration.getString(SecurityOptions.KERBEROS_LOGIN_PRINCIPAL);
+            String principal = configuration.get(SecurityOptions.KERBEROS_LOGIN_PRINCIPAL);
             appMasterEnv.put(YarnConfigKeys.KEYTAB_PRINCIPAL, principal);
             if (remotePathKeytab != null) {
                 appMasterEnv.put(YarnConfigKeys.REMOTE_KEYTAB_PATH, remotePathKeytab.toString());
@@ -1227,8 +1225,7 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
         // Set up resource type requirements for ApplicationMaster
         Resource capability = Records.newRecord(Resource.class);
         capability.setMemorySize(clusterSpecification.getMasterMemoryMB());
-        capability.setVirtualCores(
-                flinkConfiguration.getInteger(YarnConfigOptions.APP_MASTER_VCORES));
+        capability.setVirtualCores(flinkConfiguration.get(YarnConfigOptions.APP_MASTER_VCORES));
 
         final String customApplicationName = customName != null ? customName : applicationName;
 
@@ -1238,7 +1235,7 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
         appContext.setResource(capability);
 
         // Set priority for application
-        int priorityNum = flinkConfiguration.getInteger(YarnConfigOptions.APPLICATION_PRIORITY);
+        int priorityNum = flinkConfiguration.get(YarnConfigOptions.APPLICATION_PRIORITY);
         if (priorityNum >= 0) {
             Priority priority = Priority.newInstance(priorityNum);
             appContext.setPriority(priority);
@@ -1373,7 +1370,7 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
     @VisibleForTesting
     Path getStagingDir(FileSystem defaultFileSystem) throws IOException {
         final String configuredStagingDir =
-                flinkConfiguration.getString(YarnConfigOptions.STAGING_DIRECTORY);
+                flinkConfiguration.get(YarnConfigOptions.STAGING_DIRECTORY);
         if (configuredStagingDir == null) {
             return defaultFileSystem.getHomeDirectory();
         }
@@ -1386,8 +1383,7 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
         final int yarnFileReplication =
                 yarnConfiguration.getInt(
                         DFSConfigKeys.DFS_REPLICATION_KEY, DFSConfigKeys.DFS_REPLICATION_DEFAULT);
-        final int fileReplication =
-                flinkConfiguration.getInteger(YarnConfigOptions.FILE_REPLICATION);
+        final int fileReplication = flinkConfiguration.get(YarnConfigOptions.FILE_REPLICATION);
         return fileReplication > 0 ? fileReplication : yarnFileReplication;
     }
 
@@ -1514,7 +1510,7 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
 
         reflector.setAttemptFailuresValidityInterval(
                 appContext,
-                flinkConfiguration.getLong(
+                flinkConfiguration.get(
                         YarnConfigOptions.APPLICATION_ATTEMPT_FAILURE_VALIDITY_INTERVAL));
     }
 
@@ -1523,7 +1519,7 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
 
         final ApplicationSubmissionContextReflector reflector =
                 ApplicationSubmissionContextReflector.getInstance();
-        final String tagsString = flinkConfiguration.getString(YarnConfigOptions.APPLICATION_TAGS);
+        final String tagsString = flinkConfiguration.get(YarnConfigOptions.APPLICATION_TAGS);
 
         final Set<String> applicationTags = new HashSet<>();
 
@@ -1833,9 +1829,9 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
         // ------------------ Prepare Application Master Container  ------------------------------
 
         // respect custom JVM options in the YAML file
-        String javaOpts = flinkConfiguration.getString(CoreOptions.FLINK_JVM_OPTIONS);
-        if (flinkConfiguration.getString(CoreOptions.FLINK_JM_JVM_OPTIONS).length() > 0) {
-            javaOpts += " " + flinkConfiguration.getString(CoreOptions.FLINK_JM_JVM_OPTIONS);
+        String javaOpts = flinkConfiguration.get(CoreOptions.FLINK_JVM_OPTIONS);
+        if (flinkConfiguration.get(CoreOptions.FLINK_JM_JVM_OPTIONS).length() > 0) {
+            javaOpts += " " + flinkConfiguration.get(CoreOptions.FLINK_JM_JVM_OPTIONS);
         }
 
         javaOpts += " " + IGNORE_UNRECOGNIZED_VM_OPTIONS;
@@ -1909,11 +1905,11 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
 
         LOG.info("Found Web Interface {}:{} of application '{}'.", host, port, appId);
 
-        flinkConfiguration.setString(JobManagerOptions.ADDRESS, host);
-        flinkConfiguration.setInteger(JobManagerOptions.PORT, port);
+        flinkConfiguration.set(JobManagerOptions.ADDRESS, host);
+        flinkConfiguration.set(JobManagerOptions.PORT, port);
 
-        flinkConfiguration.setString(RestOptions.ADDRESS, host);
-        flinkConfiguration.setInteger(RestOptions.PORT, port);
+        flinkConfiguration.set(RestOptions.ADDRESS, host);
+        flinkConfiguration.set(RestOptions.PORT, port);
 
         flinkConfiguration.set(YarnConfigOptions.APPLICATION_ID, ConverterUtils.toString(appId));
 

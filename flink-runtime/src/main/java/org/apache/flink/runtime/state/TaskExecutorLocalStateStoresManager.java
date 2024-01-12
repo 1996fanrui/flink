@@ -175,7 +175,7 @@ public class TaskExecutorLocalStateStoresManager {
                                         StateChangelogOptionsInternal
                                                 .ENABLE_CHANGE_LOG_FOR_APPLICATION)
                                 .orElse(
-                                        clusterConfiguration.getBoolean(
+                                        clusterConfiguration.get(
                                                 StateChangelogOptions.ENABLE_STATE_CHANGE_LOG));
 
                 if (localRecoveryConfig.isLocalRecoveryEnabled() && changelogEnabled) {

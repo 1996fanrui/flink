@@ -149,7 +149,7 @@ public class StreamExecutionEnvironmentComplexConfigurationTest {
                 TernaryBoolean.UNDEFINED, envFromConfiguration.isChangelogStateBackendEnabled());
 
         Configuration configuration = new Configuration();
-        configuration.setBoolean(ENABLE_STATE_CHANGE_LOG, true);
+        configuration.set(ENABLE_STATE_CHANGE_LOG, true);
         envFromConfiguration.configure(
                 configuration, Thread.currentThread().getContextClassLoader());
         assertEquals(TernaryBoolean.TRUE, envFromConfiguration.isChangelogStateBackendEnabled());
@@ -158,7 +158,7 @@ public class StreamExecutionEnvironmentComplexConfigurationTest {
                 configuration, Thread.currentThread().getContextClassLoader());
         assertEquals(TernaryBoolean.TRUE, envFromConfiguration.isChangelogStateBackendEnabled());
 
-        configuration.setBoolean(ENABLE_STATE_CHANGE_LOG, false);
+        configuration.set(ENABLE_STATE_CHANGE_LOG, false);
         envFromConfiguration.configure(
                 configuration, Thread.currentThread().getContextClassLoader());
         assertEquals(TernaryBoolean.FALSE, envFromConfiguration.isChangelogStateBackendEnabled());
