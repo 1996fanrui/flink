@@ -26,6 +26,7 @@ import org.apache.flink.runtime.executiongraph.utils.SimpleAckingTaskManagerGate
 import org.apache.flink.runtime.jobmaster.JobMasterId;
 import org.apache.flink.runtime.jobmaster.RpcTaskManagerGateway;
 import org.apache.flink.runtime.jobmaster.SlotRequestId;
+import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 import org.apache.flink.runtime.taskexecutor.TestingTaskExecutorGatewayBuilder;
 import org.apache.flink.runtime.taskexecutor.slot.SlotOffer;
 import org.apache.flink.runtime.taskmanager.LocalTaskManagerLocation;
@@ -77,7 +78,7 @@ class DeclarativeSlotPoolBridgeTest extends DeclarativeSlotPoolBridgeTestBase {
 
             CompletableFuture<PhysicalSlot> slotAllocationFuture =
                     declarativeSlotPoolBridge.requestNewAllocatedSlot(
-                            slotRequestId, ResourceProfile.UNKNOWN, null);
+                            slotRequestId, ResourceProfile.UNKNOWN, LoadingWeight.EMPTY, null);
 
             waitSlotRequestMaxIntervalIfNeeded(slotRequestMaxInterval);
 
@@ -107,6 +108,7 @@ class DeclarativeSlotPoolBridgeTest extends DeclarativeSlotPoolBridgeTestBase {
                                             declarativeSlotPoolBridge.requestNewAllocatedSlot(
                                                     slotRequestId,
                                                     ResourceProfile.UNKNOWN,
+                                                    LoadingWeight.EMPTY,
                                                     Time.minutes(5)),
                                     mainThreadExecutor)
                             .get();
@@ -153,7 +155,10 @@ class DeclarativeSlotPoolBridgeTest extends DeclarativeSlotPoolBridgeTestBase {
             final SlotRequestId slotRequestId = new SlotRequestId();
 
             declarativeSlotPoolBridge.allocateAvailableSlot(
-                    slotRequestId, expectedAllocationId, allocatedSlot.getResourceProfile());
+                    slotRequestId,
+                    expectedAllocationId,
+                    allocatedSlot.getResourceProfile(),
+                    LoadingWeight.EMPTY);
 
             waitSlotRequestMaxIntervalIfNeeded(slotRequestMaxInterval);
 
@@ -184,6 +189,7 @@ class DeclarativeSlotPoolBridgeTest extends DeclarativeSlotPoolBridgeTestBase {
                                                 declarativeSlotPoolBridge.requestNewAllocatedSlot(
                                                         slotRequestId,
                                                         ResourceProfile.UNKNOWN,
+                                                        LoadingWeight.EMPTY,
                                                         rpcTimeout);
                                         slotFuture.whenComplete(
                                                 (physicalSlot, throwable) -> {
@@ -218,7 +224,10 @@ class DeclarativeSlotPoolBridgeTest extends DeclarativeSlotPoolBridgeTestBase {
 
             final CompletableFuture<PhysicalSlot> slotFuture =
                     declarativeSlotPoolBridge.requestNewAllocatedSlot(
-                            new SlotRequestId(), ResourceProfile.UNKNOWN, rpcTimeout);
+                            new SlotRequestId(),
+                            ResourceProfile.UNKNOWN,
+                            LoadingWeight.EMPTY,
+                            rpcTimeout);
 
             waitSlotRequestMaxIntervalIfNeeded(slotRequestMaxInterval);
 
@@ -305,6 +314,7 @@ class DeclarativeSlotPoolBridgeTest extends DeclarativeSlotPoolBridgeTestBase {
                 new LocalTaskManagerLocation(),
                 0,
                 ResourceProfile.ANY,
+                LoadingWeight.EMPTY,
                 new RpcTaskManagerGateway(
                         new TestingTaskExecutorGatewayBuilder().createTestingTaskExecutorGateway(),
                         JobMasterId.generate()));

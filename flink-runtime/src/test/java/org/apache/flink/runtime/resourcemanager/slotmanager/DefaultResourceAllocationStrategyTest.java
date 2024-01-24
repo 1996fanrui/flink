@@ -24,6 +24,7 @@ import org.apache.flink.api.common.resources.ExternalResource;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
+import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 import org.apache.flink.runtime.slots.ResourceRequirement;
 import org.apache.flink.runtime.util.ResourceCounter;
 
@@ -115,8 +116,12 @@ class DefaultResourceAllocationStrategyTest {
                         .setRegisteredTaskManagersSupplier(
                                 () -> Arrays.asList(taskManager1, taskManager2, taskManager3))
                         .build();
-        requirements.add(ResourceRequirement.create(largeResource, 4));
-        requirements.add(ResourceRequirement.create(ResourceProfile.UNKNOWN, 2));
+        requirements.add(
+                ResourceRequirement.create(
+                        largeResource, 4, LoadingWeight.ofDefaultLoadingWeights(2, 3, 4, 1)));
+        requirements.add(
+                ResourceRequirement.create(
+                        ResourceProfile.UNKNOWN, 2, LoadingWeight.ofDefaultLoadingWeights(1, 3)));
 
         final ResourceAllocationResult result =
                 EVENLY_STRATEGY.tryFulfillRequirements(
@@ -251,7 +256,7 @@ class DefaultResourceAllocationStrategyTest {
                         .get(jobId)
                         .getResourcesWithCount()) {
             allFulfilledRequirements =
-                    allFulfilledRequirements.add(
+                    allFulfilledRequirements.addWithEmptyLoadings(
                             resourceWithCount.getKey(), resourceWithCount.getValue());
         }
         for (Map.Entry<ResourceProfile, Integer> resourceWithCount :
@@ -260,7 +265,7 @@ class DefaultResourceAllocationStrategyTest {
                         .get(jobId)
                         .getResourcesWithCount()) {
             allFulfilledRequirements =
-                    allFulfilledRequirements.add(
+                    allFulfilledRequirements.addWithEmptyLoadings(
                             resourceWithCount.getKey(), resourceWithCount.getValue());
         }
 

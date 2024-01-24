@@ -269,7 +269,7 @@ class BlocklistDeclarativeSlotPoolTest extends DefaultDeclarativeSlotPoolTestBas
         final PhysicalSlot offeredSlot = getOnlyElement(newSlots);
         final AllocationID allocationID = offeredSlot.getAllocationId();
 
-        slotPool.reserveFreeSlot(allocationID, RESOURCE_PROFILE);
+        slotPool.reserveFreeSlot(allocationID, RESOURCE_PROFILE, offeredSlot.getLoading());
 
         if (isBlocked) {
             // block TM

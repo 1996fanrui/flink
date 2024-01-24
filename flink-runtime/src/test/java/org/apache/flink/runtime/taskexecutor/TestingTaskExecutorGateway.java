@@ -42,6 +42,7 @@ import org.apache.flink.runtime.resourcemanager.ResourceManagerId;
 import org.apache.flink.runtime.rest.messages.LogInfo;
 import org.apache.flink.runtime.rest.messages.ProfilingInfo;
 import org.apache.flink.runtime.rest.messages.ThreadDumpInfo;
+import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 import org.apache.flink.runtime.webmonitor.threadinfo.ThreadInfoSamplesRequest;
 import org.apache.flink.types.SerializableOptional;
 import org.apache.flink.util.Preconditions;
@@ -198,6 +199,7 @@ public class TestingTaskExecutorGateway implements TaskExecutorGateway {
             JobID jobId,
             AllocationID allocationId,
             ResourceProfile resourceProfile,
+            LoadingWeight loadingWeight,
             String targetAddress,
             ResourceManagerId resourceManagerId,
             Time timeout) {

@@ -19,7 +19,9 @@
 package org.apache.flink.runtime.jobmaster.slotpool;
 
 import org.apache.flink.runtime.clusterframework.types.AllocationID;
+import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.jobmaster.SlotRequestId;
+import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -40,7 +42,9 @@ public enum PreferredAllocationRequestSlotMatchingStrategy implements RequestSlo
 
     @Override
     public Collection<RequestSlotMatch> matchRequestsAndSlots(
-            Collection<? extends PhysicalSlot> slots, Collection<PendingRequest> pendingRequests) {
+            Collection<? extends PhysicalSlot> slots,
+            Collection<PendingRequest> pendingRequests,
+            Map<ResourceID, LoadingWeight> taskExecutorsLoadingWeight) {
         final Collection<RequestSlotMatch> requestSlotMatches = new ArrayList<>();
 
         final Map<AllocationID, PhysicalSlot> freeSlots =
@@ -79,6 +83,10 @@ public enum PreferredAllocationRequestSlotMatchingStrategy implements RequestSlo
                                 .getPreferredAllocations()
                                 .contains(freeSlot.getAllocationId())) {
                     requestSlotMatches.add(RequestSlotMatch.createFor(pendingRequest, freeSlot));
+                    taskExecutorsLoadingWeight.compute(
+                            freeSlot.getTaskManagerLocation().getResourceID(),
+                            (resourceID, loadingWeight) ->
+                                    pendingRequest.getLoading().merge(loadingWeight));
                     pendingRequestIterator.remove();
                     freeSlotsIterator.remove();
                     break;
@@ -90,7 +98,7 @@ public enum PreferredAllocationRequestSlotMatchingStrategy implements RequestSlo
         if (!freeSlots.isEmpty() && !unmatchedRequests.isEmpty()) {
             requestSlotMatches.addAll(
                     SimpleRequestSlotMatchingStrategy.INSTANCE.matchRequestsAndSlots(
-                            freeSlots.values(), unmatchedRequests));
+                            freeSlots.values(), unmatchedRequests, taskExecutorsLoadingWeight));
         }
 
         return requestSlotMatches;

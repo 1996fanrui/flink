@@ -80,6 +80,7 @@ import org.apache.flink.runtime.resourcemanager.utils.TestingResourceManagerGate
 import org.apache.flink.runtime.rpc.RpcUtils;
 import org.apache.flink.runtime.rpc.TestingRpcService;
 import org.apache.flink.runtime.rpc.exceptions.RecipientUnreachableException;
+import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 import org.apache.flink.runtime.security.token.DelegationTokenReceiverRepository;
 import org.apache.flink.runtime.shuffle.ShuffleDescriptor;
 import org.apache.flink.runtime.shuffle.ShuffleEnvironment;
@@ -2954,9 +2955,16 @@ class TaskExecutorTest {
                 JobID jobId,
                 AllocationID allocationId,
                 ResourceProfile resourceProfile,
+                LoadingWeight loadingWeight,
                 Duration slotTimeout) {
             final boolean result =
-                    super.allocateSlot(index, jobId, allocationId, resourceProfile, slotTimeout);
+                    super.allocateSlot(
+                            index,
+                            jobId,
+                            allocationId,
+                            resourceProfile,
+                            loadingWeight,
+                            slotTimeout);
             allocateSlotLatch.trigger();
 
             return result;

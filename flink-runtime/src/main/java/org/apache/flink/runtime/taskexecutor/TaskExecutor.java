@@ -98,6 +98,7 @@ import org.apache.flink.runtime.rpc.FatalErrorHandler;
 import org.apache.flink.runtime.rpc.RpcEndpoint;
 import org.apache.flink.runtime.rpc.RpcService;
 import org.apache.flink.runtime.rpc.RpcServiceUtils;
+import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 import org.apache.flink.runtime.security.token.DelegationTokenReceiverRepository;
 import org.apache.flink.runtime.shuffle.ShuffleDescriptor;
 import org.apache.flink.runtime.shuffle.ShuffleEnvironment;
@@ -1140,6 +1141,7 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
             final JobID jobId,
             final AllocationID allocationId,
             final ResourceProfile resourceProfile,
+            final LoadingWeight loadingWeight,
             final String targetAddress,
             final ResourceManagerId resourceManagerId,
             final Time timeout) {
@@ -1163,11 +1165,22 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
 
         tryPersistAllocationSnapshot(
                 new SlotAllocationSnapshot(
-                        slotId, jobId, targetAddress, allocationId, resourceProfile));
+                        slotId,
+                        jobId,
+                        targetAddress,
+                        allocationId,
+                        resourceProfile,
+                        loadingWeight));
 
         try {
             final boolean isConnected =
-                    allocateSlotForJob(jobId, slotId, allocationId, resourceProfile, targetAddress);
+                    allocateSlotForJob(
+                            jobId,
+                            slotId,
+                            allocationId,
+                            resourceProfile,
+                            loadingWeight,
+                            targetAddress);
 
             if (isConnected) {
                 offerSlotsToJobManager(jobId);
@@ -1185,9 +1198,10 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
             SlotID slotId,
             AllocationID allocationId,
             ResourceProfile resourceProfile,
+            LoadingWeight loadingWeight,
             String targetAddress)
             throws SlotAllocationException {
-        allocateSlot(slotId, jobId, allocationId, resourceProfile);
+        allocateSlot(slotId, jobId, allocationId, resourceProfile, loadingWeight);
 
         final JobTable.Job job;
 
@@ -1232,7 +1246,11 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
     }
 
     private void allocateSlot(
-            SlotID slotId, JobID jobId, AllocationID allocationId, ResourceProfile resourceProfile)
+            SlotID slotId,
+            JobID jobId,
+            AllocationID allocationId,
+            ResourceProfile resourceProfile,
+            LoadingWeight loadingWeight)
             throws SlotAllocationException {
         if (taskSlotTable.isSlotFree(slotId.getSlotNumber())) {
             if (!taskSlotTable.allocateSlot(
@@ -1240,6 +1258,7 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
                     jobId,
                     allocationId,
                     resourceProfile,
+                    loadingWeight,
                     taskManagerConfiguration.getSlotTimeout())) {
                 log.info("Could not allocate slot for {}.", allocationId);
                 throw new SlotAllocationException("Could not allocate slot.");
@@ -2220,6 +2239,7 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
                         slotAllocationSnapshot.getSlotID(),
                         slotAllocationSnapshot.getAllocationId(),
                         slotAllocationSnapshot.getResourceProfile(),
+                        slotAllocationSnapshot.getLoadingWeight(),
                         slotAllocationSnapshot.getJobTargetAddress());
 
             } catch (SlotAllocationException e) {

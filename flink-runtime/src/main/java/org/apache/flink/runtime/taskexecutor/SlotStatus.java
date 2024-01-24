@@ -18,17 +18,20 @@
 
 package org.apache.flink.runtime.taskexecutor;
 
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.runtime.clusterframework.types.AllocationID;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
 import org.apache.flink.runtime.clusterframework.types.SlotID;
+import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
+import org.apache.flink.runtime.scheduler.loading.WeightLoadable;
 
 import java.io.Serializable;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /** This describes the slot current status which located in TaskManager. */
-public class SlotStatus implements Serializable {
+public class SlotStatus implements WeightLoadable, Serializable {
 
     private static final long serialVersionUID = 5099191707339664493L;
 
@@ -49,19 +52,33 @@ public class SlotStatus implements Serializable {
      */
     private final JobID jobID;
 
+    private final LoadingWeight loadingWeight;
+
+    @VisibleForTesting
     public SlotStatus(SlotID slotID, ResourceProfile resourceProfile) {
-        this(slotID, resourceProfile, null, null);
+        this(slotID, resourceProfile, null, null, LoadingWeight.EMPTY);
+    }
+
+    @VisibleForTesting
+    public SlotStatus(
+            SlotID slotID,
+            ResourceProfile resourceProfile,
+            JobID jobID,
+            AllocationID allocationID) {
+        this(slotID, resourceProfile, jobID, allocationID, LoadingWeight.EMPTY);
     }
 
     public SlotStatus(
             SlotID slotID,
             ResourceProfile resourceProfile,
             JobID jobID,
-            AllocationID allocationID) {
+            AllocationID allocationID,
+            LoadingWeight loadingWeight) {
         this.slotID = checkNotNull(slotID, "slotID cannot be null");
         this.resourceProfile = checkNotNull(resourceProfile, "profile cannot be null");
         this.allocationID = allocationID;
         this.jobID = jobID;
+        this.loadingWeight = loadingWeight;
     }
 
     /**
@@ -146,5 +163,10 @@ public class SlotStatus implements Serializable {
                 + ", resourceProfile="
                 + resourceProfile
                 + '}';
+    }
+
+    @Override
+    public LoadingWeight getLoading() {
+        return loadingWeight;
     }
 }

@@ -107,6 +107,7 @@ import org.apache.flink.runtime.scheduler.ExecutionGraphInfo;
 import org.apache.flink.runtime.scheduler.SchedulerTestingUtils;
 import org.apache.flink.runtime.scheduler.TestingSchedulerNG;
 import org.apache.flink.runtime.scheduler.TestingSchedulerNGFactory;
+import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 import org.apache.flink.runtime.state.CompletedCheckpointStorageLocation;
 import org.apache.flink.runtime.state.StreamStateHandle;
 import org.apache.flink.runtime.taskexecutor.TaskExecutorGateway;
@@ -606,7 +607,8 @@ class JobMasterTest {
         public Optional<PhysicalSlot> allocateAvailableSlot(
                 @Nonnull SlotRequestId slotRequestId,
                 @Nonnull AllocationID allocationID,
-                @Nonnull ResourceProfile requirementProfile) {
+                @Nonnull ResourceProfile requirementProfile,
+                @Nonnull LoadingWeight loadingWeight) {
             throw new UnsupportedOperationException(
                     "TestingSlotPool does not support this operation.");
         }
@@ -616,6 +618,7 @@ class JobMasterTest {
         public CompletableFuture<PhysicalSlot> requestNewAllocatedSlot(
                 @Nonnull SlotRequestId slotRequestId,
                 @Nonnull ResourceProfile resourceProfile,
+                @Nonnull LoadingWeight loadingWeight,
                 @Nonnull Collection<AllocationID> preferredAllocations,
                 @Nullable Time timeout) {
             return new CompletableFuture<>();

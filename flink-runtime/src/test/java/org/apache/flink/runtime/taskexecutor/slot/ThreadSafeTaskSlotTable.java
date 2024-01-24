@@ -26,6 +26,7 @@ import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutor;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
 import org.apache.flink.runtime.memory.MemoryManager;
 import org.apache.flink.runtime.rpc.MainThreadExecutable;
+import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 import org.apache.flink.runtime.taskexecutor.SlotReport;
 import org.apache.flink.util.Preconditions;
 
@@ -108,11 +109,17 @@ public class ThreadSafeTaskSlotTable<T extends TaskSlotPayload> implements TaskS
             JobID jobId,
             AllocationID allocationId,
             ResourceProfile resourceProfile,
+            LoadingWeight loadingWeight,
             Duration slotTimeout) {
         return callAsync(
                 () ->
                         taskSlotTable.allocateSlot(
-                                index, jobId, allocationId, resourceProfile, slotTimeout));
+                                index,
+                                jobId,
+                                allocationId,
+                                resourceProfile,
+                                loadingWeight,
+                                slotTimeout));
     }
 
     @Override

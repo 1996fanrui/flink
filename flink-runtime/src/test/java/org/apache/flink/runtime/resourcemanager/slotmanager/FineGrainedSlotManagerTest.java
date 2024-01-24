@@ -31,6 +31,7 @@ import org.apache.flink.runtime.metrics.groups.SlotManagerMetricGroup;
 import org.apache.flink.runtime.metrics.util.TestingMetricRegistry;
 import org.apache.flink.runtime.resourcemanager.ResourceManagerId;
 import org.apache.flink.runtime.resourcemanager.registration.TaskExecutorConnection;
+import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 import org.apache.flink.runtime.slots.ResourceRequirement;
 import org.apache.flink.runtime.slots.ResourceRequirements;
 import org.apache.flink.runtime.taskexecutor.SlotReport;
@@ -243,7 +244,8 @@ class FineGrainedSlotManagerTest extends FineGrainedSlotManagerTestBase {
                             builder.addAllocationOnPendingResource(
                                     jobID,
                                     pendingTaskManager.getPendingTaskManagerId(),
-                                    DEFAULT_SLOT_RESOURCE_PROFILE);
+                                    DEFAULT_SLOT_RESOURCE_PROFILE,
+                                    LoadingWeight.EMPTY);
                             return builder.build();
                         });
 
@@ -378,7 +380,8 @@ class FineGrainedSlotManagerTest extends FineGrainedSlotManagerTestBase {
                                         .addAllocationOnRegisteredResource(
                                                 jobId,
                                                 taskManagerConnection.getInstanceID(),
-                                                DEFAULT_SLOT_RESOURCE_PROFILE)
+                                                DEFAULT_SLOT_RESOURCE_PROFILE,
+                                                LoadingWeight.EMPTY)
                                         .build()));
                 runTest(
                         () -> {
@@ -437,7 +440,8 @@ class FineGrainedSlotManagerTest extends FineGrainedSlotManagerTestBase {
                                         .addAllocationOnPendingResource(
                                                 jobId,
                                                 pendingTaskManager.getPendingTaskManagerId(),
-                                                DEFAULT_SLOT_RESOURCE_PROFILE)
+                                                DEFAULT_SLOT_RESOURCE_PROFILE,
+                                                LoadingWeight.EMPTY)
                                         .build()));
                 runTest(
                         () -> {
@@ -489,7 +493,8 @@ class FineGrainedSlotManagerTest extends FineGrainedSlotManagerTestBase {
                                         .addAllocationOnPendingResource(
                                                 jobId,
                                                 pendingTaskManager.getPendingTaskManagerId(),
-                                                DEFAULT_SLOT_RESOURCE_PROFILE)
+                                                DEFAULT_SLOT_RESOURCE_PROFILE,
+                                                LoadingWeight.EMPTY)
                                         .build()));
                 resourceAllocatorBuilder.setDeclareResourceNeededConsumer(
                         (resourceDeclarations) -> {
@@ -811,11 +816,13 @@ class FineGrainedSlotManagerTest extends FineGrainedSlotManagerTestBase {
                                         .addAllocationOnPendingResource(
                                                 jobId,
                                                 pendingTaskManager1.getPendingTaskManagerId(),
-                                                DEFAULT_SLOT_RESOURCE_PROFILE)
+                                                DEFAULT_SLOT_RESOURCE_PROFILE,
+                                                LoadingWeight.EMPTY)
                                         .addAllocationOnPendingResource(
                                                 jobId,
                                                 pendingTaskManager2.getPendingTaskManagerId(),
-                                                DEFAULT_SLOT_RESOURCE_PROFILE)
+                                                DEFAULT_SLOT_RESOURCE_PROFILE,
+                                                LoadingWeight.EMPTY)
                                         .build()));
                 runTest(
                         () -> {
@@ -1015,11 +1022,13 @@ class FineGrainedSlotManagerTest extends FineGrainedSlotManagerTestBase {
                                         .addAllocationOnPendingResource(
                                                 jobId,
                                                 pendingTaskManager1.getPendingTaskManagerId(),
-                                                DEFAULT_SLOT_RESOURCE_PROFILE)
+                                                DEFAULT_SLOT_RESOURCE_PROFILE,
+                                                LoadingWeight.EMPTY)
                                         .addAllocationOnPendingResource(
                                                 jobId,
                                                 pendingTaskManager2.getPendingTaskManagerId(),
-                                                DEFAULT_SLOT_RESOURCE_PROFILE)
+                                                DEFAULT_SLOT_RESOURCE_PROFILE,
+                                                LoadingWeight.EMPTY)
                                         .build()));
                 runTest(
                         () -> {

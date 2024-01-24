@@ -25,6 +25,7 @@ import org.apache.flink.runtime.jobmanager.scheduler.Locality;
 import org.apache.flink.runtime.jobmanager.slots.TestingSlotOwner;
 import org.apache.flink.runtime.jobmaster.LogicalSlot;
 import org.apache.flink.runtime.jobmaster.SlotRequestId;
+import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 import org.apache.flink.runtime.taskmanager.LocalTaskManagerLocation;
 
 /** Test utils of {@link PhysicalSlot}. */
@@ -40,6 +41,7 @@ public class PhysicalSlotTestUtils {
                 new LocalTaskManagerLocation(),
                 0,
                 resourceProfile,
+                LoadingWeight.EMPTY,
                 new SimpleAckingTaskManagerGateway());
     }
 

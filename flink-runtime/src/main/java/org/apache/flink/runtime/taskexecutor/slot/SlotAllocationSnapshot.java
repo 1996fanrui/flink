@@ -22,6 +22,7 @@ import org.apache.flink.api.common.JobID;
 import org.apache.flink.runtime.clusterframework.types.AllocationID;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
 import org.apache.flink.runtime.clusterframework.types.SlotID;
+import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 
 import java.util.Objects;
 
@@ -35,18 +36,31 @@ public class SlotAllocationSnapshot implements java.io.Serializable {
     private final String jobTargetAddress;
     private final AllocationID allocationId;
     private final ResourceProfile resourceProfile;
+    private final LoadingWeight loadingWeight;
 
+    @Deprecated
     public SlotAllocationSnapshot(
             SlotID slotID,
             JobID jobId,
             String jobTargetAddress,
             AllocationID allocationId,
             ResourceProfile resourceProfile) {
+        this(slotID, jobId, jobTargetAddress, allocationId, resourceProfile, LoadingWeight.EMPTY);
+    }
+
+    public SlotAllocationSnapshot(
+            SlotID slotID,
+            JobID jobId,
+            String jobTargetAddress,
+            AllocationID allocationId,
+            ResourceProfile resourceProfile,
+            LoadingWeight loadingWeight) {
         this.slotID = slotID;
         this.jobId = jobId;
         this.jobTargetAddress = jobTargetAddress;
         this.allocationId = allocationId;
         this.resourceProfile = resourceProfile;
+        this.loadingWeight = loadingWeight;
     }
 
     public SlotID getSlotID() {
@@ -69,6 +83,10 @@ public class SlotAllocationSnapshot implements java.io.Serializable {
         return resourceProfile;
     }
 
+    public LoadingWeight getLoadingWeight() {
+        return loadingWeight;
+    }
+
     public int getSlotIndex() {
         return slotID.getSlotNumber();
     }
@@ -85,6 +103,8 @@ public class SlotAllocationSnapshot implements java.io.Serializable {
                 + '\''
                 + ", allocationId="
                 + allocationId
+                + ", loadingWeight="
+                + loadingWeight
                 + ", resourceProfile="
                 + resourceProfile
                 + '}';
@@ -103,11 +123,13 @@ public class SlotAllocationSnapshot implements java.io.Serializable {
                 && jobId.equals(that.jobId)
                 && jobTargetAddress.equals(that.jobTargetAddress)
                 && allocationId.equals(that.allocationId)
-                && resourceProfile.equals(that.resourceProfile);
+                && resourceProfile.equals(that.resourceProfile)
+                && loadingWeight.equals(that.loadingWeight);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(slotID, jobId, jobTargetAddress, allocationId, resourceProfile);
+        return Objects.hash(
+                slotID, jobId, jobTargetAddress, allocationId, resourceProfile, loadingWeight);
     }
 }

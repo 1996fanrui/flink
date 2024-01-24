@@ -18,6 +18,7 @@
 
 package org.apache.flink.runtime.taskexecutor;
 
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.runtime.blob.BlobServer;
@@ -43,6 +44,7 @@ import org.apache.flink.runtime.rest.messages.ProfilingInfo;
 import org.apache.flink.runtime.rest.messages.ThreadDumpInfo;
 import org.apache.flink.runtime.rpc.RpcGateway;
 import org.apache.flink.runtime.rpc.RpcTimeout;
+import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 import org.apache.flink.runtime.taskmanager.Task;
 import org.apache.flink.types.SerializableOptional;
 import org.apache.flink.util.SerializedValue;
@@ -64,6 +66,7 @@ public interface TaskExecutorGateway
      * @param allocationId id for the request
      * @param resourceProfile of requested slot, used only for dynamic slot allocation and will be
      *     ignored otherwise
+     * @param loadingWeight loading weight
      * @param targetAddress to which to offer the requested slots
      * @param resourceManagerId current leader id of the ResourceManager
      * @param timeout for the operation
@@ -74,9 +77,30 @@ public interface TaskExecutorGateway
             JobID jobId,
             AllocationID allocationId,
             ResourceProfile resourceProfile,
+            LoadingWeight loadingWeight,
             String targetAddress,
             ResourceManagerId resourceManagerId,
             @RpcTimeout Time timeout);
+
+    @VisibleForTesting
+    default CompletableFuture<Acknowledge> requestSlot(
+            SlotID slotId,
+            JobID jobId,
+            AllocationID allocationId,
+            ResourceProfile resourceProfile,
+            String targetAddress,
+            ResourceManagerId resourceManagerId,
+            @RpcTimeout Time timeout) {
+        return requestSlot(
+                slotId,
+                jobId,
+                allocationId,
+                resourceProfile,
+                LoadingWeight.EMPTY,
+                targetAddress,
+                resourceManagerId,
+                timeout);
+    }
 
     /**
      * Submit a {@link Task} to the {@link TaskExecutor}.

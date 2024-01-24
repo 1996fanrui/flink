@@ -28,6 +28,7 @@ import org.apache.flink.runtime.jobmaster.SlotRequestId;
 import org.apache.flink.runtime.jobmaster.slotpool.PhysicalSlot;
 import org.apache.flink.runtime.scheduler.adaptive.JobSchedulingPlan;
 import org.apache.flink.runtime.scheduler.adaptive.JobSchedulingPlan.SlotAssignment;
+import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 import org.apache.flink.runtime.scheduler.strategy.ExecutionVertexID;
 import org.apache.flink.runtime.util.ResourceCounter;
 
@@ -78,7 +79,11 @@ public class SlotSharingSlotAllocator implements SlotAllocator {
                 SlotSharingGroupMetaInfo.from(vertices).values()) {
             numTotalRequiredSlots += slotSharingGroupMetaInfo.getMaxUpperBound();
         }
-        return ResourceCounter.withResource(ResourceProfile.UNKNOWN, numTotalRequiredSlots);
+        // todo
+        return ResourceCounter.withResource(
+                ResourceProfile.UNKNOWN,
+                numTotalRequiredSlots,
+                LoadingWeight.supplyEmptyLoadWeights(numTotalRequiredSlots));
     }
 
     @Override
@@ -265,7 +270,7 @@ public class SlotSharingSlotAllocator implements SlotAllocator {
     private SharedSlot reserveSharedSlot(SlotInfo slotInfo) {
         final PhysicalSlot physicalSlot =
                 reserveSlotFunction.reserveSlot(
-                        slotInfo.getAllocationId(), ResourceProfile.UNKNOWN);
+                        slotInfo.getAllocationId(), ResourceProfile.UNKNOWN, slotInfo.getLoading());
 
         return new SharedSlot(
                 new SlotRequestId(),

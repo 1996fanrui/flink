@@ -17,10 +17,14 @@
 
 package org.apache.flink.runtime.slots;
 
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
+import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 import org.apache.flink.util.Preconditions;
 
 import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 
 /** Represents the number of required resources for a specific {@link ResourceProfile}. */
@@ -32,12 +36,26 @@ public class ResourceRequirement implements Serializable {
 
     private final int numberOfRequiredSlots;
 
-    private ResourceRequirement(ResourceProfile resourceProfile, int numberOfRequiredSlots) {
+    List<LoadingWeight> loadingWeights;
+
+    private ResourceRequirement(
+            ResourceProfile resourceProfile,
+            int numberOfRequiredSlots,
+            List<LoadingWeight> loadingWeights) {
         Preconditions.checkNotNull(resourceProfile);
-        Preconditions.checkArgument(numberOfRequiredSlots > 0);
+        Preconditions.checkArgument(numberOfRequiredSlots >= 0);
+        Preconditions.checkArgument(
+                numberOfRequiredSlots == loadingWeights.size(),
+                "The number of loading weight info must be equals to numberOfRequiredSlots.");
 
         this.resourceProfile = resourceProfile;
         this.numberOfRequiredSlots = numberOfRequiredSlots;
+        this.loadingWeights =
+                new ArrayList<LoadingWeight>() {
+                    {
+                        addAll(loadingWeights);
+                    }
+                };
     }
 
     public ResourceProfile getResourceProfile() {
@@ -48,9 +66,32 @@ public class ResourceRequirement implements Serializable {
         return numberOfRequiredSlots;
     }
 
+    @VisibleForTesting
     public static ResourceRequirement create(
             ResourceProfile resourceProfile, int numberOfRequiredSlots) {
-        return new ResourceRequirement(resourceProfile, numberOfRequiredSlots);
+        return new ResourceRequirement(
+                resourceProfile,
+                numberOfRequiredSlots,
+                LoadingWeight.supplyEmptyLoadWeights(numberOfRequiredSlots));
+    }
+
+    public static ResourceRequirement create(
+            ResourceProfile resourceProfile,
+            int numberOfRequiredSlots,
+            List<LoadingWeight> loadingWeights) {
+        return new ResourceRequirement(resourceProfile, numberOfRequiredSlots, loadingWeights);
+    }
+
+    public List<LoadingWeight> getLoadingWeights() {
+        return loadingWeights;
+    }
+
+    public List<LoadingWeight> getCopiedLoadingWeights() {
+        return new ArrayList<LoadingWeight>(loadingWeights.size()) {
+            {
+                addAll(loadingWeights);
+            }
+        };
     }
 
     @Override
@@ -63,12 +104,13 @@ public class ResourceRequirement implements Serializable {
         }
         ResourceRequirement that = (ResourceRequirement) o;
         return numberOfRequiredSlots == that.numberOfRequiredSlots
-                && Objects.equals(resourceProfile, that.resourceProfile);
+                && Objects.equals(resourceProfile, that.resourceProfile)
+                && Objects.equals(loadingWeights, that.loadingWeights);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(resourceProfile, numberOfRequiredSlots);
+        return Objects.hash(resourceProfile, numberOfRequiredSlots, loadingWeights);
     }
 
     @Override
@@ -78,6 +120,8 @@ public class ResourceRequirement implements Serializable {
                 + resourceProfile
                 + ", numberOfRequiredSlots="
                 + numberOfRequiredSlots
+                + ", loadingWeights="
+                + loadingWeights
                 + '}';
     }
 }

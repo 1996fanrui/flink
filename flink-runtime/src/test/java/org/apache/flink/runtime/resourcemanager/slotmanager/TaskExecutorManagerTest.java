@@ -247,8 +247,14 @@ class TaskExecutorManagerTest {
                                         createAndRegisterTaskExecutor(
                                                 taskExecutorManager, 1, resourceProfile);
 
-                                taskExecutorManager.occupySlot(taskExecutorId);
-                                taskExecutorManager.freeSlot(taskExecutorId);
+                                taskExecutorManager.occupySlot(
+                                        TestingTaskManagerSlotInformation.newBuilder()
+                                                .setInstanceId(taskExecutorId)
+                                                .build());
+                                taskExecutorManager.freeSlot(
+                                        TestingTaskManagerSlotInformation.newBuilder()
+                                                .setInstanceId(taskExecutorId)
+                                                .build());
 
                                 return taskExecutorId;
                             },
@@ -286,7 +292,10 @@ class TaskExecutorManagerTest {
 
             InstanceID taskExecutorId =
                     createAndRegisterTaskExecutor(taskExecutorManager, 1, resourceProfile);
-            taskExecutorManager.occupySlot(taskExecutorId);
+            taskExecutorManager.occupySlot(
+                    TestingTaskManagerSlotInformation.newBuilder()
+                            .setInstanceId(taskExecutorId)
+                            .build());
             assertThat(declareResourceCount).hasValue(0);
 
             // request 1 redundant task manager
@@ -404,8 +413,14 @@ class TaskExecutorManagerTest {
                     createAndRegisterTaskExecutor(taskExecutorManager, 2, resourceProfile1);
             final InstanceID instanceId2 =
                     createAndRegisterTaskExecutor(taskExecutorManager, 2, resourceProfile2);
-            taskExecutorManager.occupySlot(instanceId1);
-            taskExecutorManager.occupySlot(instanceId2);
+            taskExecutorManager.occupySlot(
+                    TestingTaskManagerSlotInformation.newBuilder()
+                            .setInstanceId(instanceId1)
+                            .build());
+            taskExecutorManager.occupySlot(
+                    TestingTaskManagerSlotInformation.newBuilder()
+                            .setInstanceId(instanceId2)
+                            .build());
 
             assertThat(taskExecutorManager.getTotalFreeResources())
                     .isEqualTo(resourceProfile1.merge(resourceProfile2));
