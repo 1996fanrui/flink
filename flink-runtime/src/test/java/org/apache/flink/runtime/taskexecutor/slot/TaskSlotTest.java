@@ -22,6 +22,7 @@ import org.apache.flink.api.common.JobID;
 import org.apache.flink.runtime.clusterframework.types.AllocationID;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
 import org.apache.flink.runtime.memory.MemoryManager;
+import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 import org.apache.flink.util.concurrent.Executors;
 
 import org.junit.jupiter.api.Test;
@@ -59,6 +60,7 @@ class TaskSlotTest {
         return new TaskSlot<>(
                 0,
                 ResourceProfile.ZERO,
+                LoadingWeight.EMPTY,
                 MemoryManager.MIN_PAGE_SIZE,
                 JOB_ID,
                 ALLOCATION_ID,

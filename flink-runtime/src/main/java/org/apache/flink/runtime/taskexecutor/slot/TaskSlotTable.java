@@ -26,6 +26,7 @@ import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
 import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutor;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
 import org.apache.flink.runtime.memory.MemoryManager;
+import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 import org.apache.flink.runtime.taskexecutor.SlotReport;
 import org.apache.flink.util.AutoCloseableAsync;
 
@@ -108,6 +109,7 @@ public interface TaskSlotTable<T extends TaskSlotPayload>
      * @param allocationId identifying the allocation
      * @param resourceProfile of the requested slot, used only for dynamic slot allocation and will
      *     be ignored otherwise
+     * @param loadingWeight loading weight
      * @param slotTimeout until the slot times out
      * @return True if the task slot could be allocated; otherwise false
      */
@@ -116,7 +118,19 @@ public interface TaskSlotTable<T extends TaskSlotPayload>
             JobID jobId,
             AllocationID allocationId,
             ResourceProfile resourceProfile,
+            LoadingWeight loadingWeight,
             Duration slotTimeout);
+
+    @VisibleForTesting
+    default boolean allocateSlot(
+            int index,
+            JobID jobId,
+            AllocationID allocationId,
+            ResourceProfile resourceProfile,
+            Duration slotTimeout) {
+        return allocateSlot(
+                index, jobId, allocationId, resourceProfile, LoadingWeight.EMPTY, slotTimeout);
+    }
 
     /**
      * Marks the slot under the given allocation id as active. If the slot could not be found, then

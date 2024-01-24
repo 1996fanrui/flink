@@ -25,6 +25,7 @@ import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
 import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutor;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
 import org.apache.flink.runtime.memory.MemoryManager;
+import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 import org.apache.flink.runtime.taskexecutor.SlotReport;
 import org.apache.flink.util.concurrent.FutureUtils;
 
@@ -109,6 +110,7 @@ public class TestingTaskSlotTable<T extends TaskSlotPayload> implements TaskSlot
             JobID jobId,
             AllocationID allocationId,
             ResourceProfile resourceProfile,
+            LoadingWeight loadingWeight,
             Duration slotTimeout) {
         return allocateSlotSupplier.get();
     }

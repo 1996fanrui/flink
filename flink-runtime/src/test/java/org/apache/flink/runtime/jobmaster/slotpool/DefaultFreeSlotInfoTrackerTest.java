@@ -24,6 +24,7 @@ import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
 import org.apache.flink.runtime.jobmaster.JobMasterId;
 import org.apache.flink.runtime.jobmaster.RpcTaskManagerGateway;
 import org.apache.flink.runtime.jobmaster.SlotInfo;
+import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 import org.apache.flink.runtime.taskexecutor.TestingTaskExecutorGatewayBuilder;
 import org.apache.flink.runtime.taskmanager.TaskManagerLocation;
 
@@ -92,6 +93,7 @@ class DefaultFreeSlotInfoTrackerTest {
                 new TaskManagerLocation(owner, InetAddress.getLoopbackAddress(), 41),
                 0,
                 ResourceProfile.UNKNOWN,
+                LoadingWeight.EMPTY,
                 new RpcTaskManagerGateway(
                         new TestingTaskExecutorGatewayBuilder().createTestingTaskExecutorGateway(),
                         JobMasterId.generate()));

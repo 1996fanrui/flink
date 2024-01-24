@@ -22,6 +22,7 @@ import org.apache.flink.runtime.clusterframework.types.AllocationID;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
 import org.apache.flink.runtime.jobmaster.SlotRequestId;
 import org.apache.flink.runtime.scheduler.TestingPhysicalSlot;
+import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 import org.apache.flink.util.TestLoggerExtension;
 
 import org.junit.jupiter.api.Test;
@@ -58,14 +59,16 @@ public class PreferredAllocationRequestSlotMatchingStrategyTest {
                         PendingRequest.createNormalRequest(
                                 new SlotRequestId(),
                                 ResourceProfile.UNKNOWN,
+                                LoadingWeight.EMPTY,
                                 Collections.singleton(allocationId2)),
                         PendingRequest.createNormalRequest(
                                 new SlotRequestId(),
                                 ResourceProfile.UNKNOWN,
+                                LoadingWeight.EMPTY,
                                 Collections.singleton(allocationId1)));
 
         final Collection<RequestSlotMatchingStrategy.RequestSlotMatch> requestSlotMatches =
-                strategy.matchRequestsAndSlots(slots, pendingRequests);
+                strategy.matchRequestsAndSlots(slots, pendingRequests, null);
 
         assertThat(requestSlotMatches).hasSize(2);
 

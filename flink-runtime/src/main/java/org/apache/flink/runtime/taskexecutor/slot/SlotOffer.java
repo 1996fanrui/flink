@@ -18,8 +18,10 @@
 
 package org.apache.flink.runtime.taskexecutor.slot;
 
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.runtime.clusterframework.types.AllocationID;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
+import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 import org.apache.flink.util.Preconditions;
 
 import java.io.Serializable;
@@ -38,13 +40,29 @@ public class SlotOffer implements Serializable {
     /** The resource profile of the offered slot */
     private final ResourceProfile resourceProfile;
 
+    private final LoadingWeight preLoadingWeight;
+
+    public SlotOffer(
+            final AllocationID allocationID,
+            final int index,
+            final ResourceProfile resourceProfile,
+            final LoadingWeight preLoadingWeight) {
+        this.allocationId = Preconditions.checkNotNull(allocationID);
+        this.slotIndex = index;
+        this.resourceProfile = Preconditions.checkNotNull(resourceProfile);
+        this.preLoadingWeight = Preconditions.checkNotNull(preLoadingWeight);
+    }
+
+    @VisibleForTesting
     public SlotOffer(
             final AllocationID allocationID,
             final int index,
             final ResourceProfile resourceProfile) {
-        this.allocationId = Preconditions.checkNotNull(allocationID);
-        this.slotIndex = index;
-        this.resourceProfile = Preconditions.checkNotNull(resourceProfile);
+        this(allocationID, index, resourceProfile, LoadingWeight.EMPTY);
+    }
+
+    public LoadingWeight getLoading() {
+        return preLoadingWeight;
     }
 
     public AllocationID getAllocationId() {
@@ -84,6 +102,8 @@ public class SlotOffer implements Serializable {
                 + allocationId
                 + ", slotIndex="
                 + slotIndex
+                + ", preLoadingWeight="
+                + preLoadingWeight
                 + ", resourceProfile="
                 + resourceProfile
                 + '}';

@@ -18,15 +18,27 @@
 
 package org.apache.flink.runtime.util;
 
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
+import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
+import org.apache.flink.runtime.scheduler.loading.WeightLoadable;
+import org.apache.flink.util.ListUtil;
 import org.apache.flink.util.Preconditions;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.annotation.Nonnull;
+
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.Consumer;
 
 /**
  * Counter for {@link ResourceProfile ResourceProfiles}. This class is immutable.
@@ -34,12 +46,19 @@ import java.util.Set;
  * <p>ResourceCounter contains a set of {@link ResourceProfile ResourceProfiles} and their
  * associated counts. The counts are always positive (> 0).
  */
-public final class ResourceCounter {
+public final class ResourceCounter implements WeightLoadable {
+
+    public static final Logger LOG = LoggerFactory.getLogger(ResourceCounter.class);
 
     private final Map<ResourceProfile, Integer> resources;
 
-    private ResourceCounter(Map<ResourceProfile, Integer> resources) {
+    private final Map<ResourceProfile, List<LoadingWeight>> loadingWeightsMap;
+
+    private ResourceCounter(
+            Map<ResourceProfile, Integer> resources,
+            Map<ResourceProfile, List<LoadingWeight>> loadingWeightsMap) {
         this.resources = Collections.unmodifiableMap(resources);
+        this.loadingWeightsMap = Preconditions.checkNotNull(loadingWeightsMap);
     }
 
     /**
@@ -80,17 +99,20 @@ public final class ResourceCounter {
      * @return new ResourceCounter containing the result of the addition
      */
     public ResourceCounter add(ResourceCounter increment) {
-        return internalAdd(increment.getResourcesWithCount());
+        return internalAdd(increment);
     }
 
     /**
      * Adds the given increment to this resource counter value and returns the resulting value.
      *
      * @param increment increment ot add to this resource counter value
+     * @param loadingWeightMap loading weight map
      * @return new ResourceCounter containing the result of the addition
      */
-    public ResourceCounter add(Map<ResourceProfile, Integer> increment) {
-        return internalAdd(increment.entrySet());
+    public ResourceCounter add(
+            Map<ResourceProfile, Integer> increment,
+            Map<ResourceProfile, List<LoadingWeight>> loadingWeightMap) {
+        return internalAdd(ResourceCounter.withResources(increment, loadingWeightMap));
     }
 
     /**
@@ -98,41 +120,89 @@ public final class ResourceCounter {
      *
      * @param resourceProfile resourceProfile to which to add increment
      * @param increment increment is the number by which to increase the resourceProfile
+     * @param loadingWeights loading weight map
      * @return new ResourceCounter containing the result of the addition
      */
-    public ResourceCounter add(ResourceProfile resourceProfile, int increment) {
-        final Map<ResourceProfile, Integer> newValues = new HashMap<>(resources);
-        final int newValue = resources.getOrDefault(resourceProfile, 0) + increment;
-
-        updateNewValue(newValues, resourceProfile, newValue);
-
-        return new ResourceCounter(newValues);
+    public ResourceCounter add(
+            ResourceProfile resourceProfile, int increment, List<LoadingWeight> loadingWeights) {
+        Preconditions.checkArgument(increment == loadingWeights.size());
+        return internalAdd(
+                ResourceCounter.withResources(
+                        Collections.singletonMap(resourceProfile, increment),
+                        Collections.singletonMap(resourceProfile, loadingWeights)));
     }
 
-    private ResourceCounter internalAdd(
-            Iterable<? extends Map.Entry<ResourceProfile, Integer>> entries) {
+    @VisibleForTesting
+    public ResourceCounter addWithEmptyLoadings(ResourceProfile resourceProfile, int increment) {
+        return internalAdd(
+                ResourceCounter.withResources(
+                        Collections.singletonMap(resourceProfile, increment),
+                        generateEmptyLoadingsFor(
+                                Collections.singletonMap(resourceProfile, increment))));
+    }
+
+    private Map<ResourceProfile, List<LoadingWeight>> copyLoadingMap() {
+        final Map<ResourceProfile, List<LoadingWeight>> newLoadingMap =
+                new HashMap<>(loadingWeightsMap.size());
+        loadingWeightsMap.forEach(
+                (key, value) ->
+                        newLoadingMap.put(
+                                key,
+                                new ArrayList<LoadingWeight>(value.size()) {
+                                    {
+                                        addAll(value);
+                                    }
+                                }));
+        return newLoadingMap;
+    }
+
+    private ResourceCounter internalAdd(ResourceCounter resourceCounter) {
         final Map<ResourceProfile, Integer> newValues = new HashMap<>(resources);
+        final Map<ResourceProfile, List<LoadingWeight>> newLoadingMap = copyLoadingMap();
 
-        for (Map.Entry<ResourceProfile, Integer> resourceIncrement : entries) {
+        LOG.debug("internalAdd this pre {}", this);
+        LOG.debug(
+                "internalAdd resourceCounter param resourceCounter {}, newValues {}, newLoadingMap {}",
+                resourceCounter,
+                newValues,
+                newLoadingMap);
+
+        for (Map.Entry<ResourceProfile, Integer> resourceIncrement :
+                resourceCounter.getResourcesWithCount()) {
             final ResourceProfile resourceProfile = resourceIncrement.getKey();
-
-            final int newValue =
+            final int newCnt =
                     resources.getOrDefault(resourceProfile, 0) + resourceIncrement.getValue();
+            List<LoadingWeight> loadingToAdd = resourceCounter.getLoadingWeights(resourceProfile);
 
-            updateNewValue(newValues, resourceProfile, newValue);
+            updateNewValue(
+                    newValues,
+                    newLoadingMap,
+                    resourceProfile,
+                    newCnt,
+                    loads -> loads.addAll(loadingToAdd));
         }
+        LOG.debug("internalAdd result newValues: {}, newLoadingMap: {}", newValues, newLoadingMap);
 
-        return new ResourceCounter(newValues);
+        return new ResourceCounter(newValues, newLoadingMap);
     }
 
     private void updateNewValue(
             Map<ResourceProfile, Integer> newResources,
-            ResourceProfile resourceProfile,
-            int newValue) {
+            Map<ResourceProfile, List<LoadingWeight>> newLoadingsMap,
+            final ResourceProfile resourceProfile,
+            int newValue,
+            Consumer<List<LoadingWeight>> loadingOperation) {
         if (newValue > 0) {
             newResources.put(resourceProfile, newValue);
+            List<LoadingWeight> loadings =
+                    newLoadingsMap.compute(
+                            resourceProfile,
+                            (rp, loadingWeights) ->
+                                    loadingWeights == null ? new ArrayList<>() : loadingWeights);
+            loadingOperation.accept(loadings);
         } else {
             newResources.remove(resourceProfile);
+            newLoadingsMap.remove(resourceProfile);
         }
     }
 
@@ -143,17 +213,20 @@ public final class ResourceCounter {
      * @return new ResourceCounter containing the new value
      */
     public ResourceCounter subtract(ResourceCounter decrement) {
-        return internalSubtract(decrement.getResourcesWithCount());
+        return internalSubtract(decrement);
     }
 
     /**
      * Subtracts decrement from this resource counter value and returns the new value.
      *
      * @param decrement decrement to subtract from this resource counter
+     * @param loadingWeightsMap loading weight map information
      * @return new ResourceCounter containing the new value
      */
-    public ResourceCounter subtract(Map<ResourceProfile, Integer> decrement) {
-        return internalSubtract(decrement.entrySet());
+    public ResourceCounter subtract(
+            Map<ResourceProfile, Integer> decrement,
+            Map<ResourceProfile, List<LoadingWeight>> loadingWeightsMap) {
+        return internalSubtract(ResourceCounter.withResources(decrement, loadingWeightsMap));
     }
 
     /**
@@ -161,30 +234,54 @@ public final class ResourceCounter {
      *
      * @param resourceProfile resourceProfile from which to subtract decrement
      * @param decrement decrement is the number by which to decrease resourceProfile
+     * @param loadingWeights loading weight list
      * @return new ResourceCounter containing the new value
      */
-    public ResourceCounter subtract(ResourceProfile resourceProfile, int decrement) {
-        final Map<ResourceProfile, Integer> newValues = new HashMap<>(resources);
-        final int newValue = resources.getOrDefault(resourceProfile, 0) - decrement;
-
-        updateNewValue(newValues, resourceProfile, newValue);
-
-        return new ResourceCounter(newValues);
+    public ResourceCounter subtract(
+            ResourceProfile resourceProfile, int decrement, List<LoadingWeight> loadingWeights) {
+        return internalSubtract(
+                ResourceCounter.withResources(
+                        Collections.singletonMap(resourceProfile, decrement),
+                        Collections.singletonMap(resourceProfile, loadingWeights)));
     }
 
-    private ResourceCounter internalSubtract(
-            Iterable<? extends Map.Entry<ResourceProfile, Integer>> entries) {
+    private ResourceCounter internalSubtract(ResourceCounter resourceCounter) {
         final Map<ResourceProfile, Integer> newValues = new HashMap<>(resources);
+        final Map<ResourceProfile, List<LoadingWeight>> newLoadingMap = copyLoadingMap();
 
-        for (Map.Entry<ResourceProfile, Integer> resourceDecrement : entries) {
+        LOG.debug("internalSubtract this pre {}", this);
+        LOG.debug(
+                "internalSubtract resourceCounter param resourceCounter {}, newValues {}, newLoadingMap {}",
+                resourceCounter,
+                newValues,
+                newLoadingMap);
+
+        for (Map.Entry<ResourceProfile, Integer> resourceDecrement :
+                resourceCounter.getResourcesWithCount()) {
             final ResourceProfile resourceProfile = resourceDecrement.getKey();
             final int newValue =
                     resources.getOrDefault(resourceProfile, 0) - resourceDecrement.getValue();
+            List<LoadingWeight> loadingWeights = resourceCounter.getLoadingWeights(resourceProfile);
 
-            updateNewValue(newValues, resourceProfile, newValue);
+            updateNewValue(
+                    newValues,
+                    newLoadingMap,
+                    resourceProfile,
+                    newValue,
+                    loads -> {
+                        LOG.debug(
+                                "internalSubtract loads: {}, loadingWeights: {}",
+                                loads,
+                                loadingWeights);
+                        Preconditions.checkState(loads.containsAll(loadingWeights));
+                        ListUtil.remove(loads, loadingWeights);
+                    });
         }
 
-        return new ResourceCounter(newValues);
+        LOG.debug(
+                "internalSubtract result newValues {}, newLoadingMap {}", newValues, newLoadingMap);
+
+        return new ResourceCounter(newValues, newLoadingMap);
     }
 
     /**
@@ -231,17 +328,38 @@ public final class ResourceCounter {
      * @return empty resource counter
      */
     public static ResourceCounter empty() {
-        return new ResourceCounter(Collections.emptyMap());
+        return new ResourceCounter(Collections.emptyMap(), Collections.emptyMap());
     }
 
     /**
      * Creates a resource counter with the specified set of resources.
      *
      * @param resources resources with which to initialize the resource counter
+     * @param loadingWeightsMap loading weight map
      * @return ResourceCounter which contains the specified set of resources
      */
+    public static ResourceCounter withResources(
+            Map<ResourceProfile, Integer> resources,
+            Map<ResourceProfile, List<LoadingWeight>> loadingWeightsMap) {
+        return new ResourceCounter(new HashMap<>(resources), new HashMap<>(loadingWeightsMap));
+    }
+
+    @VisibleForTesting
     public static ResourceCounter withResources(Map<ResourceProfile, Integer> resources) {
-        return new ResourceCounter(new HashMap<>(resources));
+
+        return new ResourceCounter(
+                new HashMap<>(resources), new HashMap<>(generateEmptyLoadingsFor(resources)));
+    }
+
+    @VisibleForTesting
+    private static Map<ResourceProfile, List<LoadingWeight>> generateEmptyLoadingsFor(
+            Map<ResourceProfile, Integer> resources) {
+        final Map<ResourceProfile, List<LoadingWeight>> loadingMap = new HashMap<>();
+
+        for (Map.Entry<ResourceProfile, Integer> entry : resources.entrySet()) {
+            loadingMap.put(entry.getKey(), LoadingWeight.supplyEmptyLoadWeights(entry.getValue()));
+        }
+        return loadingMap;
     }
 
     /**
@@ -251,11 +369,54 @@ public final class ResourceCounter {
      * @param count count of the given resourceProfile
      * @return ResourceCounter which contains the specified resourceProfile and its count
      */
+    @VisibleForTesting
     public static ResourceCounter withResource(ResourceProfile resourceProfile, int count) {
         Preconditions.checkArgument(count >= 0);
         return count == 0
                 ? empty()
-                : new ResourceCounter(Collections.singletonMap(resourceProfile, count));
+                : new ResourceCounter(
+                        Collections.singletonMap(resourceProfile, count),
+                        Collections.singletonMap(
+                                resourceProfile, LoadingWeight.supplyEmptyLoadWeights(count)));
+    }
+
+    public static ResourceCounter withResource(
+            ResourceProfile resourceProfile, int count, List<LoadingWeight> loadingWeights) {
+        Preconditions.checkArgument(count >= 0);
+        Preconditions.checkArgument(count == loadingWeights.size());
+        return count == 0
+                ? empty()
+                : new ResourceCounter(
+                        Collections.singletonMap(resourceProfile, count),
+                        Collections.singletonMap(resourceProfile, loadingWeights));
+    }
+
+    public static ResourceCounter withSingleResource(
+            @Nonnull ResourceProfile resourceProfile, @Nonnull LoadingWeight loadingWeight) {
+        return withResource(resourceProfile, 1, Collections.singletonList(loadingWeight));
+    }
+
+    public List<LoadingWeight> getLoadingWeights(ResourceProfile resourceProfile) {
+        return new ArrayList<LoadingWeight>() {
+            {
+                addAll(loadingWeightsMap.getOrDefault(resourceProfile, new ArrayList<>()));
+            }
+        };
+    }
+
+    public Map<ResourceProfile, List<LoadingWeight>> getCopiedLoadingWeightsMap() {
+        final Map<ResourceProfile, List<LoadingWeight>> result = new HashMap<>();
+        loadingWeightsMap.forEach(
+                (resourceProfile, loadingWeights) ->
+                        result.put(
+                                resourceProfile,
+                                new ArrayList<LoadingWeight>() {
+                                    {
+                                        addAll(loadingWeights);
+                                    }
+                                }));
+
+        return result;
     }
 
     @Override
@@ -267,16 +428,29 @@ public final class ResourceCounter {
             return false;
         }
         ResourceCounter that = (ResourceCounter) o;
-        return Objects.equals(resources, that.resources);
+        return Objects.equals(resources, that.resources)
+                && Objects.equals(loadingWeightsMap, that.loadingWeightsMap);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(resources);
+        return Objects.hash(resources, loadingWeightsMap);
     }
 
     @Override
     public String toString() {
-        return "ResourceCounter{" + "resources=" + resources + '}';
+        return "ResourceCounter{"
+                + "resources="
+                + resources
+                + ", loadingWeightsMap="
+                + loadingWeightsMap
+                + "}";
+    }
+
+    @Override
+    public LoadingWeight getLoading() {
+        return loadingWeightsMap.values().stream()
+                .flatMap(Collection::stream)
+                .reduce(LoadingWeight.EMPTY, LoadingWeight::merge);
     }
 }

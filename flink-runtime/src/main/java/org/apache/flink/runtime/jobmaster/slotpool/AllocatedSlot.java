@@ -23,7 +23,11 @@ import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
 import org.apache.flink.runtime.clusterframework.types.SlotID;
 import org.apache.flink.runtime.jobmanager.slots.TaskManagerGateway;
+import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 import org.apache.flink.runtime.taskmanager.TaskManagerLocation;
+import org.apache.flink.util.Preconditions;
+
+import javax.annotation.Nonnull;
 
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -58,6 +62,8 @@ class AllocatedSlot implements PhysicalSlot {
     /** The number of the slot on the TaskManager to which slot belongs. Purely informational. */
     private final int physicalSlotNumber;
 
+    private LoadingWeight loadingWeight;
+
     private final AtomicReference<Payload> payloadReference;
 
     // ------------------------------------------------------------------------
@@ -67,12 +73,14 @@ class AllocatedSlot implements PhysicalSlot {
             TaskManagerLocation location,
             int physicalSlotNumber,
             ResourceProfile resourceProfile,
+            LoadingWeight loadingWeight,
             TaskManagerGateway taskManagerGateway) {
         this.allocationId = checkNotNull(allocationId);
         this.taskManagerLocation = checkNotNull(location);
         this.physicalSlotNumber = physicalSlotNumber;
         this.resourceProfile = checkNotNull(resourceProfile);
         this.taskManagerGateway = checkNotNull(taskManagerGateway);
+        this.loadingWeight = Preconditions.checkNotNull(loadingWeight);
 
         payloadReference = new AtomicReference<>(null);
     }
@@ -175,6 +183,18 @@ class AllocatedSlot implements PhysicalSlot {
                 + " @ "
                 + taskManagerLocation
                 + " - "
-                + physicalSlotNumber;
+                + physicalSlotNumber
+                + " loadingWeight="
+                + loadingWeight;
+    }
+
+    @Override
+    public LoadingWeight getLoading() {
+        return loadingWeight;
+    }
+
+    @Override
+    public void setLoading(@Nonnull LoadingWeight loadingWeight) {
+        this.loadingWeight = loadingWeight;
     }
 }

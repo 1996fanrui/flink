@@ -23,6 +23,7 @@ import org.apache.flink.runtime.clusterframework.types.AllocationID;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
 import org.apache.flink.runtime.memory.MemoryManager;
+import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 import org.apache.flink.util.AutoCloseableAsync;
 import org.apache.flink.util.CollectionUtil;
 import org.apache.flink.util.FlinkException;
@@ -90,9 +91,12 @@ public class TaskSlot<T extends TaskSlotPayload> implements AutoCloseableAsync {
     /** {@link Executor} for background actions, e.g. verify all managed memory released. */
     private final Executor asyncExecutor;
 
+    private final LoadingWeight preLoadingWeight;
+
     public TaskSlot(
             final int index,
             final ResourceProfile resourceProfile,
+            final LoadingWeight preLoadingWeight,
             final int memoryPageSize,
             final JobID jobId,
             final AllocationID allocationId,
@@ -100,6 +104,7 @@ public class TaskSlot<T extends TaskSlotPayload> implements AutoCloseableAsync {
 
         this.index = index;
         this.resourceProfile = Preconditions.checkNotNull(resourceProfile);
+        this.preLoadingWeight = Preconditions.checkNotNull(preLoadingWeight);
         this.asyncExecutor = Preconditions.checkNotNull(asyncExecutor);
 
         this.tasks = CollectionUtil.newHashMapWithExpectedSize(4);
@@ -170,6 +175,10 @@ public class TaskSlot<T extends TaskSlotPayload> implements AutoCloseableAsync {
      */
     public Iterator<T> getTasks() {
         return tasks.values().iterator();
+    }
+
+    public LoadingWeight getCurrentLoading() {
+        return LoadingWeight.ofDefaultLoadingWeight(tasks.size());
     }
 
     public MemoryManager getMemoryManager() {
@@ -275,7 +284,7 @@ public class TaskSlot<T extends TaskSlotPayload> implements AutoCloseableAsync {
                 "The task slot is not in state active or allocated.");
         Preconditions.checkState(allocationId != null, "The task slot are not allocated");
 
-        return new SlotOffer(allocationId, index, resourceProfile);
+        return new SlotOffer(allocationId, index, resourceProfile, preLoadingWeight);
     }
 
     @Override

@@ -21,7 +21,10 @@ package org.apache.flink.runtime.resourcemanager.slotmanager;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
 import org.apache.flink.runtime.instance.InstanceID;
+import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 import org.apache.flink.runtime.util.ResourceCounter;
+
+import org.apache.flink.shaded.guava32.com.google.common.collect.Lists;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -92,32 +95,40 @@ public class ResourceAllocationResult {
         public Builder addAllocationOnPendingResource(
                 JobID jobId,
                 PendingTaskManagerId pendingTaskManagerId,
-                ResourceProfile resourceProfile) {
+                ResourceProfile resourceProfile,
+                LoadingWeight loadingWeight) {
             this.allocationsOnPendingResources
                     .computeIfAbsent(pendingTaskManagerId, ignored -> new HashMap<>())
                     .compute(
                             jobId,
                             (id, counter) -> {
                                 if (counter == null) {
-                                    return ResourceCounter.withResource(resourceProfile, 1);
+                                    return ResourceCounter.withResource(
+                                            resourceProfile, 1, Lists.newArrayList(loadingWeight));
                                 } else {
-                                    return counter.add(resourceProfile, 1);
+                                    return counter.add(
+                                            resourceProfile, 1, Lists.newArrayList(loadingWeight));
                                 }
                             });
             return this;
         }
 
         public Builder addAllocationOnRegisteredResource(
-                JobID jobId, InstanceID instanceId, ResourceProfile resourceProfile) {
+                JobID jobId,
+                InstanceID instanceId,
+                ResourceProfile resourceProfile,
+                LoadingWeight loadingWeight) {
             this.allocationsOnRegisteredResources
                     .computeIfAbsent(jobId, jobID -> new HashMap<>())
                     .compute(
                             instanceId,
                             (id, counter) -> {
                                 if (counter == null) {
-                                    return ResourceCounter.withResource(resourceProfile, 1);
+                                    return ResourceCounter.withResource(
+                                            resourceProfile, 1, Lists.newArrayList(loadingWeight));
                                 } else {
-                                    return counter.add(resourceProfile, 1);
+                                    return counter.add(
+                                            resourceProfile, 1, Lists.newArrayList(loadingWeight));
                                 }
                             });
             return this;

@@ -114,16 +114,20 @@ import org.apache.flink.runtime.scheduler.adaptive.scalingpolicy.EnforceParallel
 import org.apache.flink.runtime.scheduler.adaptive.scalingpolicy.RescalingController;
 import org.apache.flink.runtime.scheduler.exceptionhistory.ExceptionHistoryEntry;
 import org.apache.flink.runtime.scheduler.exceptionhistory.RootExceptionHistoryEntry;
+import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 import org.apache.flink.runtime.scheduler.metrics.DeploymentStateTimeMetrics;
 import org.apache.flink.runtime.state.KeyGroupRange;
 import org.apache.flink.runtime.util.BoundedFIFOQueue;
 import org.apache.flink.runtime.util.ResourceCounter;
+import org.apache.flink.util.CollectionUtil;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.FlinkException;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.concurrent.FutureUtils;
 import org.apache.flink.util.function.FunctionWithException;
 import org.apache.flink.util.function.ThrowingConsumer;
+
+import org.apache.flink.shaded.guava32.com.google.common.collect.Lists;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -850,17 +854,23 @@ public class AdaptiveScheduler
     static boolean hasDesiredResources(
             ResourceCounter desiredResources, Collection<? extends SlotInfo> freeSlots) {
         ResourceCounter outstandingResources = desiredResources;
+        Map<ResourceProfile, List<LoadingWeight>> loadingMap =
+                outstandingResources.getCopiedLoadingWeightsMap();
         final Iterator<? extends SlotInfo> slotIterator = freeSlots.iterator();
 
         while (!outstandingResources.isEmpty() && slotIterator.hasNext()) {
             final SlotInfo slotInfo = slotIterator.next();
             final ResourceProfile resourceProfile = slotInfo.getResourceProfile();
+            boolean containedResource = outstandingResources.containsResource(resourceProfile);
+            List<LoadingWeight> loadings =
+                    loadingMap.get(containedResource ? resourceProfile : ResourceProfile.UNKNOWN);
+            Preconditions.checkState(!CollectionUtil.isNullOrEmpty(loadings));
 
-            if (outstandingResources.containsResource(resourceProfile)) {
-                outstandingResources = outstandingResources.subtract(resourceProfile, 1);
-            } else {
-                outstandingResources = outstandingResources.subtract(ResourceProfile.UNKNOWN, 1);
-            }
+            outstandingResources =
+                    outstandingResources.subtract(
+                            containedResource ? resourceProfile : ResourceProfile.UNKNOWN,
+                            1,
+                            Lists.newArrayList(loadings.remove(0)));
         }
 
         return outstandingResources.isEmpty();

@@ -24,6 +24,8 @@ import org.apache.flink.api.common.resources.ExternalResource;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
+import org.apache.flink.runtime.instance.InstanceID;
+import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 import org.apache.flink.runtime.slots.ResourceRequirement;
 import org.apache.flink.runtime.util.ResourceCounter;
 
@@ -33,6 +35,7 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -114,9 +117,27 @@ class DefaultResourceAllocationStrategyTest {
                 TestingTaskManagerResourceInfoProvider.newBuilder()
                         .setRegisteredTaskManagersSupplier(
                                 () -> Arrays.asList(taskManager1, taskManager2, taskManager3))
+                        .setLoadingWeightMap(
+                                new HashMap<InstanceID, LoadingWeight>() {
+                                    {
+                                        put(
+                                                taskManager1.getInstanceId(),
+                                                LoadingWeight.ofDefaultLoadingWeight(2));
+                                        put(
+                                                taskManager2.getInstanceId(),
+                                                LoadingWeight.ofDefaultLoadingWeight(4));
+                                        put(
+                                                taskManager3.getInstanceId(),
+                                                LoadingWeight.ofDefaultLoadingWeight(1));
+                                    }
+                                })
                         .build();
-        requirements.add(ResourceRequirement.create(largeResource, 4));
-        requirements.add(ResourceRequirement.create(ResourceProfile.UNKNOWN, 2));
+        requirements.add(
+                ResourceRequirement.create(
+                        largeResource, 4, LoadingWeight.ofDefaultLoadingWeights(2, 3, 4, 1)));
+        requirements.add(
+                ResourceRequirement.create(
+                        ResourceProfile.UNKNOWN, 2, LoadingWeight.ofDefaultLoadingWeights(1, 3)));
 
         final ResourceAllocationResult result =
                 EVENLY_STRATEGY.tryFulfillRequirements(
@@ -251,7 +272,7 @@ class DefaultResourceAllocationStrategyTest {
                         .get(jobId)
                         .getResourcesWithCount()) {
             allFulfilledRequirements =
-                    allFulfilledRequirements.add(
+                    allFulfilledRequirements.addWithEmptyLoadings(
                             resourceWithCount.getKey(), resourceWithCount.getValue());
         }
         for (Map.Entry<ResourceProfile, Integer> resourceWithCount :
@@ -260,7 +281,7 @@ class DefaultResourceAllocationStrategyTest {
                         .get(jobId)
                         .getResourcesWithCount()) {
             allFulfilledRequirements =
-                    allFulfilledRequirements.add(
+                    allFulfilledRequirements.addWithEmptyLoadings(
                             resourceWithCount.getKey(), resourceWithCount.getValue());
         }
 

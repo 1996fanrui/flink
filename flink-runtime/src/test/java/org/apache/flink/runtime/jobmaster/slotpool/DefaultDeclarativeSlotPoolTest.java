@@ -23,6 +23,7 @@ import org.apache.flink.runtime.clusterframework.types.AllocationID;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
 import org.apache.flink.runtime.jobmaster.SlotInfo;
 import org.apache.flink.runtime.messages.Acknowledge;
+import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 import org.apache.flink.runtime.slots.ResourceRequirement;
 import org.apache.flink.runtime.taskexecutor.TaskExecutorGateway;
 import org.apache.flink.runtime.taskexecutor.TestingTaskExecutorGateway;
@@ -48,6 +49,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
@@ -230,7 +232,8 @@ class DefaultDeclarativeSlotPoolTest extends DefaultDeclarativeSlotPoolTestBase 
         waitSlotRequestMaxIntervalIfNeeded();
 
         final ResourceCounter increasedRequirements =
-                resourceRequirements.add(RESOURCE_PROFILE_1, 2);
+                resourceRequirements.add(
+                        RESOURCE_PROFILE_1, 2, LoadingWeight.supplyEmptyLoadWeights(2));
 
         final Collection<SlotOffer> slotOffers =
                 createSlotOffersForResourceRequirements(increasedRequirements);
@@ -313,7 +316,8 @@ class DefaultDeclarativeSlotPoolTest extends DefaultDeclarativeSlotPoolTestBase 
                 (slotPool, freeSlot, slotToReserve, taskManagerLocation) -> {
                     slotPool.reserveFreeSlot(
                                     slotToReserve.getAllocationId(),
-                                    slotToReserve.getResourceProfile())
+                                    slotToReserve.getResourceProfile(),
+                                    LoadingWeight.EMPTY)
                             .tryAssignPayload(new TestingPhysicalSlotPayload());
 
                     final ResourceCounter fulfilledRequirements =
@@ -338,7 +342,8 @@ class DefaultDeclarativeSlotPoolTest extends DefaultDeclarativeSlotPoolTestBase 
                 (slotPool, freeSlot, slotToReserve, ignored) -> {
                     slotPool.reserveFreeSlot(
                                     slotToReserve.getAllocationId(),
-                                    slotToReserve.getResourceProfile())
+                                    slotToReserve.getResourceProfile(),
+                                    LoadingWeight.EMPTY)
                             .tryAssignPayload(new TestingPhysicalSlotPayload());
 
                     final ResourceCounter fulfilledRequirementsOfFreeSlot =
@@ -364,7 +369,8 @@ class DefaultDeclarativeSlotPoolTest extends DefaultDeclarativeSlotPoolTestBase 
                 DefaultDeclarativeSlotPoolBuilder.builder().build();
 
         final ResourceCounter resourceRequirements =
-                ResourceCounter.withResource(RESOURCE_PROFILE_1, 1).add(RESOURCE_PROFILE_2, 1);
+                ResourceCounter.withResource(RESOURCE_PROFILE_1, 1)
+                        .add(RESOURCE_PROFILE_2, 1, LoadingWeight.supplyEmptyLoadWeights(1));
 
         final LocalTaskManagerLocation taskManagerLocation = new LocalTaskManagerLocation();
         final FreeSlotConsumer freeSlotConsumer = new FreeSlotConsumer();
@@ -405,7 +411,10 @@ class DefaultDeclarativeSlotPoolTest extends DefaultDeclarativeSlotPoolTestBase 
         slotPool.releaseSlot(physicalSlot.getAllocationId(), new FlinkException("Test failure"));
 
         final ResourceCounter finalResourceRequirements =
-                resourceRequirements.subtract(physicalSlot.getResourceProfile(), 1);
+                resourceRequirements.subtract(
+                        physicalSlot.getResourceProfile(),
+                        1,
+                        LoadingWeight.supplyEmptyLoadWeights(1));
         assertThat(slotPool.getFulfilledResourceRequirements())
                 .isEqualTo(finalResourceRequirements);
     }
@@ -533,7 +542,8 @@ class DefaultDeclarativeSlotPoolTest extends DefaultDeclarativeSlotPoolTestBase 
         final Collection<PhysicalSlot> newSlots = drainNewSlotService(notifyNewSlots);
         final PhysicalSlot newSlot = Iterables.getOnlyElement(newSlots);
 
-        slotPool.reserveFreeSlot(newSlot.getAllocationId(), RESOURCE_PROFILE_1);
+        slotPool.reserveFreeSlot(
+                newSlot.getAllocationId(), RESOURCE_PROFILE_1, newSlot.getLoading());
         slotPool.freeReservedSlot(newSlot.getAllocationId(), null, 0);
 
         final Collection<PhysicalSlot> recycledSlots = drainNewSlotService(notifyNewSlots);
@@ -604,7 +614,7 @@ class DefaultDeclarativeSlotPoolTest extends DefaultDeclarativeSlotPoolTestBase 
         final SlotInfo slot =
                 slotPool.getFreeSlotInfoTracker().getFreeSlotsInformation().iterator().next();
 
-        slotPool.reserveFreeSlot(slot.getAllocationId(), largeResourceProfile);
+        slotPool.reserveFreeSlot(slot.getAllocationId(), largeResourceProfile, slot.getLoading());
         assertThat(
                         slotPool.getFulfilledResourceRequirements()
                                 .getResourceCount(largeResourceProfile))
@@ -661,7 +671,8 @@ class DefaultDeclarativeSlotPoolTest extends DefaultDeclarativeSlotPoolTestBase 
                         .findFirst()
                         .get();
 
-        slotPool.reserveFreeSlot(largeSlot.getAllocationId(), smallResourceProfile);
+        slotPool.reserveFreeSlot(
+                largeSlot.getAllocationId(), smallResourceProfile, largeSlot.getLoading());
 
         ResourceCounter availableResources = slotPool.getFulfilledResourceRequirements();
         assertThat(availableResources.getResourceCount(smallResourceProfile)).isEqualTo(1);
@@ -726,7 +737,7 @@ class DefaultDeclarativeSlotPoolTest extends DefaultDeclarativeSlotPoolTestBase 
 
         waitSlotRequestMaxIntervalIfNeeded();
 
-        slotPool.reserveFreeSlot(allocationId, requestedProfile);
+        slotPool.reserveFreeSlot(allocationId, requestedProfile, LoadingWeight.EMPTY);
         slotPool.freeReservedSlot(allocationId, null, 1L);
         slotPool.decreaseResourceRequirementsBy(ResourceCounter.withResource(requestedProfile, 1));
 
@@ -738,8 +749,11 @@ class DefaultDeclarativeSlotPoolTest extends DefaultDeclarativeSlotPoolTestBase 
         final Map<ResourceProfile, Integer> requirements = new HashMap<>();
         requirements.put(RESOURCE_PROFILE_1, 2);
         requirements.put(RESOURCE_PROFILE_2, 1);
+        final Map<ResourceProfile, List<LoadingWeight>> loadingMap = new HashMap<>();
+        loadingMap.put(RESOURCE_PROFILE_1, LoadingWeight.supplyEmptyLoadWeights(2));
+        loadingMap.put(RESOURCE_PROFILE_2, LoadingWeight.supplyEmptyLoadWeights(1));
 
-        return ResourceCounter.withResources(requirements);
+        return ResourceCounter.withResources(requirements, loadingMap);
     }
 
     @Nonnull
