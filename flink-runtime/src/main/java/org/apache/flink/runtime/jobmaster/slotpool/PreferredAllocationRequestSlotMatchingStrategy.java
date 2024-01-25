@@ -23,6 +23,8 @@ import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.jobmaster.SlotRequestId;
 import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 
+import javax.annotation.Nullable;
+
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -37,8 +39,19 @@ import java.util.stream.Collectors;
  * strategy will try to fulfill the preferred allocations and if this is not possible, then it will
  * fall back to {@link SimpleRequestSlotMatchingStrategy}.
  */
-public enum PreferredAllocationRequestSlotMatchingStrategy implements RequestSlotMatchingStrategy {
-    INSTANCE;
+public class PreferredAllocationRequestSlotMatchingStrategy implements RequestSlotMatchingStrategy {
+
+    private final RequestSlotMatchingStrategy rollback;
+
+    private PreferredAllocationRequestSlotMatchingStrategy(
+            @Nullable RequestSlotMatchingStrategy rollback) {
+        this.rollback = rollback;
+    }
+
+    public static RequestSlotMatchingStrategy create(
+            @Nullable RequestSlotMatchingStrategy rollback) {
+        return new PreferredAllocationRequestSlotMatchingStrategy(rollback);
+    }
 
     @Override
     public Collection<RequestSlotMatch> matchRequestsAndSlots(
@@ -95,9 +108,9 @@ public enum PreferredAllocationRequestSlotMatchingStrategy implements RequestSlo
         }
 
         unmatchedRequests.addAll(pendingRequestsWithPreferredAllocations.values());
-        if (!freeSlots.isEmpty() && !unmatchedRequests.isEmpty()) {
+        if (rollback != null && !freeSlots.isEmpty() && !unmatchedRequests.isEmpty()) {
             requestSlotMatches.addAll(
-                    SimpleRequestSlotMatchingStrategy.INSTANCE.matchRequestsAndSlots(
+                    rollback.matchRequestsAndSlots(
                             freeSlots.values(), unmatchedRequests, taskExecutorsLoadingWeight));
         }
 

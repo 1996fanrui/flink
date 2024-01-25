@@ -97,13 +97,24 @@ public class DefaultResourceAllocationStrategy implements ResourceAllocationStra
                 SlotManagerUtils.generateDefaultSlotResourceProfile(
                         totalResourceProfile, numSlotsPerWorker);
         this.availableResourceMatchingStrategy =
-                taskManagerLoadBalanceMode == TaskManagerLoadBalanceMode.SLOTS
-                        ? LeastUtilizationResourceMatchingStrategy.INSTANCE
-                        : AnyMatchingResourceMatchingStrategy.INSTANCE;
+                getAvailableResourceMatchingStrategy(taskManagerLoadBalanceMode);
         this.taskManagerTimeout = taskManagerTimeout;
         this.redundantTaskManagerNum = redundantTaskManagerNum;
         this.minTotalCPU = minTotalCPU;
         this.minTotalMemory = minTotalMemory;
+    }
+
+    private ResourceMatchingStrategy getAvailableResourceMatchingStrategy(
+            TaskManagerLoadBalanceMode mode) {
+        switch (mode) {
+            case SLOTS:
+                return LeastUtilizationResourceMatchingStrategy.INSTANCE;
+            case TASKS:
+                return LeastLoadingWeightResourceMatchingStrategy.INSTANCE;
+            case NONE:
+            default:
+                return AnyMatchingResourceMatchingStrategy.INSTANCE;
+        }
     }
 
     @Override
@@ -512,6 +523,46 @@ public class DefaultResourceAllocationStrategy implements ResourceAllocationStra
                 List<InternalResourceInfo> internalResources,
                 ResourceRequirement resourceRequirement,
                 JobID jobId);
+    }
+
+    private enum LeastLoadingWeightResourceMatchingStrategy implements ResourceMatchingStrategy {
+        INSTANCE;
+
+        @Override
+        public ResourceRequirement tryFulfilledRequirementWithResource(
+                List<InternalResourceInfo> internalResources,
+                ResourceRequirement resourceRequirement,
+                JobID jobId) {
+            if (internalResources.isEmpty()) {
+                return resourceRequirement;
+            }
+
+            final Queue<InternalResourceInfo> resourceInfoInLoadingWeightOrder =
+                    new PriorityQueue<>(
+                            internalResources.size(), Comparator.comparing(o -> o.loadingWeight));
+            resourceInfoInLoadingWeightOrder.addAll(internalResources);
+            int numUnfulfilled = resourceRequirement.getNumberOfRequiredSlots();
+            ResourceProfile requiredResource = resourceRequirement.getResourceProfile();
+            resourceRequirement.getLoadingWeights().sort(Comparator.reverseOrder());
+            List<LoadingWeight> loadings = resourceRequirement.getCopiedLoadingWeights();
+            while (numUnfulfilled > 0 && !resourceInfoInLoadingWeightOrder.isEmpty()) {
+                final InternalResourceInfo currentTaskManager =
+                        resourceInfoInLoadingWeightOrder.poll();
+
+                LoadingWeight loadingWeight = loadings.get(0);
+                if (currentTaskManager.tryAllocateSlotForJob(
+                        jobId, requiredResource, loadingWeight)) {
+                    numUnfulfilled--;
+                    loadings.remove(0);
+
+                    // ignore non resource task managers to reduce the overhead of insert.
+                    if (!currentTaskManager.availableProfile.equals(ResourceProfile.ZERO)) {
+                        resourceInfoInLoadingWeightOrder.add(currentTaskManager);
+                    }
+                }
+            }
+            return ResourceRequirement.create(requiredResource, numUnfulfilled, loadings);
+        }
     }
 
     private enum AnyMatchingResourceMatchingStrategy implements ResourceMatchingStrategy {
