@@ -60,11 +60,15 @@ abstract class DeclarativeSlotPoolBridgeTestBase {
                 new Object[] {
                     true,
                     DEFAULT_SLOT_REQUEST_MAX_INTERVAL,
-                    PreferredAllocationRequestSlotMatchingStrategy.INSTANCE
+                    PreferredAllocationRequestSlotMatchingStrategy.create(
+                            SimpleRequestSlotMatchingStrategy.INSTANCE)
                 },
                 new Object[] {false, null, SimpleRequestSlotMatchingStrategy.INSTANCE},
                 new Object[] {
-                    false, null, PreferredAllocationRequestSlotMatchingStrategy.INSTANCE
+                    false,
+                    null,
+                    PreferredAllocationRequestSlotMatchingStrategy.create(
+                            SimpleRequestSlotMatchingStrategy.INSTANCE)
                 });
     }
 

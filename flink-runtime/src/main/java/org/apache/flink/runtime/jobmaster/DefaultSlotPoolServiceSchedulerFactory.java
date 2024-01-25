@@ -43,6 +43,7 @@ import org.apache.flink.runtime.jobmaster.slotpool.RequestSlotMatchingStrategy;
 import org.apache.flink.runtime.jobmaster.slotpool.SimpleRequestSlotMatchingStrategy;
 import org.apache.flink.runtime.jobmaster.slotpool.SlotPoolService;
 import org.apache.flink.runtime.jobmaster.slotpool.SlotPoolServiceFactory;
+import org.apache.flink.runtime.jobmaster.slotpool.TasksBalancedRequestSlotMatchingStrategy;
 import org.apache.flink.runtime.metrics.groups.JobManagerJobMetricGroup;
 import org.apache.flink.runtime.rpc.FatalErrorHandler;
 import org.apache.flink.runtime.scheduler.DefaultSchedulerFactory;
@@ -64,6 +65,8 @@ import java.time.Duration;
 import java.util.Collection;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledExecutorService;
+
+import static org.apache.flink.configuration.TaskManagerOptions.TaskManagerLoadBalanceMode;
 
 /** Default {@link SlotPoolServiceSchedulerFactory} implementation. */
 public final class DefaultSlotPoolServiceSchedulerFactory
@@ -195,7 +198,8 @@ public final class DefaultSlotPoolServiceSchedulerFactory
                                 rpcTimeout,
                                 slotIdleTimeout,
                                 batchSlotTimeout,
-                                getRequestSlotMatchingStrategy(configuration, jobType));
+                                getRequestSlotMatchingStrategy(
+                                        configuration, jobType, schedulerType));
                 break;
             case Adaptive:
                 schedulerNGFactory = getAdaptiveSchedulerFactoryFromConfiguration(configuration);
@@ -211,7 +215,8 @@ public final class DefaultSlotPoolServiceSchedulerFactory
                                 rpcTimeout,
                                 slotIdleTimeout,
                                 batchSlotTimeout,
-                                getRequestSlotMatchingStrategy(configuration, jobType));
+                                getRequestSlotMatchingStrategy(
+                                        configuration, jobType, schedulerType));
                 break;
             default:
                 throw new IllegalArgumentException(
@@ -276,13 +281,22 @@ public final class DefaultSlotPoolServiceSchedulerFactory
 
     @VisibleForTesting
     static RequestSlotMatchingStrategy getRequestSlotMatchingStrategy(
-            Configuration configuration, JobType jobType) {
+            Configuration configuration,
+            JobType jobType,
+            JobManagerOptions.SchedulerType schedulerType) {
         final boolean isLocalRecoveryEnabled =
                 configuration.get(CheckpointingOptions.LOCAL_RECOVERY);
+        TaskManagerLoadBalanceMode mode =
+                TaskManagerLoadBalanceMode.loadFromConfiguration(configuration);
 
         if (isLocalRecoveryEnabled) {
             if (jobType == JobType.STREAMING) {
-                return PreferredAllocationRequestSlotMatchingStrategy.INSTANCE;
+                RequestSlotMatchingStrategy rollback =
+                        mode == TaskManagerLoadBalanceMode.TASKS
+                                ? TasksBalancedRequestSlotMatchingStrategy.create(
+                                        SimpleRequestSlotMatchingStrategy.INSTANCE)
+                                : SimpleRequestSlotMatchingStrategy.INSTANCE;
+                return PreferredAllocationRequestSlotMatchingStrategy.create(rollback);
             } else {
                 LOG.warn(
                         "Batch jobs do not support local recovery. Falling back for request slot matching strategy to {}.",
@@ -290,6 +304,10 @@ public final class DefaultSlotPoolServiceSchedulerFactory
                 return SimpleRequestSlotMatchingStrategy.INSTANCE;
             }
         } else {
+            if (jobType == JobType.STREAMING && mode == TaskManagerLoadBalanceMode.TASKS) {
+                return TasksBalancedRequestSlotMatchingStrategy.create(
+                        SimpleRequestSlotMatchingStrategy.INSTANCE);
+            }
             return SimpleRequestSlotMatchingStrategy.INSTANCE;
         }
     }

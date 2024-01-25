@@ -58,7 +58,8 @@ class DeclarativeSlotPoolBridgePreferredAllocationsTest {
                         TestingUtils.infiniteTime(),
                         TestingUtils.infiniteTime(),
                         TestingUtils.infiniteTime(),
-                        PreferredAllocationRequestSlotMatchingStrategy.INSTANCE,
+                        PreferredAllocationRequestSlotMatchingStrategy.create(
+                                SimpleRequestSlotMatchingStrategy.INSTANCE),
                         null,
                         forMainThread(),
                         slotBatchAllocatable);

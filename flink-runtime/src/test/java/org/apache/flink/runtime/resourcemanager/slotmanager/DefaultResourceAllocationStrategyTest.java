@@ -28,12 +28,18 @@ import org.apache.flink.runtime.instance.InstanceID;
 import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 import org.apache.flink.runtime.slots.ResourceRequirement;
 import org.apache.flink.runtime.util.ResourceCounter;
+import org.apache.flink.testutils.junit.extensions.parameterized.Parameter;
+import org.apache.flink.testutils.junit.extensions.parameterized.ParameterizedTestExtension;
+import org.apache.flink.testutils.junit.extensions.parameterized.Parameters;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -43,6 +49,7 @@ import static org.apache.flink.configuration.TaskManagerOptions.TaskManagerLoadB
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for the {@link DefaultResourceAllocationStrategy}. */
+@ExtendWith(ParameterizedTestExtension.class)
 class DefaultResourceAllocationStrategyTest {
     private static final ResourceProfile DEFAULT_SLOT_RESOURCE =
             ResourceProfile.fromResources(1, 100);
@@ -52,6 +59,16 @@ class DefaultResourceAllocationStrategyTest {
 
     private static final DefaultResourceAllocationStrategy EVENLY_STRATEGY =
             createStrategy(TaskManagerLoadBalanceMode.SLOTS);
+
+    private static final DefaultResourceAllocationStrategy TASK_BALANCED_STRATEGY =
+            createStrategy(TaskManagerLoadBalanceMode.TASKS);
+
+    @Parameter public DefaultResourceAllocationStrategy resourceAllocationStrategy;
+
+    @Parameters(name = "resourceAllocationStrategy={0}")
+    public static Collection<DefaultResourceAllocationStrategy> parameters() {
+        return Arrays.asList(EVENLY_STRATEGY, TASK_BALANCED_STRATEGY);
+    }
 
     @Test
     void testFulfillRequirementWithRegisteredResources() {
@@ -92,8 +109,8 @@ class DefaultResourceAllocationStrategyTest {
                 .isEqualTo(1);
     }
 
-    @Test
-    void testFulfillRequirementWithRegisteredResourcesEvenly() {
+    @TestTemplate
+    void testFulfillRequirementWithRegisteredResourcesForEvenlyAndBalanced() {
         final TaskManagerInfo taskManager1 =
                 new TestingTaskManagerInfo(
                         DEFAULT_SLOT_RESOURCE.multiply(10),
@@ -140,7 +157,7 @@ class DefaultResourceAllocationStrategyTest {
                         ResourceProfile.UNKNOWN, 2, LoadingWeight.ofDefaultLoadingWeights(1, 3)));
 
         final ResourceAllocationResult result =
-                EVENLY_STRATEGY.tryFulfillRequirements(
+                resourceAllocationStrategy.tryFulfillRequirements(
                         Collections.singletonMap(jobId, requirements),
                         taskManagerResourceInfoProvider,
                         resourceID -> false);
@@ -159,8 +176,8 @@ class DefaultResourceAllocationStrategyTest {
                                         .isTrue());
     }
 
-    @Test
-    void testExcessPendingResourcesCouldReleaseEvenly() {
+    @TestTemplate
+    void testExcessPendingResourcesCouldReleaseEvenlyAndBalanced() {
         final JobID jobId = new JobID();
         final List<ResourceRequirement> requirements = new ArrayList<>();
         final TaskManagerResourceInfoProvider taskManagerResourceInfoProvider =
@@ -176,7 +193,7 @@ class DefaultResourceAllocationStrategyTest {
         requirements.add(ResourceRequirement.create(ResourceProfile.UNKNOWN, 2));
 
         final ResourceAllocationResult result =
-                EVENLY_STRATEGY.tryFulfillRequirements(
+                resourceAllocationStrategy.tryFulfillRequirements(
                         Collections.singletonMap(jobId, requirements),
                         taskManagerResourceInfoProvider,
                         resourceID -> false);
@@ -186,9 +203,9 @@ class DefaultResourceAllocationStrategyTest {
         assertThat(result.getAllocationsOnPendingResources()).hasSize(1);
     }
 
-    @Test
-    void testSpecialResourcesRequirementCouldFulfilledEvenly() {
-        testSpecialResourcesRequirementCouldFulfilled(EVENLY_STRATEGY);
+    @TestTemplate
+    void testSpecialResourcesRequirementCouldFulfilledEvenlyAndBalanced() {
+        testSpecialResourcesRequirementCouldFulfilled(resourceAllocationStrategy);
     }
 
     @Test

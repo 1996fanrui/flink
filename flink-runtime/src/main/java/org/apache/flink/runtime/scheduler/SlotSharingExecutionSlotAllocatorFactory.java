@@ -23,6 +23,8 @@ import org.apache.flink.runtime.jobmaster.slotpool.PhysicalSlotProvider;
 import org.apache.flink.runtime.jobmaster.slotpool.PhysicalSlotRequestBulkChecker;
 import org.apache.flink.runtime.scheduler.SharedSlotProfileRetriever.SharedSlotProfileRetrieverFactory;
 
+import static org.apache.flink.configuration.TaskManagerOptions.TaskManagerLoadBalanceMode;
+
 /** Factory for {@link SlotSharingExecutionSlotAllocator}. */
 public class SlotSharingExecutionSlotAllocatorFactory implements ExecutionSlotAllocatorFactory {
     private final PhysicalSlotProvider slotProvider;
@@ -39,13 +41,16 @@ public class SlotSharingExecutionSlotAllocatorFactory implements ExecutionSlotAl
             PhysicalSlotProvider slotProvider,
             boolean slotWillBeOccupiedIndefinitely,
             PhysicalSlotRequestBulkChecker bulkChecker,
-            Time allocationTimeout) {
+            Time allocationTimeout,
+            TaskManagerLoadBalanceMode taskManagerLoadBalanceMode) {
         this(
                 slotProvider,
                 slotWillBeOccupiedIndefinitely,
                 bulkChecker,
                 allocationTimeout,
-                new LocalInputPreferredSlotSharingStrategy.Factory());
+                taskManagerLoadBalanceMode == TaskManagerLoadBalanceMode.TASKS
+                        ? new TaskBalancedPreferredSlotSharingStrategy.Factory()
+                        : new LocalInputPreferredSlotSharingStrategy.Factory());
     }
 
     SlotSharingExecutionSlotAllocatorFactory(

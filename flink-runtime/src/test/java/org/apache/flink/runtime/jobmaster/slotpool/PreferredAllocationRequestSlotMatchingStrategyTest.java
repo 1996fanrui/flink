@@ -44,8 +44,9 @@ public class PreferredAllocationRequestSlotMatchingStrategyTest {
      */
     @Test
     public void testNewSlotsAreMatchedAgainstPreferredAllocationIDs() throws Exception {
-        final PreferredAllocationRequestSlotMatchingStrategy strategy =
-                PreferredAllocationRequestSlotMatchingStrategy.INSTANCE;
+        final RequestSlotMatchingStrategy strategy =
+                PreferredAllocationRequestSlotMatchingStrategy.create(
+                        SimpleRequestSlotMatchingStrategy.INSTANCE);
 
         final AllocationID allocationId1 = new AllocationID();
         final AllocationID allocationId2 = new AllocationID();

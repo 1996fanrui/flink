@@ -36,6 +36,7 @@ import org.apache.flink.util.clock.SystemClock;
 
 import java.util.function.Consumer;
 
+import static org.apache.flink.configuration.TaskManagerOptions.TaskManagerLoadBalanceMode;
 import static org.apache.flink.util.Preconditions.checkArgument;
 
 /**
@@ -103,7 +104,8 @@ public class DefaultSchedulerComponents {
                         physicalSlotProvider,
                         jobType == JobType.STREAMING,
                         bulkChecker,
-                        slotRequestTimeout);
+                        slotRequestTimeout,
+                        TaskManagerLoadBalanceMode.loadFromConfiguration(jobMasterConfiguration));
         return new DefaultSchedulerComponents(
                 new PipelinedRegionSchedulingStrategy.Factory(),
                 bulkChecker::start,
