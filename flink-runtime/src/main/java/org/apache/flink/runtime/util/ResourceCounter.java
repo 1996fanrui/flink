@@ -273,6 +273,7 @@ public final class ResourceCounter implements WeightLoadable {
                                 "internalSubtract loads: {}, loadingWeights: {}",
                                 loads,
                                 loadingWeights);
+
                         Preconditions.checkState(loads.containsAll(loadingWeights));
                         ListUtil.remove(loads, loadingWeights);
                     });

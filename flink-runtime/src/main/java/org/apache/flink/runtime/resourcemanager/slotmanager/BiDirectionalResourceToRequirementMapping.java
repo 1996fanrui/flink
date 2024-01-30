@@ -119,6 +119,9 @@ class BiDirectionalResourceToRequirementMapping {
                             secondaryKey);
                     final ResourceCounter newCounter =
                             resourceCounter.subtract(secondaryKey, decrement, loadingWeights);
+
+                    // 打印 exception 时为了打印谁调用了 internalDecrementCount
+                    LOG.info("internalDecrementCount newCounter :{}", newCounter, new RuntimeException("jfsojdfslfslfjdsklf"));
                     return newCounter.isEmpty() ? null : newCounter;
                 });
         LOG.debug("internalDecrementCount, primaryMap {}", primaryMap);
