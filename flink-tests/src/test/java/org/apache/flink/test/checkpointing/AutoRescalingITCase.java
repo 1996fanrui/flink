@@ -70,6 +70,8 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.time.Duration;
@@ -101,6 +103,8 @@ import static org.junit.Assert.assertTrue;
 @RunWith(Parameterized.class)
 public class AutoRescalingITCase extends TestLogger {
 
+    private static final Logger LOG = LoggerFactory.getLogger(AutoRescalingITCase.class);
+
     @ClassRule
     public static final TestExecutorResource<ScheduledExecutorService> EXECUTOR_RESOURCE =
             TestingUtils.defaultExecutorResource();
@@ -113,7 +117,47 @@ public class AutoRescalingITCase extends TestLogger {
     public static Collection<Object[]> data() {
         return Arrays.asList(
                 new Object[][] {
-                    {"rocksdb", 0}, {"rocksdb", 2}, {"filesystem", 0}, {"filesystem", 2}
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                    {"rocksdb", 0}, {"rocksdb", 2},
+                        {"filesystem", 0}, {"filesystem", 2}
                 });
     }
 
@@ -163,6 +207,7 @@ public class AutoRescalingITCase extends TestLogger {
                     NettyShuffleEnvironmentOptions.NETWORK_BUFFERS_PER_CHANNEL, buffersPerChannel);
 
             config.set(JobManagerOptions.SCHEDULER, JobManagerOptions.SchedulerType.Adaptive);
+            config.set(JobManagerOptions.SCHEDULER_SCALING_INTERVAL_MIN, Duration.ofMillis(0));
 
             // speed the test suite up
             // - lower refresh interval -> controls how fast we invalidate ExecutionGraphCache
@@ -264,6 +309,8 @@ public class AutoRescalingITCase extends TestLogger {
             waitForOneMoreCheckpoint(jobID, cluster.getMiniCluster());
 
             SubtaskIndexSource.SOURCE_LATCH.reset();
+
+            LOG.info("rescaling ===========================");
 
             JobResourceRequirements.Builder builder = JobResourceRequirements.newBuilder();
             for (JobVertex vertex : jobGraph.getVertices()) {
@@ -785,15 +832,24 @@ public class AutoRescalingITCase extends TestLogger {
         private transient ValueState<Integer> sum;
 
         private final int numberElements;
+        private final Set<Integer> keys;
 
         SubtaskIndexFlatMapper(int numberElements) {
             this.numberElements = numberElements;
+            this.keys = new HashSet<>();
         }
 
         @Override
         public void flatMap(Integer value, Collector<Tuple2<Integer, Integer>> out)
                 throws Exception {
-
+            if(!keys.contains(value) ){
+                keys.add(value);
+                LOG.info(String.format(
+                        "First flatMap for value : [%s], the counter is %s, sum is %s.",
+                        value,
+                        counter.value(),
+                        sum.value()));
+            }
             int count = counter.value() + 1;
             counter.update(count);
 
@@ -801,8 +857,11 @@ public class AutoRescalingITCase extends TestLogger {
             sum.update(s);
 
             if (count % numberElements == 0) {
-                out.collect(
-                        Tuple2.of(getRuntimeContext().getTaskInfo().getIndexOfThisSubtask(), s));
+                final Tuple2<Integer, Integer> of = Tuple2.of(getRuntimeContext()
+                        .getTaskInfo()
+                        .getIndexOfThisSubtask(), s);
+                LOG.info("SubtaskIndexFlatMapper collect: " + of);
+                out.collect(of);
                 workCompletedLatch.countDown();
             }
         }
@@ -840,6 +899,7 @@ public class AutoRescalingITCase extends TestLogger {
 
         @Override
         public void invoke(IN value) {
+            LOG.info("CollectionSink invoke: " + value);
             elements.add(value);
         }
     }
