@@ -163,6 +163,7 @@ public class AutoRescalingITCase extends TestLogger {
                     NettyShuffleEnvironmentOptions.NETWORK_BUFFERS_PER_CHANNEL, buffersPerChannel);
 
             config.set(JobManagerOptions.SCHEDULER, JobManagerOptions.SchedulerType.Adaptive);
+            config.set(JobManagerOptions.SCHEDULER_SCALING_INTERVAL_MIN, Duration.ofMillis(0));
 
             // speed the test suite up
             // - lower refresh interval -> controls how fast we invalidate ExecutionGraphCache
@@ -427,6 +428,8 @@ public class AutoRescalingITCase extends TestLogger {
 
             restClusterClient.updateJobResourceRequirements(jobID, builder.build()).join();
 
+            Thread.sleep(2000);
+            // Source is parallelism, the flatMapper & Sink is parallelism2
             waitForRunningTasks(restClusterClient, jobID, parallelism2);
             waitForAvailableSlots(restClusterClient, totalSlots - parallelism2);
 
