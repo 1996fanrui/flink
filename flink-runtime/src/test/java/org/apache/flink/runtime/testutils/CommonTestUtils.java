@@ -67,7 +67,7 @@ public class CommonTestUtils {
 
     private static final Logger LOG = LoggerFactory.getLogger(CommonTestUtils.class);
 
-    private static final long RETRY_INTERVAL = 100L;
+    private static final long RETRY_INTERVAL = 0L;
 
     /**
      * Gets the classpath with which the current JVM was started.

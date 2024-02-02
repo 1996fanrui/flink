@@ -113,7 +113,45 @@ public class AutoRescalingITCase extends TestLogger {
     public static Collection<Object[]> data() {
         return Arrays.asList(
                 new Object[][] {
-                    {"rocksdb", 0}, {"rocksdb", 2}, {"filesystem", 0}, {"filesystem", 2}
+                    {"rocksdb", 2},
+                    {"rocksdb", 2},
+                    {"rocksdb", 2},
+                    {"rocksdb", 2},
+                    {"rocksdb", 2},
+                    {"rocksdb", 2},
+                    {"rocksdb", 2},
+                    {"rocksdb", 2},
+                    {"rocksdb", 2},
+                    {"rocksdb", 2},
+                    {"rocksdb", 2},
+                    {"rocksdb", 2},
+                    {"rocksdb", 2},
+                    {"rocksdb", 2},
+                    {"rocksdb", 2},
+                    {"rocksdb", 2},
+                    {"rocksdb", 2},
+                    {"rocksdb", 2},
+                    {"rocksdb", 2},
+                    {"rocksdb", 2},
+                    {"rocksdb", 2},
+                    {"rocksdb", 2},
+                    {"rocksdb", 2},
+                    {"rocksdb", 2},
+                    {"rocksdb", 2},
+                    {"rocksdb", 2},
+                    {"rocksdb", 2},
+                    {"rocksdb", 2},
+                    {"rocksdb", 2},
+                    {"rocksdb", 0},
+                    {"rocksdb", 2},
+                    {"rocksdb", 0},
+                    {"rocksdb", 2},
+                    {"rocksdb", 0},
+                    {"rocksdb", 2},
+                    {"rocksdb", 0},
+                    {"rocksdb", 2},
+                    {"filesystem", 0},
+                    {"filesystem", 2}
                 });
     }
 
@@ -163,6 +201,8 @@ public class AutoRescalingITCase extends TestLogger {
                     NettyShuffleEnvironmentOptions.NETWORK_BUFFERS_PER_CHANNEL, buffersPerChannel);
 
             config.set(JobManagerOptions.SCHEDULER, JobManagerOptions.SchedulerType.Adaptive);
+            // Disable the scaling cooldown to speed up the test
+            config.set(JobManagerOptions.SCHEDULER_SCALING_INTERVAL_MIN, Duration.ofMillis(0));
 
             // speed the test suite up
             // - lower refresh interval -> controls how fast we invalidate ExecutionGraphCache
@@ -558,7 +598,7 @@ public class AutoRescalingITCase extends TestLogger {
     // ------------------------------------------------------------------------------------------------------------------
 
     private static void configureCheckpointing(CheckpointConfig config) {
-        config.setCheckpointInterval(100);
+        config.setCheckpointInterval(20);
         config.setCheckpointingMode(CheckpointingMode.EXACTLY_ONCE);
         config.enableUnalignedCheckpoints(true);
     }
