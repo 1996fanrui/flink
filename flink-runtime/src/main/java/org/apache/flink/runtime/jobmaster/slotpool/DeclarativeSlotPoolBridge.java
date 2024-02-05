@@ -285,20 +285,16 @@ public class DeclarativeSlotPoolBridge extends DeclarativeSlotPoolService implem
                     pendingRequests.remove(pendingRequest.getSlotRequestId()),
                     "Cannot fulfill a non existing pending slot request.");
 
-            reserveFreeSlot(pendingRequest, slot);
+            log.debug(
+                    "Reserve slot {} for slot request id {}",
+                    slot.getAllocationId(),
+                    pendingRequest.getSlotRequestId());
+            // 处理新匹配的 slot.
+            getDeclarativeSlotPool()
+                    .reserveFreeSlot(
+                            slot.getAllocationId(), pendingRequest.getLoadableResourceProfile());
+            fulfilledRequests.put(pendingRequest.getSlotRequestId(), slot.getAllocationId());
         }
-    }
-
-    private void reserveFreeSlot(PendingRequest pendingRequest, PhysicalSlot physicalSlot) {
-        log.debug(
-                "Reserve slot {} for slot request id {}",
-                physicalSlot.getAllocationId(),
-                pendingRequest.getSlotRequestId());
-        getDeclarativeSlotPool()
-                .reserveFreeSlot(
-                        physicalSlot.getAllocationId(),
-                        pendingRequest.getLoadableResourceProfile());
-        fulfilledRequests.put(pendingRequest.getSlotRequestId(), physicalSlot.getAllocationId());
     }
 
     @Override
@@ -319,6 +315,7 @@ public class DeclarativeSlotPoolBridge extends DeclarativeSlotPoolService implem
                 reserveFreeSlotForResource(slotRequestId, allocationID, requirementProfile));
     }
 
+    // 申请空闲的 slot,
     private PhysicalSlot reserveFreeSlotForResource(
             SlotRequestId slotRequestId,
             AllocationID allocationId,

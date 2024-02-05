@@ -21,7 +21,6 @@ package org.apache.flink.runtime.jobmaster.slotpool;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
 import org.apache.flink.runtime.clusterframework.types.SlotProfileTestingUtils;
 import org.apache.flink.runtime.jobmaster.SlotRequestId;
-import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 import org.apache.flink.runtime.taskmanager.TaskManagerLocation;
 import org.apache.flink.util.TestLogger;
 
@@ -88,8 +87,7 @@ public class PhysicalSlotProviderImplWithSpreadOutStrategyTest extends TestLogge
                         SlotProfileTestingUtils.preferredLocality(
                                 ResourceProfile.ANY,
                                 Collections.singleton(preferredTaskManagerLocation)),
-                        false,
-                        LoadingWeight.EMPTY);
+                        false);
         PhysicalSlotRequest.Result result1 =
                 physicalSlotProviderResource.allocateSlot(request1).get();
 

@@ -160,8 +160,7 @@ public class DefaultAllocatedSlotPool implements AllocatedSlotPool {
     }
 
     @Override
-    public AllocatedSlot reserveFreeSlot(
-            AllocationID allocationId, @Nullable LoadingWeight loadingWeight) {
+    public AllocatedSlot reserveFreeSlot(AllocationID allocationId, LoadingWeight loadingWeight) {
         LOG.debug("Reserve free slot with allocation id {}.", allocationId);
         AllocatedSlot slot = registeredSlots.get(allocationId);
         Preconditions.checkNotNull(slot, "The slot with id %s was not exists.", allocationId);
@@ -207,6 +206,9 @@ public class DefaultAllocatedSlotPool implements AllocatedSlotPool {
         Preconditions.checkNotNull(allocationIDs);
         LoadingWeight result = LoadingWeight.EMPTY;
         for (AllocationID allocationID : allocationIDs) {
+            if (freeSlots.contains(allocationID)) {
+                continue;
+            }
             AllocatedSlot allocatedSlot =
                     Preconditions.checkNotNull(registeredSlots.get(allocationID));
             result = result.merge(allocatedSlot.getLoading());

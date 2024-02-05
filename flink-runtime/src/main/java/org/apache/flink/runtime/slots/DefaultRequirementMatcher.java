@@ -48,7 +48,7 @@ public class DefaultRequirementMatcher implements RequirementMatcher {
             // beware the order when matching resources to requirements, because
             // ResourceProfile.UNKNOWN (which only
             // occurs as a requirement) does not match any resource!
-            if (loadableResourceProfile.isMatchingResource(requirementLoadableProfile)
+            if (loadableResourceProfile.isMatching(requirementLoadableProfile)
                     && requirementCandidate.getValue()
                             > numAssignedResourcesLookup.apply(loadableResourceProfile)) {
                 return Optional.of(requirementLoadableProfile);

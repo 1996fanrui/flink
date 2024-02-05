@@ -20,7 +20,6 @@ package org.apache.flink.runtime.resourcemanager.slotmanager;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.runtime.clusterframework.types.AllocationID;
-import org.apache.flink.runtime.clusterframework.types.LoadableResourceProfile;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
 import org.apache.flink.runtime.clusterframework.types.SlotID;
@@ -316,7 +315,7 @@ class DefaultSlotStatusSyncerTest {
                         taskExecutorConnection.getInstanceID(),
                         jobId,
                         "address",
-                        ResourceProfile.ANY);
+                        ResourceProfile.ANY.toEmptyLoadsResourceProfile());
         final AllocationID allocationId = requestFuture.get();
         assertThat(resourceTracker.getAcquiredResources(jobId))
                 .contains(ResourceRequirement.create(ResourceProfile.ANY, 1));

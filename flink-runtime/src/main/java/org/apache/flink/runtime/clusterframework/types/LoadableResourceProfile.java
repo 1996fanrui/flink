@@ -73,6 +73,10 @@ public final class LoadableResourceProfile implements WeightLoadable, Serializab
         return this.weight.equals(loadingWeight);
     }
 
+    public boolean equalsResource(@Nonnull LoadableResourceProfile loadableResourceProfile) {
+        return this.resourceProfile.equals(loadableResourceProfile.getResourceProfile());
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {

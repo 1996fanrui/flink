@@ -97,7 +97,7 @@ class AllocatedSlot implements PhysicalSlot {
         this.physicalSlotNumber = physicalSlotNumber;
         this.resourceProfile = checkNotNull(resourceProfile);
         this.taskManagerGateway = checkNotNull(taskManagerGateway);
-        this.loadingWeight = resourceProfile.getLoading();
+        this.loadingWeight = LoadingWeight.EMPTY;
 
         payloadReference = new AtomicReference<>(null);
     }

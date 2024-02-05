@@ -182,7 +182,7 @@ class JobScopedResourceTracker {
         final Collection<ExcessResource> excessResources = new ArrayList<>();
 
         for (LoadableResourceProfile requirementProfile :
-                resourceToRequirementMapping.getAllLoadableResourceProfiles()) {
+                resourceToRequirementMapping.getAllRequirementLoadableProfiles()) {
             int numTotalRequiredResources =
                     resourceRequirements.getLoadableResourceCount(requirementProfile);
             int numTotalAcquiredResources =

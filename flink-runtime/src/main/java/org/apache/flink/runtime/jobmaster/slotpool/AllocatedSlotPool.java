@@ -23,8 +23,6 @@ import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.jobmaster.SlotInfo;
 import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 
-import javax.annotation.Nullable;
-
 import java.util.Collection;
 import java.util.Map;
 import java.util.Optional;
@@ -94,7 +92,7 @@ public interface AllocatedSlotPool {
      * @return the {@link AllocatedSlot} which has been reserved
      * @throws IllegalStateException if there is no free slot with the given allocationId
      */
-    AllocatedSlot reserveFreeSlot(AllocationID allocationId, @Nullable LoadingWeight loadingWeight);
+    AllocatedSlot reserveFreeSlot(AllocationID allocationId, LoadingWeight loadingWeight);
 
     /**
      * Frees the reserved slot, adding it back into the set of free slots.

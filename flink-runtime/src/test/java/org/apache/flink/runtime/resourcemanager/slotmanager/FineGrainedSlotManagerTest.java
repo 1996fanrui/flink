@@ -996,7 +996,6 @@ class FineGrainedSlotManagerTest extends FineGrainedSlotManagerTestBase {
                             // clear requirements, which should trigger slots being reclaimed
                             runInMainThreadAndWait(
                                     () -> getSlotManager().clearResourceRequirements(jobId));
-                            System.out.println(freeInactiveSlotsJobIdFuture);
                             assertThatFuture(freeInactiveSlotsJobIdFuture)
                                     .eventuallySucceeds()
                                     .isEqualTo(jobId);

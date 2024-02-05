@@ -77,7 +77,6 @@ public class ResourceRequirement implements Serializable {
                 resourceProfile.toEmptyLoadsResourceProfile(), numberOfRequiredSlots);
     }
 
-    @VisibleForTesting
     public static ResourceRequirement create(
             LoadableResourceProfile loadableResourceProfile, int numberOfRequiredSlots) {
         return new ResourceRequirement(loadableResourceProfile, numberOfRequiredSlots);
