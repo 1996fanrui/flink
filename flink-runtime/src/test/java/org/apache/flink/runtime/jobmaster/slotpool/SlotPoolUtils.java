@@ -49,7 +49,7 @@ import static org.hamcrest.Matchers.is;
 /** Testing utility functions for the {@link SlotPool}. */
 public class SlotPoolUtils {
 
-    public static final Time TIMEOUT = Time.seconds(10L);
+    public static final Time TIMEOUT = Time.ofSeconds(10L);
 
     private SlotPoolUtils() {
         throw new UnsupportedOperationException("Cannot instantiate this class.");

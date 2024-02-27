@@ -592,7 +592,7 @@ class GroupWindowITCase(mode: StateBackendMode, useTimestampLtz: Boolean)
   }
 
   private def withLateFireDelay(tableConfig: TableConfig, interval: Time): Unit = {
-    val intervalInMillis = interval.toMilliseconds
+    val intervalInMillis = interval.toMillis
     val lateFireDelay: Duration =
       tableConfig.getOptional(TABLE_EXEC_EMIT_LATE_FIRE_DELAY).orElse(null)
     if (lateFireDelay != null && (lateFireDelay.toMillis != intervalInMillis)) {

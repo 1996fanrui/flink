@@ -315,7 +315,7 @@ public class RowTimeMiniBatchLatestChangeDeduplicateFunctionTest
                 new RowTimeMiniBatchLatestChangeDeduplicateFunction(
                         inputRowType,
                         serializer,
-                        minTtlTime.toMilliseconds(),
+                        minTtlTime.toMillis(),
                         rowTimeIndex,
                         generateUpdateBefore,
                         generateInsert,

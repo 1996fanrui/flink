@@ -62,7 +62,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @ExtendWith(ParameterizedTestExtension.class)
 class DeclarativeSlotPoolBridgeTest {
 
-    private static final Time rpcTimeout = Time.seconds(20);
+    private static final Time rpcTimeout = Time.ofSeconds(20);
     private static final JobID jobId = new JobID();
     private static final JobMasterId jobMasterId = JobMasterId.generate();
     private final ComponentMainThreadExecutor mainThreadExecutor =
@@ -118,7 +118,7 @@ class DeclarativeSlotPoolBridgeTest {
                                             declarativeSlotPoolBridge.requestNewAllocatedSlot(
                                                     slotRequestId,
                                                     ResourceProfile.UNKNOWN,
-                                                    Time.minutes(5)),
+                                                    Time.ofMinutes(5)),
                                     mainThreadExecutor)
                             .get();
 
@@ -278,8 +278,8 @@ class DeclarativeSlotPoolBridgeTest {
                 declarativeSlotPoolFactory,
                 SystemClock.getInstance(),
                 rpcTimeout,
-                Time.seconds(20),
-                Time.seconds(20),
+                Time.ofSeconds(20),
+                Time.ofSeconds(20),
                 requestSlotMatchingStrategy);
     }
 

@@ -555,7 +555,7 @@ public class DataStreamBatchExecutionITCase {
         // trick the collecting sink into working even in the face of failures 🙏
         env.enableCheckpointing(42);
 
-        env.setRestartStrategy(RestartStrategies.fixedDelayRestart(10, Time.milliseconds(1)));
+        env.setRestartStrategy(RestartStrategies.fixedDelayRestart(10, Time.ofMillis(1)));
 
         return env;
     }

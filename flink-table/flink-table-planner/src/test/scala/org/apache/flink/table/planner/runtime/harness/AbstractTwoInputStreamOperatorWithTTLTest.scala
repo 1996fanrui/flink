@@ -49,8 +49,8 @@ class AbstractTwoInputStreamOperatorWithTTLTest extends HarnessTestBase(HEAP_BAC
   @transient
   private var recordBForFirstKey: StreamRecord[RowData] = _
 
-  private val minRetentionTime = Time.milliseconds(2)
-  private val maxRetentionTime = Time.milliseconds(4)
+  private val minRetentionTime = Time.ofMillis(2)
+  private val maxRetentionTime = Time.ofMillis(4)
 
   private var operatorUnderTest: StubOperatorWithStateTTL = _
 
@@ -157,8 +157,8 @@ class AbstractTwoInputStreamOperatorWithTTLTest extends HarnessTestBase(HEAP_BAC
    */
   class StubOperatorWithStateTTL(minRetentionTime: Time, maxRetentionTime: Time)
     extends BaseTwoInputStreamOperatorWithStateRetention(
-      minRetentionTime.toMilliseconds,
-      maxRetentionTime.toMilliseconds) {
+      minRetentionTime.toMillis,
+      maxRetentionTime.toMillis) {
 
     val firedCleanUpTimers: mutable.Buffer[JLong] = ArrayBuffer.empty
 

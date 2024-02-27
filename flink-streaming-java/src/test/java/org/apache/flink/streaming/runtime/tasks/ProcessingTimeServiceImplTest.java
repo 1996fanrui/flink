@@ -43,7 +43,7 @@ import static org.junit.Assert.assertTrue;
 /** Tests for {@link ProcessingTimeServiceImpl}. */
 public class ProcessingTimeServiceImplTest extends TestLogger {
 
-    private static final Time testingTimeout = Time.seconds(10L);
+    private static final Time testingTimeout = Time.ofSeconds(10L);
 
     private SystemProcessingTimeService timerService;
 
@@ -77,7 +77,7 @@ public class ProcessingTimeServiceImplTest extends TestLogger {
         ScheduledFuture<?> firedTimer =
                 processingTimeService.registerTimer(
                         0, timestamp -> firedTimerFuture.complete(null));
-        firedTimer.get(testingTimeout.toMilliseconds(), TimeUnit.MILLISECONDS);
+        firedTimer.get(testingTimeout.toMillis(), TimeUnit.MILLISECONDS);
         assertTrue(firedTimerFuture.isDone());
         assertFalse(firedTimer.isCancelled());
 
@@ -87,7 +87,7 @@ public class ProcessingTimeServiceImplTest extends TestLogger {
                 processingTimeService.scheduleAtFixedRate(
                         timestamp -> periodicTimerFuture.complete(null), 0, Long.MAX_VALUE);
 
-        periodicTimerFuture.get(testingTimeout.toMilliseconds(), TimeUnit.MILLISECONDS);
+        periodicTimerFuture.get(testingTimeout.toMillis(), TimeUnit.MILLISECONDS);
         assertTrue(periodicTimer.cancel(false));
         assertTrue(periodicTimer.isDone());
         assertTrue(periodicTimer.isCancelled());
@@ -110,7 +110,7 @@ public class ProcessingTimeServiceImplTest extends TestLogger {
                         });
 
         // wait for the timer to run, then quiesce the time service
-        timerRunFuture.get(testingTimeout.toMilliseconds(), TimeUnit.MILLISECONDS);
+        timerRunFuture.get(testingTimeout.toMillis(), TimeUnit.MILLISECONDS);
         CompletableFuture<?> quiesceCompletedFuture = processingTimeService.quiesce();
 
         // after the timer server is quiesced, tests #registerTimer() and #scheduleAtFixedRate()
@@ -124,7 +124,7 @@ public class ProcessingTimeServiceImplTest extends TestLogger {
         // when the timer is finished, the quiesce-completed future should be completed
         assertFalse(quiesceCompletedFuture.isDone());
         timerWaitLatch.trigger();
-        timer.get(testingTimeout.toMilliseconds(), TimeUnit.MILLISECONDS);
+        timer.get(testingTimeout.toMillis(), TimeUnit.MILLISECONDS);
         assertTrue(quiesceCompletedFuture.isDone());
     }
 

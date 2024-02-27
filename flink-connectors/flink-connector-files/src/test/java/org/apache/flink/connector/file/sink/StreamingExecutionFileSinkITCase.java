@@ -82,7 +82,7 @@ class StreamingExecutionFileSinkITCase extends FileSinkITBase {
         env.enableCheckpointing(10, CheckpointingMode.EXACTLY_ONCE);
 
         if (triggerFailover) {
-            env.setRestartStrategy(RestartStrategies.fixedDelayRestart(1, Time.milliseconds(100)));
+            env.setRestartStrategy(RestartStrategies.fixedDelayRestart(1, Time.ofMillis(100)));
         } else {
             env.setRestartStrategy(RestartStrategies.noRestart());
         }

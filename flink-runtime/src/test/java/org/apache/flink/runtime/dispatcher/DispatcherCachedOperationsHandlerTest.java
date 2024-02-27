@@ -51,7 +51,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /** Tests for the {@link DispatcherCachedOperationsHandler} component. */
 public class DispatcherCachedOperationsHandlerTest extends TestLogger {
 
-    private static final Time TIMEOUT = Time.minutes(10);
+    private static final Time TIMEOUT = Time.ofMinutes(10);
 
     private CompletedOperationCache<AsynchronousJobOperationKey, Long> checkpointTriggerCache;
     private CompletedOperationCache<AsynchronousJobOperationKey, String> savepointTriggerCache;

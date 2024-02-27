@@ -254,7 +254,7 @@ public class ExecutionGraphInfoStoreTestUtils {
             File storageDirectory, ScheduledExecutor scheduledExecutor) throws IOException {
         return new FileExecutionGraphInfoStore(
                 storageDirectory,
-                Time.hours(1L),
+                Time.ofHours(1L),
                 Integer.MAX_VALUE,
                 10000L,
                 scheduledExecutor,

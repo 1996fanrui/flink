@@ -40,6 +40,7 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nonnull;
 import javax.annotation.concurrent.GuardedBy;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -64,7 +65,7 @@ public class MetricFetcherImpl<T extends RestfulGateway> implements MetricFetche
     private final GatewayRetriever<T> retriever;
     private final MetricQueryServiceRetriever queryServiceRetriever;
     private final Executor executor;
-    private final Time timeout;
+    private final Duration timeout;
 
     private final MetricStore metrics = new MetricStore();
     private final MetricDumpDeserializer deserializer = new MetricDumpDeserializer();
@@ -80,7 +81,7 @@ public class MetricFetcherImpl<T extends RestfulGateway> implements MetricFetche
             GatewayRetriever<T> retriever,
             MetricQueryServiceRetriever queryServiceRetriever,
             Executor executor,
-            Time timeout,
+            Duration timeout,
             long updateInterval) {
         this.retriever = Preconditions.checkNotNull(retriever);
         this.queryServiceRetriever = Preconditions.checkNotNull(queryServiceRetriever);
@@ -270,7 +271,7 @@ public class MetricFetcherImpl<T extends RestfulGateway> implements MetricFetche
             final MetricQueryServiceRetriever metricQueryServiceGatewayRetriever,
             final GatewayRetriever<T> dispatcherGatewayRetriever,
             final ExecutorService executor) {
-        final Time timeout = Time.milliseconds(configuration.get(WebOptions.TIMEOUT));
+        final Duration timeout = Duration.ofMillis(configuration.get(WebOptions.TIMEOUT));
         final long updateInterval = configuration.get(MetricOptions.METRIC_FETCHER_UPDATE_INTERVAL);
 
         return new MetricFetcherImpl<>(

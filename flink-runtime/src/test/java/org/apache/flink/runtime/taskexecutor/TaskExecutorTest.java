@@ -196,7 +196,7 @@ class TaskExecutorTest {
 
     @TempDir private Path tempDir;
 
-    private static final Time timeout = Time.milliseconds(10000L);
+    private static final Time timeout = Time.ofMillis(10000L);
 
     private static final HeartbeatServices failedRpcEnabledHeartbeatServices =
             new HeartbeatServicesImpl(1L, 10000000L, 1);
@@ -464,7 +464,7 @@ class TaskExecutorTest {
             final ResourceID resourceID = disconnectTaskManagerFuture.get();
             assertThat(resourceID).isEqualTo(unresolvedTaskManagerLocation.getResourceID());
 
-            assertThat(registrationAttempts.await(timeout.toMilliseconds(), TimeUnit.SECONDS))
+            assertThat(registrationAttempts.await(timeout.toMillis(), TimeUnit.SECONDS))
                     .withFailMessage("The TaskExecutor should try to reconnect to the JM")
                     .isTrue();
         } finally {
@@ -577,10 +577,10 @@ class TaskExecutorTest {
 
             // heartbeat timeout should trigger disconnect TaskManager from ResourceManager
             assertThat(taskExecutorDisconnectFuture)
-                    .succeedsWithin(timeout.toMilliseconds(), TimeUnit.MILLISECONDS)
+                    .succeedsWithin(timeout.toMillis(), TimeUnit.MILLISECONDS)
                     .isEqualTo(unresolvedTaskManagerLocation.getResourceID());
 
-            assertThat(registrationAttempts.await(timeout.toMilliseconds(), TimeUnit.SECONDS))
+            assertThat(registrationAttempts.await(timeout.toMillis(), TimeUnit.SECONDS))
                     .withFailMessage("The TaskExecutor should try to reconnect to the RM")
                     .isTrue();
         } finally {
@@ -767,7 +767,7 @@ class TaskExecutorTest {
 
             assertThat(
                             taskManagerRegisteredLatch.await(
-                                    timeout.toMilliseconds(), TimeUnit.MILLISECONDS))
+                                    timeout.toMillis(), TimeUnit.MILLISECONDS))
                     .isTrue();
         } finally {
             RpcUtils.terminateRpcEndpoint(taskManager);
@@ -2475,7 +2475,7 @@ class TaskExecutorTest {
             verifySlotReportFuture.get();
         } finally {
             ExecutorUtils.gracefulShutdown(
-                    timeout.toMilliseconds(), TimeUnit.MILLISECONDS, heartbeatExecutor);
+                    timeout.toMillis(), TimeUnit.MILLISECONDS, heartbeatExecutor);
             RpcUtils.terminateRpcEndpoint(taskExecutor);
         }
     }
@@ -2934,7 +2934,7 @@ class TaskExecutorTest {
                     createTotalResourceProfile(1),
                     DEFAULT_RESOURCE_PROFILE,
                     MemoryManager.MIN_PAGE_SIZE,
-                    createDefaultTimerService(timeout.toMilliseconds()),
+                    createDefaultTimerService(timeout.toMillis()),
                     Executors.newDirectExecutorService());
             this.allocateSlotLatch = allocateSlotLatch;
         }
@@ -2974,7 +2974,7 @@ class TaskExecutorTest {
                     createTotalResourceProfile(numberOfDefaultSlots),
                     DEFAULT_RESOURCE_PROFILE,
                     MemoryManager.MIN_PAGE_SIZE,
-                    createDefaultTimerService(timeout.toMilliseconds()),
+                    createDefaultTimerService(timeout.toMillis()),
                     Executors.newDirectExecutorService());
             this.slotsToActivate = slotsToActivate;
         }

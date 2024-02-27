@@ -62,7 +62,7 @@ import static org.assertj.core.api.Assertions.fail;
 /** Tests for the {@link AbstractAsynchronousOperationHandlers}. */
 class AbstractAsynchronousOperationHandlersTest {
 
-    private static final Time TIMEOUT = Time.seconds(10L);
+    private static final Time TIMEOUT = Time.ofSeconds(10L);
 
     // Not actually used by the tests in this class, but required as a parameter
     private static final TestingRestfulGateway DUMMY_GATEWAY = new TestingRestfulGateway();

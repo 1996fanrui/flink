@@ -60,7 +60,7 @@ class RestartBackoffTimeStrategyFactoryLoaderTest {
 
         final RestartBackoffTimeStrategy.Factory factory =
                 RestartBackoffTimeStrategyFactoryLoader.createRestartBackoffTimeStrategyFactory(
-                        RestartStrategies.fixedDelayRestart(1, Time.milliseconds(1000)),
+                        RestartStrategies.fixedDelayRestart(1, Time.ofMillis(1000)),
                         conf,
                         conf,
                         false);

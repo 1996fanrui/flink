@@ -53,7 +53,7 @@ class WikipediaEditsSourceTest {
     @RetryOnFailure(times = 1)
     void testWikipediaEditsSource() throws Exception {
         if (canConnect(1, TimeUnit.SECONDS)) {
-            final Time testTimeout = Time.seconds(60);
+            final Time testTimeout = Time.ofSeconds(60);
             final WikipediaEditsSource wikipediaEditsSource = new WikipediaEditsSource();
 
             ExecutorService executorService = null;
@@ -117,7 +117,7 @@ class WikipediaEditsSourceTest {
     }
 
     private long deadlineNanos(Time testTimeout) {
-        return System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(testTimeout.toMilliseconds());
+        return System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(testTimeout.toMillis());
     }
 
     private static class CollectingSourceContext<T> implements SourceFunction.SourceContext<T> {

@@ -91,7 +91,7 @@ class TaskSubmissionTestEnvironment implements AutoCloseable {
     private final TestingRpcService testingRpcService;
     private final TaskExecutorBlobService taskExecutorBlobService =
             NoOpTaskExecutorBlobService.INSTANCE;
-    private final Time timeout = Time.milliseconds(10000L);
+    private final Time timeout = Time.ofMillis(10000L);
     private final TestingFatalErrorHandler testingFatalErrorHandler =
             new TestingFatalErrorHandler();
     private final TimerService<AllocationID> timerService;
@@ -120,7 +120,7 @@ class TaskSubmissionTestEnvironment implements AutoCloseable {
         this.timerService =
                 new DefaultTimerService<>(
                         java.util.concurrent.Executors.newSingleThreadScheduledExecutor(),
-                        timeout.toMilliseconds());
+                        timeout.toMillis());
 
         this.haServices = new TestingHighAvailabilityServices();
         this.haServices.setResourceManagerLeaderRetriever(new SettableLeaderRetrievalService());

@@ -67,7 +67,7 @@ import static org.assertj.core.api.Assertions.fail;
  */
 class StopWithSavepointHandlersTest {
 
-    private static final Time TIMEOUT = Time.seconds(10);
+    private static final Time TIMEOUT = Time.ofSeconds(10);
 
     private static final JobID JOB_ID = new JobID();
 

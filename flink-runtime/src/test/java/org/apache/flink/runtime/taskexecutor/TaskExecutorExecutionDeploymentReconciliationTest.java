@@ -90,7 +90,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /** Tests for the execution deployment-reconciliation logic in the {@link TaskExecutor}. */
 class TaskExecutorExecutionDeploymentReconciliationTest {
 
-    private static final Time timeout = Time.seconds(10L);
+    private static final Time timeout = Time.ofSeconds(10L);
 
     private final TestingHighAvailabilityServices haServices =
             new TestingHighAvailabilityServices();

@@ -433,7 +433,7 @@ public abstract class RestServerEndpoint implements RestService {
                     () -> {
                         CompletableFuture<?> groupFuture = new CompletableFuture<>();
                         CompletableFuture<?> childGroupFuture = new CompletableFuture<>();
-                        final Time gracePeriod = Time.seconds(10L);
+                        final Time gracePeriod = Time.ofSeconds(10L);
 
                         if (bootstrap != null) {
                             final ServerBootstrapConfig config = bootstrap.config();
@@ -441,7 +441,7 @@ public abstract class RestServerEndpoint implements RestService {
                             if (group != null) {
                                 group.shutdownGracefully(
                                                 0L,
-                                                gracePeriod.toMilliseconds(),
+                                                gracePeriod.toMillis(),
                                                 TimeUnit.MILLISECONDS)
                                         .addListener(
                                                 finished -> {
@@ -461,7 +461,7 @@ public abstract class RestServerEndpoint implements RestService {
                                 childGroup
                                         .shutdownGracefully(
                                                 0L,
-                                                gracePeriod.toMilliseconds(),
+                                                gracePeriod.toMillis(),
                                                 TimeUnit.MILLISECONDS)
                                         .addListener(
                                                 finished -> {

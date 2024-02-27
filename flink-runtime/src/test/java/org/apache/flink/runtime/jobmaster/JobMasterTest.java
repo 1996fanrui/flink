@@ -180,7 +180,7 @@ class JobMasterTest {
 
     @TempDir private Path temporaryFolder;
 
-    private static final Time testingTimeout = Time.seconds(10L);
+    private static final Time testingTimeout = Time.ofSeconds(10L);
 
     private static final long fastHeartbeatInterval = 1L;
     private static final long fastHeartbeatTimeout = 10L;
@@ -360,7 +360,7 @@ class JobMasterTest {
 
             final JobID disconnectedJobManager =
                     disconnectedJobManagerFuture.get(
-                            testingTimeout.toMilliseconds(), TimeUnit.MILLISECONDS);
+                            testingTimeout.toMillis(), TimeUnit.MILLISECONDS);
 
             assertThat(disconnectedJobManager).isEqualTo(jobGraph.getJobID());
         }
@@ -695,7 +695,7 @@ class JobMasterTest {
             // register job manager success will trigger monitor heartbeat target between jm and rm
             final Tuple3<JobMasterId, ResourceID, JobID> registrationInformation =
                     jobManagerRegistrationFuture.get(
-                            testingTimeout.toMilliseconds(), TimeUnit.MILLISECONDS);
+                            testingTimeout.toMillis(), TimeUnit.MILLISECONDS);
 
             assertThat(registrationInformation.f0).isEqualTo(jobMasterId);
             assertThat(registrationInformation.f1).isEqualTo(jmResourceId);
@@ -703,7 +703,7 @@ class JobMasterTest {
 
             final JobID disconnectedJobManager =
                     disconnectedJobManagerFuture.get(
-                            testingTimeout.toMilliseconds(), TimeUnit.MILLISECONDS);
+                            testingTimeout.toMillis(), TimeUnit.MILLISECONDS);
 
             // heartbeat timeout should trigger disconnect JobManager from ResourceManager
             assertThat(disconnectedJobManager).isEqualTo(jobGraph.getJobID());
@@ -1447,7 +1447,7 @@ class JobMasterTest {
                     jobMaster.getSelfGateway(JobMasterGateway.class);
             final CompletableFuture<String> savepointFutureLowTimeout =
                     jobMasterGateway.triggerSavepoint(
-                            "/tmp", false, SavepointFormatType.CANONICAL, Time.milliseconds(1));
+                            "/tmp", false, SavepointFormatType.CANONICAL, Time.ofMillis(1));
             final CompletableFuture<String> savepointFutureHighTimeout =
                     jobMasterGateway.triggerSavepoint(
                             "/tmp", false, SavepointFormatType.CANONICAL, RpcUtils.INF_TIMEOUT);
@@ -1586,7 +1586,7 @@ class JobMasterTest {
 
             // trigger some request to guarantee ensure the slotAllocationFailure processing if
             // complete
-            jobMasterGateway.requestJobStatus(Time.seconds(5)).get();
+            jobMasterGateway.requestJobStatus(Time.ofSeconds(5)).get();
             assertThat(disconnectTaskExecutorFuture).isNotDone();
         }
     }

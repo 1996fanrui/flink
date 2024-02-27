@@ -81,7 +81,7 @@ abstract class RestAPIITCaseBase {
         checkNotNull(sqlGatewayRestEndpoint);
         sqlGatewayRestEndpoint.close();
         checkNotNull(restClient);
-        restClient.shutdown(Time.seconds(3));
+        restClient.shutdown(Time.ofSeconds(3));
     }
 
     public <

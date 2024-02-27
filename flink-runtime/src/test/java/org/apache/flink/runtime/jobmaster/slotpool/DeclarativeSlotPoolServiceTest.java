@@ -359,8 +359,8 @@ class DeclarativeSlotPoolServiceTest {
                         jobId,
                         declarativeSlotPoolFactory,
                         SystemClock.getInstance(),
-                        Time.seconds(20L),
-                        Time.seconds(20L));
+                        Time.ofSeconds(20L),
+                        Time.ofSeconds(20L));
 
         declarativeSlotPoolService.start(jobMasterId, address, mainThreadExecutor);
 

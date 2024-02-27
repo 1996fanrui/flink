@@ -56,7 +56,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /** IT cases for {@link RestClient} and {@link RestServerEndpoint}. */
 class RestExternalHandlersITCase {
 
-    private static final Time timeout = Time.seconds(10L);
+    private static final Time timeout = Time.ofSeconds(10L);
     private static final String REQUEST_URL = "/nonExisting1";
     private static final String REDIRECT1_URL = "/nonExisting2";
     private static final String REDIRECT2_URL = "/nonExisting3";

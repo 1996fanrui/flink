@@ -92,7 +92,7 @@ class TaskExecutorSubmissionTest {
     private static final TestExecutorExtension<ScheduledExecutorService> EXECUTOR_EXTENSION =
             TestingUtils.defaultExecutorExtension();
 
-    private static final Time timeout = Time.milliseconds(10000L);
+    private static final Time timeout = Time.ofMillis(10000L);
 
     private JobID jobId = new JobID();
 

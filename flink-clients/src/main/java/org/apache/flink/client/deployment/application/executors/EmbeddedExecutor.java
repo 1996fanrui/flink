@@ -117,7 +117,7 @@ public class EmbeddedExecutor implements PipelineExecutor {
             final ClassLoader userCodeClassloader)
             throws MalformedURLException {
         final Time timeout =
-                Time.milliseconds(configuration.get(ClientOptions.CLIENT_TIMEOUT).toMillis());
+                Time.ofMillis(configuration.get(ClientOptions.CLIENT_TIMEOUT).toMillis());
 
         final JobGraph jobGraph =
                 PipelineExecutorUtils.getJobGraph(pipeline, configuration, userCodeClassloader);

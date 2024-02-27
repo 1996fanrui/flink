@@ -65,7 +65,7 @@ public abstract class AbstractSqlGatewayRestHandler<
                 () -> CompletableFuture.completedFuture(NonLeaderRetrievalRestfulGateway.INSTANCE),
                 // SqlGatewayRestHandler doesn't support RPC timeout option, this property is used
                 // for placeholder
-                Time.seconds(1),
+                Time.ofSeconds(1),
                 responseHeaders,
                 messageHeaders);
         this.service = service;

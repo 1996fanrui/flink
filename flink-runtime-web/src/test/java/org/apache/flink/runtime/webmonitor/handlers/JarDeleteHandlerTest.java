@@ -66,7 +66,7 @@ class JarDeleteHandlerTest {
         jarDeleteHandler =
                 new JarDeleteHandler(
                         () -> CompletableFuture.completedFuture(restfulGateway),
-                        Time.seconds(10),
+                        Time.ofSeconds(10),
                         Collections.emptyMap(),
                         new JarDeleteHeaders(),
                         jarDir,

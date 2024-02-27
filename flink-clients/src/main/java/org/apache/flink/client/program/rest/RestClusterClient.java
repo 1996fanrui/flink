@@ -300,7 +300,7 @@ public class RestClusterClient<T> implements ClusterClient<T> {
                     TimeUnit.MILLISECONDS,
                     retryExecutorService);
 
-            this.restClient.shutdown(Time.seconds(5));
+            this.restClient.shutdown(Duration.ofSeconds(5));
             ExecutorUtils.gracefulShutdown(5, TimeUnit.SECONDS, this.executorService);
 
             try {

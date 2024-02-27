@@ -38,7 +38,7 @@ import org.apache.flink.table.utils.HandwrittenSelectorUtil;
 abstract class RowTimeDeduplicateFunctionTestBase {
 
     protected final long miniBatchSize = 4L;
-    protected Time minTtlTime = Time.milliseconds(10);
+    protected Time minTtlTime = Time.ofMillis(10);
     protected InternalTypeInfo inputRowType =
             InternalTypeInfo.ofFields(VarCharType.STRING_TYPE, new IntType(), new BigIntType());
     protected TypeSerializer<RowData> serializer = inputRowType.toSerializer();

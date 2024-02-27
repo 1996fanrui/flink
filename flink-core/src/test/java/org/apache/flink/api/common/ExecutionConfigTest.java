@@ -304,7 +304,7 @@ public class ExecutionConfigTest {
     void testNotOverridingRestartStrategiesWithDefaultsFromConfiguration() {
         ExecutionConfig config = new ExecutionConfig();
         RestartStrategies.RestartStrategyConfiguration restartStrategyConfiguration =
-                RestartStrategies.fixedDelayRestart(10, Time.minutes(2));
+                RestartStrategies.fixedDelayRestart(10, Time.ofMinutes(2));
         config.setRestartStrategy(restartStrategyConfiguration);
 
         // mutate config according to configuration

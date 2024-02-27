@@ -50,6 +50,7 @@ import org.apache.flink.util.concurrent.ScheduledExecutor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -364,10 +365,10 @@ public class ApplicationDispatcherBootstrap implements DispatcherBootstrap {
             final JobID jobId,
             final ScheduledExecutor scheduledExecutor,
             final boolean tolerateMissingResult) {
-        final Time timeout =
-                Time.milliseconds(configuration.get(ClientOptions.CLIENT_TIMEOUT).toMillis());
-        final Time retryPeriod =
-                Time.milliseconds(configuration.get(ClientOptions.CLIENT_RETRY_PERIOD).toMillis());
+        final Duration timeout =
+                Duration.ofMillis(configuration.get(ClientOptions.CLIENT_TIMEOUT).toMillis());
+        final Duration retryPeriod =
+                Duration.ofMillis(configuration.get(ClientOptions.CLIENT_RETRY_PERIOD).toMillis());
         final CompletableFuture<JobResult> jobResultFuture =
                 JobStatusPollingUtils.getJobResult(
                         dispatcherGateway, jobId, scheduledExecutor, timeout, retryPeriod);

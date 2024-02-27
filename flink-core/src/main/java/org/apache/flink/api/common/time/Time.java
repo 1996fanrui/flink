@@ -83,7 +83,7 @@ public final class Time implements Serializable {
     }
 
     public Duration toDuration() {
-        return Duration.ofMillis(this.toMilliseconds());
+        return Duration.ofMillis(this.toMillis());
     }
 
     /**
@@ -91,7 +91,7 @@ public final class Time implements Serializable {
      *
      * @return The time interval in milliseconds.
      */
-    public long toMilliseconds() {
+    public long toMillis() {
         return unit.toMillis(size);
     }
 
@@ -106,7 +106,7 @@ public final class Time implements Serializable {
 
     @Override
     public String toString() {
-        return toMilliseconds() + " ms";
+        return toMillis() + " ms";
     }
 
     @Override
@@ -118,12 +118,12 @@ public final class Time implements Serializable {
             return false;
         }
         Time time = (Time) o;
-        return toMilliseconds() == time.toMilliseconds();
+        return toMillis() == time.toMillis();
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(toMilliseconds());
+        return Objects.hash(toMillis());
     }
 
     // ------------------------------------------------------------------------
@@ -142,27 +142,27 @@ public final class Time implements Serializable {
     }
 
     /** Creates a new {@link Time} that represents the given number of milliseconds. */
-    public static Time milliseconds(long milliseconds) {
+    public static Time ofMillis(long milliseconds) {
         return of(milliseconds, TimeUnit.MILLISECONDS);
     }
 
     /** Creates a new {@link Time} that represents the given number of seconds. */
-    public static Time seconds(long seconds) {
+    public static Time ofSeconds(long seconds) {
         return of(seconds, TimeUnit.SECONDS);
     }
 
     /** Creates a new {@link Time} that represents the given number of minutes. */
-    public static Time minutes(long minutes) {
+    public static Time ofMinutes(long minutes) {
         return of(minutes, TimeUnit.MINUTES);
     }
 
     /** Creates a new {@link Time} that represents the given number of hours. */
-    public static Time hours(long hours) {
+    public static Time ofHours(long hours) {
         return of(hours, TimeUnit.HOURS);
     }
 
     /** Creates a new {@link Time} that represents the given number of days. */
-    public static Time days(long days) {
+    public static Time ofDays(long days) {
         return of(days, TimeUnit.DAYS);
     }
 
@@ -170,6 +170,6 @@ public final class Time implements Serializable {
      * Creates a new {@link Time} that represents the number of milliseconds in the given duration.
      */
     public static Time fromDuration(Duration duration) {
-        return milliseconds(duration.toMillis());
+        return ofMillis(duration.toMillis());
     }
 }

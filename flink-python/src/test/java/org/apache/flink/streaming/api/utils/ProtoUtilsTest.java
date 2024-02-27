@@ -81,7 +81,7 @@ class ProtoUtilsTest {
                         .build();
         FlinkFnApi.StateDescriptor.StateTTLConfig stateTTLConfigProto =
                 FlinkFnApi.StateDescriptor.StateTTLConfig.newBuilder()
-                        .setTtl(Time.of(1000, TimeUnit.MILLISECONDS).toMilliseconds())
+                        .setTtl(Time.of(1000, TimeUnit.MILLISECONDS).toMillis())
                         .setUpdateType(
                                 FlinkFnApi.StateDescriptor.StateTTLConfig.UpdateType
                                         .OnCreateAndWrite)
@@ -98,7 +98,7 @@ class ProtoUtilsTest {
                 .isEqualTo(StateTtlConfig.UpdateType.OnCreateAndWrite);
         assertThat(stateTTLConfig.getStateVisibility())
                 .isEqualTo(StateTtlConfig.StateVisibility.NeverReturnExpired);
-        assertThat(stateTTLConfig.getTtl()).isEqualTo(Time.milliseconds(1000));
+        assertThat(stateTTLConfig.getTtl()).isEqualTo(Time.ofMillis(1000));
         assertThat(stateTTLConfig.getTtlTimeCharacteristic())
                 .isEqualTo(StateTtlConfig.TtlTimeCharacteristic.ProcessingTime);
 
@@ -118,6 +118,6 @@ class ProtoUtilsTest {
         assertThat(rocksdbCompactFilterCleanupStrategy.getQueryTimeAfterNumEntries())
                 .isEqualTo(1000);
         assertThat(rocksdbCompactFilterCleanupStrategy.getPeriodicCompactionTime())
-                .isEqualTo(Time.days(30));
+                .isEqualTo(Time.ofDays(30));
     }
 }

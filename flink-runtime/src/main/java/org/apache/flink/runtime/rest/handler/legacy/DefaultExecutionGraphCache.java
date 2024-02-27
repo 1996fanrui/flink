@@ -86,7 +86,7 @@ public class DefaultExecutionGraphCache implements ExecutionGraphCache {
             }
 
             final ExecutionGraphEntry newEntry =
-                    new ExecutionGraphEntry(currentTime + timeToLive.toMilliseconds());
+                    new ExecutionGraphEntry(currentTime + timeToLive.toMillis());
 
             final boolean successfulUpdate;
 

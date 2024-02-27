@@ -116,7 +116,7 @@ public class RocksDbTtlCompactFiltersManager {
             FlinkCompactionFilterFactory compactionFilterFactory =
                     compactionFilterFactories.get(stateDesc.getName());
             Preconditions.checkNotNull(compactionFilterFactory);
-            long ttl = ttlConfig.getTtl().toMilliseconds();
+            long ttl = ttlConfig.getTtl().toMillis();
 
             StateTtlConfig.RocksdbCompactFilterCleanupStrategy rocksdbCompactFilterCleanupStrategy =
                     ttlConfig.getCleanupStrategies().getRocksdbCompactFilterCleanupStrategy();

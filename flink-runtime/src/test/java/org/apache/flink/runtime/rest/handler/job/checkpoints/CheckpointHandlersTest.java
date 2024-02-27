@@ -63,7 +63,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /** Test for {@link CheckpointHandlers}. */
 class CheckpointHandlersTest {
 
-    private static final Time TIMEOUT = Time.seconds(10);
+    private static final Time TIMEOUT = Time.ofSeconds(10);
 
     private static final JobID JOB_ID = new JobID();
 

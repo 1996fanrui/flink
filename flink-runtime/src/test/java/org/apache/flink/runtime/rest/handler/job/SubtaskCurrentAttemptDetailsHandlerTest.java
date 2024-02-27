@@ -127,18 +127,18 @@ class SubtaskCurrentAttemptDetailsHandlerTest {
                         () -> null,
                         address -> null,
                         Executors.directExecutor(),
-                        Time.milliseconds(1000L),
+                        Time.ofMillis(1000L),
                         MetricOptions.METRIC_FETCHER_UPDATE_INTERVAL.defaultValue());
 
         final SubtaskCurrentAttemptDetailsHandler handler =
                 new SubtaskCurrentAttemptDetailsHandler(
                         () -> null,
-                        Time.milliseconds(100),
+                        Time.ofMillis(100),
                         Collections.emptyMap(),
                         SubtaskCurrentAttemptDetailsHeaders.getInstance(),
                         new DefaultExecutionGraphCache(
                                 restHandlerConfiguration.getTimeout(),
-                                Time.milliseconds(restHandlerConfiguration.getRefreshInterval())),
+                                Time.ofMillis(restHandlerConfiguration.getRefreshInterval())),
                         Executors.directExecutor(),
                         metricFetcher);
 

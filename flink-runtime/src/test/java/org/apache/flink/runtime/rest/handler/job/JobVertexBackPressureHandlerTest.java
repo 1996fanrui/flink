@@ -119,7 +119,7 @@ class JobVertexBackPressureHandlerTest {
         jobVertexBackPressureHandler =
                 new JobVertexBackPressureHandler(
                         () -> CompletableFuture.completedFuture(restfulGateway),
-                        Time.seconds(10),
+                        Time.ofSeconds(10),
                         Collections.emptyMap(),
                         JobVertexBackPressureHeaders.getInstance(),
                         new MetricFetcher() {
@@ -299,7 +299,7 @@ class JobVertexBackPressureHandlerTest {
         JobVertexBackPressureHandler jobVertexBackPressureHandler =
                 new JobVertexBackPressureHandler(
                         () -> CompletableFuture.completedFuture(restfulGateway),
-                        Time.seconds(10),
+                        Time.ofSeconds(10),
                         Collections.emptyMap(),
                         JobVertexBackPressureHeaders.getInstance(),
                         new MetricFetcher() {

@@ -95,7 +95,7 @@ class SqlGatewayRestEndpointITCase {
     private static TestVersionHandler testVersionHandlerNot0;
 
     private static Configuration config;
-    private static final Time timeout = Time.seconds(10L);
+    private static final Time timeout = Time.ofSeconds(10L);
 
     @BeforeEach
     void setup() throws Exception {

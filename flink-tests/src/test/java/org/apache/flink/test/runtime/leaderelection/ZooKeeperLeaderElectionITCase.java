@@ -62,7 +62,7 @@ import static org.junit.Assert.fail;
 /** Test the election of a new JobManager leader. */
 public class ZooKeeperLeaderElectionITCase extends TestLogger {
 
-    private static final Time RPC_TIMEOUT = Time.minutes(1L);
+    private static final Time RPC_TIMEOUT = Time.ofMinutes(1L);
 
     private static TestingServer zkServer;
 

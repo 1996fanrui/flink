@@ -32,7 +32,7 @@ class SystemResourcesCounterTest {
 
     @Test
     void testObtainAnyMetrics() throws InterruptedException {
-        SystemResourcesCounter systemResources = new SystemResourcesCounter(Time.milliseconds(10));
+        SystemResourcesCounter systemResources = new SystemResourcesCounter(Time.ofMillis(10));
         double initialCpuIdle = systemResources.getCpuIdle();
 
         systemResources.start();

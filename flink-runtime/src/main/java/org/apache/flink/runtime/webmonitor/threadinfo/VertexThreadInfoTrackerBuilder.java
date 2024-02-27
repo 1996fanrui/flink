@@ -38,7 +38,7 @@ public class VertexThreadInfoTrackerBuilder {
 
     private final GatewayRetriever<ResourceManagerGateway> resourceManagerGatewayRetriever;
     private final ScheduledExecutorService executor;
-    private final Time restTimeout;
+    private final Duration restTimeout;
 
     private ThreadInfoRequestCoordinator coordinator;
     private Duration cleanUpInterval;
@@ -52,7 +52,7 @@ public class VertexThreadInfoTrackerBuilder {
     VertexThreadInfoTrackerBuilder(
             GatewayRetriever<ResourceManagerGateway> resourceManagerGatewayRetriever,
             ScheduledExecutorService executor,
-            Time restTimeout) {
+            Duration restTimeout) {
         this.resourceManagerGatewayRetriever = resourceManagerGatewayRetriever;
         this.executor = executor;
         this.restTimeout = restTimeout;

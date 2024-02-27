@@ -55,13 +55,13 @@ public abstract class LeaderRetrievalHandler<T extends RestfulGateway>
 
     protected final GatewayRetriever<? extends T> leaderRetriever;
 
-    protected final Time timeout;
+    protected final Duration timeout;
 
     protected final Map<String, String> responseHeaders;
 
     protected LeaderRetrievalHandler(
             @Nonnull GatewayRetriever<? extends T> leaderRetriever,
-            @Nonnull Time timeout,
+            @Nonnull Duration timeout,
             @Nonnull Map<String, String> responseHeaders) {
         this.leaderRetriever = Preconditions.checkNotNull(leaderRetriever);
         this.timeout = Preconditions.checkNotNull(timeout);
@@ -69,7 +69,7 @@ public abstract class LeaderRetrievalHandler<T extends RestfulGateway>
     }
 
     protected Duration getTimeout() {
-        return Duration.ofMillis(timeout.toMilliseconds());
+        return timeout;
     }
 
     @Override

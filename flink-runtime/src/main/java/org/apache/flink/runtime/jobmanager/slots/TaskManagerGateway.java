@@ -33,6 +33,7 @@ import org.apache.flink.runtime.rpc.RpcTimeout;
 import org.apache.flink.runtime.taskexecutor.TaskExecutorOperatorEventGateway;
 import org.apache.flink.util.SerializedValue;
 
+import java.time.Duration;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
@@ -144,7 +145,7 @@ public interface TaskManagerGateway extends TaskExecutorOperatorEventGateway {
      * @return Future acknowledge which is returned once the slot has been freed
      */
     CompletableFuture<Acknowledge> freeSlot(
-            final AllocationID allocationId, final Throwable cause, @RpcTimeout final Time timeout);
+            final AllocationID allocationId, final Throwable cause, @RpcTimeout final Duration timeout);
 
     @Override
     CompletableFuture<Acknowledge> sendOperatorEventToTask(

@@ -112,6 +112,7 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -197,7 +198,7 @@ public class DefaultSchedulerTest {
         shuffleMaster = new TestingShuffleMaster();
         partitionTracker = new TestingJobMasterPartitionTracker();
 
-        timeout = Time.seconds(60);
+        timeout = Time.ofSeconds(60);
     }
 
     @AfterEach
@@ -1590,7 +1591,7 @@ public class DefaultSchedulerTest {
                 ComponentMainThreadExecutorServiceAdapter.forSingleThreadExecutor(
                         scheduledExecutorService);
 
-        final Time slotTimeout = Time.milliseconds(5L);
+        final Duration slotTimeout = Duration.ofMillis(5L);
         final SlotPool slotPool =
                 new DeclarativeSlotPoolBridgeBuilder()
                         .setBatchSlotTimeout(slotTimeout)
@@ -1712,7 +1713,7 @@ public class DefaultSchedulerTest {
 
             final JobGraph jobGraph = nonParallelSourceSinkJobGraph();
 
-            timeout = Time.milliseconds(1);
+            timeout = Time.ofMillis(1);
             createSchedulerAndStartScheduling(jobGraph, mainThreadExecutor);
 
             testExecutionOperations.awaitCanceledExecutions(2);

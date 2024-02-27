@@ -134,7 +134,7 @@ public class UpdatableTopNFunction extends AbstractTopNFunction implements Check
         CacheBuilder<Object, Object> cacheBuilder = CacheBuilder.newBuilder();
         if (ttlConfig.isEnabled()) {
             cacheBuilder.expireAfterWrite(
-                    ttlConfig.getTtl().toMilliseconds(), TimeUnit.MILLISECONDS);
+                    ttlConfig.getTtl().toMillis(), TimeUnit.MILLISECONDS);
         }
         kvRowKeyMap =
                 cacheBuilder

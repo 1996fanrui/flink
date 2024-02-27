@@ -43,7 +43,7 @@ class WebMonitorUtilsTest {
         final WebMonitorExtension webMonitorExtension =
                 WebMonitorUtils.loadWebSubmissionExtension(
                         CompletableFuture::new,
-                        Time.seconds(10),
+                        Time.ofSeconds(10),
                         Collections.emptyMap(),
                         CompletableFuture.completedFuture("localhost:12345"),
                         Paths.get("/tmp"),

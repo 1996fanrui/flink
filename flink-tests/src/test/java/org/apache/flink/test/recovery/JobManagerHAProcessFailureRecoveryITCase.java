@@ -431,7 +431,7 @@ class JobManagerHAProcessFailureRecoveryITCase {
         FutureUtils.retrySuccessfulWithDelay(
                         () ->
                                 dispatcherGateway.requestClusterOverview(
-                                        Time.milliseconds(timeLeft.toMillis())),
+                                        Time.ofMillis(timeLeft.toMillis())),
                         Duration.ofMillis(50L),
                         org.apache.flink.api.common.time.Deadline.fromNow(
                                 Duration.ofMillis(timeLeft.toMillis())),

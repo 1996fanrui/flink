@@ -21,7 +21,6 @@ package org.apache.flink.runtime.resourcemanager;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.JobStatus;
-import org.apache.flink.api.common.time.Time;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.runtime.blob.TransientBlobKey;
 import org.apache.flink.runtime.blocklist.BlockedNode;
@@ -114,7 +113,7 @@ import static org.apache.flink.util.Preconditions.checkState;
  * <p>It offers the following methods as part of its rpc interface to interact with him remotely:
  *
  * <ul>
- *   <li>{@link #registerJobMaster(JobMasterId, ResourceID, String, JobID, Time)} registers a {@link
+ *   <li>{@link #registerJobMaster(JobMasterId, ResourceID, String, JobID, Duration)} registers a {@link
  *       JobMaster} at the resource manager
  * </ul>
  */
@@ -187,7 +186,7 @@ public abstract class ResourceManager<WorkerType extends ResourceIDRetrievable>
             ClusterInformation clusterInformation,
             FatalErrorHandler fatalErrorHandler,
             ResourceManagerMetricGroup resourceManagerMetricGroup,
-            Time rpcTimeout,
+            Duration rpcTimeout,
             Executor ioExecutor) {
 
         super(
@@ -364,7 +363,7 @@ public abstract class ResourceManager<WorkerType extends ResourceIDRetrievable>
             final ResourceID jobManagerResourceId,
             final String jobManagerAddress,
             final JobID jobId,
-            final Time timeout) {
+            final Duration timeout) {
 
         checkNotNull(jobMasterId);
         checkNotNull(jobManagerResourceId);
@@ -464,7 +463,7 @@ public abstract class ResourceManager<WorkerType extends ResourceIDRetrievable>
 
     @Override
     public CompletableFuture<RegistrationResponse> registerTaskExecutor(
-            final TaskExecutorRegistration taskExecutorRegistration, final Time timeout) {
+            final TaskExecutorRegistration taskExecutorRegistration, final Duration timeout) {
 
         CompletableFuture<TaskExecutorGateway> taskExecutorGatewayFuture =
                 getRpcService()
@@ -501,7 +500,7 @@ public abstract class ResourceManager<WorkerType extends ResourceIDRetrievable>
             ResourceID taskManagerResourceId,
             InstanceID taskManagerRegistrationId,
             SlotReport slotReport,
-            Time timeout) {
+            Duration timeout) {
         final WorkerRegistration<WorkerType> workerTypeWorkerRegistration =
                 taskExecutors.get(taskManagerResourceId);
 
@@ -570,7 +569,7 @@ public abstract class ResourceManager<WorkerType extends ResourceIDRetrievable>
 
     @Override
     public CompletableFuture<Acknowledge> declareRequiredResources(
-            JobMasterId jobMasterId, ResourceRequirements resourceRequirements, Time timeout) {
+            JobMasterId jobMasterId, ResourceRequirements resourceRequirements, Duration timeout) {
         final JobID jobId = resourceRequirements.getJobId();
         final JobManagerRegistration jobManagerRegistration = jobManagerRegistrations.get(jobId);
 
@@ -654,7 +653,7 @@ public abstract class ResourceManager<WorkerType extends ResourceIDRetrievable>
     }
 
     @Override
-    public CompletableFuture<Collection<TaskManagerInfo>> requestTaskManagerInfo(Time timeout) {
+    public CompletableFuture<Collection<TaskManagerInfo>> requestTaskManagerInfo(Duration timeout) {
 
         final ArrayList<TaskManagerInfo> taskManagerInfos = new ArrayList<>(taskExecutors.size());
 
@@ -684,7 +683,7 @@ public abstract class ResourceManager<WorkerType extends ResourceIDRetrievable>
 
     @Override
     public CompletableFuture<TaskManagerInfoWithSlots> requestTaskManagerDetailsInfo(
-            ResourceID resourceId, Time timeout) {
+            ResourceID resourceId, Duration timeout) {
 
         final WorkerRegistration<WorkerType> taskExecutor = taskExecutors.get(resourceId);
 
@@ -715,7 +714,7 @@ public abstract class ResourceManager<WorkerType extends ResourceIDRetrievable>
     }
 
     @Override
-    public CompletableFuture<ResourceOverview> requestResourceOverview(Time timeout) {
+    public CompletableFuture<ResourceOverview> requestResourceOverview(Duration timeout) {
         final int numberSlots = slotManager.getNumberRegisteredSlots();
         final ResourceProfile totalResource = slotManager.getRegisteredResource();
 
@@ -751,7 +750,7 @@ public abstract class ResourceManager<WorkerType extends ResourceIDRetrievable>
 
     @Override
     public CompletableFuture<Collection<Tuple2<ResourceID, String>>>
-            requestTaskManagerMetricQueryServiceAddresses(Time timeout) {
+            requestTaskManagerMetricQueryServiceAddresses(Duration timeout) {
         final ArrayList<CompletableFuture<Optional<Tuple2<ResourceID, String>>>>
                 metricQueryServiceAddressFutures = new ArrayList<>(taskExecutors.size());
 
@@ -790,7 +789,7 @@ public abstract class ResourceManager<WorkerType extends ResourceIDRetrievable>
 
     @Override
     public CompletableFuture<TransientBlobKey> requestTaskManagerFileUploadByType(
-            ResourceID taskManagerId, FileType fileType, Time timeout) {
+            ResourceID taskManagerId, FileType fileType, Duration timeout) {
         log.debug(
                 "Request {} file upload from TaskExecutor {}.",
                 fileType,
@@ -812,9 +811,9 @@ public abstract class ResourceManager<WorkerType extends ResourceIDRetrievable>
 
     @Override
     public CompletableFuture<TransientBlobKey> requestTaskManagerFileUploadByName(
-            ResourceID taskManagerId, String fileName, Time timeout) {
+            ResourceID taskManagerId, String fileName, Duration timeout) {
         return requestTaskManagerFileUploadByNameAndType(
-                taskManagerId, fileName, FileType.LOG, Duration.ofMillis(timeout.toMilliseconds()));
+                taskManagerId, fileName, FileType.LOG, Duration.ofMillis(timeout.toMillis()));
     }
 
     @Override
@@ -845,7 +844,7 @@ public abstract class ResourceManager<WorkerType extends ResourceIDRetrievable>
 
     @Override
     public CompletableFuture<Collection<LogInfo>> requestTaskManagerLogList(
-            ResourceID taskManagerId, Time timeout) {
+            ResourceID taskManagerId, Duration timeout) {
         final WorkerRegistration<WorkerType> taskExecutor = taskExecutors.get(taskManagerId);
         if (taskExecutor == null) {
             log.debug(
@@ -886,7 +885,7 @@ public abstract class ResourceManager<WorkerType extends ResourceIDRetrievable>
 
     @Override
     public CompletableFuture<ThreadDumpInfo> requestThreadDump(
-            ResourceID taskManagerId, Time timeout) {
+            ResourceID taskManagerId, Duration timeout) {
         final WorkerRegistration<WorkerType> taskExecutor = taskExecutors.get(taskManagerId);
 
         if (taskExecutor == null) {
@@ -937,7 +936,7 @@ public abstract class ResourceManager<WorkerType extends ResourceIDRetrievable>
     @Override
     @Local // Bug; see FLINK-27954
     public CompletableFuture<TaskExecutorThreadInfoGateway> requestTaskExecutorThreadInfoGateway(
-            ResourceID taskManagerId, Time timeout) {
+            ResourceID taskManagerId, Duration timeout) {
 
         final WorkerRegistration<WorkerType> taskExecutor = taskExecutors.get(taskManagerId);
 

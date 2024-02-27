@@ -1392,7 +1392,7 @@ public class JobMaster extends FencedRpcEndpoint<JobMasterId>
                         ResourceManagerGateway gateway,
                         ResourceManagerId fencingToken,
                         long timeoutMillis) {
-                    Time timeout = Time.milliseconds(timeoutMillis);
+                    Time timeout = Time.ofMillis(timeoutMillis);
 
                     return gateway.registerJobMaster(
                             jobMasterId,

@@ -889,7 +889,7 @@ public class DispatcherTest extends AbstractDispatcherTest {
         final Throwable error =
                 fatalErrorHandler
                         .getErrorFuture()
-                        .get(TIMEOUT.toMilliseconds(), TimeUnit.MILLISECONDS);
+                        .get(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
 
         assertThat(
                 ExceptionUtils.findThrowableWithMessage(error, testException.getMessage())

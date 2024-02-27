@@ -81,11 +81,11 @@ class JobVertexFlameGraphHandlerTest {
         handler =
                 new JobVertexFlameGraphHandler(
                         () -> null,
-                        Time.milliseconds(100L),
+                        Time.ofMillis(100L),
                         Collections.emptyMap(),
                         new DefaultExecutionGraphCache(
                                 restHandlerConfiguration.getTimeout(),
-                                Time.milliseconds(restHandlerConfiguration.getRefreshInterval())),
+                                Time.ofMillis(restHandlerConfiguration.getRefreshInterval())),
                         Executors.directExecutor(),
                         new TestThreadInfoTracker(taskThreadInfoStatsDefaultSample));
     }

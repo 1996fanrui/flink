@@ -56,6 +56,7 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -97,7 +98,7 @@ public abstract class AbstractHandler<
 
     protected AbstractHandler(
             @Nonnull GatewayRetriever<? extends T> leaderRetriever,
-            @Nonnull Time timeout,
+            @Nonnull Duration timeout,
             @Nonnull Map<String, String> responseHeaders,
             @Nonnull UntypedResponseMessageHeaders<R, M> untypedResponseMessageHeaders) {
         super(leaderRetriever, timeout, responseHeaders);

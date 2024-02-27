@@ -70,7 +70,7 @@ import static org.apache.flink.runtime.checkpoint.TaskStateSnapshot.serializeTas
  */
 public class JobMasterTester implements Closeable {
 
-    private static final Time TIMEOUT = Time.minutes(1);
+    private static final Time TIMEOUT = Time.ofMinutes(1);
 
     private static TaskStateSnapshot createNonEmptyStateSnapshot(TaskInformation taskInformation) {
         final TaskStateSnapshot checkpointStateHandles = new TaskStateSnapshot();

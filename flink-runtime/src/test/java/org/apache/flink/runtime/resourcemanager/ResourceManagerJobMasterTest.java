@@ -50,7 +50,7 @@ import static org.apache.flink.core.testutils.FlinkAssertions.assertThatFuture;
 /** Tests for the interaction between the {@link ResourceManager} and the {@link JobMaster}. */
 class ResourceManagerJobMasterTest {
 
-    private static final Time TIMEOUT = Time.seconds(10L);
+    private static final Time TIMEOUT = Time.ofSeconds(10L);
 
     private TestingRpcService rpcService;
 
@@ -142,7 +142,7 @@ class ResourceManagerJobMasterTest {
                         jobId,
                         TIMEOUT);
         assertThatFuture(successfulFuture)
-                .succeedsWithin(TIMEOUT.toMilliseconds(), TimeUnit.MILLISECONDS)
+                .succeedsWithin(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)
                 .isInstanceOf(JobMasterRegistrationSuccess.class);
     }
 
@@ -155,7 +155,7 @@ class ResourceManagerJobMasterTest {
                                 resourceManagerGateway.getAddress(),
                                 ResourceManagerId.generate(),
                                 ResourceManagerGateway.class)
-                        .get(TIMEOUT.toMilliseconds(), TimeUnit.MILLISECONDS);
+                        .get(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
 
         // test throw exception when receive a registration from job master which takes unmatched
         // leaderSessionId
@@ -228,7 +228,7 @@ class ResourceManagerJobMasterTest {
 
         assertThatFuture(registrationFuture)
                 .as("Expected to fail with a ResourceManagerException.")
-                .failsWithin(TIMEOUT.toMilliseconds(), TimeUnit.MILLISECONDS)
+                .failsWithin(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)
                 .withThrowableOfType(ExecutionException.class)
                 .withCauseInstanceOf(ResourceManagerException.class);
 

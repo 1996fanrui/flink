@@ -120,7 +120,7 @@ class ShuffleMasterTest {
 
         JobGraph jobGraph = JobGraphTestUtils.batchJobGraph(source, sink);
         ExecutionConfig config = new ExecutionConfig();
-        config.setRestartStrategy(fixedDelayRestart(2, Time.seconds(2)));
+        config.setRestartStrategy(fixedDelayRestart(2, Time.ofSeconds(2)));
         jobGraph.setExecutionConfig(config);
         return jobGraph;
     }

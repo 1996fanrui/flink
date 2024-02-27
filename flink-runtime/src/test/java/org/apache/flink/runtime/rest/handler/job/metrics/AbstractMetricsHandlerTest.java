@@ -87,7 +87,7 @@ class AbstractMetricsHandlerTest {
                                 return CompletableFuture.completedFuture(mockDispatcherGateway);
                             }
                         },
-                        Time.milliseconds(50),
+                        Time.ofMillis(50),
                         Collections.emptyMap(),
                         new TestMetricsHeaders(),
                         mockMetricFetcher);

@@ -135,7 +135,7 @@ public class MemoryExecutionGraphInfoStoreTest extends TestLogger {
     /** Tests that an expired execution graph is removed from the execution graph store. */
     @Test
     public void testExecutionGraphExpiration() throws Exception {
-        final Time expirationTime = Time.milliseconds(1L);
+        final Time expirationTime = Time.ofMillis(1L);
 
         final ManuallyTriggeredScheduledExecutor scheduledExecutor =
                 new ManuallyTriggeredScheduledExecutor();
@@ -157,7 +157,7 @@ public class MemoryExecutionGraphInfoStoreTest extends TestLogger {
             // there should one execution graph
             assertThat(executionGraphInfoStore.size(), Matchers.equalTo(1));
 
-            manualTicker.advanceTime(expirationTime.toMilliseconds(), TimeUnit.MILLISECONDS);
+            manualTicker.advanceTime(expirationTime.toMillis(), TimeUnit.MILLISECONDS);
 
             // this should trigger the cleanup after expiration
             scheduledExecutor.triggerScheduledTasks();
@@ -212,7 +212,7 @@ public class MemoryExecutionGraphInfoStoreTest extends TestLogger {
         final Collection<JobDetails> jobDetails = generateJobDetails(newExecutionGraphInfos);
 
         try (final MemoryExecutionGraphInfoStore executionGraphInfoStore =
-                createMemoryExecutionGraphInfoStore(Time.hours(1L), maxCapacity)) {
+                createMemoryExecutionGraphInfoStore(Time.ofHours(1L), maxCapacity)) {
 
             for (ExecutionGraphInfo executionGraphInfo : oldExecutionGraphInfos) {
                 executionGraphInfoStore.put(executionGraphInfo);

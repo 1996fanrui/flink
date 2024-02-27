@@ -55,7 +55,7 @@ class StandaloneResourceManagerTest {
             RPC_SERVICE_EXTENSION_WRAPPER =
                     new AllCallbackWrapper<>(new TestingRpcServiceExtension());
 
-    private static final Time TIMEOUT = Time.seconds(10L);
+    private static final Time TIMEOUT = Time.ofSeconds(10L);
 
     private final TestingFatalErrorHandler fatalErrorHandler = new TestingFatalErrorHandler();
 
@@ -69,7 +69,7 @@ class StandaloneResourceManagerTest {
                                 setFailUnfulfillableRequestInvokes::add)
                         .createSlotManager();
         final TestingStandaloneResourceManager rm =
-                createResourceManager(Time.milliseconds(1L), slotManager);
+                createResourceManager(Time.ofMillis(1L), slotManager);
 
         assertThat(setFailUnfulfillableRequestInvokes.take()).isFalse();
         assertThat(setFailUnfulfillableRequestInvokes.take()).isTrue();
@@ -87,7 +87,7 @@ class StandaloneResourceManagerTest {
                                 setFailUnfulfillableRequestInvokes::add)
                         .createSlotManager();
         final TestingStandaloneResourceManager rm =
-                createResourceManager(Time.milliseconds(-1L), slotManager);
+                createResourceManager(Time.ofMillis(-1L), slotManager);
 
         assertThat(setFailUnfulfillableRequestInvokes.take()).isFalse();
         assertThat(setFailUnfulfillableRequestInvokes.poll(50L, TimeUnit.MILLISECONDS)).isNull();

@@ -439,7 +439,7 @@ public enum ProtoUtils {
     public static StateTtlConfig parseStateTtlConfigFromProto(
             FlinkFnApi.StateDescriptor.StateTTLConfig stateTTLConfigProto) {
         StateTtlConfig.Builder builder =
-                StateTtlConfig.newBuilder(Time.milliseconds(stateTTLConfigProto.getTtl()))
+                StateTtlConfig.newBuilder(Time.ofMillis(stateTTLConfigProto.getTtl()))
                         .setUpdateType(
                                 parseUpdateTypeFromProto(stateTTLConfigProto.getUpdateType()))
                         .setStateVisibility(

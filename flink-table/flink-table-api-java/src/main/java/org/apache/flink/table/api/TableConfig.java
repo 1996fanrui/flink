@@ -382,8 +382,8 @@ public final class TableConfig implements WritableConfig, ReadableConfig {
      */
     @Deprecated
     public void setIdleStateRetentionTime(Time minTime, Time maxTime) {
-        if (maxTime.toMilliseconds() - minTime.toMilliseconds() < 300000
-                && !(maxTime.toMilliseconds() == 0 && minTime.toMilliseconds() == 0)) {
+        if (maxTime.toMillis() - minTime.toMillis() < 300000
+                && !(maxTime.toMillis() == 0 && minTime.toMillis() == 0)) {
             throw new IllegalArgumentException(
                     "Difference between minTime: "
                             + minTime
@@ -391,7 +391,7 @@ public final class TableConfig implements WritableConfig, ReadableConfig {
                             + maxTime
                             + " should be at least 5 minutes.");
         }
-        setIdleStateRetention(Duration.ofMillis(minTime.toMilliseconds()));
+        setIdleStateRetention(Duration.ofMillis(minTime.toMillis()));
     }
 
     /**

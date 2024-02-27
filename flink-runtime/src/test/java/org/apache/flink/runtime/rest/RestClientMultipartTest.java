@@ -35,6 +35,7 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.concurrent.CompletableFuture;
@@ -70,7 +71,7 @@ class RestClientMultipartTest {
     @AfterAll
     static void teardownClient() {
         if (restClient != null) {
-            restClient.shutdown(Time.seconds(10));
+            restClient.shutdown(Duration.ofSeconds(10));
         }
     }
 

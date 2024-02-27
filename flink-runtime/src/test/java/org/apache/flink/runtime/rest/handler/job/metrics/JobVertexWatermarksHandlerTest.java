@@ -84,7 +84,7 @@ class JobVertexWatermarksHandlerTest {
         watermarkHandler =
                 new JobVertexWatermarksHandler(
                         Mockito.mock(LeaderGatewayRetriever.class),
-                        Time.seconds(1),
+                        Time.ofSeconds(1),
                         Collections.emptyMap(),
                         metricFetcher,
                         NoOpExecutionGraphCache.INSTANCE,

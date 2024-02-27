@@ -121,7 +121,7 @@ public class RestHandlerConfiguration {
         final int checkpointStatsSnapshotCacheSize =
                 configuration.get(RestOptions.CACHE_CHECKPOINT_STATISTICS_SIZE);
 
-        final Time timeout = Time.milliseconds(configuration.get(WebOptions.TIMEOUT));
+        final Time timeout = Time.ofMillis(configuration.get(WebOptions.TIMEOUT));
 
         final String rootDir = "flink-web-ui";
         final File webUiDir = new File(configuration.get(WebOptions.TMP_DIR), rootDir);

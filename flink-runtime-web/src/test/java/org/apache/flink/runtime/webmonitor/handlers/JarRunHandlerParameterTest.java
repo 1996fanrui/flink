@@ -103,7 +103,7 @@ class JarRunHandlerParameterTest
         init(tempDir);
         final GatewayRetriever<TestingDispatcherGateway> gatewayRetriever =
                 () -> CompletableFuture.completedFuture(restfulGateway);
-        final Time timeout = Time.seconds(10);
+        final Time timeout = Time.ofSeconds(10);
         final Map<String, String> responseHeaders = Collections.emptyMap();
 
         final Path jarLocation = Paths.get(System.getProperty("targetDir"));

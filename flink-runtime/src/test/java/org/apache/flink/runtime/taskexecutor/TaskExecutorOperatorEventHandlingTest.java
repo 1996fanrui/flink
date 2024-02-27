@@ -183,7 +183,7 @@ class TaskExecutorOperatorEventHandlingTest {
                 .allocateSlot(0, jobId, tdd.getAllocationId(), Duration.ofSeconds(60));
 
         final TaskExecutorGateway tmGateway = env.getTaskExecutorGateway();
-        tmGateway.submitTask(tdd, env.getJobMasterId(), Time.seconds(10)).get();
+        tmGateway.submitTask(tdd, env.getJobMasterId(), Time.ofSeconds(10)).get();
         taskRunningFuture.get();
 
         return env;

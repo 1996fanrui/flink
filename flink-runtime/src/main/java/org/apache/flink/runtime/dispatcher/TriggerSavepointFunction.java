@@ -22,6 +22,7 @@ import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.core.execution.SavepointFormatType;
 
+import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -35,5 +36,5 @@ public interface TriggerSavepointFunction {
             String targetDirectory,
             SavepointFormatType formatType,
             TriggerSavepointMode savepointMode,
-            Time timeout);
+            Duration timeout);
 }

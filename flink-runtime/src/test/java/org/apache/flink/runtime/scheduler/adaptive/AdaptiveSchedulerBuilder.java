@@ -55,7 +55,7 @@ import java.util.concurrent.ScheduledExecutorService;
 
 /** Builder for {@link AdaptiveScheduler}. */
 public class AdaptiveSchedulerBuilder {
-    private static final Time DEFAULT_TIMEOUT = Time.seconds(300);
+    private static final Time DEFAULT_TIMEOUT = Time.ofSeconds(300);
 
     private final JobGraph jobGraph;
 

@@ -52,6 +52,7 @@ import org.apache.flink.util.TimeUtils;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
+import java.time.Duration;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.concurrent.Callable;
@@ -148,13 +149,13 @@ class TestingDispatcher extends Dispatcher {
         return callAsync(callable, TestingUtils.TESTING_DURATION).thenCompose(Function.identity());
     }
 
-    CompletableFuture<Void> getJobTerminationFuture(@Nonnull JobID jobId, @Nonnull Time timeout) {
-        return callAsync(() -> getJobTerminationFuture(jobId), TimeUtils.toDuration(timeout))
+    CompletableFuture<Void> getJobTerminationFuture(@Nonnull JobID jobId, @Nonnull Duration timeout) {
+        return callAsync(() -> getJobTerminationFuture(jobId), timeout)
                 .thenCompose(Function.identity());
     }
 
-    CompletableFuture<Integer> getNumberJobs(Time timeout) {
-        return callAsync(() -> listJobs(timeout).get().size(), TimeUtils.toDuration(timeout));
+    CompletableFuture<Integer> getNumberJobs(Duration timeout) {
+        return callAsync(() -> listJobs(timeout).get().size(), timeout);
     }
 
     void waitUntilStarted() {

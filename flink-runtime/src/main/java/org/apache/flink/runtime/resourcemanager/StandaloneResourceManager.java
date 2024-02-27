@@ -110,7 +110,7 @@ public class StandaloneResourceManager extends ResourceManager<ResourceID> {
     private void startStartupPeriod() {
         setFailUnfulfillableRequest(false);
 
-        final long startupPeriodMillis = startupPeriodTime.toMilliseconds();
+        final long startupPeriodMillis = startupPeriodTime.toMillis();
 
         if (startupPeriodMillis > 0) {
             scheduleRunAsync(

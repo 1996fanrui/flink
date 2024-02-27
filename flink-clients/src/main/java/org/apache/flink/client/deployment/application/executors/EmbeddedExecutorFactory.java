@@ -29,6 +29,7 @@ import org.apache.flink.core.execution.PipelineExecutorFactory;
 import org.apache.flink.runtime.dispatcher.DispatcherGateway;
 import org.apache.flink.util.concurrent.ScheduledExecutor;
 
+import java.time.Duration;
 import java.util.Collection;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
@@ -80,8 +81,8 @@ public class EmbeddedExecutorFactory implements PipelineExecutorFactory {
                 submittedJobIds,
                 dispatcherGateway,
                 (jobId, userCodeClassloader) -> {
-                    final Time timeout =
-                            Time.milliseconds(
+                    final Duration timeout =
+                            Duration.ofMillis(
                                     configuration.get(ClientOptions.CLIENT_TIMEOUT).toMillis());
                     return new EmbeddedJobClient(
                             jobId, dispatcherGateway, retryExecutor, timeout, userCodeClassloader);

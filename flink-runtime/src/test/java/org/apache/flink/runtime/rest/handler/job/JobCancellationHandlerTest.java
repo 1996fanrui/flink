@@ -132,7 +132,7 @@ class JobCancellationHandlerTest {
     private static JobCancellationHandler createHandler(RestfulGateway gateway) {
         return new JobCancellationHandler(
                 () -> CompletableFuture.completedFuture(gateway),
-                Time.hours(1),
+                Time.ofHours(1),
                 Collections.emptyMap(),
                 JobCancellationHeaders.getInstance(),
                 TerminationModeQueryParameter.TerminationMode.CANCEL);

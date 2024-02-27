@@ -62,12 +62,12 @@ class SubtaskExecutionAttemptAccumulatorsHandlerTest {
         final SubtaskExecutionAttemptAccumulatorsHandler handler =
                 new SubtaskExecutionAttemptAccumulatorsHandler(
                         () -> null,
-                        Time.milliseconds(100L),
+                        Time.ofMillis(100L),
                         Collections.emptyMap(),
                         SubtaskExecutionAttemptAccumulatorsHeaders.getInstance(),
                         new DefaultExecutionGraphCache(
                                 restHandlerConfiguration.getTimeout(),
-                                Time.milliseconds(restHandlerConfiguration.getRefreshInterval())),
+                                Time.ofMillis(restHandlerConfiguration.getRefreshInterval())),
                         Executors.directExecutor());
 
         // Instance a empty request.

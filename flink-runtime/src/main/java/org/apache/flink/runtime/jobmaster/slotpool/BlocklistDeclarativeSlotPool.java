@@ -33,6 +33,7 @@ import org.apache.flink.util.FlinkRuntimeException;
 
 import javax.annotation.Nullable;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Optional;
@@ -55,8 +56,8 @@ public class BlocklistDeclarativeSlotPool extends DefaultDeclarativeSlotPool {
             AllocatedSlotPool slotPool,
             Consumer<? super Collection<ResourceRequirement>> notifyNewResourceRequirements,
             BlockedTaskManagerChecker blockedTaskManagerChecker,
-            Time idleSlotTimeout,
-            Time rpcTimeout) {
+            Duration idleSlotTimeout,
+            Duration rpcTimeout) {
         super(jobId, slotPool, notifyNewResourceRequirements, idleSlotTimeout, rpcTimeout);
         this.blockedTaskManagerChecker = checkNotNull(blockedTaskManagerChecker);
     }

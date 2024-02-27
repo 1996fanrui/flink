@@ -63,7 +63,7 @@ public class RestServerSSLAuthITCase {
     private static final String UNTRUSTED_KEY_STORE_FILE =
             RestServerSSLAuthITCase.class.getResource("/untrusted.keystore").getFile();
 
-    private static final Time timeout = Time.seconds(10L);
+    private static final Time timeout = Time.ofSeconds(10L);
 
     private final Configuration clientConfig;
     private final Configuration serverConfig;

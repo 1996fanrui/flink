@@ -32,11 +32,11 @@ public class TestingUtils {
     private static final UUID ZERO_UUID = new UUID(0L, 0L);
 
     public static final Duration TESTING_DURATION = Duration.ofMinutes(2L);
-    public static final Time TIMEOUT = Time.minutes(1L);
+    public static final Time TIMEOUT = Time.ofMinutes(1L);
     public static final Duration DEFAULT_ASK_TIMEOUT = Duration.ofSeconds(200);
 
     public static Time infiniteTime() {
-        return Time.milliseconds(Integer.MAX_VALUE);
+        return Time.ofMillis(Integer.MAX_VALUE);
     }
 
     public static Duration infiniteDuration() {

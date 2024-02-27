@@ -45,7 +45,7 @@ public abstract class SessionClusterEntrypoint extends ClusterEntrypoint {
         final JobManagerOptions.JobStoreType jobStoreType =
                 configuration.get(JobManagerOptions.JOB_STORE_TYPE);
         final Time expirationTime =
-                Time.seconds(configuration.get(JobManagerOptions.JOB_STORE_EXPIRATION_TIME));
+                Time.ofSeconds(configuration.get(JobManagerOptions.JOB_STORE_EXPIRATION_TIME));
         final int maximumCapacity = configuration.get(JobManagerOptions.JOB_STORE_MAX_CAPACITY);
 
         switch (jobStoreType) {

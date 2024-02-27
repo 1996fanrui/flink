@@ -109,7 +109,7 @@ class DeclarativeSlotPoolBridgeResourceDeclarationTest {
 
         // requesting the allocation of a new slot should increase the requirements
         declarativeSlotPoolBridge.requestNewAllocatedSlot(
-                new SlotRequestId(), ResourceProfile.UNKNOWN, Time.minutes(5));
+                new SlotRequestId(), ResourceProfile.UNKNOWN, Time.ofMinutes(5));
         assertThat(requirementListener.getRequirements().getResourceCount(ResourceProfile.UNKNOWN))
                 .isOne();
     }
@@ -131,7 +131,7 @@ class DeclarativeSlotPoolBridgeResourceDeclarationTest {
                                             declarativeSlotPoolBridge.requestNewAllocatedSlot(
                                                     new SlotRequestId(),
                                                     ResourceProfile.UNKNOWN,
-                                                    Time.milliseconds(5)),
+                                                    Time.ofMillis(5)),
                                     mainThreadExecutor)
                             .get();
 

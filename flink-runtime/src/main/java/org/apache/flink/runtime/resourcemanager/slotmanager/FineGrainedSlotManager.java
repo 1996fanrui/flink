@@ -226,7 +226,7 @@ public class FineGrainedSlotManager implements SlotManager {
                     scheduledExecutor.scheduleWithFixedDelay(
                             () -> mainThreadExecutor.execute(this::checkClusterReconciliation),
                             0L,
-                            taskManagerTimeout.toMilliseconds(),
+                            taskManagerTimeout.toMillis(),
                             TimeUnit.MILLISECONDS);
         }
 

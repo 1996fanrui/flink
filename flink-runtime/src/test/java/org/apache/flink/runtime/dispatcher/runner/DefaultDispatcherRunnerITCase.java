@@ -76,7 +76,7 @@ class DefaultDispatcherRunnerITCase {
 
     private static final Logger LOG = LoggerFactory.getLogger(DefaultDispatcherRunnerITCase.class);
 
-    private static final Time TIMEOUT = Time.seconds(10L);
+    private static final Time TIMEOUT = Time.ofSeconds(10L);
 
     @RegisterExtension
     public static AllCallbackWrapper<TestingRpcServiceExtension> rpcServiceExtensionWrapper =

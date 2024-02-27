@@ -34,15 +34,13 @@ import org.apache.flink.table.planner.utils.TableTestUtil
 import org.apache.flink.table.types.inference.{TypeInference, TypeStrategies}
 import org.apache.flink.testutils.junit.extensions.parameterized.ParameterizedTestExtension
 import org.apache.flink.types.Row
-
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.TestTemplate
 import org.junit.jupiter.api.extension.ExtendWith
 
 import java.sql.Timestamp
-import java.time.{Instant, ZoneId}
+import java.time.{Duration, Instant, ZoneId}
 import java.util.TimeZone
-
 import scala.collection.mutable
 
 @ExtendWith(Array(classOf[ParameterizedTestExtension]))
@@ -262,19 +260,19 @@ class MatchRecognizeITCase(backend: StateBackendMode) extends StreamingWithState
 
     val data = new mutable.MutableList[(String, Long, Int, Int)]
     // first window
-    data.+=(("ACME", Time.seconds(1).toMilliseconds, 1, 1))
-    data.+=(("ACME", Time.seconds(2).toMilliseconds, 2, 2))
+    data.+=(("ACME", Time.ofSeconds(1).toMillis, 1, 1))
+    data.+=(("ACME", Time.ofSeconds(2).toMillis, 2, 2))
     // second window
-    data.+=(("ACME", Time.seconds(4).toMilliseconds, 1, 4))
-    data.+=(("ACME", Time.seconds(5).toMilliseconds, 1, 3))
+    data.+=(("ACME", Time.ofSeconds(4).toMillis, 1, 4))
+    data.+=(("ACME", Time.ofSeconds(5).toMillis, 1, 3))
     // third window
-    data.+=(("ACME", Time.seconds(7).toMilliseconds, 2, 3))
-    data.+=(("ACME", Time.seconds(8).toMilliseconds, 2, 3))
+    data.+=(("ACME", Time.ofSeconds(7).toMillis, 2, 3))
+    data.+=(("ACME", Time.ofSeconds(8).toMillis, 2, 3))
 
-    data.+=(("ACME1", Time.seconds(1).toMilliseconds, 20, 4))
-    data.+=(("ACME1", Time.seconds(1).toMilliseconds, 24, 4))
-    data.+=(("ACME1", Time.seconds(1).toMilliseconds, 25, 3))
-    data.+=(("ACME1", Time.seconds(1).toMilliseconds, 19, 8))
+    data.+=(("ACME1", Time.ofSeconds(1).toMillis, 20, 4))
+    data.+=(("ACME1", Time.ofSeconds(1).toMillis, 24, 4))
+    data.+=(("ACME1", Time.ofSeconds(1).toMillis, 25, 3))
+    data.+=(("ACME1", Time.ofSeconds(1).toMillis, 19, 8))
 
     val t = env
       .fromCollection(data)
@@ -323,11 +321,11 @@ class MatchRecognizeITCase(backend: StateBackendMode) extends StreamingWithState
 
     val data = new mutable.MutableList[(String, Long, Int, Int)]
     // first window
-    data.+=(("ACME", Time.seconds(1).toMilliseconds, 1, 1))
-    data.+=(("ACME", Time.seconds(2).toMilliseconds, 2, 2))
+    data.+=(("ACME", Duration.ofSeconds(1).toMillis, 1, 1))
+    data.+=(("ACME", Duration.ofSeconds(2).toMillis, 2, 2))
     // second window
-    data.+=(("ACME", Time.seconds(4).toMilliseconds, 1, 4))
-    data.+=(("ACME", Time.seconds(5).toMilliseconds, 1, 3))
+    data.+=(("ACME", Duration.ofSeconds(4).toMillis, 1, 4))
+    data.+=(("ACME", Duration.ofSeconds(5).toMillis, 1, 3))
 
     val tickerEvents = env
       .fromCollection(data)

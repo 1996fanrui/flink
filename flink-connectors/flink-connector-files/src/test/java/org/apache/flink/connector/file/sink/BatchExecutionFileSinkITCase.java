@@ -49,7 +49,7 @@ class BatchExecutionFileSinkITCase extends FileSinkITBase {
         env.configure(config, getClass().getClassLoader());
 
         if (triggerFailover) {
-            env.setRestartStrategy(RestartStrategies.fixedDelayRestart(1, Time.milliseconds(100)));
+            env.setRestartStrategy(RestartStrategies.fixedDelayRestart(1, Time.ofMillis(100)));
         } else {
             env.setRestartStrategy(RestartStrategies.noRestart());
         }

@@ -522,8 +522,8 @@ public class AdaptiveSchedulerTest {
                         jobGraph.getJobID(),
                         new DefaultAllocatedSlotPool(),
                         ignored -> {},
-                        Time.minutes(10),
-                        Time.minutes(10));
+                        Time.ofMinutes(10),
+                        Time.ofMinutes(10));
 
         final Configuration configuration = createConfigurationWithNoTimeouts();
         configuration.set(JobManagerOptions.MIN_PARALLELISM_INCREASE, 1);

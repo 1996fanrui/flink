@@ -74,7 +74,7 @@ class TtlTestConfig {
                         UPDATE_GENERATOR_SRC_SLEEP_TIME.key(),
                         UPDATE_GENERATOR_SRC_SLEEP_TIME.defaultValue());
         Time ttl =
-                Time.milliseconds(
+                Time.ofMillis(
                         pt.getLong(
                                 STATE_TTL_VERIFIER_TTL_MILLI.key(),
                                 STATE_TTL_VERIFIER_TTL_MILLI.defaultValue()));

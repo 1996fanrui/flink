@@ -155,7 +155,7 @@ public class TaskExecutorToResourceManagerConnection
                 long timeoutMillis)
                 throws Exception {
 
-            Time timeout = Time.milliseconds(timeoutMillis);
+            Time timeout = Time.ofMillis(timeoutMillis);
             return resourceManager.registerTaskExecutor(taskExecutorRegistration, timeout);
         }
     }

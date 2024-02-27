@@ -111,7 +111,7 @@ class MiniBatchIntervalInferTest extends TableTestBase {
     val tableConfig = util.tableEnv.getConfig
     tableConfig
       .set(ExecutionConfigOptions.TABLE_EXEC_MINIBATCH_ALLOW_LATENCY, Duration.ofSeconds(1))
-    withEarlyFireDelay(tableConfig, Time.milliseconds(500))
+    withEarlyFireDelay(tableConfig, Time.ofMillis(500))
     val sql =
       """
         | SELECT b, SUM(cnt)
@@ -427,7 +427,7 @@ class MiniBatchIntervalInferTest extends TableTestBase {
   }
 
   private def withEarlyFireDelay(tableConfig: TableConfig, interval: Time): Unit = {
-    val intervalInMillis = interval.toMilliseconds
+    val intervalInMillis = interval.toMillis
     val earlyFireDelay: Duration = tableConfig
       .getOptional(TABLE_EXEC_EMIT_EARLY_FIRE_DELAY)
       .orElse(null)

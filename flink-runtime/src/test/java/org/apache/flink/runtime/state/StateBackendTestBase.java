@@ -1577,7 +1577,7 @@ public abstract class StateBackendTestBase<B extends AbstractStateBackend> {
         try {
             ValueStateDescriptor<MutableLong> kvId =
                     new ValueStateDescriptor<>("id", MutableLong.class);
-            kvId.enableTimeToLive(StateTtlConfig.newBuilder(Time.seconds(1)).build());
+            kvId.enableTimeToLive(StateTtlConfig.newBuilder(Time.ofSeconds(1)).build());
 
             ValueState<MutableLong> state =
                     backend.getPartitionedState(

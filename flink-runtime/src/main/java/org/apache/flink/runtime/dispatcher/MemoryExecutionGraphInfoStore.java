@@ -58,7 +58,7 @@ public class MemoryExecutionGraphInfoStore implements ExecutionGraphInfoStore {
     private final Thread shutdownHook;
 
     public MemoryExecutionGraphInfoStore() {
-        this(Time.milliseconds(0), 0, null, null);
+        this(Time.ofMillis(0), 0, null, null);
     }
 
     public MemoryExecutionGraphInfoStore(
@@ -66,7 +66,7 @@ public class MemoryExecutionGraphInfoStore implements ExecutionGraphInfoStore {
             int maximumCapacity,
             @Nullable ScheduledExecutor scheduledExecutor,
             @Nullable Ticker ticker) {
-        final long expirationMills = expirationTime.toMilliseconds();
+        final long expirationMills = expirationTime.toMillis();
         CacheBuilder<Object, Object> cacheBuilder = CacheBuilder.newBuilder();
         if (expirationMills > 0) {
             cacheBuilder.expireAfterWrite(expirationMills, TimeUnit.MILLISECONDS);
@@ -83,8 +83,8 @@ public class MemoryExecutionGraphInfoStore implements ExecutionGraphInfoStore {
             this.cleanupFuture =
                     scheduledExecutor.scheduleWithFixedDelay(
                             serializableExecutionGraphInfos::cleanUp,
-                            expirationTime.toMilliseconds(),
-                            expirationTime.toMilliseconds(),
+                            expirationTime.toMillis(),
+                            expirationTime.toMillis(),
                             TimeUnit.MILLISECONDS);
         } else {
             this.cleanupFuture = null;

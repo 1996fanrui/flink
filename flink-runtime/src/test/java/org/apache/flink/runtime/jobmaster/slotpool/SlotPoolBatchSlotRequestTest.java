@@ -18,7 +18,6 @@
 
 package org.apache.flink.runtime.jobmaster.slotpool;
 
-import org.apache.flink.api.common.time.Time;
 import org.apache.flink.core.testutils.FlinkMatchers;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
@@ -83,7 +82,7 @@ public class SlotPoolBatchSlotRequestTest extends TestLogger {
     @Test
     public void testPendingBatchSlotRequestTimeout() throws Exception {
         try (final SlotPool slotPool =
-                createAndSetUpSlotPool(mainThreadExecutor, null, Time.milliseconds(2L))) {
+                createAndSetUpSlotPool(mainThreadExecutor, null, Duration.ofMillis(2L))) {
             final CompletableFuture<PhysicalSlot> slotFuture =
                     SlotPoolUtils.requestNewAllocatedBatchSlot(
                             slotPool, mainThreadExecutor, ResourceProfile.UNKNOWN);
@@ -103,7 +102,7 @@ public class SlotPoolBatchSlotRequestTest extends TestLogger {
      */
     @Test
     public void testPendingBatchSlotRequestDoesNotTimeoutIfFulfillingSlotExists() throws Exception {
-        final Time batchSlotTimeout = Time.milliseconds(2L);
+        final Duration batchSlotTimeout = Duration.ofMillis(2L);
         final ManualClock clock = new ManualClock();
 
         try (final DeclarativeSlotPoolBridge slotPool =
@@ -145,7 +144,7 @@ public class SlotPoolBatchSlotRequestTest extends TestLogger {
                 (jobMasterId, resourceRequirements) ->
                         FutureUtils.completedExceptionally(new FlinkException("Failed request")));
 
-        final Time batchSlotTimeout = Time.milliseconds(1000L);
+        final Duration batchSlotTimeout = Duration.ofMillis(1000L);
         try (final SlotPool slotPool =
                 createAndSetUpSlotPool(
                         mainThreadExecutor, testingResourceManagerGateway, batchSlotTimeout)) {
@@ -165,7 +164,7 @@ public class SlotPoolBatchSlotRequestTest extends TestLogger {
     @Test
     public void testPendingBatchSlotRequestTimeoutAfterSlotRelease() throws Exception {
         final ManualClock clock = new ManualClock();
-        final Time batchSlotTimeout = Time.milliseconds(10000L);
+        final Duration batchSlotTimeout = Duration.ofMillis(10000L);
 
         try (final DeclarativeSlotPoolBridge slotPool =
                 createAndSetUpSlotPool(mainThreadExecutor, null, batchSlotTimeout, clock)) {
@@ -218,12 +217,12 @@ public class SlotPoolBatchSlotRequestTest extends TestLogger {
             DeclarativeSlotPoolBridge slotPool,
             ComponentMainThreadExecutor componentMainThreadExecutor,
             ManualClock clock,
-            Time batchSlotTimeout) {
+            Duration batchSlotTimeout) {
         // trigger batch slot timeout check which marks unfulfillable slots
         runBatchSlotTimeoutCheck(slotPool, componentMainThreadExecutor);
 
         // advance clock behind timeout
-        clock.advanceTime(batchSlotTimeout.toMilliseconds() + 1L, TimeUnit.MILLISECONDS);
+        clock.advanceTime(batchSlotTimeout.toMillis() + 1L, TimeUnit.MILLISECONDS);
 
         // timeout all as unfulfillable marked slots
         runBatchSlotTimeoutCheck(slotPool, componentMainThreadExecutor);
@@ -239,7 +238,7 @@ public class SlotPoolBatchSlotRequestTest extends TestLogger {
     private DeclarativeSlotPoolBridge createAndSetUpSlotPool(
             final ComponentMainThreadExecutor componentMainThreadExecutor,
             @Nullable final ResourceManagerGateway resourceManagerGateway,
-            final Time batchSlotTimeout)
+            final Duration batchSlotTimeout)
             throws Exception {
 
         return new DeclarativeSlotPoolBridgeBuilder()
@@ -251,7 +250,7 @@ public class SlotPoolBatchSlotRequestTest extends TestLogger {
     private DeclarativeSlotPoolBridge createAndSetUpSlotPool(
             final ComponentMainThreadExecutor componentMainThreadExecutor,
             @Nullable final ResourceManagerGateway resourceManagerGateway,
-            final Time batchSlotTimeout,
+            final Duration batchSlotTimeout,
             final Clock clock)
             throws Exception {
 

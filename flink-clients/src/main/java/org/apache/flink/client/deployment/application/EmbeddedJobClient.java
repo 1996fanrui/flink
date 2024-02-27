@@ -40,6 +40,7 @@ import org.apache.flink.util.concurrent.ScheduledExecutor;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -59,7 +60,7 @@ public class EmbeddedJobClient implements JobClient, CoordinationRequestGateway 
 
     private final ScheduledExecutor retryExecutor;
 
-    private final Time timeout;
+    private final Duration timeout;
 
     private final ClassLoader classLoader;
 
@@ -67,7 +68,7 @@ public class EmbeddedJobClient implements JobClient, CoordinationRequestGateway 
             final JobID jobId,
             final DispatcherGateway dispatcherGateway,
             final ScheduledExecutor retryExecutor,
-            final Time rpcTimeout,
+            final Duration rpcTimeout,
             final ClassLoader classLoader) {
         this.jobId = checkNotNull(jobId);
         this.dispatcherGateway = checkNotNull(dispatcherGateway);
@@ -136,7 +137,7 @@ public class EmbeddedJobClient implements JobClient, CoordinationRequestGateway 
     public CompletableFuture<JobExecutionResult> getJobExecutionResult() {
         checkNotNull(classLoader);
 
-        final Time retryPeriod = Time.milliseconds(100L);
+        final Duration retryPeriod = Duration.ofMillis(100L);
         return JobStatusPollingUtils.getJobResult(
                         dispatcherGateway, jobId, retryExecutor, timeout, retryPeriod)
                 .thenApply(

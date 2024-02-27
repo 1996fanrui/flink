@@ -172,7 +172,7 @@ class FineGrainedSlotManagerDefaultResourceAllocationStrategyITCase
      */
     @Test
     void testTimeoutForUnusedTaskManager() throws Exception {
-        final Time taskManagerTimeout = Time.milliseconds(50L);
+        final Time taskManagerTimeout = Time.ofMillis(50L);
 
         final CompletableFuture<InstanceID> releaseResourceFuture = new CompletableFuture<>();
         final AllocationID allocationId = new AllocationID();

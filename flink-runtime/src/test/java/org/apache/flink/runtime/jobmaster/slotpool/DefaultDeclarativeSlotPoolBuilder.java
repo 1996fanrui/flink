@@ -30,8 +30,8 @@ final class DefaultDeclarativeSlotPoolBuilder {
     private AllocatedSlotPool allocatedSlotPool = new DefaultAllocatedSlotPool();
     private Consumer<? super Collection<ResourceRequirement>> notifyNewResourceRequirements =
             ignored -> {};
-    private Time idleSlotTimeout = Time.seconds(20);
-    private Time rpcTimeout = Time.seconds(20);
+    private Time idleSlotTimeout = Time.ofSeconds(20);
+    private Time rpcTimeout = Time.ofSeconds(20);
 
     public DefaultDeclarativeSlotPoolBuilder setAllocatedSlotPool(
             AllocatedSlotPool allocatedSlotPool) {

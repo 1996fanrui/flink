@@ -153,7 +153,7 @@ public class RowTimeDeduplicateFunctionTest extends RowTimeDeduplicateFunctionTe
                     new RowTimeMiniBatchDeduplicateFunction(
                             inputRowType,
                             serializer,
-                            minTtlTime.toMilliseconds(),
+                            minTtlTime.toMillis(),
                             rowTimeIndex,
                             generateUpdateBefore,
                             generateInsert,
@@ -165,7 +165,7 @@ public class RowTimeDeduplicateFunctionTest extends RowTimeDeduplicateFunctionTe
             RowTimeDeduplicateFunction func =
                     new RowTimeDeduplicateFunction(
                             inputRowType,
-                            minTtlTime.toMilliseconds(),
+                            minTtlTime.toMillis(),
                             rowTimeIndex,
                             generateUpdateBefore,
                             generateInsert,
@@ -208,7 +208,7 @@ public class RowTimeDeduplicateFunctionTest extends RowTimeDeduplicateFunctionTe
         testHarness.processWatermark(new Watermark(302));
 
         // test 3: expire the state
-        testHarness.setStateTtlProcessingTime(minTtlTime.toMilliseconds() + 1);
+        testHarness.setStateTtlProcessingTime(minTtlTime.toMillis() + 1);
         testHarness.processElement(insertRecord("key1", 12, 400L));
         testHarness.processElement(insertRecord("key2", 11, 401L));
         testHarness.processWatermark(402);
@@ -233,7 +233,7 @@ public class RowTimeDeduplicateFunctionTest extends RowTimeDeduplicateFunctionTe
                     new RowTimeMiniBatchDeduplicateFunction(
                             inputRowType,
                             serializer,
-                            minTtlTime.toMilliseconds(),
+                            minTtlTime.toMillis(),
                             rowTimeIndex,
                             generateUpdateBefore,
                             generateInsert,
@@ -245,7 +245,7 @@ public class RowTimeDeduplicateFunctionTest extends RowTimeDeduplicateFunctionTe
             RowTimeDeduplicateFunction func =
                     new RowTimeDeduplicateFunction(
                             inputRowType,
-                            minTtlTime.toMilliseconds(),
+                            minTtlTime.toMillis(),
                             rowTimeIndex,
                             generateUpdateBefore,
                             generateInsert,
@@ -287,7 +287,7 @@ public class RowTimeDeduplicateFunctionTest extends RowTimeDeduplicateFunctionTe
         testHarness.processWatermark(new Watermark(302));
 
         // test 3: expire the state
-        testHarness.setStateTtlProcessingTime(minTtlTime.toMilliseconds() + 1);
+        testHarness.setStateTtlProcessingTime(minTtlTime.toMillis() + 1);
         testHarness.processElement(insertRecord("key1", 12, 400L));
         testHarness.processElement(insertRecord("key2", 11, 401L));
         testHarness.processWatermark(402);

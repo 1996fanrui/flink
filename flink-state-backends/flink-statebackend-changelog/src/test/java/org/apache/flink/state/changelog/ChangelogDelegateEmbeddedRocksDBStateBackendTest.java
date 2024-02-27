@@ -111,7 +111,7 @@ public class ChangelogDelegateEmbeddedRocksDBStateBackendTest
                         .configure(configuration, Thread.currentThread().getContextClassLoader());
         ChangelogStateBackendTestUtils.testMaterializedRestore(
                 stateBackend,
-                StateTtlConfig.newBuilder(Time.minutes(1)).build(),
+                StateTtlConfig.newBuilder(Time.ofMinutes(1)).build(),
                 env,
                 streamFactory);
     }

@@ -335,7 +335,7 @@ public class ExecutionGraphTestUtils {
     public static DefaultExecutionGraph createExecutionGraph(
             ScheduledExecutorService executor, JobVertex... vertices) throws Exception {
 
-        return createExecutionGraph(executor, Time.seconds(10L), vertices);
+        return createExecutionGraph(executor, Time.ofSeconds(10L), vertices);
     }
 
     public static DefaultExecutionGraph createExecutionGraph(

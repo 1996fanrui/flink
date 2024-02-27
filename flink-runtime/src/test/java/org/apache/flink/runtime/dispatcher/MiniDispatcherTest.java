@@ -73,7 +73,7 @@ import static org.junit.Assert.assertThat;
 /** Tests for the {@link MiniDispatcher}. */
 public class MiniDispatcherTest extends TestLogger {
 
-    private static final Time timeout = Time.seconds(10L);
+    private static final Time timeout = Time.ofSeconds(10L);
 
     @ClassRule public static TemporaryFolder temporaryFolder = new TemporaryFolder();
 
@@ -309,7 +309,7 @@ public class MiniDispatcherTest extends TestLogger {
             final DispatcherGateway dispatcherGateway =
                     miniDispatcher.getSelfGateway(DispatcherGateway.class);
 
-            dispatcherGateway.cancelJob(jobGraph.getJobID(), Time.seconds(10L));
+            dispatcherGateway.cancelJob(jobGraph.getJobID(), Time.ofSeconds(10L));
             testingJobManagerRunner.completeResultFuture(
                     new ExecutionGraphInfo(
                             new ArchivedExecutionGraphBuilder()

@@ -36,6 +36,7 @@ import org.apache.flink.util.TimeUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -127,10 +128,10 @@ public class MetricQueryService extends RpcEndpoint implements MetricQueryServic
 
     @Override
     public CompletableFuture<MetricDumpSerialization.MetricSerializationResult> queryMetrics(
-            Time timeout) {
+            Duration timeout) {
         return callAsync(
                 () -> enforceSizeLimit(serializer.serialize(counters, gauges, histograms, meters)),
-                TimeUtils.toDuration(timeout));
+                timeout);
     }
 
     private MetricDumpSerialization.MetricSerializationResult enforceSizeLimit(

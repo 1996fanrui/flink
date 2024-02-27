@@ -69,7 +69,7 @@ import static org.junit.Assert.assertThat;
 /** Tests for the execution deployment-reconciliation logic in the {@link JobMaster}. */
 public class JobMasterExecutionDeploymentReconciliationTest extends TestLogger {
 
-    private static final Time testingTimeout = Time.seconds(10L);
+    private static final Time testingTimeout = Time.ofSeconds(10L);
 
     private final HeartbeatServices heartbeatServices =
             new HeartbeatServicesImpl(Integer.MAX_VALUE, Integer.MAX_VALUE);

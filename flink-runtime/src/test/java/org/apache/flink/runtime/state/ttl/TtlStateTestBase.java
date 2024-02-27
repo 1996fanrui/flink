@@ -135,7 +135,7 @@ public abstract class TtlStateTestBase {
     }
 
     protected static StateTtlConfig.Builder getConfBuilder(long ttl) {
-        return StateTtlConfig.newBuilder(Time.milliseconds(ttl));
+        return StateTtlConfig.newBuilder(Time.ofMillis(ttl));
     }
 
     protected <S extends State> StateDescriptor<S, Object> initTest(StateTtlConfig ttlConfig)

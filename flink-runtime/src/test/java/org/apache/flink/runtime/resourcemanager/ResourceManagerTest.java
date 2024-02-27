@@ -94,7 +94,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /** Tests for the {@link ResourceManager}. */
 class ResourceManagerTest {
 
-    private static final Time TIMEOUT = Time.minutes(2L);
+    private static final Time TIMEOUT = Time.ofMinutes(2L);
 
     private static final HeartbeatServices heartbeatServices =
             new HeartbeatServicesImpl(1000L, 10000L);
@@ -381,7 +381,7 @@ class ResourceManagerTest {
                             return null;
                         },
                         TIMEOUT)
-                .get(TIMEOUT.toMilliseconds(), TimeUnit.MILLISECONDS);
+                .get(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
         processRequirementsFuture.get();
     }
 
@@ -718,7 +718,7 @@ class ResourceManagerTest {
         executor.triggerAll();
 
         ResourceOverview overview =
-                resourceManagerGateway.requestResourceOverview(Time.seconds(5)).get();
+                resourceManagerGateway.requestResourceOverview(Time.ofSeconds(5)).get();
         assertThat(overview.getNumberTaskManagers()).isEqualTo(2);
         assertThat(overview.getNumberRegisteredSlots()).isEqualTo(8);
         assertThat(overview.getNumberFreeSlots()).isEqualTo(8);
@@ -737,7 +737,7 @@ class ResourceManagerTest {
                                 Long.MAX_VALUE)));
 
         ResourceOverview overviewBlocked =
-                resourceManagerGateway.requestResourceOverview(Time.seconds(5)).get();
+                resourceManagerGateway.requestResourceOverview(Time.ofSeconds(5)).get();
         assertThat(overviewBlocked.getNumberTaskManagers()).isEqualTo(2);
         assertThat(overviewBlocked.getNumberRegisteredSlots()).isEqualTo(8);
         assertThat(overviewBlocked.getNumberFreeSlots()).isEqualTo(3);
@@ -783,7 +783,7 @@ class ResourceManagerTest {
                             new SlotID(taskManagerId, i), ResourceProfile.fromResources(1, 1024)));
         }
         resourceManagerGateway.sendSlotReport(
-                taskManagerId, instanceID, new SlotReport(slots), Time.seconds(5));
+                taskManagerId, instanceID, new SlotReport(slots), Time.ofSeconds(5));
     }
 
     private JobMasterGateway createJobMasterGateway(Collection<BlockedNode> receivedBlockedNodes) {

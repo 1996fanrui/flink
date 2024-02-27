@@ -101,7 +101,7 @@ public class ThreadInfoRequestCoordinator
             // messages to the task managers, but only wait for the responses
             // and then ignore them.
             long expectedDuration = numSamples * delayBetweenSamples.toMillis();
-            Time timeout = Time.milliseconds(expectedDuration + requestTimeout.toMillis());
+            Time timeout = Time.ofMillis(expectedDuration + requestTimeout.toMillis());
 
             // Add the pending request before scheduling the discard task to
             // prevent races with removing it again.

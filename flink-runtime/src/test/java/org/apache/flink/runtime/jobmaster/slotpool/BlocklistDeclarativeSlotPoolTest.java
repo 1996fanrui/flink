@@ -305,8 +305,8 @@ class BlocklistDeclarativeSlotPoolTest {
                     new DefaultAllocatedSlotPool(),
                     ignored -> {},
                     blockedTaskManagerChecker,
-                    Time.seconds(20),
-                    Time.seconds(20));
+                    Time.ofSeconds(20),
+                    Time.ofSeconds(20));
         }
 
         public static BlocklistDeclarativeSlotPoolBuilder builder() {

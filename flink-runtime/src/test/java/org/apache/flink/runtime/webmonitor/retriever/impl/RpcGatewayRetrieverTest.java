@@ -45,7 +45,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /** Tests for the {@link RpcGatewayRetriever}. */
 class RpcGatewayRetrieverTest {
 
-    private static final Time TIMEOUT = Time.seconds(10L);
+    private static final Time TIMEOUT = Time.ofSeconds(10L);
     private static TestingRpcService rpcService;
 
     @BeforeAll
@@ -103,7 +103,7 @@ class RpcGatewayRetrieverTest {
                     dummyRpcEndpoint.getAddress(), leaderSessionId);
 
             final DummyGateway dummyGateway =
-                    gatewayFuture.get(TIMEOUT.toMilliseconds(), TimeUnit.MILLISECONDS);
+                    gatewayFuture.get(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
 
             assertThat(dummyGateway.getAddress()).isEqualTo(dummyRpcEndpoint.getAddress());
             FlinkAssertions.assertThatFuture(dummyGateway.foobar(TIMEOUT))
@@ -116,7 +116,7 @@ class RpcGatewayRetrieverTest {
 
             final CompletableFuture<DummyGateway> gatewayFuture2 = gatewayRetriever.getFuture();
             final DummyGateway dummyGateway2 =
-                    gatewayFuture2.get(TIMEOUT.toMilliseconds(), TimeUnit.MILLISECONDS);
+                    gatewayFuture2.get(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
 
             assertThat(dummyGateway2.getAddress()).isEqualTo(dummyRpcEndpoint2.getAddress());
             FlinkAssertions.assertThatFuture(dummyGateway2.foobar(TIMEOUT))

@@ -57,7 +57,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class MetricFetcherTest {
     @Test
     void testUpdate() {
-        final Time timeout = Time.seconds(10L);
+        final Time timeout = Time.ofSeconds(10L);
         JobID jobID = new JobID();
         ResourceID tmRID = ResourceID.generate();
 
@@ -232,7 +232,7 @@ class MetricFetcherTest {
     void testIgnoreUpdateRequestWhenFetchingMetrics() throws InterruptedException {
         final long updateInterval = 1000L;
         final long waitTimeBeforeReturnMetricResults = updateInterval * 2;
-        final Time timeout = Time.seconds(10L);
+        final Time timeout = Time.ofSeconds(10L);
         final AtomicInteger requestMetricQueryServiceGatewaysCounter = new AtomicInteger(0);
         final JobID jobID = new JobID();
         final ResourceID tmRID = ResourceID.generate();
@@ -366,7 +366,7 @@ class MetricFetcherTest {
                 () -> CompletableFuture.completedFuture(restfulGateway),
                 address -> null,
                 Executors.directExecutor(),
-                Time.seconds(10L),
+                Time.ofSeconds(10L),
                 updateInterval);
     }
 

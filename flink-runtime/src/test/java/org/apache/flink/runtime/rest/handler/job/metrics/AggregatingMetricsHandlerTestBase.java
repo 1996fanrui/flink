@@ -61,7 +61,7 @@ abstract class AggregatingMetricsHandlerTestBase<
 
     private static final DispatcherGateway MOCK_DISPATCHER_GATEWAY;
     private static final GatewayRetriever<DispatcherGateway> LEADER_RETRIEVER;
-    private static final Time TIMEOUT = Time.milliseconds(50);
+    private static final Time TIMEOUT = Time.ofMillis(50);
     private static final Map<String, String> TEST_HEADERS = Collections.emptyMap();
 
     static {

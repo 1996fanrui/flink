@@ -52,7 +52,7 @@ import static org.junit.Assert.fail;
 /** Tests for {@link PhysicalSlotRequestBulkCheckerImpl}. */
 public class PhysicalSlotRequestBulkCheckerImplTest extends TestLogger {
 
-    private static final Time TIMEOUT = Time.milliseconds(50L);
+    private static final Time TIMEOUT = Time.ofMillis(50L);
 
     private static ScheduledExecutorService singleThreadScheduledExecutorService;
 
@@ -96,7 +96,7 @@ public class PhysicalSlotRequestBulkCheckerImplTest extends TestLogger {
                 createPhysicalSlotRequestBulkWithCancellationFuture(
                         cancellationFuture, new SlotRequestId());
         bulkChecker.schedulePendingRequestBulkTimeoutCheck(bulk, TIMEOUT);
-        checkNotCancelledAfter(cancellationFuture, 2 * TIMEOUT.toMilliseconds());
+        checkNotCancelledAfter(cancellationFuture, 2 * TIMEOUT.toMillis());
     }
 
     @Test
@@ -106,7 +106,7 @@ public class PhysicalSlotRequestBulkCheckerImplTest extends TestLogger {
                 createPhysicalSlotRequestBulkWithCancellationFuture(
                         cancellationFuture, new SlotRequestId());
         bulkChecker.schedulePendingRequestBulkTimeoutCheck(bulk, TIMEOUT);
-        checkNotCancelledAfter(cancellationFuture, 2 * TIMEOUT.toMilliseconds());
+        checkNotCancelledAfter(cancellationFuture, 2 * TIMEOUT.toMillis());
     }
 
     private static void checkNotCancelledAfter(CompletableFuture<?> cancellationFuture, long milli)
@@ -129,7 +129,7 @@ public class PhysicalSlotRequestBulkCheckerImplTest extends TestLogger {
                 createPhysicalSlotRequestBulkWithCancellationFuture(
                         cancellationFuture, slotRequestId);
         bulkChecker.schedulePendingRequestBulkTimeoutCheck(bulk, TIMEOUT);
-        clock.advanceTime(TIMEOUT.toMilliseconds() + 1L, TimeUnit.MILLISECONDS);
+        clock.advanceTime(TIMEOUT.toMillis() + 1L, TimeUnit.MILLISECONDS);
         assertThat(cancellationFuture.join(), is(slotRequestId));
     }
 
@@ -152,7 +152,7 @@ public class PhysicalSlotRequestBulkCheckerImplTest extends TestLogger {
         final PhysicalSlotRequestBulkWithTimestamp bulk =
                 createPhysicalSlotRequestBulkWithTimestamp(new SlotRequestId());
 
-        clock.advanceTime(TIMEOUT.toMilliseconds() + 1L, TimeUnit.MILLISECONDS);
+        clock.advanceTime(TIMEOUT.toMillis() + 1L, TimeUnit.MILLISECONDS);
         assertThat(
                 checkBulkTimeout(bulk),
                 is(PhysicalSlotRequestBulkCheckerImpl.TimeoutCheckResult.TIMEOUT));

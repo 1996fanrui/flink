@@ -160,7 +160,7 @@ public class MiniCluster implements AutoCloseableAsync {
     /** The configuration for this mini cluster. */
     private final MiniClusterConfiguration miniClusterConfiguration;
 
-    private final Time rpcTimeout;
+    private final Duration rpcTimeout;
 
     @GuardedBy("lock")
     private final List<TaskExecutor> taskManagers;

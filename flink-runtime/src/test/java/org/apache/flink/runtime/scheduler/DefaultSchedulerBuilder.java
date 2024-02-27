@@ -90,7 +90,7 @@ public class DefaultSchedulerBuilder {
     private CheckpointsCleaner checkpointCleaner = new CheckpointsCleaner();
     private CheckpointRecoveryFactory checkpointRecoveryFactory =
             new StandaloneCheckpointRecoveryFactory();
-    private Time rpcTimeout = Time.seconds(300);
+    private Time rpcTimeout = Time.ofSeconds(300);
     private BlobWriter blobWriter = VoidBlobWriter.getInstance();
     private JobManagerJobMetricGroup jobManagerJobMetricGroup =
             UnregisteredMetricGroups.createUnregisteredJobManagerJobMetricGroup();

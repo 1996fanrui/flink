@@ -45,7 +45,7 @@ public class ProcTimeDeduplicateKeepLastRowFunctionTest
             boolean generateUpdateBefore, boolean generateInsert) {
         return new ProcTimeDeduplicateKeepLastRowFunction(
                 inputRowType,
-                minTime.toMilliseconds(),
+                minTime.toMillis(),
                 generateUpdateBefore,
                 generateInsert,
                 true,

@@ -596,8 +596,8 @@ public class RestartStrategies {
                                 RestartStrategyOptions.RESTART_STRATEGY_FAILURE_RATE_DELAY);
                 return failureRateRestart(
                         maxFailures,
-                        Time.milliseconds(failureRateInterval.toMillis()),
-                        Time.milliseconds(failureRateDelay.toMillis()));
+                        Time.ofMillis(failureRateInterval.toMillis()),
+                        Time.ofMillis(failureRateDelay.toMillis()));
             default:
                 throw new IllegalArgumentException(
                         "Unknown restart strategy " + restartstrategyKind + ".");

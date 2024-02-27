@@ -95,7 +95,7 @@ public class FileExecutionGraphInfoStore implements ExecutionGraphInfoStore {
                 "Initializing {}: Storage directory {}, expiration time {}, maximum cache size {} bytes.",
                 FileExecutionGraphInfoStore.class.getSimpleName(),
                 storageDirectory,
-                expirationTime.toMilliseconds(),
+                expirationTime.toMillis(),
                 maximumCacheSizeBytes);
 
         this.storageDir = Preconditions.checkNotNull(storageDirectory);
@@ -104,7 +104,7 @@ public class FileExecutionGraphInfoStore implements ExecutionGraphInfoStore {
                 "The storage directory must exist and be a directory.");
         this.jobDetailsCache =
                 CacheBuilder.newBuilder()
-                        .expireAfterWrite(expirationTime.toMilliseconds(), TimeUnit.MILLISECONDS)
+                        .expireAfterWrite(expirationTime.toMillis(), TimeUnit.MILLISECONDS)
                         .maximumSize(maximumCapacity)
                         .removalListener(
                                 (RemovalListener<JobID, JobDetails>)
@@ -128,8 +128,8 @@ public class FileExecutionGraphInfoStore implements ExecutionGraphInfoStore {
         this.cleanupFuture =
                 scheduledExecutor.scheduleWithFixedDelay(
                         jobDetailsCache::cleanUp,
-                        expirationTime.toMilliseconds(),
-                        expirationTime.toMilliseconds(),
+                        expirationTime.toMillis(),
+                        expirationTime.toMillis(),
                         TimeUnit.MILLISECONDS);
 
         this.shutdownHook = ShutdownHookUtil.addShutdownHook(this, getClass().getSimpleName(), LOG);

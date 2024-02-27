@@ -37,6 +37,7 @@ import org.apache.flink.util.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -77,7 +78,7 @@ class SlotSharingExecutionSlotAllocator implements ExecutionSlotAllocator {
 
     private final PhysicalSlotRequestBulkChecker bulkChecker;
 
-    private final Time allocationTimeout;
+    private final Duration allocationTimeout;
 
     private final Function<ExecutionVertexID, ResourceProfile> resourceProfileRetriever;
 
@@ -87,7 +88,7 @@ class SlotSharingExecutionSlotAllocator implements ExecutionSlotAllocator {
             SlotSharingStrategy slotSharingStrategy,
             SharedSlotProfileRetrieverFactory sharedSlotProfileRetrieverFactory,
             PhysicalSlotRequestBulkChecker bulkChecker,
-            Time allocationTimeout,
+            Duration allocationTimeout,
             Function<ExecutionVertexID, ResourceProfile> resourceProfileRetriever) {
         this.slotProvider = checkNotNull(slotProvider);
         this.slotWillBeOccupiedIndefinitely = slotWillBeOccupiedIndefinitely;

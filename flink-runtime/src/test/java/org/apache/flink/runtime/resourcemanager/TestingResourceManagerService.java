@@ -51,7 +51,7 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 /** Implementation of {@link ResourceManagerService} for testing purpose. */
 public class TestingResourceManagerService implements ResourceManagerService {
 
-    private static final Time TIMEOUT = Time.seconds(10L);
+    private static final Time TIMEOUT = Time.ofSeconds(10L);
 
     private final ResourceManagerServiceImpl rmService;
     private final TestingLeaderElection leaderElection;

@@ -90,7 +90,7 @@ public abstract class AbstractTaskManagerFileHandler<M extends TaskManagerMessag
         this.fileBlobKeys =
                 CacheBuilder.newBuilder()
                         .expireAfterWrite(
-                                cacheEntryDuration.toMilliseconds(), TimeUnit.MILLISECONDS)
+                                cacheEntryDuration.toMillis(), TimeUnit.MILLISECONDS)
                         .removalListener(this::removeBlob)
                         .build(
                                 new CacheLoader<

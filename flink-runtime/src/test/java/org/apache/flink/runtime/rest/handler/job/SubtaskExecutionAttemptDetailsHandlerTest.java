@@ -124,7 +124,7 @@ class SubtaskExecutionAttemptDetailsHandlerTest {
                         () -> null,
                         address -> null,
                         Executors.directExecutor(),
-                        Time.milliseconds(1000L),
+                        Time.ofMillis(1000L),
                         MetricOptions.METRIC_FETCHER_UPDATE_INTERVAL.defaultValue());
 
         // Instance the handler.
@@ -134,12 +134,12 @@ class SubtaskExecutionAttemptDetailsHandlerTest {
         final SubtaskExecutionAttemptDetailsHandler handler =
                 new SubtaskExecutionAttemptDetailsHandler(
                         () -> null,
-                        Time.milliseconds(100L),
+                        Time.ofMillis(100L),
                         Collections.emptyMap(),
                         SubtaskExecutionAttemptDetailsHeaders.getInstance(),
                         new DefaultExecutionGraphCache(
                                 restHandlerConfiguration.getTimeout(),
-                                Time.milliseconds(restHandlerConfiguration.getRefreshInterval())),
+                                Time.ofMillis(restHandlerConfiguration.getRefreshInterval())),
                         Executors.directExecutor(),
                         metricFetcher);
 

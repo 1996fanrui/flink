@@ -91,6 +91,6 @@ public class DefaultSchedulerComponentsFactoryTest extends TestLogger {
                 iApproximateLocalRecoveryEnabled,
                 configuration,
                 SlotPoolUtils.createDeclarativeSlotPoolBridge(),
-                Time.milliseconds(10L));
+                Time.ofMillis(10L));
     }
 }

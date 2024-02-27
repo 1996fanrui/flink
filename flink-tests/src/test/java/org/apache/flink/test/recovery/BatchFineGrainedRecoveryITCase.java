@@ -261,7 +261,7 @@ public class BatchFineGrainedRecoveryITCase extends TestLogger {
         ExecutionEnvironment env = new TestEnvironment(miniCluster, 1, true);
         env.setRestartStrategy(
                 RestartStrategies.fixedDelayRestart(
-                        MAX_JOB_RESTART_ATTEMPTS, Time.milliseconds(10)));
+                        MAX_JOB_RESTART_ATTEMPTS, Time.ofMillis(10)));
         env.getConfig()
                 .setExecutionMode(
                         ExecutionMode.BATCH_FORCED); // forces all partitions to be blocking

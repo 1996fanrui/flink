@@ -970,7 +970,7 @@ public class WebMonitorEndpoint<T extends RestfulGateway> extends RestServerEndp
         handlers.add(
                 Tuple2.of(JobManagerThreadDumpHeaders.getInstance(), jobManagerThreadDumpHandler));
 
-        final Time cacheEntryDuration = Time.milliseconds(restConfiguration.getRefreshInterval());
+        final Time cacheEntryDuration = Time.ofMillis(restConfiguration.getRefreshInterval());
 
         // load profiler relative handlers
         if (clusterConfiguration.get(RestOptions.ENABLE_PROFILER)) {

@@ -30,7 +30,7 @@ public class StateConfigUtil {
      */
     public static StateTtlConfig createTtlConfig(long retentionTime) {
         if (retentionTime > 0) {
-            return StateTtlConfig.newBuilder(Time.milliseconds(retentionTime))
+            return StateTtlConfig.newBuilder(Time.ofMillis(retentionTime))
                     .setUpdateType(StateTtlConfig.UpdateType.OnCreateAndWrite)
                     .setStateVisibility(StateTtlConfig.StateVisibility.NeverReturnExpired)
                     .build();

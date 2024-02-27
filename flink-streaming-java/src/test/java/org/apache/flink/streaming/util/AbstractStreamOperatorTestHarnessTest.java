@@ -79,7 +79,7 @@ public class AbstractStreamOperatorTestHarnessTest extends TestLogger {
             result.config.setStateKeySerializer(IntSerializer.INSTANCE);
             result.config.serializeAllConfigs();
 
-            Time timeToLive = Time.hours(1);
+            Time timeToLive = Time.ofHours(1);
             result.initializeState(OperatorSubtaskState.builder().build());
             result.open();
 
@@ -98,7 +98,7 @@ public class AbstractStreamOperatorTestHarnessTest extends TestLogger {
             result.setStateTtlProcessingTime(0L);
             state.update(expectedValue);
             Assert.assertEquals(expectedValue, (int) state.value());
-            result.setStateTtlProcessingTime(timeToLive.toMilliseconds() + 1);
+            result.setStateTtlProcessingTime(timeToLive.toMillis() + 1);
             Assert.assertNull(state.value());
         }
     }

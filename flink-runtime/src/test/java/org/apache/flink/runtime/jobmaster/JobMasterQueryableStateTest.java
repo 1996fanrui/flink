@@ -66,7 +66,7 @@ import static org.junit.Assert.fail;
 /** Tests for the queryable-state logic of the {@link JobMaster}. */
 public class JobMasterQueryableStateTest extends TestLogger {
 
-    private static final Time testingTimeout = Time.seconds(10L);
+    private static final Time testingTimeout = Time.ofSeconds(10L);
 
     private static TestingRpcService rpcService;
 

@@ -59,7 +59,7 @@ class JarUploadHandlerTest {
         jarUploadHandler =
                 new JarUploadHandler(
                         () -> CompletableFuture.completedFuture(mockDispatcherGateway),
-                        Time.seconds(10),
+                        Time.ofSeconds(10),
                         Collections.emptyMap(),
                         JarUploadHeaders.getInstance(),
                         jarDir,

@@ -46,7 +46,7 @@ public class RpcUtils {
      * private method {@code checkMaxDelay()} in {@link
      * org.apache.pekko.actor.LightArrayRevolverScheduler}.
      */
-    public static final Time INF_TIMEOUT = Time.seconds(21474835);
+    public static final Time INF_TIMEOUT = Time.ofSeconds(21474835);
 
     public static final Duration INF_DURATION = Duration.ofSeconds(21474835);
 

@@ -19,7 +19,6 @@
 package org.apache.flink.runtime.scheduler;
 
 import org.apache.flink.api.common.JobStatus;
-import org.apache.flink.api.common.time.Time;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
 import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutor;
 import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutorServiceAdapter;
@@ -54,6 +53,7 @@ import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.util.Collections;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
@@ -98,7 +98,7 @@ public class DefaultSchedulerBatchSchedulingTest extends TestLogger {
     @Test
     public void testSchedulingOfJobWithFewerSlotsThanParallelism() throws Exception {
         final int parallelism = 5;
-        final Time batchSlotTimeout = Time.milliseconds(5L);
+        final Duration batchSlotTimeout = Duration.ofMillis(5L);
         final JobGraph jobGraph = createBatchJobGraph(parallelism);
 
         try (final SlotPool slotPool = createSlotPool(mainThreadExecutor, batchSlotTimeout)) {
@@ -136,7 +136,7 @@ public class DefaultSchedulerBatchSchedulingTest extends TestLogger {
                     new RpcTaskManagerGateway(testingTaskExecutorGateway, JobMasterId.generate()));
 
             // wait until the batch slot timeout has been reached
-            Thread.sleep(batchSlotTimeout.toMilliseconds());
+            Thread.sleep(batchSlotTimeout.toMillis());
 
             final CompletableFuture<JobStatus> terminationFuture =
                     jobStatusListener.getTerminationFuture();
@@ -184,7 +184,7 @@ public class DefaultSchedulerBatchSchedulingTest extends TestLogger {
     }
 
     private SlotPool createSlotPool(
-            ComponentMainThreadExecutor mainThreadExecutor, Time batchSlotTimeout)
+            ComponentMainThreadExecutor mainThreadExecutor, Duration batchSlotTimeout)
             throws Exception {
         return new DeclarativeSlotPoolBridgeBuilder()
                 .setBatchSlotTimeout(batchSlotTimeout)
@@ -202,7 +202,7 @@ public class DefaultSchedulerBatchSchedulingTest extends TestLogger {
             JobGraph jobGraph,
             ComponentMainThreadExecutor mainThreadExecutor,
             PhysicalSlotProvider physicalSlotProvider,
-            Time slotRequestTimeout,
+            Duration slotRequestTimeout,
             JobStatusListener jobStatusListener)
             throws Exception {
         return new DefaultSchedulerBuilder(

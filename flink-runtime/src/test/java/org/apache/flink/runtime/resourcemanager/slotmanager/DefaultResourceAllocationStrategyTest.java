@@ -711,7 +711,7 @@ class DefaultResourceAllocationStrategyTest {
                 DEFAULT_SLOT_RESOURCE.multiply(NUM_OF_SLOTS),
                 NUM_OF_SLOTS,
                 taskManagerLoadBalanceMode,
-                Time.milliseconds(0),
+                Time.ofMillis(0),
                 redundantTaskManagerNum,
                 new CPUResource(0.0),
                 MemorySize.ZERO);
@@ -723,7 +723,7 @@ class DefaultResourceAllocationStrategyTest {
                 DEFAULT_SLOT_RESOURCE.multiply(NUM_OF_SLOTS),
                 NUM_OF_SLOTS,
                 TaskManagerLoadBalanceMode.NONE,
-                Time.milliseconds(0),
+                Time.ofMillis(0),
                 0,
                 minRequiredCPU,
                 minRequiredMemory);

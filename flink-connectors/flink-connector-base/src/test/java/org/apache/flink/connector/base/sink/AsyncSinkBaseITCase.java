@@ -66,7 +66,7 @@ public class AsyncSinkBaseITCase {
     @Test
     public void testThatNoIssuesOccurWhenCheckpointingIsEnabled() throws Exception {
         env.enableCheckpointing(20);
-        env.setRestartStrategy(RestartStrategies.fixedDelayRestart(1, Time.milliseconds(200)));
+        env.setRestartStrategy(RestartStrategies.fixedDelayRestart(1, Time.ofMillis(200)));
         env.fromSequence(1, 10_000).map(Object::toString).sinkTo(new ArrayListAsyncSink());
         env.execute("Integration Test: AsyncSinkBaseITCase");
     }

@@ -65,7 +65,7 @@ class LeaderRetrievalHandlerTest {
 
         final Configuration configuration = new Configuration();
         final Router router = new Router();
-        final Time timeout = Time.seconds(10L);
+        final Time timeout = Time.ofSeconds(10L);
         final CompletableFuture<RestfulGateway> gatewayFuture = new CompletableFuture<>();
         final GatewayRetriever<RestfulGateway> gatewayRetriever = () -> gatewayFuture;
         final RestfulGateway gateway = new TestingRestfulGateway.Builder().build();

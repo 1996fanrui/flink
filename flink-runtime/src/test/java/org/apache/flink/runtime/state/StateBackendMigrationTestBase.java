@@ -1198,12 +1198,12 @@ public abstract class StateBackendMigrationTestBase<B extends StateBackend> {
 
         ValueStateDescriptor<TestType> initialAccessDescriptor =
                 new ValueStateDescriptor<>(stateName, new TestType.V1TestTypeSerializer());
-        initialAccessDescriptor.enableTimeToLive(StateTtlConfig.newBuilder(Time.days(1)).build());
+        initialAccessDescriptor.enableTimeToLive(StateTtlConfig.newBuilder(Time.ofDays(1)).build());
 
         ValueStateDescriptor<TestType> newAccessDescriptorAfterRestore =
                 new ValueStateDescriptor<>(stateName, new TestType.V2TestTypeSerializer());
         newAccessDescriptorAfterRestore.enableTimeToLive(
-                StateTtlConfig.newBuilder(Time.days(2)).build());
+                StateTtlConfig.newBuilder(Time.ofDays(2)).build());
 
         testKeyedValueStateUpgrade(initialAccessDescriptor, newAccessDescriptorAfterRestore);
     }
@@ -1214,7 +1214,7 @@ public abstract class StateBackendMigrationTestBase<B extends StateBackend> {
 
         ValueStateDescriptor<TestType> initialAccessDescriptor =
                 new ValueStateDescriptor<>(stateName, new TestType.V1TestTypeSerializer());
-        initialAccessDescriptor.enableTimeToLive(StateTtlConfig.newBuilder(Time.days(1)).build());
+        initialAccessDescriptor.enableTimeToLive(StateTtlConfig.newBuilder(Time.ofDays(1)).build());
 
         ValueStateDescriptor<TestType> newAccessDescriptorAfterRestore =
                 new ValueStateDescriptor<>(stateName, new TestType.V2TestTypeSerializer());
@@ -1238,7 +1238,7 @@ public abstract class StateBackendMigrationTestBase<B extends StateBackend> {
         ValueStateDescriptor<TestType> newAccessDescriptorAfterRestore =
                 new ValueStateDescriptor<>(stateName, new TestType.V2TestTypeSerializer());
         newAccessDescriptorAfterRestore.enableTimeToLive(
-                StateTtlConfig.newBuilder(Time.days(1)).build());
+                StateTtlConfig.newBuilder(Time.ofDays(1)).build());
 
         assertThatThrownBy(
                         () ->

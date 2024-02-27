@@ -63,7 +63,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class CheckpointResourcesCleanupRunnerTest {
 
-    private static final Time TIMEOUT_FOR_REQUESTS = Time.milliseconds(0);
+    private static final Time TIMEOUT_FOR_REQUESTS = Time.ofMillis(0);
 
     private static final ThrowingConsumer<CheckpointResourcesCleanupRunner, ? extends Exception>
             BEFORE_START = ignored -> {};

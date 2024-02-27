@@ -157,7 +157,7 @@ class ExecutionJobVertexTest {
     static void initializeVertex(ExecutionJobVertex vertex) throws Exception {
         vertex.initialize(
                 1,
-                Time.milliseconds(1L),
+                Time.ofMillis(1L),
                 1L,
                 new DefaultSubtaskAttemptNumberStore(Collections.emptyList()));
     }

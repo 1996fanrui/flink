@@ -94,7 +94,7 @@ class TaskManagerStdoutFileHandlerTest {
 
     @Test
     void testStdoutFileHandlerHandleFileNotFoundException() throws Exception {
-        final Time cacheEntryDuration = Time.milliseconds(1000L);
+        final Time cacheEntryDuration = Time.ofMillis(1000L);
         final TestingChannelHandlerContext testingContext;
         CompletableFuture<Void> handleFuture;
         try (TestingTaskManagerStdoutFileHandler testingTaskManagerStdoutFileHandler =
@@ -124,7 +124,7 @@ class TaskManagerStdoutFileHandlerTest {
 
     @Test
     void testStdoutFileHandlerHandleOtherException() throws Exception {
-        final Time cacheEntryDuration = Time.milliseconds(1000L);
+        final Time cacheEntryDuration = Time.ofMillis(1000L);
         final TestingChannelHandlerContext testingContext;
         CompletableFuture<Void> handleFuture;
         try (TestingTaskManagerStdoutFileHandler testingTaskManagerStdoutFileHandler =

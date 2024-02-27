@@ -88,7 +88,7 @@ class ZooKeeperDefaultDispatcherRunnerTest {
     private static final Logger LOG =
             LoggerFactory.getLogger(ZooKeeperDefaultDispatcherRunnerTest.class);
 
-    private static final Time TESTING_TIMEOUT = Time.seconds(10L);
+    private static final Time TESTING_TIMEOUT = Time.ofSeconds(10L);
 
     @RegisterExtension
     public static AllCallbackWrapper<ZooKeeperExtension> zooKeeperExtensionWrapper =

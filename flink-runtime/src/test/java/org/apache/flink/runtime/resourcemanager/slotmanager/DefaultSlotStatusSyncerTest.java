@@ -52,7 +52,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for the {@link DefaultSlotStatusSyncer}. */
 class DefaultSlotStatusSyncerTest {
-    private static final Time TASK_MANAGER_REQUEST_TIMEOUT = Time.seconds(10);
+    private static final Time TASK_MANAGER_REQUEST_TIMEOUT = Time.ofSeconds(10);
     private static final TaskExecutorConnection TASK_EXECUTOR_CONNECTION =
             new TaskExecutorConnection(
                     ResourceID.generate(),

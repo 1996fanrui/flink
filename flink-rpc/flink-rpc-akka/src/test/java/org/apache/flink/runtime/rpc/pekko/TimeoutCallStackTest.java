@@ -80,7 +80,7 @@ class TimeoutCallStackTest {
 
     @Test
     void testTimeoutExceptionWithTime() throws Exception {
-        testTimeoutException(gateway -> gateway.callThatTimesOut(Time.milliseconds(1)));
+        testTimeoutException(gateway -> gateway.callThatTimesOut(Time.ofMillis(1)));
     }
 
     @Test

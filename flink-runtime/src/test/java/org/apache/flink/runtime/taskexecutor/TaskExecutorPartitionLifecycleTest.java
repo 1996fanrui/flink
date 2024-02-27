@@ -104,7 +104,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /** Tests for the partition-lifecycle logic in the {@link TaskExecutor}. */
 class TaskExecutorPartitionLifecycleTest {
 
-    private static final Time timeout = Time.seconds(10L);
+    private static final Time timeout = Time.ofSeconds(10L);
 
     private static TestingRpcService rpc;
 

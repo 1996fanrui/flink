@@ -148,7 +148,7 @@ abstract class FineGrainedSlotManagerTestBase {
         private final ResourceTracker resourceTracker = new DefaultResourceTracker();
         private final TaskManagerTracker taskManagerTracker = new FineGrainedTaskManagerTracker();
         private final SlotStatusSyncer slotStatusSyncer =
-                new DefaultSlotStatusSyncer(Time.seconds(10L));
+                new DefaultSlotStatusSyncer(Time.ofSeconds(10L));
         private SlotManagerMetricGroup slotManagerMetricGroup =
                 UnregisteredMetricGroups.createUnregisteredSlotManagerMetricGroup();
         private BlockedTaskManagerChecker blockedTaskManagerChecker = resourceID -> false;

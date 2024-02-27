@@ -80,7 +80,7 @@ public class SystemResourcesCounter extends Thread {
     private AtomicLongArray sendRatePerInterface;
 
     public SystemResourcesCounter(Time probeInterval) {
-        probeIntervalMs = probeInterval.toMilliseconds();
+        probeIntervalMs = probeInterval.toMillis();
         checkState(this.probeIntervalMs > 0);
 
         setName(SystemResourcesCounter.class.getSimpleName() + " probing thread");

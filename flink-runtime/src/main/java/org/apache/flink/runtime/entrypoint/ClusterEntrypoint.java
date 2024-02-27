@@ -122,7 +122,7 @@ public abstract class ClusterEntrypoint implements AutoCloseableAsync, FatalErro
     protected static final int STARTUP_FAILURE_RETURN_CODE = 1;
     protected static final int RUNTIME_FAILURE_RETURN_CODE = 2;
 
-    private static final Time INITIALIZATION_SHUTDOWN_TIMEOUT = Time.seconds(30L);
+    private static final Time INITIALIZATION_SHUTDOWN_TIMEOUT = Time.ofSeconds(30L);
 
     /** The lock to guard startup / shutdown / manipulation methods. */
     private final Object lock = new Object();
@@ -251,7 +251,7 @@ public abstract class ClusterEntrypoint implements AutoCloseableAsync, FatalErro
                                 ExceptionUtils.stringifyException(strippedThrowable),
                                 false)
                         .get(
-                                INITIALIZATION_SHUTDOWN_TIMEOUT.toMilliseconds(),
+                                INITIALIZATION_SHUTDOWN_TIMEOUT.toMillis(),
                                 TimeUnit.MILLISECONDS);
             } catch (InterruptedException | ExecutionException | TimeoutException e) {
                 strippedThrowable.addSuppressed(e);

@@ -333,7 +333,7 @@ public class DefaultJobLeaderIdService implements JobLeaderIdService {
                                                 jobId, newTimeoutId);
                                     }
                                 },
-                                jobTimeout.toMilliseconds(),
+                                jobTimeout.toMillis(),
                                 TimeUnit.MILLISECONDS);
             }
         }

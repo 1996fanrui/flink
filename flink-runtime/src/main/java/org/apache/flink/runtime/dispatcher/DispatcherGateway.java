@@ -29,6 +29,7 @@ import org.apache.flink.runtime.rpc.FencedRpcGateway;
 import org.apache.flink.runtime.rpc.RpcTimeout;
 import org.apache.flink.runtime.webmonitor.RestfulGateway;
 
+import java.time.Duration;
 import java.util.Collection;
 import java.util.concurrent.CompletableFuture;
 
@@ -42,7 +43,7 @@ public interface DispatcherGateway extends FencedRpcGateway<DispatcherId>, Restf
      * @param timeout RPC timeout
      * @return A future acknowledge if the submission succeeded
      */
-    CompletableFuture<Acknowledge> submitJob(JobGraph jobGraph, @RpcTimeout Time timeout);
+    CompletableFuture<Acknowledge> submitJob(JobGraph jobGraph, @RpcTimeout Duration timeout);
 
     CompletableFuture<Acknowledge> submitFailedJob(
             JobID jobId, String jobName, Throwable exception);
@@ -53,7 +54,7 @@ public interface DispatcherGateway extends FencedRpcGateway<DispatcherId>, Restf
      * @param timeout RPC timeout
      * @return A future collection of currently submitted jobs
      */
-    CompletableFuture<Collection<JobID>> listJobs(@RpcTimeout Time timeout);
+    CompletableFuture<Collection<JobID>> listJobs(@RpcTimeout Duration timeout);
 
     /**
      * Returns the port of the blob server.
@@ -61,13 +62,13 @@ public interface DispatcherGateway extends FencedRpcGateway<DispatcherId>, Restf
      * @param timeout of the operation
      * @return A future integer of the blob server port
      */
-    CompletableFuture<Integer> getBlobServerPort(@RpcTimeout Time timeout);
+    CompletableFuture<Integer> getBlobServerPort(@RpcTimeout Duration timeout);
 
     default CompletableFuture<Acknowledge> shutDownCluster(ApplicationStatus applicationStatus) {
         return shutDownCluster();
     }
 
-    default CompletableFuture<String> triggerCheckpoint(JobID jobID, @RpcTimeout Time timeout) {
+    default CompletableFuture<String> triggerCheckpoint(JobID jobID, @RpcTimeout Duration timeout) {
         throw new UnsupportedOperationException();
     }
 
@@ -87,7 +88,7 @@ public interface DispatcherGateway extends FencedRpcGateway<DispatcherId>, Restf
             String targetDirectory,
             SavepointFormatType formatType,
             TriggerSavepointMode savepointMode,
-            @RpcTimeout Time timeout) {
+            @RpcTimeout Duration timeout) {
         throw new UnsupportedOperationException();
     }
 
@@ -106,7 +107,7 @@ public interface DispatcherGateway extends FencedRpcGateway<DispatcherId>, Restf
             String targetDirectory,
             SavepointFormatType formatType,
             TriggerSavepointMode savepointMode,
-            @RpcTimeout final Time timeout) {
+            @RpcTimeout final Duration timeout) {
         throw new UnsupportedOperationException();
     }
 
@@ -120,7 +121,7 @@ public interface DispatcherGateway extends FencedRpcGateway<DispatcherId>, Restf
      * @return Future which is completed once the operation is triggered successfully
      */
     default CompletableFuture<Long> triggerCheckpointAndGetCheckpointID(
-            final JobID jobId, final CheckpointType checkpointType, final Time timeout) {
+            final JobID jobId, final CheckpointType checkpointType, final Duration timeout) {
         throw new UnsupportedOperationException();
     }
 }

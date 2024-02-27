@@ -203,7 +203,7 @@ public class DefaultExecutionGraphFactoryTest extends TestLogger {
                         new DefaultExecutionDeploymentTracker(),
                         EXECUTOR_RESOURCE.getExecutor(),
                         EXECUTOR_RESOURCE.getExecutor(),
-                        Time.milliseconds(0L),
+                        Time.ofMillis(0L),
                         metricGroup,
                         VoidBlobWriter.getInstance(),
                         ShuffleTestUtils.DEFAULT_SHUFFLE_MASTER,

@@ -419,7 +419,7 @@ class DefaultDeclarativeSlotPoolTest {
 
     @Test
     void testReturnIdleSlotsAfterTimeout() {
-        final Time idleSlotTimeout = Time.seconds(10);
+        final Time idleSlotTimeout = Time.ofSeconds(10);
         final long offerTime = 0;
         final DefaultDeclarativeSlotPool slotPool =
                 DefaultDeclarativeSlotPoolBuilder.builder()
@@ -443,7 +443,7 @@ class DefaultDeclarativeSlotPoolTest {
         // decrease the resource requirements so that slots are no longer needed
         slotPool.decreaseResourceRequirementsBy(resourceRequirements);
 
-        slotPool.releaseIdleSlots(offerTime + idleSlotTimeout.toMilliseconds());
+        slotPool.releaseIdleSlots(offerTime + idleSlotTimeout.toMillis());
 
         final Collection<AllocationID> freedSlots = freeSlotConsumer.drainFreedSlots();
 
@@ -463,7 +463,7 @@ class DefaultDeclarativeSlotPoolTest {
 
     @Test
     void testOnlyReturnExcessIdleSlots() {
-        final Time idleSlotTimeout = Time.seconds(10);
+        final Time idleSlotTimeout = Time.ofSeconds(10);
         final long offerTime = 0;
         final DefaultDeclarativeSlotPool slotPool =
                 DefaultDeclarativeSlotPoolBuilder.builder()
@@ -483,7 +483,7 @@ class DefaultDeclarativeSlotPoolTest {
         final ResourceCounter excessRequirements = resourceRequirements.subtract(requiredResources);
         slotPool.decreaseResourceRequirementsBy(excessRequirements);
 
-        slotPool.releaseIdleSlots(offerTime + idleSlotTimeout.toMilliseconds());
+        slotPool.releaseIdleSlots(offerTime + idleSlotTimeout.toMillis());
 
         assertThat(acceptedSlots).isNotEmpty();
         assertThat(slotPool.getFulfilledResourceRequirements()).isEqualTo(requiredResources);

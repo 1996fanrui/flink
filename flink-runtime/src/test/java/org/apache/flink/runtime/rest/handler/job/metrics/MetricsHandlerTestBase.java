@@ -47,7 +47,7 @@ abstract class MetricsHandlerTestBase<T extends AbstractMetricsHandler> {
 
     private static final int TEST_METRIC_VALUE = 1000;
 
-    static final Time TIMEOUT = Time.milliseconds(50);
+    static final Time TIMEOUT = Time.ofMillis(50);
 
     static final Map<String, String> TEST_HEADERS = Collections.emptyMap();
 

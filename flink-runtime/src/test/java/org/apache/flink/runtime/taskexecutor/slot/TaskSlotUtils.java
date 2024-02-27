@@ -52,7 +52,7 @@ public enum TaskSlotUtils {
             int numberOfSlots, Time timeout, ScheduledExecutorService executorService) {
         return createTaskSlotTable(
                 numberOfSlots,
-                createDefaultTimerService(timeout.toMilliseconds()),
+                createDefaultTimerService(timeout.toMillis()),
                 executorService);
     }
 

@@ -82,7 +82,7 @@ abstract class JarHandlerParameterTest<
             () -> CompletableFuture.completedFuture(restfulGateway);
     static CompletableFuture<String> localAddressFuture =
             CompletableFuture.completedFuture("shazam://localhost:12345");
-    static Time timeout = Time.seconds(10);
+    static Time timeout = Time.ofSeconds(10);
     static Map<String, String> responseHeaders = Collections.emptyMap();
 
     protected static Path jarWithManifest;
@@ -119,7 +119,7 @@ abstract class JarHandlerParameterTest<
 
         gatewayRetriever = () -> CompletableFuture.completedFuture(restfulGateway);
         localAddressFuture = CompletableFuture.completedFuture("shazam://localhost:12345");
-        timeout = Time.seconds(10);
+        timeout = Time.ofSeconds(10);
         responseHeaders = Collections.emptyMap();
     }
 

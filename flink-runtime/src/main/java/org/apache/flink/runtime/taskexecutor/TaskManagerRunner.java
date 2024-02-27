@@ -408,7 +408,7 @@ public class TaskManagerRunner implements FatalErrorHandler {
             if (executor != null) {
                 terminationFutures.add(
                         ExecutorUtils.nonBlockingShutdown(
-                                timeout.toMilliseconds(), TimeUnit.MILLISECONDS, executor));
+                                timeout.toMillis(), TimeUnit.MILLISECONDS, executor));
             }
 
             if (exception != null) {

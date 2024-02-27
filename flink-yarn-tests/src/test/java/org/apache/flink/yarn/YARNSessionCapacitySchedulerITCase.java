@@ -136,7 +136,7 @@ class YARNSessionCapacitySchedulerITCase extends YarnTestBase {
             YarnTestBase.teardown();
         } finally {
             if (restClient != null) {
-                restClient.shutdown(Time.seconds(5));
+                restClient.shutdown(Time.ofSeconds(5));
             }
 
             if (restClientExecutor != null) {

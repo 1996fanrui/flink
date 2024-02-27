@@ -166,7 +166,7 @@ public class DefaultResourceAllocationStrategy implements ResourceAllocationStra
                         taskManagerInfo -> {
                             if (taskManagerInfo.isIdle()
                                     && currentTime - taskManagerInfo.getIdleSince()
-                                            >= taskManagerTimeout.toMilliseconds()) {
+                                            >= taskManagerTimeout.toMillis()) {
                                 taskManagersIdleTimeout.add(taskManagerInfo);
                             } else {
                                 taskManagersNonTimeout.add(taskManagerInfo);

@@ -126,7 +126,7 @@ public class PhysicalSlotRequestBulkCheckerImpl implements PhysicalSlotRequestBu
             slotRequestBulk.markUnfulfillable(currentTimestamp);
 
             final long unfulfillableSince = slotRequestBulk.getUnfulfillableSince();
-            if (unfulfillableSince + slotRequestTimeout.toMilliseconds() <= currentTimestamp) {
+            if (unfulfillableSince + slotRequestTimeout.toMillis() <= currentTimestamp) {
                 return TimeoutCheckResult.TIMEOUT;
             }
         }

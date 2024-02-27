@@ -79,7 +79,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /** Tests for the {@link JobMasterServiceLeadershipRunner}. */
 class JobMasterServiceLeadershipRunnerTest {
 
-    private static final Time TESTING_TIMEOUT = Time.seconds(10);
+    private static final Time TESTING_TIMEOUT = Time.ofSeconds(10);
 
     private static JobGraph jobGraph;
 

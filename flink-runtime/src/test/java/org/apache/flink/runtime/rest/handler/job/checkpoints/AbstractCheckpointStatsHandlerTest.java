@@ -57,7 +57,7 @@ import static org.assertj.core.api.AssertionsForClassTypes.assertThatExceptionOf
 /** Test class for {@link AbstractCheckpointStatsHandler}. */
 class AbstractCheckpointStatsHandlerTest {
 
-    private static final Time TIMEOUT = Time.seconds(10);
+    private static final Time TIMEOUT = Time.ofSeconds(10);
 
     private static final JobID JOB_ID = new JobID();
 

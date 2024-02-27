@@ -35,7 +35,7 @@ import org.apache.flink.table.utils.HandwrittenSelectorUtil;
 /** Base class of tests for all kinds of processing-time DeduplicateFunction. */
 abstract class ProcTimeDeduplicateFunctionTestBase {
 
-    Time minTime = Time.milliseconds(10);
+    Time minTime = Time.ofMillis(10);
     InternalTypeInfo<RowData> inputRowType =
             InternalTypeInfo.ofFields(VarCharType.STRING_TYPE, new BigIntType(), new IntType());
 

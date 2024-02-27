@@ -44,7 +44,7 @@ public class ProcTimeDeduplicateKeepFirstRowFunctionTest
     @Test
     public void test() throws Exception {
         ProcTimeDeduplicateKeepFirstRowFunction func =
-                new ProcTimeDeduplicateKeepFirstRowFunction(minTime.toMilliseconds());
+                new ProcTimeDeduplicateKeepFirstRowFunction(minTime.toMillis());
         OneInputStreamOperatorTestHarness<RowData, RowData> testHarness = createTestHarness(func);
         testHarness.open();
         testHarness.processElement(insertRecord("book", 1L, 12));
@@ -62,7 +62,7 @@ public class ProcTimeDeduplicateKeepFirstRowFunctionTest
     @Test
     public void testWithStateTtl() throws Exception {
         ProcTimeDeduplicateKeepFirstRowFunction func =
-                new ProcTimeDeduplicateKeepFirstRowFunction(minTime.toMilliseconds());
+                new ProcTimeDeduplicateKeepFirstRowFunction(minTime.toMillis());
         OneInputStreamOperatorTestHarness<RowData, RowData> testHarness = createTestHarness(func);
         testHarness.open();
         testHarness.processElement(insertRecord("book", 1L, 12));

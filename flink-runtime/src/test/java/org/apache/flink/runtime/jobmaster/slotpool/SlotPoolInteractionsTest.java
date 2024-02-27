@@ -39,7 +39,7 @@ import static org.junit.Assert.fail;
 /** Tests for the {@link DeclarativeSlotPoolBridge} interactions. */
 public class SlotPoolInteractionsTest extends TestLogger {
 
-    private static final Time fastTimeout = Time.milliseconds(1L);
+    private static final Time fastTimeout = Time.ofMillis(1L);
 
     @ClassRule
     public static final TestingComponentMainThreadExecutor.Resource EXECUTOR_RESOURCE =

@@ -497,7 +497,7 @@ public class StateTtlConfig implements Serializable {
          * Default value is 30 days so that every file goes through the compaction process at least
          * once every 30 days if not compacted sooner.
          */
-        static final Time DEFAULT_PERIODIC_COMPACTION_TIME = Time.days(30);
+        static final Time DEFAULT_PERIODIC_COMPACTION_TIME = Time.ofDays(30);
 
         static final RocksdbCompactFilterCleanupStrategy
                 DEFAULT_ROCKSDB_COMPACT_FILTER_CLEANUP_STRATEGY =

@@ -53,6 +53,6 @@ public class MockResourceManagerRuntimeServices {
                 new DefaultJobLeaderIdService(
                         highAvailabilityServices,
                         rpcService.getScheduledExecutor(),
-                        Time.minutes(5L));
+                        Time.ofMinutes(5L));
     }
 }

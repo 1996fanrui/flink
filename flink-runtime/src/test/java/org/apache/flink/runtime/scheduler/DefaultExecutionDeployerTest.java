@@ -94,7 +94,7 @@ class DefaultExecutionDeployerTest {
         testExecutionSlotAllocator = new TestExecutionSlotAllocator();
         shuffleMaster = new TestingShuffleMaster();
         partitionTracker = new TestingJobMasterPartitionTracker();
-        partitionRegistrationTimeout = Time.milliseconds(5000);
+        partitionRegistrationTimeout = Time.ofMillis(5000);
     }
 
     @AfterEach
@@ -278,7 +278,7 @@ class DefaultExecutionDeployerTest {
     void testProducedPartitionRegistrationTimeout() throws Exception {
         ScheduledExecutorService scheduledExecutorService = null;
         try {
-            partitionRegistrationTimeout = Time.milliseconds(1);
+            partitionRegistrationTimeout = Time.ofMillis(1);
 
             scheduledExecutorService = Executors.newSingleThreadScheduledExecutor();
             mainThreadExecutor =

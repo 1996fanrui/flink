@@ -80,7 +80,7 @@ public class JobMasterPartitionReleaseTest extends TestLogger {
 
     @ClassRule public static TemporaryFolder temporaryFolder = new TemporaryFolder();
 
-    private static final Time testingTimeout = Time.seconds(10L);
+    private static final Time testingTimeout = Time.ofSeconds(10L);
 
     private static TestingRpcService rpcService;
 

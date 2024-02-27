@@ -130,7 +130,7 @@ class TaskExecutorRecoveryTest {
                         slotStatus.getResourceProfile(),
                         "localhost",
                         testingResourceManagerGateway.getFencingToken(),
-                        Time.seconds(10L))
+                        Time.ofSeconds(10L))
                 .join();
 
         taskExecutor.close();

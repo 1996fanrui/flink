@@ -192,7 +192,7 @@ class ResourceManagerTaskExecutorTest {
      */
     @Test
     void testDelayedRegisterTaskExecutor() throws Exception {
-        final Time fastTimeout = Time.milliseconds(1L);
+        final Time fastTimeout = Time.ofMillis(1L);
         try {
             final OneShotLatch startConnection = new OneShotLatch();
             final OneShotLatch finishConnection = new OneShotLatch();

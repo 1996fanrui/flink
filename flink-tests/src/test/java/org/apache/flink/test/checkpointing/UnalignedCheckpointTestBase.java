@@ -749,7 +749,7 @@ public abstract class UnalignedCheckpointTestBase extends TestLogger {
             env.setRestartStrategy(
                     RestartStrategies.fixedDelayRestart(
                             generateCheckpoint ? expectedFailures / 2 : expectedFailures,
-                            Time.milliseconds(100)));
+                            Time.ofMillis(100)));
             env.getCheckpointConfig().enableUnalignedCheckpoints(true);
             // for custom partitioner
             env.getCheckpointConfig().setForceUnalignedCheckpoints(true);

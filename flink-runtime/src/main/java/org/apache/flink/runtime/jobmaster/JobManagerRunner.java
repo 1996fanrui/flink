@@ -26,6 +26,7 @@ import org.apache.flink.runtime.messages.webmonitor.JobDetails;
 import org.apache.flink.runtime.scheduler.ExecutionGraphInfo;
 import org.apache.flink.util.AutoCloseableAsync;
 
+import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 
 /** Interface for a runner which executes a {@link JobMaster}. */
@@ -70,7 +71,7 @@ public interface JobManagerRunner extends AutoCloseableAsync {
      * @param timeout of this operation
      * @return Future acknowledge of the operation
      */
-    CompletableFuture<Acknowledge> cancel(Time timeout);
+    CompletableFuture<Acknowledge> cancel(Duration timeout);
 
     /**
      * Requests the current job status.
@@ -78,7 +79,7 @@ public interface JobManagerRunner extends AutoCloseableAsync {
      * @param timeout for the rpc call
      * @return Future containing the current job status
      */
-    CompletableFuture<JobStatus> requestJobStatus(Time timeout);
+    CompletableFuture<JobStatus> requestJobStatus(Duration timeout);
 
     /**
      * Request the details of the executed job.
@@ -86,7 +87,7 @@ public interface JobManagerRunner extends AutoCloseableAsync {
      * @param timeout for the rpc call
      * @return Future details of the executed job
      */
-    CompletableFuture<JobDetails> requestJobDetails(Time timeout);
+    CompletableFuture<JobDetails> requestJobDetails(Duration timeout);
 
     /**
      * Requests the {@link ExecutionGraphInfo} of the executed job.
@@ -94,7 +95,7 @@ public interface JobManagerRunner extends AutoCloseableAsync {
      * @param timeout for the rpc call
      * @return Future which is completed with the {@link ExecutionGraphInfo} of the executed job
      */
-    CompletableFuture<ExecutionGraphInfo> requestJob(Time timeout);
+    CompletableFuture<ExecutionGraphInfo> requestJob(Duration timeout);
 
     /**
      * Flag indicating if the JobManagerRunner has been initialized.

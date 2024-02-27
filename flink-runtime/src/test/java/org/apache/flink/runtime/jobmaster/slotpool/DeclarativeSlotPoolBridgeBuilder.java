@@ -31,15 +31,16 @@ import org.apache.flink.util.clock.SystemClock;
 
 import javax.annotation.Nullable;
 
+import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 
 /** Builder for a {@link DeclarativeSlotPoolBridge}. */
 public class DeclarativeSlotPoolBridgeBuilder {
 
     private JobID jobId = new JobID();
-    private Time batchSlotTimeout =
-            Time.milliseconds(JobManagerOptions.SLOT_IDLE_TIMEOUT.defaultValue());
-    private Time idleSlotTimeout = TestingUtils.infiniteTime();
+    private Duration batchSlotTimeout =
+            Duration.ofMillis(JobManagerOptions.SLOT_IDLE_TIMEOUT.defaultValue());
+    private Duration idleSlotTimeout = TestingUtils.infiniteDuration();
     private Clock clock = SystemClock.getInstance();
 
     @Nullable
@@ -54,12 +55,12 @@ public class DeclarativeSlotPoolBridgeBuilder {
         return this;
     }
 
-    public DeclarativeSlotPoolBridgeBuilder setBatchSlotTimeout(Time batchSlotTimeout) {
+    public DeclarativeSlotPoolBridgeBuilder setBatchSlotTimeout(Duration batchSlotTimeout) {
         this.batchSlotTimeout = batchSlotTimeout;
         return this;
     }
 
-    public DeclarativeSlotPoolBridgeBuilder setIdleSlotTimeout(Time idleSlotTimeout) {
+    public DeclarativeSlotPoolBridgeBuilder setIdleSlotTimeout(Duration idleSlotTimeout) {
         this.idleSlotTimeout = idleSlotTimeout;
         return this;
     }
@@ -85,7 +86,7 @@ public class DeclarativeSlotPoolBridgeBuilder {
                 jobId,
                 new DefaultDeclarativeSlotPoolFactory(),
                 clock,
-                TestingUtils.infiniteTime(),
+                TestingUtils.infiniteDuration(),
                 idleSlotTimeout,
                 batchSlotTimeout,
                 requestSlotMatchingStrategy);

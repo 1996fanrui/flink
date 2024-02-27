@@ -952,7 +952,7 @@ public class ExecutingTest extends TestLogger {
 
             initialize(
                     1,
-                    Time.milliseconds(1L),
+                    Time.ofMillis(1L),
                     1L,
                     new DefaultSubtaskAttemptNumberStore(Collections.emptyList()));
             mockExecutionVertex = executionVertexSupplier.apply(this);
@@ -973,7 +973,7 @@ public class ExecutingTest extends TestLogger {
         @Nullable private Throwable markFailed = null;
 
         public FailOnDeployMockExecutionVertex(ExecutionJobVertex jobVertex) {
-            super(jobVertex, 1, new IntermediateResult[] {}, Time.milliseconds(1L), 1L, 1, 0);
+            super(jobVertex, 1, new IntermediateResult[] {}, Time.ofMillis(1L), 1L, 1, 0);
         }
 
         @Override
@@ -997,7 +997,7 @@ public class ExecutingTest extends TestLogger {
         private ExecutionState mockedExecutionState = ExecutionState.RUNNING;
 
         MockExecutionVertex(ExecutionJobVertex jobVertex) {
-            super(jobVertex, 1, new IntermediateResult[] {}, Time.milliseconds(1L), 1L, 1, 0);
+            super(jobVertex, 1, new IntermediateResult[] {}, Time.ofMillis(1L), 1L, 1, 0);
         }
 
         @Override

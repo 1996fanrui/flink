@@ -60,7 +60,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Test suite for {@link SlotSharingExecutionSlotAllocator}. */
 class SlotSharingExecutionSlotAllocatorTest {
-    private static final Time ALLOCATION_TIMEOUT = Time.milliseconds(100L);
+    private static final Time ALLOCATION_TIMEOUT = Time.ofMillis(100L);
     private static final ResourceProfile RESOURCE_PROFILE = ResourceProfile.fromResources(3, 5);
 
     private static final ExecutionVertexID EV1 = createRandomExecutionVertexId();

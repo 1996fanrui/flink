@@ -186,7 +186,7 @@ class DefaultSchedulerCheckpointCoordinatorTest {
 
     private DefaultScheduler createSchedulerAndEnableCheckpointing(
             CheckpointIDCounter counter, CompletedCheckpointStore store) throws Exception {
-        final Time timeout = Time.days(1L);
+        final Time timeout = Time.ofDays(1L);
 
         final JobVertex jobVertex = new JobVertex("MockVertex");
         jobVertex.setParallelism(1);

@@ -63,7 +63,7 @@ class JobExecutionResultHandlerTest {
         jobExecutionResultHandler =
                 new JobExecutionResultHandler(
                         () -> CompletableFuture.completedFuture(testingRestfulGateway),
-                        Time.seconds(10),
+                        Time.ofSeconds(10),
                         Collections.emptyMap());
 
         testRequest =

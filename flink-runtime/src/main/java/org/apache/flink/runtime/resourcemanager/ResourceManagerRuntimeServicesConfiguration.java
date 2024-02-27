@@ -57,7 +57,7 @@ public class ResourceManagerRuntimeServicesConfiguration {
         final Time jobTimeout;
 
         try {
-            jobTimeout = Time.milliseconds(TimeUtils.parseDuration(strJobTimeout).toMillis());
+            jobTimeout = Time.ofMillis(TimeUtils.parseDuration(strJobTimeout).toMillis());
         } catch (IllegalArgumentException e) {
             throw new ConfigurationException(
                     "Could not parse the resource manager's job timeout "

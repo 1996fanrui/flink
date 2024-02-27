@@ -249,7 +249,7 @@ class StateDescriptorTest {
     void testStateTTlConfig() {
         ValueStateDescriptor<Integer> stateDescriptor =
                 new ValueStateDescriptor<>("test-state", IntSerializer.INSTANCE);
-        stateDescriptor.enableTimeToLive(StateTtlConfig.newBuilder(Time.minutes(60)).build());
+        stateDescriptor.enableTimeToLive(StateTtlConfig.newBuilder(Time.ofMinutes(60)).build());
         assertThat(stateDescriptor.getTtlConfig().isEnabled()).isTrue();
 
         stateDescriptor.enableTimeToLive(StateTtlConfig.DISABLED);

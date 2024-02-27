@@ -28,6 +28,7 @@ import org.apache.flink.runtime.rest.handler.async.OperationResult;
 import org.apache.flink.runtime.rest.handler.job.AsynchronousJobOperationKey;
 import org.apache.flink.util.concurrent.FutureUtils;
 
+import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
 
@@ -103,7 +104,7 @@ public class DispatcherCachedOperationsHandler {
             String targetDirectory,
             SavepointFormatType formatType,
             TriggerSavepointMode savepointMode,
-            Time timeout) {
+            Duration timeout) {
         return registerOperationIdempotently(
                 operationKey,
                 () ->
@@ -120,7 +121,7 @@ public class DispatcherCachedOperationsHandler {
             String targetDirectory,
             SavepointFormatType formatType,
             TriggerSavepointMode savepointMode,
-            Time timeout) {
+            Duration timeout) {
         return registerOperationIdempotently(
                 operationKey,
                 () ->

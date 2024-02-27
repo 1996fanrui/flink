@@ -69,7 +69,7 @@ class DefaultJobLeaderIdServiceTest {
         highAvailabilityServices.setJobMasterLeaderRetriever(jobId, leaderRetrievalService);
 
         ScheduledExecutor scheduledExecutor = mock(ScheduledExecutor.class);
-        Time timeout = Time.milliseconds(5000L);
+        Time timeout = Time.ofMillis(5000L);
         JobLeaderIdActions jobLeaderIdActions = mock(JobLeaderIdActions.class);
 
         JobLeaderIdService jobLeaderIdService =
@@ -102,7 +102,7 @@ class DefaultJobLeaderIdServiceTest {
         highAvailabilityServices.setJobMasterLeaderRetriever(jobId, leaderRetrievalService);
 
         ScheduledExecutor scheduledExecutor = mock(ScheduledExecutor.class);
-        Time timeout = Time.milliseconds(5000L);
+        Time timeout = Time.ofMillis(5000L);
         JobLeaderIdActions jobLeaderIdActions = mock(JobLeaderIdActions.class);
 
         JobLeaderIdService jobLeaderIdService =
@@ -140,7 +140,7 @@ class DefaultJobLeaderIdServiceTest {
         highAvailabilityServices.setJobMasterLeaderRetriever(jobId, leaderRetrievalService);
 
         ScheduledExecutor scheduledExecutor = mock(ScheduledExecutor.class);
-        Time timeout = Time.milliseconds(5000L);
+        Time timeout = Time.ofMillis(5000L);
         JobLeaderIdActions jobLeaderIdActions = mock(JobLeaderIdActions.class);
 
         JobLeaderIdService jobLeaderIdService =
@@ -200,7 +200,7 @@ class DefaultJobLeaderIdServiceTest {
                 .when(scheduledExecutor)
                 .schedule(any(Runnable.class), anyLong(), any(TimeUnit.class));
 
-        Time timeout = Time.milliseconds(5000L);
+        Time timeout = Time.ofMillis(5000L);
         JobLeaderIdActions jobLeaderIdActions = mock(JobLeaderIdActions.class);
 
         final AtomicReference<UUID> lastTimeoutId = new AtomicReference<>();
@@ -286,7 +286,7 @@ class DefaultJobLeaderIdServiceTest {
                 new DefaultJobLeaderIdService(
                         highAvailabilityServices,
                         new ManuallyTriggeredScheduledExecutor(),
-                        Time.milliseconds(5000L));
+                        Time.ofMillis(5000L));
 
         jobLeaderIdService.start(new NoOpJobLeaderIdActions());
 
@@ -320,7 +320,7 @@ class DefaultJobLeaderIdServiceTest {
                 new SettableLeaderRetrievalService(null, null);
         highAvailabilityServices.setJobMasterLeaderRetriever(jobId, leaderRetrievalService);
         ScheduledExecutor scheduledExecutor = mock(ScheduledExecutor.class);
-        Time timeout = Time.milliseconds(5000L);
+        Time timeout = Time.ofMillis(5000L);
         JobLeaderIdActions jobLeaderIdActions = mock(JobLeaderIdActions.class);
         DefaultJobLeaderIdService jobLeaderIdService =
                 new DefaultJobLeaderIdService(highAvailabilityServices, scheduledExecutor, timeout);

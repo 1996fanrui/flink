@@ -119,7 +119,7 @@ class AbstractTaskManagerFileHandlerTest {
     /** Tests that the {@link AbstractTaskManagerFileHandler} serves the requested file. */
     @Test
     void testFileServing() throws Exception {
-        final Time cacheEntryDuration = Time.milliseconds(1000L);
+        final Time cacheEntryDuration = Time.ofMillis(1000L);
 
         final Queue<CompletableFuture<TransientBlobKey>> requestFileUploads = new ArrayDeque<>(1);
 
@@ -143,7 +143,7 @@ class AbstractTaskManagerFileHandlerTest {
     /** Tests that files are cached. */
     @Test
     void testFileCaching() throws Exception {
-        final File outputFile = runFileCachingTest(Time.milliseconds(5000L), Time.milliseconds(0L));
+        final File outputFile = runFileCachingTest(Time.ofMillis(5000L), Time.ofMillis(0L));
 
         assertThat(outputFile).isNotEmpty();
         assertThat(FileUtils.readFileUtf8(outputFile)).isEqualTo(fileContent1);
@@ -152,7 +152,7 @@ class AbstractTaskManagerFileHandlerTest {
     /** Tests that file cache entries expire. */
     @Test
     void testFileCacheExpiration() throws Exception {
-        final Time cacheEntryDuration = Time.milliseconds(5L);
+        final Time cacheEntryDuration = Time.ofMillis(5L);
 
         final File outputFile = runFileCachingTest(cacheEntryDuration, cacheEntryDuration);
 
@@ -177,7 +177,7 @@ class AbstractTaskManagerFileHandlerTest {
         testingTaskManagerFileHandler.respondToRequest(
                 testingContext, HTTP_REQUEST, handlerRequest, null);
 
-        Thread.sleep(delayBetweenRequests.toMilliseconds());
+        Thread.sleep(delayBetweenRequests.toMillis());
 
         // the handler should not trigger the file upload again because it is still cached
         testingTaskManagerFileHandler.respondToRequest(

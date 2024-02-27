@@ -517,7 +517,7 @@ public class DefaultJobLeaderService implements JobLeaderService {
         protected CompletableFuture<RegistrationResponse> invokeRegistration(
                 JobMasterGateway gateway, JobMasterId fencingToken, long timeoutMillis) {
             return gateway.registerTaskManager(
-                    jobId, taskManagerRegistrationInformation, Time.milliseconds(timeoutMillis));
+                    jobId, taskManagerRegistrationInformation, Time.ofMillis(timeoutMillis));
         }
     }
 
