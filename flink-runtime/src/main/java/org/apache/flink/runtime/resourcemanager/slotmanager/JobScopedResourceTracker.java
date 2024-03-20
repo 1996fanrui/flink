@@ -86,6 +86,7 @@ class JobScopedResourceTracker {
 
     private Optional<LoadableResourceProfile> findMatchingRequirement(
             LoadableResourceProfile resourceProfile) {
+        // TODO
         return requirementMatcher.match(
                 resourceProfile,
                 resourceRequirements,
@@ -95,6 +96,7 @@ class JobScopedResourceTracker {
     public void notifyLostResource(LoadableResourceProfile resourceProfile) {
         Preconditions.checkNotNull(resourceProfile);
         if (excessResources.getLoadableResourceCount(resourceProfile) > 0) {
+            // TODO 如果 loading match 失败了，不能 减资源。
             LOG.trace("Job {} lost excess resource {}.", jobId, resourceProfile);
             excessResources = excessResources.subtract(resourceProfile);
             return;

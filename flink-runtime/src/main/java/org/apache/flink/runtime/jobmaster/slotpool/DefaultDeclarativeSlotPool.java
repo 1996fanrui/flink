@@ -605,7 +605,7 @@ public class DefaultDeclarativeSlotPool implements DeclarativeSlotPool {
                 log.info("Releasing slot [{}].", slotToReturn.getAllocationId());
             }
 
-            // todo
+            // TODO 没 match loading 就去 减资源了，有可能 match 不上。
             final ResourceProfile matchingResourceProfile =
                     getMatchingResourceProfile(slotToReturn.getAllocationId());
             // todo

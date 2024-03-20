@@ -781,6 +781,9 @@ public class MiniCluster implements AutoCloseableAsync {
             taskExecutor.start();
             taskManagers.add(taskExecutor);
         }
+        Executors.newScheduledThreadPool(1).schedule(() -> {
+            taskManagers.get(0).onStop();
+        }, 5, TimeUnit.SECONDS);
     }
 
     @VisibleForTesting
