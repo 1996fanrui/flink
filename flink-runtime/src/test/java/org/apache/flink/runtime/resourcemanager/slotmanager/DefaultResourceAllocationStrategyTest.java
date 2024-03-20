@@ -25,7 +25,7 @@ import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.runtime.clusterframework.types.LoadableResourceProfile;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
-import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
+import org.apache.flink.runtime.scheduler.loading.DefaultLoadingWeight;
 import org.apache.flink.runtime.slots.ResourceRequirement;
 import org.apache.flink.runtime.util.ResourceCounter;
 import org.apache.flink.testutils.junit.extensions.parameterized.Parameter;
@@ -136,13 +136,11 @@ class DefaultResourceAllocationStrategyTest {
                         .build();
         requirements.add(
                 ResourceRequirement.create(
-                        largeResource.toLoadableResourceProfile(
-                                LoadingWeight.ofDefaultLoadingWeight(4)),
-                        4));
+                        largeResource.toLoadableResourceProfile(new DefaultLoadingWeight(4)), 4));
         requirements.add(
                 ResourceRequirement.create(
                         ResourceProfile.UNKNOWN.toLoadableResourceProfile(
-                                LoadingWeight.ofDefaultLoadingWeight(2)),
+                                new DefaultLoadingWeight(2)),
                         2));
 
         final ResourceAllocationResult result =

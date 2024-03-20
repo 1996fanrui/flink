@@ -29,7 +29,7 @@ public class DefaultLoadingWeight implements LoadingWeight {
 
     private final float loading;
 
-    DefaultLoadingWeight(float loading) {
+    public DefaultLoadingWeight(float loading) {
         Preconditions.checkArgument(loading >= 0.0f);
         this.loading = loading;
     }
@@ -44,7 +44,12 @@ public class DefaultLoadingWeight implements LoadingWeight {
         if (other == null) {
             return this;
         }
-        return LoadingWeight.ofDefaultLoadingWeight(loading + other.getLoading());
+        return new DefaultLoadingWeight(loading + other.getLoading());
+    }
+
+    @Override
+    public LoadingWeight multiply(float factor) {
+        return new DefaultLoadingWeight(factor * getLoading());
     }
 
     @Override
@@ -66,6 +71,6 @@ public class DefaultLoadingWeight implements LoadingWeight {
 
     @Override
     public String toString() {
-        return "DefaultLoadingWeight{" + "loading=" + loading + '}';
+        return "DefaultLoadingWeight{loading=" + loading + '}';
     }
 }

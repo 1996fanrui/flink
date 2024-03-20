@@ -1198,15 +1198,6 @@ class JobMasterTest {
                         TaskManagerLoadBalanceMode.TASKS,
                         true,
                         false),
-
-                // Ignored.
-                // Arguments.of(SchedulerType.AdaptiveBatch, JobType.STREAMING,
-                // TaskManagerLoadBalanceMode.NONE, true, false),
-                // Arguments.of(SchedulerType.AdaptiveBatch, JobType.STREAMING,
-                // TaskManagerLoadBalanceMode.SLOTS, true, false),
-                // Arguments.of(SchedulerType.AdaptiveBatch, JobType.STREAMING,
-                // TaskManagerLoadBalanceMode.TASKS, true, true),
-
                 Arguments.of(
                         SchedulerType.AdaptiveBatch,
                         JobType.BATCH,

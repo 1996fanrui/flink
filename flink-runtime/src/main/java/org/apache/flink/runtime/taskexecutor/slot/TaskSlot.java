@@ -24,6 +24,7 @@ import org.apache.flink.runtime.clusterframework.types.LoadableResourceProfile;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
 import org.apache.flink.runtime.memory.MemoryManager;
+import org.apache.flink.runtime.scheduler.loading.DefaultLoadingWeight;
 import org.apache.flink.runtime.scheduler.loading.LoadingWeight;
 import org.apache.flink.util.AutoCloseableAsync;
 import org.apache.flink.util.CollectionUtil;
@@ -182,7 +183,7 @@ public class TaskSlot<T extends TaskSlotPayload> implements AutoCloseableAsync {
     }
 
     public LoadingWeight getCurrentLoading() {
-        return LoadingWeight.ofDefaultLoadingWeight(tasks.size());
+        return new DefaultLoadingWeight(tasks.size());
     }
 
     public MemoryManager getMemoryManager() {

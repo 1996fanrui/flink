@@ -30,10 +30,6 @@ public interface LoadingWeight extends Comparable<LoadingWeight>, Serializable {
 
     LoadingWeight EMPTY = new DefaultLoadingWeight(0f);
 
-    static LoadingWeight ofDefaultLoadingWeight(float loading) {
-        return new DefaultLoadingWeight(loading);
-    }
-
     /**
      * Get the loading value.
      *
@@ -47,9 +43,7 @@ public interface LoadingWeight extends Comparable<LoadingWeight>, Serializable {
      * @param factor the factor to multiply.
      * @return a new multiplied object.
      */
-    default LoadingWeight multiply(float factor) {
-        return LoadingWeight.ofDefaultLoadingWeight(factor * getLoading());
-    }
+    LoadingWeight multiply(float factor);
 
     /**
      * Merge the other loading weight and this one into a new object.

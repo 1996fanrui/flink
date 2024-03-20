@@ -32,17 +32,14 @@ class DefaultLoadingWeightTest {
 
     @Test
     void testInvalidLoading() {
-        assertThatThrownBy(() -> LoadingWeight.ofDefaultLoadingWeight(-1f))
+        assertThatThrownBy(() -> new DefaultLoadingWeight(-1f))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
     void testMerge() {
-        assertThat(LoadingWeight.ofDefaultLoadingWeight(0).merge(null).getLoading()).isZero();
-        assertThat(
-                        LoadingWeight.ofDefaultLoadingWeight(0)
-                                .merge(LoadingWeight.ofDefaultLoadingWeight(1.2f))
-                                .getLoading())
+        assertThat(new DefaultLoadingWeight(0).merge(null).getLoading()).isZero();
+        assertThat(new DefaultLoadingWeight(0).merge(new DefaultLoadingWeight(1.2f)).getLoading())
                 .isEqualTo(1.2f);
     }
 }
