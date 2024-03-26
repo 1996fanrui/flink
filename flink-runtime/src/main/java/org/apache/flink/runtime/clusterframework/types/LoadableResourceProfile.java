@@ -53,6 +53,9 @@ public final class LoadableResourceProfile implements WeightLoadable, Serializab
     }
 
     public boolean isMatching(@Nonnull LoadableResourceProfile loadableResourceProfile) {
+        if(resourceProfile.equals(ResourceProfile.ANY)) {
+            return true;
+        }
         return resourceProfile.isMatching(loadableResourceProfile.resourceProfile)
                 && Objects.equals(weight, loadableResourceProfile.weight);
     }

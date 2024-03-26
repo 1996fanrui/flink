@@ -357,6 +357,8 @@ public class FineGrainedSlotManager implements SlotManager {
             reportSlotStatus(taskExecutorConnection.getInstanceID(), initialSlotReport);
             return RegistrationResult.IGNORED;
         } else {
+            System.out.println("yyyyyyyyyyyyyyyyyyyy: " + taskExecutorConnection.getInstanceID());
+
             Optional<PendingTaskManager> matchedPendingTaskManagerOptional =
                     initialSlotReport.hasAllocatedSlot()
                             ? Optional.empty()

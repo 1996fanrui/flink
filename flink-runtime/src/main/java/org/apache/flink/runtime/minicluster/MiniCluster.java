@@ -746,6 +746,21 @@ public class MiniCluster implements AutoCloseableAsync {
         for (int i = 0; i < numTaskManagers; i++) {
             startTaskManager();
         }
+
+        Executors.newScheduledThreadPool(1).scheduleWithFixedDelay(() -> {
+            System.out.println("stop task executor.");
+
+            try {
+                final TaskExecutor remove = taskManagers.remove(0);
+                // refer to terminateTaskManager()
+                remove.closeAsync().get();
+                System.out.println("stopped task executor.");
+                Thread.sleep(20_000);
+                startTaskManager();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }, 10, 100, TimeUnit.SECONDS);
     }
 
     /**
@@ -760,6 +775,7 @@ public class MiniCluster implements AutoCloseableAsync {
      */
     public void startTaskManager() throws Exception {
         synchronized (lock) {
+            System.out.println("startTaskManager----------------------");
             final Configuration configuration = miniClusterConfiguration.getConfiguration();
 
             final TaskExecutor taskExecutor =
@@ -773,7 +789,7 @@ public class MiniCluster implements AutoCloseableAsync {
                             blobCacheService,
                             useLocalCommunication(),
                             ExternalResourceInfoProvider.NO_EXTERNAL_RESOURCES,
-                            workingDirectory.createSubWorkingDirectory("tm_" + taskManagers.size()),
+                            workingDirectory.createSubWorkingDirectory("tm_" + UUID.randomUUID().toString()),
                             taskManagerTerminatingFatalErrorHandlerFactory.create(
                                     taskManagers.size()),
                             delegationTokenReceiverRepository);
@@ -781,9 +797,6 @@ public class MiniCluster implements AutoCloseableAsync {
             taskExecutor.start();
             taskManagers.add(taskExecutor);
         }
-        Executors.newScheduledThreadPool(1).schedule(() -> {
-            taskManagers.get(0).onStop();
-        }, 5, TimeUnit.SECONDS);
     }
 
     @VisibleForTesting

@@ -161,7 +161,7 @@ public class DefaultJobLeaderService implements JobLeaderService {
     public void removeJob(JobID jobId) {
         Preconditions.checkState(
                 DefaultJobLeaderService.State.STARTED == state,
-                "The service is currently not running.");
+                "The service is currently not running %s.", state);
 
         Tuple2<LeaderRetrievalService, DefaultJobLeaderService.JobManagerLeaderListener> entry =
                 jobLeaderServices.remove(jobId);

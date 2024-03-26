@@ -243,6 +243,7 @@ public abstract class RpcEndpoint implements RpcGateway, AutoCloseableAsync {
      *     occurs this future is completed exceptionally
      */
     public final CompletableFuture<Void> internalCallOnStop() {
+        closeAsync();
         validateRunsInMainThread();
         CompletableFuture<Void> stopFuture = new CompletableFuture<>();
         try {

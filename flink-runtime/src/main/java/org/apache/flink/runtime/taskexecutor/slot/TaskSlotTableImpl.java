@@ -657,8 +657,8 @@ public class TaskSlotTableImpl<T extends TaskSlotPayload> implements TaskSlotTab
     private void checkRunning() {
         Preconditions.checkState(
                 state == State.RUNNING,
-                "The %s has to be running.",
-                TaskSlotTableImpl.class.getSimpleName());
+                "The %s has to be running, %s.",
+                TaskSlotTableImpl.class.getSimpleName(), state);
     }
 
     private void checkStarted() {

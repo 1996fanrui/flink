@@ -451,6 +451,7 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
     @Override
     public void onStart() throws Exception {
         try {
+            System.out.println("xxxxxxxxxxx-start-TM");
             startTaskExecutorServices();
         } catch (Throwable t) {
             final TaskManagerException exception =
@@ -1532,6 +1533,7 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
             InstanceID taskExecutorRegistrationId,
             ClusterInformation clusterInformation) {
 
+        System.out.println("zzzzzzzzzzzzzzzzzzzzzz:" + taskExecutorRegistrationId);
         final CompletableFuture<Acknowledge> slotReportResponseFuture =
                 resourceManagerGateway.sendSlotReport(
                         getResourceID(),
@@ -1606,6 +1608,8 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
                             resourceManagerConnection.getTargetAddress());
                 }
             }
+
+            System.out.println("closeResourceManagerConnection:" + cause);
 
             resourceManagerConnection.close();
             resourceManagerConnection = null;
@@ -2492,6 +2496,7 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
             final InstanceID taskExecutorRegistrationId = success.getRegistrationId();
             final ClusterInformation clusterInformation = success.getClusterInformation();
             final ResourceManagerGateway resourceManagerGateway = connection.getTargetGateway();
+            System.out.println("aaaaaaaaaaaaaaaaaaaaa:" + taskExecutorRegistrationId);
 
             byte[] tokens = success.getInitialTokens();
             if (tokens != null) {

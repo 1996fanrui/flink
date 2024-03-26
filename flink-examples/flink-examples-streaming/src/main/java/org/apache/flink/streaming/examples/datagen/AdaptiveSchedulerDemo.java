@@ -18,6 +18,9 @@ public class AdaptiveSchedulerDemo {
         conf.setString("taskmanager.numberOfTaskSlots", "2");
         conf.setString("minicluster.number-of-taskmanagers", "3");
         conf.setString("rest.flamegraph.enabled", "true");
+        conf.setString("restart-strategy.type", "fixed-delay");
+        conf.setString("restart-strategy.fixed-delay.attempts", "100000");
+//        conf.setString("taskmanager.load-balance.mode", "TASKS");
 
 //        conf.setString("jobmanager.scheduler", "adaptive");
         conf.setString("slot.request.max-interval", "0ms");
@@ -28,21 +31,36 @@ public class AdaptiveSchedulerDemo {
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(conf);
         env.setParallelism(5);
+        env.enableCheckpointing(1000L);
 
         DataGeneratorSource<Long> generatorSource =
+                new DataGeneratorSource<>(
+                        value -> value,
+                        200000,
+                        RateLimiterStrategy.perSecond(20),
+                        Types.LONG);
+
+        env.fromSource(generatorSource, WatermarkStrategy.noWatermarks(), "Data Generator")
+                .rebalance()
+                .map(x -> x).name("map1").setParallelism(2)
+                .rebalance()
+                .map(x -> x).name("map2").setParallelism(3)
+                .rebalance()
+                .print();
+
+
+
+        DataGeneratorSource<Long> generatorSource1 =
                 new DataGeneratorSource<>(
                         value -> value,
                         20,
                         RateLimiterStrategy.perSecond(20),
                         Types.LONG);
 
-        env.fromSource(generatorSource, WatermarkStrategy.noWatermarks(), "Data Generator")
-                .rebalance()
-                .map(x -> x)
-                .rebalance()
-                .map(x -> x).setParallelism(3)
-                .rebalance()
+        env.fromSource(generatorSource1, WatermarkStrategy.noWatermarks(), "Data Generator")
                 .print();
+
+
 
         env.execute(AdaptiveSchedulerDemo.class.getSimpleName());
     }
