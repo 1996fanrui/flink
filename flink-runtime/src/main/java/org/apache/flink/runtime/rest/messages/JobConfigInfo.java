@@ -174,6 +174,7 @@ public class JobConfigInfo implements ResponseBody {
         public static final String FIELD_NAME_OBJECT_REUSE_MODE = "object-reuse-mode";
         public static final String FIELD_NAME_GLOBAL_JOB_PARAMETERS = "user-config";
 
+        @Deprecated
         @JsonProperty(FIELD_NAME_EXECUTION_MODE)
         private final String executionMode;
 
@@ -191,7 +192,7 @@ public class JobConfigInfo implements ResponseBody {
 
         @JsonCreator
         public ExecutionConfigInfo(
-                @JsonProperty(FIELD_NAME_EXECUTION_MODE) String executionMode,
+                @Deprecated @JsonProperty(FIELD_NAME_EXECUTION_MODE) String executionMode,
                 @JsonProperty(FIELD_NAME_RESTART_STRATEGY) String restartStrategy,
                 @JsonProperty(FIELD_NAME_PARALLELISM) int parallelism,
                 @JsonProperty(FIELD_NAME_OBJECT_REUSE_MODE) boolean isObjectReuse,
