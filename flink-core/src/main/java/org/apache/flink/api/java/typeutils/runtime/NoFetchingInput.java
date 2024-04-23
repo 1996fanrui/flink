@@ -65,6 +65,10 @@ public class NoFetchingInput extends Input {
      */
     @Override
     protected int require(int required) throws KryoException {
+        if (required == 0) {
+            return 0;
+        }
+
         if (required > capacity) {
             throw new KryoException(
                     "Buffer too small: capacity: " + capacity + ", " + "required: " + required);
@@ -115,6 +119,10 @@ public class NoFetchingInput extends Input {
     public void readBytes(byte[] bytes, int offset, int count) throws KryoException {
         if (bytes == null) {
             throw new IllegalArgumentException("bytes cannot be null.");
+        }
+
+        if (count == 0) {
+            return;
         }
 
         try {
