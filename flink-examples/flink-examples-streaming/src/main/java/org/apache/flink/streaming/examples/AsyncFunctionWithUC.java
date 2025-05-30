@@ -33,6 +33,8 @@ import org.apache.flink.streaming.api.functions.sink.v2.DiscardingSink;
 import org.apache.flink.util.Collector;
 
 import org.apache.commons.math3.random.RandomDataGenerator;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.Collections;
 import java.util.Random;
@@ -43,6 +45,8 @@ import java.util.concurrent.TimeUnit;
 
 /** FLINK-35051: Reproduce the UC doesn't work well with Async Operator. */
 public class AsyncFunctionWithUC {
+
+    private static final Logger LOG = LoggerFactory.getLogger(AsyncFunctionWithUC.class);
 
     public static void main(String[] args) throws Exception {
         Configuration conf = new Configuration();
@@ -58,22 +62,21 @@ public class AsyncFunctionWithUC {
 
         env.setParallelism(1);
 
-        DataStream<String> source =
-                env.fromSource(
-                                new DataGeneratorSource<>(
-                                        value -> new RandomDataGenerator().nextHexString(300),
-                                        Long.MAX_VALUE,
-                                        RateLimiterStrategy.perSecond(100000),
-                                        Types.STRING),
-                                WatermarkStrategy.noWatermarks(),
-                                "Source Task")
-                        .rebalance();
+        DataStream<String> source = env.fromSource(
+                        new DataGeneratorSource<>(
+                                value -> new RandomDataGenerator().nextHexString(300),
+                                Long.MAX_VALUE,
+                                RateLimiterStrategy.perSecond(100000),
+                                Types.STRING), WatermarkStrategy.noWatermarks(), "Source Task")
+                .rebalance();
 
-        AsyncDataStream.orderedWait(source, new MyAsyncFunction(), 2, TimeUnit.SECONDS, 1000)
-                //                source
+        AsyncDataStream.orderedWait(
+                        source,
+                        new MyAsyncFunction(), 2, TimeUnit.SECONDS, 1000)
+//                source
                 .flatMap(new AmplificationAndSleep())
                 .rebalance()
-                .flatMap(new AmplificationAndSleep(10))
+                .flatMap(new AmplificationAndSleep(10, false))
                 .sinkTo(new DiscardingSink<>());
 
         env.execute(AsyncFunctionWithUC.class.getSimpleName());
@@ -82,17 +85,22 @@ public class AsyncFunctionWithUC {
     private static class AmplificationAndSleep<V> implements FlatMapFunction<V, V> {
 
         private final int factor;
+        private final boolean print;
 
         public AmplificationAndSleep() {
-            this(10);
+            this(10, true);
         }
 
-        public AmplificationAndSleep(int factor) {
+        public AmplificationAndSleep(int factor, boolean print) {
             this.factor = factor;
+            this.print = print;
         }
 
         @Override
         public void flatMap(V value, Collector<V> out) throws Exception {
+            if (print) {
+                LOG.info("flatMap");
+            }
             for (int i = 0; i < factor; i++) {
                 Thread.sleep(1);
                 out.collect(value);
@@ -119,21 +127,19 @@ public class AsyncFunctionWithUC {
                                     throw new RuntimeException(exception);
                                 }
                                 return value;
-                            },
-                            executor)
-                    .whenCompleteAsync(
-                            (result, throwable) -> {
-                                if (result != null) {
-                                    resultFuture.complete(Collections.singleton(result));
-                                } else {
-                                    resultFuture.complete(Collections.emptyList());
-                                }
-                            },
-                            executor);
+                            }, executor)
+                    .whenCompleteAsync((result, throwable) -> {
+                        if (result != null) {
+                            resultFuture.complete(Collections.singleton(result));
+                        } else {
+                            resultFuture.complete(Collections.emptyList());
+                        }
+                    }, executor);
         }
 
         @Override
-        public void timeout(String value, ResultFuture<String> resultFuture) {}
+        public void timeout(String value, ResultFuture<String> resultFuture) {
+        }
 
         @Override
         public void close() {
