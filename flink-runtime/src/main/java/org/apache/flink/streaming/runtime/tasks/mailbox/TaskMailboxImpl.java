@@ -191,7 +191,7 @@ public class TaskMailboxImpl implements TaskMailbox {
         try {
             Mail mail;
             while ((mail = queue.pollFirst()) != null) {
-                if(mail.getMailOptions().isHighPriority()) {
+                if (mail.getMailOptions().isHighPriority()) {
                     batch.addFirst(mail);
                 } else {
                     batch.addLast(mail);
@@ -213,12 +213,9 @@ public class TaskMailboxImpl implements TaskMailbox {
         return Optional.ofNullable(batch.pollFirst());
     }
 
-    /**
-     *
-     * @return True if it has new high priority mail,
-     */
+    /** Move all mails from queue to batch queue if it has new priority mail. */
     private void moveMailsToBatchIfHasNewHighPriorityMail() {
-        if(!hasNewHighPriorityMail) {
+        if (!hasNewHighPriorityMail) {
             return;
         }
 
@@ -229,6 +226,15 @@ public class TaskMailboxImpl implements TaskMailbox {
 
     @Override
     public void put(@Nonnull Mail mail) {
+        if (mail.getMailOptions().isHighPriority()) {
+            putFirst(mail);
+        } else {
+            putLast(mail);
+        }
+    }
+
+    /** Adds the given action to the tail of the mailbox. */
+    private void putLast(@Nonnull Mail mail) {
         final ReentrantLock lock = this.lock;
         lock.lock();
         try {
@@ -241,9 +247,7 @@ public class TaskMailboxImpl implements TaskMailbox {
         }
     }
 
-    // todo: refactor the putfirst. Let put awares the priority from mail.getMailOptions().isHighPriority(), and put first can be removed.
-    // Keep the same style.
-    @Override
+    /** Adds the given action to the head of the mailbox. */
     public void putFirst(@Nonnull Mail mail) {
         if (isMailboxThread()) {
             checkPutStateConditions();

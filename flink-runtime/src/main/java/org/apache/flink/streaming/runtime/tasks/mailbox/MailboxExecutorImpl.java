@@ -73,25 +73,14 @@ public final class MailboxExecutorImpl implements MailboxExecutor {
             final String descriptionFormat,
             final Object... descriptionArgs) {
         try {
-            if(mailOptions.isHighPriority()) {
-                mailbox.putFirst(
-                        new Mail(
-                                mailOptions,
-                                command,
-                                Integer.MAX_VALUE,
-                                actionExecutor,
-                                descriptionFormat,
-                                descriptionArgs));
-            } else {
-                mailbox.put(
-                        new Mail(
-                                mailOptions,
-                                command,
-                                priority,
-                                actionExecutor,
-                                descriptionFormat,
-                                descriptionArgs));
-            }
+            mailbox.put(
+                    new Mail(
+                            mailOptions,
+                            command,
+                            priority,
+                            actionExecutor,
+                            descriptionFormat,
+                            descriptionArgs));
         } catch (MailboxClosedException mbex) {
             throw new RejectedExecutionException(mbex);
         }

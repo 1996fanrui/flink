@@ -24,7 +24,7 @@ import org.apache.flink.annotation.Internal;
 public class MailOptionsImpl implements MailboxExecutor.MailOptions {
     static final MailboxExecutor.MailOptions HIGH_PRIORITY = new MailOptionsImpl(true, false);
 
-    static final MailboxExecutor.MailOptions DEFAULT = new MailOptionsImpl(false,false);
+    static final MailboxExecutor.MailOptions DEFAULT = new MailOptionsImpl(false, false);
     static final MailboxExecutor.MailOptions DEFERRABLE = new MailOptionsImpl(false, true);
 
     private final boolean highPriority;
