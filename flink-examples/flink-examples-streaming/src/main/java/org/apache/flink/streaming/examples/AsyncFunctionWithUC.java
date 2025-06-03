@@ -57,23 +57,26 @@ public class AsyncFunctionWithUC {
         conf.setString("execution.checkpointing.unaligned.enabled", "true");
         conf.setString("execution.checkpointing.interval", "10s");
         conf.setString("execution.checkpointing.min-pause", "8s");
+        conf.setString("taskmanager.network.memory.max-overdraft-buffers-per-gate", "20");
+        conf.setString("rest.flamegraph.enabled", "true");
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(conf);
 
         env.setParallelism(1);
 
-        DataStream<String> source = env.fromSource(
-                        new DataGeneratorSource<>(
-                                value -> new RandomDataGenerator().nextHexString(300),
-                                Long.MAX_VALUE,
-                                RateLimiterStrategy.perSecond(100000),
-                                Types.STRING), WatermarkStrategy.noWatermarks(), "Source Task")
-                .rebalance();
+        DataStream<String> source =
+                env.fromSource(
+                                new DataGeneratorSource<>(
+                                        value -> new RandomDataGenerator().nextHexString(300),
+                                        Long.MAX_VALUE,
+                                        RateLimiterStrategy.perSecond(100000),
+                                        Types.STRING),
+                                WatermarkStrategy.noWatermarks(),
+                                "Source Task")
+                        .rebalance();
 
-        AsyncDataStream.orderedWait(
-                        source,
-                        new MyAsyncFunction(), 2, TimeUnit.SECONDS, 1000)
-//                source
+        AsyncDataStream.orderedWait(source, new MyAsyncFunction(), 2, TimeUnit.SECONDS, 1000)
+                //                source
                 .flatMap(new AmplificationAndSleep())
                 .rebalance()
                 .flatMap(new AmplificationAndSleep(10, false))
@@ -127,19 +130,21 @@ public class AsyncFunctionWithUC {
                                     throw new RuntimeException(exception);
                                 }
                                 return value;
-                            }, executor)
-                    .whenCompleteAsync((result, throwable) -> {
-                        if (result != null) {
-                            resultFuture.complete(Collections.singleton(result));
-                        } else {
-                            resultFuture.complete(Collections.emptyList());
-                        }
-                    }, executor);
+                            },
+                            executor)
+                    .whenCompleteAsync(
+                            (result, throwable) -> {
+                                if (result != null) {
+                                    resultFuture.complete(Collections.singleton(result));
+                                } else {
+                                    resultFuture.complete(Collections.emptyList());
+                                }
+                            },
+                            executor);
         }
 
         @Override
-        public void timeout(String value, ResultFuture<String> resultFuture) {
-        }
+        public void timeout(String value, ResultFuture<String> resultFuture) {}
 
         @Override
         public void close() {
