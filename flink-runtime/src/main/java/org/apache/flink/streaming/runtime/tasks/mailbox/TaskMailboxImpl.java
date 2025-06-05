@@ -115,7 +115,7 @@ public class TaskMailboxImpl implements TaskMailbox {
         checkIsMailboxThread();
         checkTakeStateConditions();
 
-        moveMailsToBatchIfHasNewHighPriorityMail();
+        moveMailsToBatchIfNeeded();
 
         Mail head = takeOrNull(batch, priority);
         if (head != null) {
@@ -143,7 +143,7 @@ public class TaskMailboxImpl implements TaskMailbox {
         checkIsMailboxThread();
         checkTakeStateConditions();
 
-        moveMailsToBatchIfHasNewHighPriorityMail();
+        moveMailsToBatchIfNeeded();
 
         Mail head = takeOrNull(batch, priority);
         if (head != null) {
@@ -209,12 +209,12 @@ public class TaskMailboxImpl implements TaskMailbox {
     public Optional<Mail> tryTakeFromBatch() {
         checkIsMailboxThread();
         checkTakeStateConditions();
-        moveMailsToBatchIfHasNewHighPriorityMail();
+        moveMailsToBatchIfNeeded();
         return Optional.ofNullable(batch.pollFirst());
     }
 
     /** Move all mails from queue to batch queue if it has new priority mail. */
-    private void moveMailsToBatchIfHasNewHighPriorityMail() {
+    private void moveMailsToBatchIfNeeded() {
         if (!hasNewHighPriorityMail) {
             return;
         }

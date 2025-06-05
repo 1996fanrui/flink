@@ -22,10 +22,10 @@ import org.apache.flink.annotation.Internal;
 /** Options to configure behaviour of executing mailbox mails. */
 @Internal
 public class MailOptionsImpl implements MailboxExecutor.MailOptions {
-    static final MailboxExecutor.MailOptions HIGH_PRIORITY = new MailOptionsImpl(true, false);
 
     static final MailboxExecutor.MailOptions DEFAULT = new MailOptionsImpl(false, false);
     static final MailboxExecutor.MailOptions DEFERRABLE = new MailOptionsImpl(false, true);
+    static final MailboxExecutor.MailOptions HIGH_PRIORITY = new MailOptionsImpl(true, false);
 
     private final boolean highPriority;
     private final boolean deferrable;
