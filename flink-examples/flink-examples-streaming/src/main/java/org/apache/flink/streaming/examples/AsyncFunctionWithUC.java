@@ -45,41 +45,35 @@ import java.util.concurrent.TimeUnit;
 
 /** FLINK-35051: Reproduce the UC doesn't work well with Async Operator. */
 public class AsyncFunctionWithUC {
-
     private static final Logger LOG = LoggerFactory.getLogger(AsyncFunctionWithUC.class);
 
     public static void main(String[] args) throws Exception {
         Configuration conf = new Configuration();
 
-        conf.setString("execution.buffer-timeout.enabled", "false");
-        conf.setString("taskmanager.memory.segment-size", "4kb");
-
         conf.setString("execution.checkpointing.unaligned.enabled", "true");
         conf.setString("execution.checkpointing.interval", "10s");
         conf.setString("execution.checkpointing.min-pause", "8s");
-        conf.setString("taskmanager.network.memory.max-overdraft-buffers-per-gate", "20");
-        conf.setString("rest.flamegraph.enabled", "true");
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(conf);
 
         env.setParallelism(1);
 
-        DataStream<String> source =
-                env.fromSource(
-                                new DataGeneratorSource<>(
-                                        value -> new RandomDataGenerator().nextHexString(300),
-                                        Long.MAX_VALUE,
-                                        RateLimiterStrategy.perSecond(100000),
-                                        Types.STRING),
-                                WatermarkStrategy.noWatermarks(),
-                                "Source Task")
-                        .rebalance();
+        DataStream<String> source = env.fromSource(
+                new DataGeneratorSource<>(
+                        value -> new RandomDataGenerator().nextHexString(300),
+                        Long.MAX_VALUE,
+                        RateLimiterStrategy.perSecond(100000),
+                        Types.STRING), WatermarkStrategy.noWatermarks(), "Source Task")
+//                .rebalance()
+                ;
 
-        AsyncDataStream.orderedWait(source, new MyAsyncFunction(), 2, TimeUnit.SECONDS, 1000)
-                //                source
-                .flatMap(new AmplificationAndSleep())
+        AsyncDataStream.orderedWait(
+                        source,
+                        new MyAsyncFunction(), 2, TimeUnit.SECONDS, 1000)
+//                source
+                .flatMap(new AmplificationAndSleep(50, true))
                 .rebalance()
-                .flatMap(new AmplificationAndSleep(10, false))
+                .flatMap(new AmplificationAndSleep(2, false))
                 .sinkTo(new DiscardingSink<>());
 
         env.execute(AsyncFunctionWithUC.class.getSimpleName());
@@ -130,17 +124,14 @@ public class AsyncFunctionWithUC {
                                     throw new RuntimeException(exception);
                                 }
                                 return value;
-                            },
-                            executor)
-                    .whenCompleteAsync(
-                            (result, throwable) -> {
-                                if (result != null) {
-                                    resultFuture.complete(Collections.singleton(result));
-                                } else {
-                                    resultFuture.complete(Collections.emptyList());
-                                }
-                            },
-                            executor);
+                            }, executor)
+                    .whenCompleteAsync((result, throwable) -> {
+                        if (result != null) {
+                            resultFuture.complete(Collections.singleton(result));
+                        } else {
+                            resultFuture.complete(Collections.emptyList());
+                        }
+                    }, executor);
         }
 
         @Override

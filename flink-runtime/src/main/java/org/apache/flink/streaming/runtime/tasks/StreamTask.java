@@ -1265,6 +1265,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 
         CompletableFuture<Boolean> result = new CompletableFuture<>();
         mainMailboxExecutor.execute(
+                MailboxExecutor.MailOptions.highPriority(),
                 () -> {
                     try {
                         boolean noUnfinishedInputGates =
