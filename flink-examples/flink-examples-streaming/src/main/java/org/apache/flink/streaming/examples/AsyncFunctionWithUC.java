@@ -20,7 +20,6 @@ package org.apache.flink.streaming.examples;
 
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.functions.FlatMapFunction;
-import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.connector.source.util.ratelimit.RateLimiterStrategy;
 import org.apache.flink.api.java.functions.KeySelector;
@@ -29,24 +28,13 @@ import org.apache.flink.connector.datagen.source.DataGeneratorSource;
 import org.apache.flink.runtime.state.FunctionInitializationContext;
 import org.apache.flink.runtime.state.FunctionSnapshotContext;
 import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
-import org.apache.flink.streaming.api.datastream.AsyncDataStream;
-import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.async.ResultFuture;
-import org.apache.flink.streaming.api.functions.async.RichAsyncFunction;
 import org.apache.flink.streaming.api.functions.sink.v2.DiscardingSink;
 import org.apache.flink.util.Collector;
 
 import org.apache.commons.math3.random.RandomDataGenerator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import java.util.Collections;
-import java.util.Random;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 
 /** FLINK-35051: Reproduce the UC doesn't work well with Async Operator. */
 public class AsyncFunctionWithUC {
@@ -76,21 +64,23 @@ public class AsyncFunctionWithUC {
                                 Types.STRING),
                         WatermarkStrategy.noWatermarks(),
                         "Source Task")
-                .keyBy(new KeySelector<String, Integer>() {
-                    @Override
-                    public Integer getKey(String value) throws Exception {
-                        return value.hashCode() % 100;
-                    }
-                })
-//                .flatMap(new AmplificationAndSleep(2, false))
-//                .rebalance()
+                .keyBy(
+                        new KeySelector<String, Integer>() {
+                            @Override
+                            public Integer getKey(String value) throws Exception {
+                                return value.hashCode() % 100;
+                            }
+                        })
+                //                .flatMap(new AmplificationAndSleep(2, false))
+                //                .rebalance()
                 .flatMap(new AmplificationAndSleep(10, false))
                 .sinkTo(new DiscardingSink<>());
 
         env.execute(AsyncFunctionWithUC.class.getSimpleName());
     }
 
-    private static class AmplificationAndSleep<V> implements FlatMapFunction<V, V>, CheckpointedFunction {
+    private static class AmplificationAndSleep<V>
+            implements FlatMapFunction<V, V>, CheckpointedFunction {
 
         private final int factor;
         private final boolean print;
@@ -117,15 +107,12 @@ public class AsyncFunctionWithUC {
 
         @Override
         public void snapshotState(FunctionSnapshotContext context) {
-//            if (context.getCheckpointId() == 3) {
-//                throw new IllegalStateException("Mocked exception!");
-//            }
+            //            if (context.getCheckpointId() == 3) {
+            //                throw new IllegalStateException("Mocked exception!");
+            //            }
         }
 
         @Override
-        public void initializeState(FunctionInitializationContext context) {
-
-        }
+        public void initializeState(FunctionInitializationContext context) {}
     }
-
 }
