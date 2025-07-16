@@ -1,3 +1,8 @@
+# 文档
+
+请注意：当前的 @@GEMINI_CONTEXT.md 可能有些设计是不全面的。如果你发现了文档里有任何设计上的缺陷请进行优化， 并将 方案的改动更新到 @@GEMINI_CONTEXT.md 中。
+如有设计文档有任何的缺失也请补充，也就是把这个文档当做设计文档，所有的设计方案都要更新到这里。
+
 ## 代码生成规则
 
 请严格遵守以下规则：
@@ -13,7 +18,7 @@
 
 每次修改完请务必运行相关测试 ，如果有报错请自动修复，直到报错被解决后才停止。
 
-注：如果测试失败是因为测试覆盖率不足，请提升覆盖率而不是 降低测试覆盖率的要求。
+编译命令： mvn -T 20 clean install -DskipTests -Dmaven.javadoc.skip=true -Drat.skip=true -Dcheckstyle.skip=true -Denforcer.skip=true -P java11-target
 
 ## 编写测试
 
