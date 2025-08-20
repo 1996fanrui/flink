@@ -1685,6 +1685,7 @@ under the License.
 						<exclude>**/flink-bin/conf/masters</exclude>
 						<!-- Administrative files in the main trunk. -->
 						<exclude>**/README.md</exclude>
+						<exclude>requirements/**</exclude>
 						<exclude>.github/**</exclude>
 						<!-- Build files -->
 						<exclude>**/*.iml</exclude>
