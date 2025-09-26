@@ -1,0 +1,24 @@
+#!/bin/zsh
+################################################################################
+
+set -e  # 遇到错误立即退出
+# set -x  # 会在执行每个命令之前，先打印出这个命令以及其所有参数。方便排查具体执行到哪里了
+
+# Source the user's profile to load environment variables
+if [ -f ~/.zshrc ]; then
+    . ~/.zshrc
+fi
+
+export FLINK_VERSION="os-troubleshooting-$(git rev-parse --short HEAD)"
+
+jdk11
+
+mvn versions:set -DnewVersion="$FLINK_VERSION" -DgenerateBackupPoms=false
+
+git add .
+
+git commit -m "tmp version change"
+
+# ./mvnw -T 20 clean install -U -Pfast -DskipTests -Dmaven.javadoc.skip=true -Drat.skip=true -Dcheckstyle.skip=true -Denforcer.skip=true -P java11-target -P java11
+
+./mvnw -T 20 clean install -U -Pfast -DskipTests -Dmaven.javadoc.skip=true -Drat.skip=true -Dcheckstyle.skip=true -Denforcer.skip=true -P java11-target -P java11 -pl flink-tests -am

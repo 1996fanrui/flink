@@ -18,6 +18,7 @@ logs.zip
 .mvn/maven.config
 target
 tmp
+log/*
 *.class
 *.iml
 *.swp
