@@ -47,6 +47,7 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ExternalizedCheckpointRetention;
 import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.configuration.NettyShuffleEnvironmentOptions;
+import org.apache.flink.configuration.RestOptions;
 import org.apache.flink.configuration.RpcOptions;
 import org.apache.flink.configuration.StateBackendOptions;
 import org.apache.flink.configuration.StateRecoveryOptions;
@@ -838,6 +839,8 @@ abstract class UnalignedCheckpointTestBase {
             Configuration conf = new Configuration();
 
             conf.set(TaskManagerOptions.NETWORK_MEMORY_FRACTION, 0.9f);
+            conf.set(RestOptions.ENABLE_FLAMEGRAPH, true);
+            // conf.set(RestOptions.PORT, 12345);
             conf.set(TaskManagerOptions.MEMORY_SEGMENT_SIZE, MemorySize.parse("4kb"));
             conf.set(StateBackendOptions.STATE_BACKEND, "hashmap");
             conf.set(CheckpointingOptions.CHECKPOINTS_DIRECTORY, checkpointDir.toURI().toString());
