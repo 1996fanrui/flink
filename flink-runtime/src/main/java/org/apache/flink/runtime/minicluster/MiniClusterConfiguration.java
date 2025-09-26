@@ -231,6 +231,8 @@ public class MiniClusterConfiguration {
         public MiniClusterConfiguration build() {
             final Configuration modifiedConfiguration = new Configuration(configuration);
             modifiedConfiguration.set(TaskManagerOptions.NUM_TASK_SLOTS, numSlotsPerTaskManager);
+            modifiedConfiguration.set(TaskManagerOptions.BIND_HOST, "localhost");
+            modifiedConfiguration.set(RestOptions.ENABLE_FLAMEGRAPH, true);
             modifiedConfiguration.set(
                     RestOptions.ADDRESS,
                     modifiedConfiguration.get(RestOptions.ADDRESS, "localhost"));
