@@ -116,7 +116,7 @@ public class InflightDataRescalingDescriptor implements Serializable {
         public static final InflightDataGateOrPartitionRescalingDescriptor NO_STATE =
                 new InflightDataGateOrPartitionRescalingDescriptor(
                         new int[0],
-                        RescaleMappings.identity(0, 0),
+                        RescaleMappings.SYMMETRIC_IDENTITY,
                         Collections.emptySet(),
                         MappingType.IDENTITY) {
 
@@ -124,14 +124,12 @@ public class InflightDataRescalingDescriptor implements Serializable {
 
                     @Override
                     public int[] getOldSubtaskInstances() {
-                        throw new UnsupportedOperationException(
-                                "Cannot get old subtasks from a descriptor that represents no state.");
+                        return new int[0];
                     }
 
                     @Override
                     public RescaleMappings getRescaleMappings() {
-                        throw new UnsupportedOperationException(
-                                "Cannot get rescale mappings from a descriptor that represents no state.");
+                        return RescaleMappings.SYMMETRIC_IDENTITY;
                     }
                 };
 
