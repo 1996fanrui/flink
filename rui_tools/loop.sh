@@ -55,7 +55,7 @@ if [ ! -d "$log_dir" ]; then
 fi
 
 # Loop 100 times
-for i in {1..100}; do
+for i in {1..2000}; do
   echo "Starting iteration $i at $(date)"
 
   # Get the current date and time in the format YYYYMMDD_HHMMSS

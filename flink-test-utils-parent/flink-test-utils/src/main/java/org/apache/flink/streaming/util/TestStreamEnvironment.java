@@ -146,7 +146,7 @@ public class TestStreamEnvironment extends StreamExecutionEnvironment {
         if (RANDOMIZE_CHECKPOINTING_CONFIG) {
             randomize(conf, CheckpointingOptions.ENABLE_UNALIGNED, true, false);
             randomize(
-                    conf, CheckpointingOptions.UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM, true, false);
+                    conf, CheckpointingOptions.UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM, true, true);
             randomize(
                     conf,
                     CheckpointingOptions.ALIGNED_CHECKPOINT_TIMEOUT,
