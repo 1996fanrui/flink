@@ -26,6 +26,7 @@ import org.apache.flink.runtime.checkpoint.CheckpointFailureReason;
 import org.apache.flink.runtime.checkpoint.CheckpointMetaData;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
 import org.apache.flink.runtime.checkpoint.CheckpointType;
+import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
 import org.apache.flink.runtime.deployment.InputGateDeploymentDescriptor;
 import org.apache.flink.runtime.deployment.ResultPartitionDeploymentDescriptor;
 import org.apache.flink.runtime.deployment.TaskDeploymentDescriptorFactory.ShuffleDescriptorAndIndex;
@@ -1249,6 +1250,34 @@ public class TaskTest extends TestLogger {
         assertEquals(ExecutionState.FINISHED, task.getTerminationFuture().getNow(null));
     }
 
+    private void testChannelStateWriterCloses(Class<? extends TriggerLatchInvokable> invokable)
+            throws Exception {
+        final Task task =
+                createTaskBuilder()
+                        .setInvokable(invokable)
+                        .setTaskManagerActions(new NoOpTaskManagerActions())
+                        .build(Executors.directExecutor());
+
+        task.startTaskThread();
+        awaitInvokableLatch(task);
+        ChannelStateWriterWithCloseCounter channelStateWriter =
+                (ChannelStateWriterWithCloseCounter) task.getChannelStateWriter();
+        assertTrue(channelStateWriter.isOpen());
+        triggerInvokableLatch(task);
+        task.getExecutingThread().join();
+        assertTrue(channelStateWriter.isClosed());
+    }
+
+    @Test
+    public void testChannelStateWriterClosesOnSuccess() throws Exception {
+        testChannelStateWriterCloses(ChannelStateWriterSetterInvokable.class);
+    }
+
+    @Test
+    public void testChannelStateWriterClosesOnFailure() throws Exception {
+        testChannelStateWriterCloses(FailingChannelStateWriterSetterInvokable.class);
+    }
+
     private void assertCheckpointDeclined(
             Task task,
             TestCheckpointResponder testCheckpointResponder,
@@ -1576,7 +1605,7 @@ public class TaskTest extends TestLogger {
     }
 
     /** {@link AbstractInvokable} which throws {@link RuntimeException} on invoke. */
-    public static final class InvokableWithExceptionOnTrigger extends TriggerLatchInvokable {
+    public static class InvokableWithExceptionOnTrigger extends TriggerLatchInvokable {
         public InvokableWithExceptionOnTrigger(Environment environment) {
             super(environment);
         }
@@ -1760,6 +1789,40 @@ public class TaskTest extends TestLogger {
                     // fall through the loop
                 }
             }
+        }
+    }
+
+    private static class ChannelStateWriterWithCloseCounter
+            extends ChannelStateWriter.NoOpChannelStateWriter {
+        private final AtomicInteger closeCalledCounter = new AtomicInteger(0);
+
+        @Override
+        public void close() {
+            closeCalledCounter.incrementAndGet();
+        }
+
+        public boolean isOpen() {
+            return closeCalledCounter.get() == 0;
+        }
+
+        public boolean isClosed() {
+            return closeCalledCounter.get() == 1;
+        }
+    }
+
+    private static class ChannelStateWriterSetterInvokable extends InvokableBlockingWithTrigger {
+
+        public ChannelStateWriterSetterInvokable(Environment environment) {
+            super(environment);
+            environment.setChannelStateWriter(new ChannelStateWriterWithCloseCounter());
+        }
+    }
+
+    private static class FailingChannelStateWriterSetterInvokable
+            extends InvokableWithExceptionOnTrigger {
+        public FailingChannelStateWriterSetterInvokable(Environment environment) {
+            super(environment);
+            environment.setChannelStateWriter(new ChannelStateWriterWithCloseCounter());
         }
     }
 }
