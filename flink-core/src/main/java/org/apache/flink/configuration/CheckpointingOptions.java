@@ -651,10 +651,17 @@ public class CheckpointingOptions {
             ConfigOptions.key(
                             "execution.checkpointing.unaligned.recover-output-on-downstream.enabled")
                     .booleanType()
-                    .defaultValue(false)
+                    .defaultValue(true)
                     .withDescription(
                             "Whether recovering output buffers of upstream task on downstream task directly "
                                     + "when job restores from the unaligned checkpoint.");
+
+    @Experimental
+    public static final ConfigOption<Boolean> UNALIGNED_DURING_RECOVERY_ENABLED =
+            ConfigOptions.key("execution.checkpointing.unaligned.during-recovery.enabled")
+                    .booleanType()
+                    .defaultValue(true)
+                    .withDescription("Whether to enable unaligned checkpoint support during recovery.");
 
     /**
      * Determines whether checkpointing is enabled based on the configuration.
@@ -750,5 +757,25 @@ public class CheckpointingOptions {
             return false;
         }
         return config.get(ENABLE_UNALIGNED_INTERRUPTIBLE_TIMERS);
+    }
+
+    /**
+     * Determines whether unaligned checkpoint support during recovery is enabled.
+     *
+     * <p>This feature requires {@link #UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM} to be enabled. Note
+     * that it does not require unaligned checkpoints to be currently enabled, because a job may
+     * restore from an unaligned checkpoint while having unaligned checkpoints disabled for the new
+     * execution.
+     *
+     * @param config the configuration to check
+     * @return {@code true} if unaligned checkpoint during recovery is enabled, {@code false}
+     *     otherwise
+     */
+    @Internal
+    public static boolean isUnalignedDuringRecoveryEnabled(Configuration config) {
+        if (!config.get(UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM)) {
+            return false;
+        }
+        return config.get(UNALIGNED_DURING_RECOVERY_ENABLED);
     }
 }
