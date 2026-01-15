@@ -28,6 +28,7 @@ import org.apache.flink.runtime.io.network.partition.consumer.InputGate;
 import org.apache.flink.runtime.state.AbstractChannelStateHandle;
 import org.apache.flink.runtime.state.ChannelStateHelper;
 import org.apache.flink.runtime.state.StreamStateHandle;
+import org.apache.flink.streaming.runtime.io.recovery.RecordFilterContext;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -58,10 +59,21 @@ public class SequentialChannelStateReaderImpl implements SequentialChannelStateR
     }
 
     @Override
-    public void readInputData(InputGate[] inputGates) throws IOException, InterruptedException {
+    public void readInputData(InputGate[] inputGates, RecordFilterContext filterContext)
+            throws IOException, InterruptedException {
+
+        // Create filtering handler if filtering is needed
+        ChannelStateFilteringHandler<?> filteringHandler = null;
+        if (filterContext.isUnalignedDuringRecoveryEnabled()) {
+            filteringHandler =
+                    ChannelStateFilteringHandler.createFromContext(filterContext, inputGates);
+        }
+
         try (InputChannelRecoveredStateHandler stateHandler =
                 new InputChannelRecoveredStateHandler(
-                        inputGates, taskStateSnapshot.getInputRescalingDescriptor())) {
+                        inputGates,
+                        taskStateSnapshot.getInputRescalingDescriptor(),
+                        filteringHandler)) {
             read(
                     stateHandler,
                     groupByDelegate(

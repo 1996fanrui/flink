@@ -21,6 +21,7 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.api.common.operators.ProcessingTimeService.ProcessingTimeCallback;
+import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.NettyShuffleEnvironmentOptions;
@@ -84,6 +85,7 @@ import org.apache.flink.runtime.taskmanager.Task;
 import org.apache.flink.runtime.util.ConfigurationParserUtils;
 import org.apache.flink.streaming.api.graph.NonChainedOutput;
 import org.apache.flink.streaming.api.graph.StreamConfig;
+import org.apache.flink.streaming.api.graph.StreamEdge;
 import org.apache.flink.streaming.api.operators.InternalTimeServiceManager;
 import org.apache.flink.streaming.api.operators.InternalTimeServiceManagerImpl;
 import org.apache.flink.streaming.api.operators.StreamOperator;
@@ -94,6 +96,7 @@ import org.apache.flink.streaming.runtime.io.RecordWriterOutput;
 import org.apache.flink.streaming.runtime.io.StreamInputProcessor;
 import org.apache.flink.streaming.runtime.io.checkpointing.BarrierAlignmentUtil;
 import org.apache.flink.streaming.runtime.io.checkpointing.CheckpointBarrierHandler;
+import org.apache.flink.streaming.runtime.io.recovery.RecordFilterContext;
 import org.apache.flink.streaming.runtime.partitioner.ConfigurableStreamPartitioner;
 import org.apache.flink.streaming.runtime.partitioner.ForwardPartitioner;
 import org.apache.flink.streaming.runtime.partitioner.RebalancePartitioner;
@@ -878,10 +881,13 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                 INITIALIZE_STATE_DURATION, initializeStateEndTs - readOutputDataTs);
         IndexedInputGate[] inputGates = getEnvironment().getAllInputGates();
 
+        // Create record filter context for filtering during recovery
+        final RecordFilterContext filterContext = createRecordFilterContext();
+
         channelIOExecutor.execute(
                 () -> {
                     try {
-                        reader.readInputData(inputGates);
+                        reader.readInputData(inputGates, filterContext);
                     } catch (Exception e) {
                         asyncExceptionHandler.handleAsyncException(
                                 "Unable to read channel state", e);
@@ -1954,6 +1960,51 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
     @Override
     public final Environment getEnvironment() {
         return environment;
+    }
+
+    /**
+     * Creates a RecordFilterContext for filtering recovered channel state buffers.
+     *
+     * <p>This method builds the complete context using information available in StreamTask,
+     * including input configurations for all network inputs.
+     *
+     * @return A RecordFilterContext with input configurations. The context may have empty
+     *     inputConfigs (e.g., for source tasks) or enabled=false when filtering is not needed.
+     */
+    protected RecordFilterContext createRecordFilterContext() {
+        ClassLoader cl = getUserCodeClassLoader();
+        StreamConfig.InputConfig[] inputs = configuration.getInputs(cl);
+        List<StreamEdge> inEdges = configuration.getInPhysicalEdges(cl);
+
+        List<RecordFilterContext.InputFilterConfig> inputConfigs = new ArrayList<>();
+
+        // Iterate through all inputs and only process NetworkInputConfig entries.
+        // The inputs array may contain mixed types (NetworkInputConfig and SourceInputConfig),
+        // so we need to check the type before accessing network-specific properties.
+        for (int i = 0; i < inputs.length; i++) {
+            if (inputs[i] instanceof StreamConfig.NetworkInputConfig) {
+                StreamConfig.NetworkInputConfig networkInput =
+                        (StreamConfig.NetworkInputConfig) inputs[i];
+                TypeSerializer<?> typeSerializer = networkInput.getTypeSerializer();
+                StreamPartitioner<?> partitioner = inEdges.get(i).getPartitioner();
+                int numberOfChannels = getEnvironment().getTaskInfo().getNumberOfParallelSubtasks();
+
+                inputConfigs.add(
+                        new RecordFilterContext.InputFilterConfig(
+                                typeSerializer, partitioner, numberOfChannels));
+            }
+        }
+
+        boolean unalignedDuringRecoveryEnabled =
+                CheckpointingOptions.isUnalignedDuringRecoveryEnabled(getJobConfiguration());
+
+        return new RecordFilterContext(
+                inputConfigs,
+                getEnvironment().getTaskStateManager().getInputRescalingDescriptor(),
+                getEnvironment().getTaskInfo().getIndexOfThisSubtask(),
+                getEnvironment().getTaskInfo().getMaxNumberOfParallelSubtasks(),
+                getEnvironment().getIOManager().getSpillingDirectoriesPaths(),
+                unalignedDuringRecoveryEnabled);
     }
 
     /** Check whether records can be emitted in batch. */
