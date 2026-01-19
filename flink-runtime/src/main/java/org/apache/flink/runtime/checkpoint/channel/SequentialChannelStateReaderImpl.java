@@ -44,6 +44,7 @@ import java.util.stream.Stream;
 import static java.util.Comparator.comparingLong;
 import static java.util.stream.Collectors.groupingBy;
 import static java.util.stream.Collectors.toList;
+import static org.apache.flink.util.Preconditions.checkState;
 
 /** {@link SequentialChannelStateReader} implementation. */
 public class SequentialChannelStateReaderImpl implements SequentialChannelStateReader {
@@ -84,6 +85,12 @@ public class SequentialChannelStateReaderImpl implements SequentialChannelStateR
                     groupByDelegate(
                             streamSubtaskStates(),
                             OperatorSubtaskState::getUpstreamOutputBufferState));
+
+            if (filteringHandler != null) {
+                checkState(
+                        !filteringHandler.hasPartialData(),
+                        "Not all data has been fully consumed during filtering");
+            }
         }
     }
 

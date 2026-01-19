@@ -297,13 +297,9 @@ public class ChannelStateFilteringHandler<T> {
             int[] oldSubtaskIndexes = rescalingDescriptor.getOldSubtaskIndexes(gateIndex);
             RescaleMappings channelMapping = rescalingDescriptor.getChannelMapping(gateIndex);
 
-            // Get the input index for this gate (clamp to valid range for cases where
-            // numberOfInputs < numberOfGates)
-            int inputIndex = Math.min(gateIndex, filterContext.getNumberOfInputs() - 1);
-
             // Create serializer for this gate's input type
             RecordFilterContext.InputFilterConfig inputConfig =
-                    filterContext.getInputConfig(inputIndex);
+                    filterContext.getInputConfig(gateIndex);
             @SuppressWarnings("unchecked")
             TypeSerializer<T> typeSerializer = (TypeSerializer<T>) inputConfig.getTypeSerializer();
             StreamElementSerializer<T> elementSerializer =
@@ -311,7 +307,7 @@ public class ChannelStateFilteringHandler<T> {
 
             // Create filter factory for this gate's input
             VirtualChannelRecordFilterFactory<T> filterFactory =
-                    VirtualChannelRecordFilterFactory.fromContext(filterContext, inputIndex);
+                    VirtualChannelRecordFilterFactory.fromContext(filterContext, gateIndex);
 
             // Build virtual channels for this gate
             Map<SubtaskConnectionDescriptor, VirtualChannel<T>> gateVirtualChannels =
