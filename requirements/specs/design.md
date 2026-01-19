@@ -6,9 +6,13 @@
 
 ### 1.1 背景
 
-当前 Flink 的 channel state recovery 逻辑存在问题：
-- **过滤时机**：过滤逻辑在 Task 线程处理数据时执行（在 `DemultiplexingRecordDeserializer.VirtualChannel.getNextRecord()` 中）
-- **问题**：未过滤的 buffer 被保存到 checkpoint，导致多次 rescale 后数据膨胀
+当前 Flink 的 channel state recovery 逻辑是通过 channel-state-unspilling 和  RescalingStreamTaskNetworkInput 两阶段实现。
+
+RescalingStreamTaskNetworkInput 回调用 DemultiplexingRecordDeserializer 负责数据过滤。
+
+需求是，希望 过滤从 RescalingStreamTaskNetworkInput 移动到 channel-state-unspilling。从而第二阶段使用简单的 StreamTaskNetworkInput 即可。
+
+注：这个改动是为了后续其他 feature 做铺垫。
 
 ### 1.2 目标
 
