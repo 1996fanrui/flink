@@ -21,21 +21,25 @@ FLIP-547 的核心目标是支持在 Recovery 阶段触发 Checkpoint，以解�
 
 | 任务 | 关注点 | 状态 | 优先级 |
 |------|--------|------|--------|
-| Task 1 | 数据路径变更（Buffer 在哪里恢复） | ✅ 已合并 | 必需 |
-| Task 2 | 核心过滤机制 | 待开发 | 必需 |
-| Task 3 | 内存压力处理 | 待开发 | 可选（优化） |
-| Task 4 | 控制面变更（生命周期、Checkpoint 触发） | 待开发 | 必需 |
+| Task 1 | 数据路径变更（Buffer 在哪里恢复） | ✅ 已合并 (commit 686c00f8) | 必需 |
+| Task 2 | 核心过滤机制 | ✅ POC 完成 (commit 62566c4b) | 必需 |
+| Task 3 | 内存压力处理 | 首版跳过 | 可选（优化） |
+| Task 4 | 控制面变更（生命周期、Checkpoint 触发） | **待开发（当前焦点）** | 必需 |
+
+**相关 Commits:**
+- `686c00f8`: [FLINK-38541] Introducing config option: execution.checkpointing.unaligned.during-recovery.enabled
+- `62566c4b`: [FLINK-38930] Filtering record before processing without spilling strategy
 
 ## 任务依赖关系
 
 ```
-Task 1 (已完成)
+Task 1 (✅ 已合并)
     │
-    ├──→ Task 2 (过滤逻辑) ──────────────────┐
-    │                                        ├──→ 首版/POC 完成
-    └──→ Task 4 (控制面变更，可与 Task 2 并行) ──┘
-                                             │
-                                             └──→ Task 3 (可选优化，后续迭代)
+    ├──→ Task 2 (✅ POC 完成) ─────────────────┐
+    │                                          │
+    └──→ Task 4 (🔧 当前焦点) ─────────────────┼──→ 首版/POC 完成
+                                               │
+                                               └──→ Task 3 (首版跳过，后续优化)
 ```
 
 ---
@@ -71,7 +75,7 @@ Task 1 (已完成)
 
 ## Task 2: Filtering Records in Async Thread
 
-**状态**: 待开发
+**状态**: ✅ POC 完成 (commit 62566c4b: [FLINK-38930] Filtering record before processing without spilling strategy)
 
 ### 职责
 
@@ -180,41 +184,23 @@ Task 3 是一个**优化项**，而非正确性必需：
 
 ## Task 4: Change the Overall UC Restore Process
 
-**状态**: 待开发
+**状态**: 🔧 待开发（当前焦点）
+
+**详细设计文档**: [task4_design.md](./task4_design.md)
 
 ### 职责
 
-变更整体的 UC 恢复流程，包括 Task 生命周期、Checkpoint 触发时机、上游阻塞机制等。
+变更整体的 UC 恢复流程，包括 Checkpoint 触发时机、Task Snapshot 等待逻辑、上游阻塞机制等。
 
-### 核心变更
+### 核心变更概述
 
-1. **Task INITIALIZING 阶段变更**
-   - 在初始化开始时请求上游 Partition
-   - 允许接收上游 Task 的事件（如 Checkpoint Barrier）
-   - 不允许在初始化阶段接收数据（确保 Output Buffer 在 Input Buffer 之后消费）
-   - Task ExecutionState 更早地从 INITIALIZING 切换到 RUNNING
-   - 只初始化 Task，不处理数据，预期非常快
-
-2. **Task RUNNING 阶段变更**
-   - 所有 Task 的 ExecutionState 为 RUNNING 后，即可触发 Checkpoint
-   - 在异步线程中读取、分配和过滤恢复的 Input & Output Buffer
-   - Task 线程开始消费过滤后的 Buffer
-   - 所有恢复的 Buffer 放入 Real InputChannel 后，才开始消费新数据
-
-3. **Block/Unblock 上游 Task**
-   - 初始阶段阻塞上游 Task（类似背压机制）
-   - 确保新生成的 Buffer 在恢复的 Buffer 之后被消费
-   - 当所有 Input Buffer 和 Output Buffer 放入 InputChannel 后，解除上游 Task 的阻塞
-   - 新生成的 Buffer 无需过滤，直接放入 InputChannel
-
-4. **Checkpoint 触发逻辑**
-   - 在 Recovery 阶段允许触发 Checkpoint
-   - **Phase 1 期间的 Checkpoint 阻塞**：如果在 Phase 1（S3 Active Loop）期间触发 Checkpoint，必须等待所有 S3 数据过滤完成后 Checkpoint 才能完成
-   - Phase 2 进入后，表示已准备好进行 Checkpoint
+1. **Checkpoint 触发时机变更** - 当所有 Task 进入 INITIALIZING 状态即可触发（当前需等待 RUNNING）
+2. **Task Snapshot 等待逻辑** - 每个 Task 在 Snapshot 时等待其 Buffer 过滤完成
+3. **Block/Unblock 上游 Task** - 阻塞上游直到恢复完成
 
 ### 收益
 
-- Checkpoint 可以在 Recovery 阶段触发
+- Checkpoint 可以在 Recovery 阶段更早触发
 - 保证恢复的 Buffer 在新数据之前被处理
 - 确保 Checkpoint 完整性
 
@@ -224,12 +210,12 @@ Task 3 是一个**优化项**，而非正确性必需：
 
 ### 首版/POC（必需任务）
 
-1. **Task 2** (过滤逻辑) - 核心功能，实现 P1 路径
-2. **Task 4** (控制面变更) - 可与 Task 2 并行开发
+1. ~~**Task 2** (过滤逻辑)~~ - ✅ 已完成
+2. **Task 4** (控制面变更) - **当前焦点**
 
 ### 后续优化
 
-3. **Task 3** (Spill 逻辑) - 可选优化，处理 Network Memory 不足场景
+3. **Task 3** (Spill 逻辑) - 可选优化，首版跳过
 
 ---
 
