@@ -194,7 +194,7 @@ Task 3 是一个**优化项**，而非正确性必需：
 
 ### 核心变更概述
 
-1. **Checkpoint 触发时机变更** - 当所有 Task 进入 INITIALIZING 状态即可触发（当前需等待 RUNNING）
+1. **RUNNING 转换时机变更** - Task 在 Buffer 过滤完成后即可进入 RUNNING（无需等待数据处理完成），Checkpoint 触发逻辑不变
 2. **Task Snapshot 等待逻辑** - 每个 Task 在 Snapshot 时等待其 Buffer 过滤完成
 3. **Block/Unblock 上游 Task** - 阻塞上游直到恢复完成
 

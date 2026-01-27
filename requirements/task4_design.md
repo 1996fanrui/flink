@@ -2,7 +2,7 @@
 
 ## 概述
 
-本文档描述 Task 4 的详细技术设计，核心目标是变更 UC 恢复流程，使 Checkpoint 能够在 Recovery 阶段更早触发。
+本文档描述 Task 4 的详细技术设计，核心目标是变更 UC 恢复流程，延迟 Task 进入 RUNNING 状态的时机，使得 Buffer 过滤完成后才能触发 Checkpoint。
 
 ---
 
@@ -14,78 +14,157 @@
 execution.checkpointing.unaligned.during-recovery.enabled = true
 ```
 
-默认值为 `false`，即默认不启用。
+默认值为 `false`，即默认不启用。当配置为 `false` 时，所有现有逻辑保持不变。
 
 ---
 
 ## 2. 核心变更
 
-### 2.1 Checkpoint 触发时机
+### 2.1 核心思路
 
-| | 当前 | Task 4 之后 |
+**Checkpoint trigger 逻辑不变**，仍然是所有 Task 进入 RUNNING 后触发。
+
+**核心变化是 RUNNING 状态转换时机**：
+
+| | 配置关闭（当前行为） | 配置开启（Task 4） |
 |---|---|---|
-| **Checkpoint 触发条件** | 所有 Task 进入 **RUNNING** | 所有 Task 进入 **INITIALIZING** |
+| **RUNNING 转换时机** | `stateConsumedFuture` 完成后 | `bufferFilteringCompleteFuture` 完成后 |
+| **等待内容** | 恢复的 buffer 数据处理完成 | 恢复的 buffer 过滤完成（不处理数据） |
+| **效果** | RUNNING 转换较慢 | RUNNING 转换更快，Checkpoint 更早触发 |
 
-### 2.2 Checkpoint 流程拆分
+配置开启时，由于 buffer filtering 只做序列化过滤+反序列化（不处理数据），速度很快，RUNNING 转换和 Checkpoint 触发都会更早。
 
-Checkpoint 流程分为两个阶段：
+### 2.2 两个 Future 的设计
 
-| 阶段 | 执行位置 | 等待 Buffer 过滤？ |
-|------|----------|-------------------|
-| **Trigger** | JM (CheckpointCoordinator) | ❌ 不等待 |
-| **Snapshot** | 每个 Task | ✅ 等待本 Task 的 Buffer 过滤完成 |
+| Future | 完成时机 | 说明 |
+|--------|----------|------|
+| `stateConsumedFuture` | 恢复的 buffer **数据处理完成** | 现有逻辑，需要等待数据真正被消费处理 |
+| `bufferFilteringCompleteFuture` (新增) | 恢复的 buffer **过滤完成** | 只做序列化过滤+反序列化，不处理数据，交给 Task 线程即完成 |
 
-**关键点：**
-- Checkpoint **Trigger** 不需要等待 Buffer 过滤
-- 每个 Task 执行 **Snapshot** 时，需等待自己的 Input/Output Buffer 过滤完成
+**配置开启时的优势：**
+- Buffer filtering 只做过滤，不处理数据，速度很快（前提是 buffer 内存足够）
+- 过滤完成后立即切换 RUNNING，Checkpoint 更早触发
+- 比等待数据处理完成（`stateConsumedFuture`）快得多
+
+| | 配置关闭时 | 配置开启时 |
+|---|------------|------------|
+| **RUNNING 触发条件** | `stateConsumedFuture` 完成（数据处理完） | `bufferFilteringCompleteFuture` 完成（过滤完） |
+| **等待时间** | 较长（需处理数据） | 较短（只做过滤） |
+
+**关键：两个 Future 都需要保留，根据配置选择使用哪个来触发 RUNNING 转换。**
 
 ---
 
 ## 3. 详细设计
 
-### 3.1 Checkpoint Trigger 变更
+### 3.1 RUNNING 状态转换时机变更（核心）
 
-**变更点：CheckpointCoordinator**
+**当前逻辑：**
 
-当前检查 Task 状态为 RUNNING，需改为检查 INITIALIZING 或 RUNNING。
+Task 在 `stateConsumedFuture` 完成后（恢复的 buffer 数据处理完成）切换到 RUNNING 状态。
 
-```
-Before: all tasks in RUNNING → trigger checkpoint
-After:  all tasks in INITIALIZING or RUNNING → trigger checkpoint
-```
+**修改方案：**
 
-**注意：** 仅当配置 `execution.checkpointing.unaligned.during-recovery.enabled = true` 时生效。
+根据配置选择不同的 Future 来触发 RUNNING 转换：
 
-### 3.2 Task Snapshot 等待逻辑
+```java
+// StreamTask 中的逻辑
+CompletableFuture<Void> runningTriggerFuture;
+if (isRecoveryCheckpointEnabled) {
+    // 配置开启：等待 Buffer 过滤完成
+    runningTriggerFuture = inputGate.getBufferFilteringCompleteFuture();
+} else {
+    // 配置关闭：保持原有行为
+    runningTriggerFuture = inputGate.getStateConsumedFuture();
+}
 
-**变更点：Task Snapshot 流程**
-
-当 Task 收到 Checkpoint Barrier 并执行 Snapshot 时：
-
-```
-1. 收到 Checkpoint Barrier
-2. 检查 Buffer 过滤是否完成
-   - 如果未完成：等待过滤完成
-   - 如果已完成：继续
-3. 执行 Snapshot（包括 Input/Output Channel State）
-4. 发送 Acknowledge 给 JM
+runningTriggerFuture.thenRun(() -> {
+    // 触发 requestPartitions() 和 RUNNING 状态转换
+});
 ```
 
-**实现方式：**
-- 引入 `bufferFilteringCompleteFuture: CompletableFuture<Void>`
-- Snapshot 时 await 此 Future
+### 3.2 两个 Future 的架构设计
+
+**现有架构：**
+
+`stateConsumedFuture` 位于 `RecoveredInputChannel` 类中，每个 Channel 有独立的 future。`SingleInputGate.getStateConsumedFuture()` 方法聚合所有 `RecoveredInputChannel` 的 future。
+
+**新增 `bufferFilteringCompleteFuture`：**
+
+采用相同架构：
+- 在 `RecoveredInputChannel` 中新增 `bufferFilteringCompleteFuture` 字段
+- 在 `SingleInputGate` 中新增 `getBufferFilteringCompleteFuture()` 方法，聚合所有 channel 的 future
+
+```java
+// RecoveredInputChannel.java
+/** Future that completes when recovered buffers have been filtered for this channel. */
+private CompletableFuture<Void> bufferFilteringCompleteFuture;
+
+// SingleInputGate.java
+/** Returns a future that completes when all channels' buffer filtering is complete. */
+public CompletableFuture<Void> getBufferFilteringCompleteFuture() {
+    // 聚合所有 RecoveredInputChannel 的 bufferFilteringCompleteFuture
+}
+```
+
+**两个 Future 的完成时序：**
+
+```
+Channel State 读取 → Buffer 过滤（序列化+反序列化）→ bufferFilteringCompleteFuture 完成
+                                                              ↓
+                                                    数据交给 Task 线程处理
+                                                              ↓
+                                                    数据处理完成 → stateConsumedFuture 完成
+```
+
+`bufferFilteringCompleteFuture` 先于 `stateConsumedFuture` 完成。
 
 ### 3.3 Block/Unblock 上游 Task
 
 **方案：延迟 requestPartitions() 调用**
 
-- 下游 Task 在所有恢复的 Buffer 过滤完成并放入 InputChannel 后，才调用 `requestPartitions()`
-- 上游发送的 Barrier 会被缓存在 ResultSubpartition 中，下游请求后获取
+**当前代码逻辑 `StreamTask.restoreInternal()` 方法：**
+
+```java
+// 当前: stateConsumedFuture 完成后立即调用 requestPartitions()
+inputGate.getStateConsumedFuture()
+    .thenRun(() -> mainMailboxExecutor.execute(
+        inputGate::requestPartitions,
+        "Input gate request partitions"));
+```
+
+**修改方案：**
+
+根据配置选择触发条件：
+
+```java
+// 修改后: 根据配置选择触发 Future
+CompletableFuture<Void> triggerFuture = isRecoveryCheckpointEnabled
+    ? inputGate.getBufferFilteringCompleteFuture()
+    : inputGate.getStateConsumedFuture();
+
+triggerFuture.thenRun(() -> mainMailboxExecutor.execute(
+    inputGate::requestPartitions,
+    "Input gate request partitions"));
+```
+
+**Barrier 缓存机制：**
+
+- 上游发送的 Barrier 会被缓存在 `PipelinedSubpartition.buffers` 队列中
+- 下游调用 `requestPartitions()` 后，通过 `pollBuffer()` 获取缓存的 Barrier
 - 详细方案分析见 [task4_block_unblock_analysis.md](./task4_block_unblock_analysis.md)
+
+**与原始需求文档的差异说明：**
+
+原始需求文档 (requirement.md) 第 4.3.2 节描述了 "Request upstream partitions in the beginning"。本设计采用了延迟 `requestPartitions()` 的方案，原因是：
+
+1. 经过代码调研验证，延迟调用 `requestPartitions()` 是可行的（详见 task4_block_unblock_analysis.md）
+2. 这种方案实现简单，利用现有 Subpartition 缓存机制
+3. Barrier 虽然延迟到达下游，但不影响正确性，因为下游需要等待过滤完成才能 Snapshot
 
 ---
 
-## 4. 时序图
+## 4. 时序图（配置开启时）
 
 ```
         JM                      Task                   channelIOExecutor
@@ -101,19 +180,13 @@ After:  all tasks in INITIALIZING or RUNNING → trigger checkpoint
          │<───────────────────────│                           │
          │                        │                           │
          │                        │  start buffer recovery    │
+         │                        │   & filtering             │
          │                        │──────────────────────────>│
+         │                        │                           │ (read & filter...)
          │                        │                           │
-         │  trigger checkpoint    │                           │ (filtering...)
-         │───────────────────────>│                           │
          │                        │                           │
-         │                        │  wait for filter done     │
-         │                        │·························>│
-         │                        │                           │
-         │                        │                           │ filter complete
+         │                        │   filteringComplete       │ filter complete
          │                        │<──────────────────────────│
-         │                        │                           │
-         │                        │  snapshot & ack           │
-         │<───────────────────────│                           │
          │                        │                           │
          │                        │  requestPartitions()      │
          │                        │──────────┐                │
@@ -122,26 +195,62 @@ After:  all tasks in INITIALIZING or RUNNING → trigger checkpoint
          │  RUNNING               │                           │
          │<───────────────────────│                           │
          │                        │                           │
+         │  trigger checkpoint    │  (all tasks RUNNING)      │
+         │───────────────────────>│                           │
+         │                        │                           │
+         │                        │  snapshot & ack           │
+         │<───────────────────────│                           │
+         │                        │                           │
          │                        │  process new data         │
          │                        │                           │
 ```
+
+**时序说明：**
+
+1. Task 部署后进入 **INITIALIZING** 状态
+2. Buffer 过滤在 channelIOExecutor 线程异步执行
+3. `bufferFilteringCompleteFuture` 完成后：
+   - `requestPartitions()` 被调用，建立与上游连接
+   - Task 切换到 **RUNNING** 状态
+4. JM 检测到所有 Task RUNNING 后触发 Checkpoint（trigger 逻辑不变）
+5. Task 执行 Snapshot 并发送 Ack
+
+**配置关闭时的行为（保持不变）：**
+
+- `stateConsumedFuture` 完成后（恢复的 buffer 数据处理完成）触发 `requestPartitions()` 和 RUNNING 转换
+- 等待时间较长
 
 ---
 
 ## 5. 需要修改的关键类
 
-| 类 | 修改内容 |
-|----|----------|
-| `CheckpointCoordinator` | 修改触发条件：当配置开启时，INITIALIZING 也可触发 |
-| `StreamTask` | Snapshot 时等待 Buffer 过滤完成 |
-| `SingleInputGate` | 控制 `requestPartitions()` 调用时机 |
+| 类 | 文件位置 | 修改内容 | 优先级 |
+|----|----------|----------|--------|
+| `RecoveredInputChannel` | `flink-runtime/.../partition/consumer/` | 新增 `bufferFilteringCompleteFuture` 字段 | 高 |
+| `SingleInputGate` | `flink-runtime/.../partition/consumer/` | 新增 `getBufferFilteringCompleteFuture()` 方法，聚合所有 channel 的 future | 高 |
+| `StreamTask` | `flink-runtime/.../tasks/` | 根据配置选择使用哪个 Future 触发 `requestPartitions()` 和 RUNNING 转换 | 高 |
+
+**注意：Checkpoint trigger 逻辑不需要修改。**
 
 ---
 
-## 6. 待确认问题
+## 6. Source Task 处理
 
-1. **Source Task 处理**
-   - Source Task 没有上游，是否需要特殊处理？
+**结论：Source Task 无需特殊处理。**
+
+**分析：**
+
+| 维度 | Source Task | 非 Source Task |
+|------|-------------|----------------|
+| InputGate | 无 | 有 |
+| Input Buffer 过滤 | 不涉及 | 需要过滤 |
+| `requestPartitions()` | 不涉及（无上游） | 根据配置延迟调用 |
+| `bufferFilteringCompleteFuture` | 不存在（无 InputGate） | 需要等待过滤完成 |
+| RUNNING 转换 | 正常流程（无 InputGate 影响） | 根据配置选择 Future |
+
+**处理方式：**
+
+Source Task 没有 InputGate，因此不受 `bufferFilteringCompleteFuture` 逻辑影响，正常进入 RUNNING 状态。
 
 ---
 
