@@ -137,4 +137,12 @@ public class MockIndexedInputGate extends IndexedInputGate {
 
     @Override
     public void triggerDebloating() {}
+
+    @Override
+    public CompletableFuture<Void> getBufferFilteringCompleteFuture() {
+        return CompletableFuture.completedFuture(null);
+    }
+
+    @Override
+    public void setUnalignedDuringRecoveryEnabled(boolean enabled) {}
 }

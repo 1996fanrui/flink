@@ -884,6 +884,20 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
         // Create record filter context for filtering during recovery
         final RecordFilterContext filterContext = createRecordFilterContext();
 
+        // Determine whether to use bufferFilteringCompleteFuture for earlier RUNNING state
+        // transition. When unaligned checkpoint during recovery is enabled, we can enter RUNNING
+        // state as soon as buffer filtering is complete, allowing checkpoint to be triggered
+        // earlier.
+        boolean useBufferFilteringFuture =
+                CheckpointingOptions.isUnalignedDuringRecoveryEnabled(getJobConfiguration());
+
+        // IMPORTANT: Must set the flag on input gates BEFORE starting the async read task.
+        // The async task will call finishReadRecoveredState() when done, which checks this flag
+        // to decide whether to complete the bufferFilteringCompleteFuture.
+        for (IndexedInputGate inputGate : inputGates) {
+            inputGate.setUnalignedDuringRecoveryEnabled(useBufferFilteringFuture);
+        }
+
         channelIOExecutor.execute(
                 () -> {
                     try {
@@ -894,20 +908,27 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                     }
                 });
 
-        // We wait for all input channel state to recover before we go into RUNNING state, and thus
-        // start checkpointing. If we implement incremental checkpointing of input channel state
-        // we must make sure it supports CheckpointType#FULL_CHECKPOINT
         List<CompletableFuture<?>> recoveredFutures = new ArrayList<>(inputGates.length);
         for (InputGate inputGate : inputGates) {
-            recoveredFutures.add(inputGate.getStateConsumedFuture());
+            // For RUNNING state transition: use bufferFilteringCompleteFuture when config enabled
+            if (useBufferFilteringFuture) {
+                recoveredFutures.add(inputGate.getBufferFilteringCompleteFuture());
+            } else {
+                recoveredFutures.add(inputGate.getStateConsumedFuture());
+            }
 
-            inputGate
-                    .getStateConsumedFuture()
-                    .thenRun(
-                            () ->
-                                    mainMailboxExecutor.execute(
-                                            inputGate::requestPartitions,
-                                            "Input gate request partitions"));
+            // For requestPartitions: use the same future as RUNNING state transition.
+            // When buffer filtering is enabled, wait for filtering to complete;
+            // otherwise, wait for state consumption to complete.
+            CompletableFuture<?> requestPartitionsTrigger =
+                    useBufferFilteringFuture
+                            ? inputGate.getBufferFilteringCompleteFuture()
+                            : inputGate.getStateConsumedFuture();
+
+            requestPartitionsTrigger.thenRun(
+                    () ->
+                            mainMailboxExecutor.execute(
+                                    inputGate::requestPartitions, "Input gate request partitions"));
         }
 
         return CompletableFuture.allOf(recoveredFutures.toArray(new CompletableFuture[0]))
@@ -1976,22 +1997,26 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
         StreamConfig.InputConfig[] inputs = configuration.getInputs(cl);
         List<StreamEdge> inEdges = configuration.getInPhysicalEdges(cl);
 
-        List<RecordFilterContext.InputFilterConfig> inputConfigs = new ArrayList<>();
+        // Create array sized to match the number of input gates.
+        // Each position corresponds to a gate index, with null for non-network inputs.
+        int numGates = getEnvironment().getAllInputGates().length;
+        RecordFilterContext.InputFilterConfig[] inputConfigs =
+                new RecordFilterContext.InputFilterConfig[numGates];
 
         // Iterate through all inputs and only process NetworkInputConfig entries.
-        // The inputs array may contain mixed types (NetworkInputConfig and SourceInputConfig),
-        // so we need to check the type before accessing network-specific properties.
+        // Use gateIndex from NetworkInputConfig to place config at correct position.
         for (int i = 0; i < inputs.length; i++) {
             if (inputs[i] instanceof StreamConfig.NetworkInputConfig) {
                 StreamConfig.NetworkInputConfig networkInput =
                         (StreamConfig.NetworkInputConfig) inputs[i];
+                int gateIndex = networkInput.getInputGateIndex();
                 TypeSerializer<?> typeSerializer = networkInput.getTypeSerializer();
                 StreamPartitioner<?> partitioner = inEdges.get(i).getPartitioner();
                 int numberOfChannels = getEnvironment().getTaskInfo().getNumberOfParallelSubtasks();
 
-                inputConfigs.add(
+                inputConfigs[gateIndex] =
                         new RecordFilterContext.InputFilterConfig(
-                                typeSerializer, partitioner, numberOfChannels));
+                                typeSerializer, partitioner, numberOfChannels);
             }
         }
 

@@ -91,7 +91,8 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
             int maxBackoff,
             Counter numBytesIn,
             Counter numBuffersIn,
-            ChannelStateWriter stateWriter) {
+            ChannelStateWriter stateWriter,
+            @Nullable ArrayDeque<Buffer> initialRecoveredBuffers) {
 
         super(
                 inputGate,
@@ -106,6 +107,31 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
         this.partitionManager = checkNotNull(partitionManager);
         this.taskEventPublisher = checkNotNull(taskEventPublisher);
         this.channelStatePersister = new ChannelStatePersister(stateWriter, getChannelInfo());
+
+        // Migrate recovered buffers from RecoveredInputChannel if provided.
+        // These buffers have been filtered but not yet consumed by the Task.
+        if (initialRecoveredBuffers != null && !initialRecoveredBuffers.isEmpty()) {
+            final int expectedCount = initialRecoveredBuffers.size();
+            // Sequence number starts at Integer.MIN_VALUE, consistent with RecoveredInputChannel.
+            int seqNum = Integer.MIN_VALUE;
+            while (!initialRecoveredBuffers.isEmpty()) {
+                Buffer buffer = initialRecoveredBuffers.poll();
+                // Determine next data type based on the next buffer in the queue
+                Buffer.DataType nextDataType =
+                        initialRecoveredBuffers.isEmpty()
+                                ? Buffer.DataType.NONE
+                                : initialRecoveredBuffers.peek().getDataType();
+                // buffersInBacklog is set to 0 as these are recovered buffers
+                BufferAndBacklog bufferAndBacklog =
+                        new BufferAndBacklog(buffer, 0, nextDataType, seqNum++);
+                toBeConsumedBuffers.add(bufferAndBacklog);
+            }
+            checkState(
+                    toBeConsumedBuffers.size() == expectedCount,
+                    "Buffer migration failed: expected %s buffers but got %s",
+                    expectedCount,
+                    toBeConsumedBuffers.size());
+        }
     }
 
     // ------------------------------------------------------------------------
@@ -122,7 +148,8 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
 
     @Override
     protected void requestSubpartitions() throws IOException {
-        checkState(toBeConsumedBuffers.isEmpty());
+        // toBeConsumedBuffers may contain migrated buffers from RecoveredInputChannel.
+        // This is expected when unaligned checkpoint during recovery is enabled.
 
         boolean retriggerRequest = false;
         boolean notifyDataAvailable = false;

@@ -243,6 +243,13 @@ public class SingleInputGate extends IndexedInputGate {
      */
     private final int[] endOfPartitions;
 
+    /**
+     * Flag indicating whether unaligned checkpoint during recovery is enabled. When enabled,
+     * RecoveredInputChannel will use bufferFilteringCompleteFuture instead of stateConsumedFuture
+     * for RUNNING state transition.
+     */
+    private volatile boolean isUnalignedDuringRecoveryEnabled = false;
+
     public SingleInputGate(
             String owningTaskName,
             int gateIndex,
@@ -330,6 +337,21 @@ public class SingleInputGate extends IndexedInputGate {
     }
 
     @Override
+    public CompletableFuture<Void> getBufferFilteringCompleteFuture() {
+        synchronized (requestLock) {
+            List<CompletableFuture<?>> futures = new ArrayList<>(numberOfInputChannels);
+            for (InputChannel inputChannel : inputChannels()) {
+                if (inputChannel instanceof RecoveredInputChannel) {
+                    futures.add(
+                            ((RecoveredInputChannel) inputChannel)
+                                    .getBufferFilteringCompleteFuture());
+                }
+            }
+            return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
+        }
+    }
+
+    @Override
     public void requestPartitions() {
         synchronized (requestLock) {
             if (!requestedPartitionsFlag) {
@@ -374,13 +396,28 @@ public class SingleInputGate extends IndexedInputGate {
                 InputChannel inputChannel = inputChannelsForCurrentPartition.get(inputChannelInfo);
                 if (inputChannel instanceof RecoveredInputChannel) {
                     try {
+                        // Remove old channel from queue if present
+                        if (inputChannelsWithData.contains(inputChannel)) {
+                            inputChannelsWithData.getAndRemove(ch -> ch == inputChannel);
+                        }
+                        enqueuedInputChannelsWithData.clear(inputChannel.getChannelIndex());
+
+                        // Convert the channel
                         InputChannel realInputChannel =
                                 ((RecoveredInputChannel) inputChannel).toInputChannel();
                         inputChannel.releaseAllResources();
+
+                        // Update data structures
                         inputChannelsForCurrentPartition.remove(inputChannelInfo);
                         inputChannelsForCurrentPartition.put(
                                 realInputChannel.getChannelInfo(), realInputChannel);
                         channels[inputChannel.getChannelIndex()] = realInputChannel;
+
+                        // If the new channel has buffered data, enqueue it
+                        if (realInputChannel.getBuffersInUseCount() > 0) {
+                            inputChannelsWithData.add(realInputChannel);
+                            enqueuedInputChannelsWithData.set(realInputChannel.getChannelIndex());
+                        }
                     } catch (Throwable t) {
                         inputChannel.setError(t);
                         return;
@@ -612,6 +649,26 @@ public class SingleInputGate extends IndexedInputGate {
             setupTieredStorageNettyService(nettyService, tieredStorageConsumerSpecs);
             client.registerAvailabilityNotifier(availabilityNotifier);
         }
+    }
+
+    /**
+     * Sets whether unaligned checkpoint during recovery is enabled. When enabled,
+     * RecoveredInputChannel will use bufferFilteringCompleteFuture instead of stateConsumedFuture
+     * for RUNNING state transition.
+     *
+     * @param enabled true to enable unaligned checkpoint during recovery
+     */
+    public void setUnalignedDuringRecoveryEnabled(boolean enabled) {
+        this.isUnalignedDuringRecoveryEnabled = enabled;
+    }
+
+    /**
+     * Returns whether unaligned checkpoint during recovery is enabled.
+     *
+     * @return true if unaligned checkpoint during recovery is enabled
+     */
+    public boolean isUnalignedDuringRecoveryEnabled() {
+        return isUnalignedDuringRecoveryEnabled;
     }
 
     public void updateInputChannel(

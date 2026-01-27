@@ -22,10 +22,6 @@ import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.runtime.checkpoint.InflightDataRescalingDescriptor;
 import org.apache.flink.streaming.runtime.partitioner.StreamPartitioner;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-
 import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
@@ -79,8 +75,11 @@ public class RecordFilterContext {
         }
     }
 
-    /** Input configurations indexed by input index. Can be empty but never null. */
-    private final List<InputFilterConfig> inputConfigs;
+    /**
+     * Input configurations indexed by gate index. Array elements may be null for non-network inputs
+     * (e.g., SourceInputConfig). The array length equals the total number of input gates.
+     */
+    private final InputFilterConfig[] inputConfigs;
 
     /** Descriptor containing rescaling information. Never null. */
     private final InflightDataRescalingDescriptor rescalingDescriptor;
@@ -100,7 +99,8 @@ public class RecordFilterContext {
     /**
      * Creates a new RecordFilterContext.
      *
-     * @param inputConfigs Input configurations indexed by input index. Can be empty but not null.
+     * @param inputConfigs Input configurations indexed by gate index. Array elements may be null
+     *     for non-network inputs. Not null itself.
      * @param rescalingDescriptor Descriptor containing rescaling information. Not null.
      * @param subtaskIndex Current subtask index.
      * @param maxParallelism Maximum parallelism.
@@ -110,14 +110,13 @@ public class RecordFilterContext {
      *     enabled.
      */
     public RecordFilterContext(
-            List<InputFilterConfig> inputConfigs,
+            InputFilterConfig[] inputConfigs,
             InflightDataRescalingDescriptor rescalingDescriptor,
             int subtaskIndex,
             int maxParallelism,
             String[] tmpDirectories,
             boolean unalignedDuringRecoveryEnabled) {
-        this.inputConfigs =
-                Collections.unmodifiableList(new ArrayList<>(checkNotNull(inputConfigs)));
+        this.inputConfigs = checkNotNull(inputConfigs).clone();
         this.rescalingDescriptor = checkNotNull(rescalingDescriptor);
         this.subtaskIndex = subtaskIndex;
         this.maxParallelism = maxParallelism;
@@ -126,28 +125,29 @@ public class RecordFilterContext {
     }
 
     /**
-     * Gets the input configuration for a specific input.
+     * Gets the input configuration for a specific gate.
      *
-     * @param inputIndex The input index (0-based).
-     * @return The input configuration for the specified input.
-     * @throws IllegalArgumentException if inputIndex is out of bounds.
+     * @param gateIndex The gate index (0-based).
+     * @return The input configuration for the specified gate, or null if the gate is not a network
+     *     input (e.g., SourceInputConfig).
+     * @throws IllegalArgumentException if gateIndex is out of bounds.
      */
-    public InputFilterConfig getInputConfig(int inputIndex) {
+    public InputFilterConfig getInputConfig(int gateIndex) {
         checkArgument(
-                inputIndex >= 0 && inputIndex < inputConfigs.size(),
-                "Invalid input index: %s, number of inputs: %s",
-                inputIndex,
-                inputConfigs.size());
-        return inputConfigs.get(inputIndex);
+                gateIndex >= 0 && gateIndex < inputConfigs.length,
+                "Invalid gate index: %s, number of gates: %s",
+                gateIndex,
+                inputConfigs.length);
+        return inputConfigs[gateIndex];
     }
 
     /**
-     * Gets the number of inputs.
+     * Gets the number of input gates.
      *
-     * @return The number of inputs.
+     * @return The number of input gates.
      */
-    public int getNumberOfInputs() {
-        return inputConfigs.size();
+    public int getNumberOfGates() {
+        return inputConfigs.length;
     }
 
     /**
@@ -217,7 +217,7 @@ public class RecordFilterContext {
      */
     public static RecordFilterContext disabled() {
         return new RecordFilterContext(
-                Collections.emptyList(),
+                new InputFilterConfig[0],
                 InflightDataRescalingDescriptor.NO_RESCALE,
                 0,
                 0,
