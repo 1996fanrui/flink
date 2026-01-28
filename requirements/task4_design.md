@@ -38,8 +38,16 @@ execution.checkpointing.unaligned.during-recovery.enabled = true
 
 | Future | 完成时机 | 说明 |
 |--------|----------|------|
-| `stateConsumedFuture` | 恢复的 buffer **数据处理完成** | 现有逻辑，需要等待数据真正被消费处理 |
-| `bufferFilteringCompleteFuture` (新增) | 恢复的 buffer **过滤完成** | 只做序列化过滤+反序列化，不处理数据，交给 Task 线程即完成 |
+| `stateConsumedFuture` | 恢复的 buffer **数据处理完成** | 现有逻辑，需要等待数据真正被消费处理，**无论配置是否开启都会完成** |
+| `bufferFilteringCompleteFuture` (新增) | 恢复的 buffer **过滤完成** | **仅在配置开启时完成**；只做序列化过滤+反序列化，不处理数据，交给 Task 线程即完成 |
+
+**重要：`bufferFilteringCompleteFuture` 的语义**
+
+从命名上看，`bufferFilteringCompleteFuture` 表示 "buffer filtering 逻辑完成"。因此：
+- **配置开启时**：执行 buffer filtering 逻辑，完成后 complete 此 future
+- **配置关闭时**：没有 buffer filtering 逻辑，**不应该 complete 此 future**
+
+这意味着在 `InputChannelRecoveredStateHandler.close()` 中，只有当 `filteringHandler != null`（即功能开启）时才应该调用 `finishReadRecoveredState()` 来完成 `bufferFilteringCompleteFuture`。配置关闭时，`finishReadRecoveredState()` 不应该完成 `bufferFilteringCompleteFuture`。
 
 **配置开启时的优势：**
 - Buffer filtering 只做过滤，不处理数据，速度很快（前提是 buffer 内存足够）
@@ -49,6 +57,7 @@ execution.checkpointing.unaligned.during-recovery.enabled = true
 | | 配置关闭时 | 配置开启时 |
 |---|------------|------------|
 | **RUNNING 触发条件** | `stateConsumedFuture` 完成（数据处理完） | `bufferFilteringCompleteFuture` 完成（过滤完） |
+| **`bufferFilteringCompleteFuture` 状态** | **不完成**（无 filtering 逻辑） | 完成 |
 | **等待时间** | 较长（需处理数据） | 较短（只做过滤） |
 
 **关键：两个 Future 都需要保留，根据配置选择使用哪个来触发 RUNNING 转换。**
@@ -65,23 +74,9 @@ Task 在 `stateConsumedFuture` 完成后（恢复的 buffer 数据处理完成�
 
 **修改方案：**
 
-根据配置选择不同的 Future 来触发 RUNNING 转换：
-
-```java
-// StreamTask 中的逻辑
-CompletableFuture<Void> runningTriggerFuture;
-if (isRecoveryCheckpointEnabled) {
-    // 配置开启：等待 Buffer 过滤完成
-    runningTriggerFuture = inputGate.getBufferFilteringCompleteFuture();
-} else {
-    // 配置关闭：保持原有行为
-    runningTriggerFuture = inputGate.getStateConsumedFuture();
-}
-
-runningTriggerFuture.thenRun(() -> {
-    // 触发 requestPartitions() 和 RUNNING 状态转换
-});
-```
+在 `StreamTask` 中根据配置选择不同的 Future 来触发 RUNNING 转换：
+- 配置开启：等待 `bufferFilteringCompleteFuture` 完成
+- 配置关闭：等待 `stateConsumedFuture` 完成（保持原有行为）
 
 ### 3.2 两个 Future 的架构设计
 
@@ -95,19 +90,7 @@ runningTriggerFuture.thenRun(() -> {
 - 在 `RecoveredInputChannel` 中新增 `bufferFilteringCompleteFuture` 字段
 - 在 `SingleInputGate` 中新增 `getBufferFilteringCompleteFuture()` 方法，聚合所有 channel 的 future
 
-```java
-// RecoveredInputChannel.java
-/** Future that completes when recovered buffers have been filtered for this channel. */
-private CompletableFuture<Void> bufferFilteringCompleteFuture;
-
-// SingleInputGate.java
-/** Returns a future that completes when all channels' buffer filtering is complete. */
-public CompletableFuture<Void> getBufferFilteringCompleteFuture() {
-    // 聚合所有 RecoveredInputChannel 的 bufferFilteringCompleteFuture
-}
-```
-
-**两个 Future 的完成时序：**
+**两个 Future 的完成时序（配置开启时）：**
 
 ```
 Channel State 读取 → Buffer 过滤（序列化+反序列化）→ bufferFilteringCompleteFuture 完成
@@ -119,34 +102,91 @@ Channel State 读取 → Buffer 过滤（序列化+反序列化）→ bufferFilt
 
 `bufferFilteringCompleteFuture` 先于 `stateConsumedFuture` 完成。
 
-### 3.3 Block/Unblock 上游 Task
+**配置关闭时的完成时序：**
+
+```
+Channel State 读取 → 数据交给 Task 线程处理 → 数据处理完成 → stateConsumedFuture 完成
+
+（bufferFilteringCompleteFuture 不完成，因为没有 filtering 逻辑）
+```
+
+### 3.3 Channel 转换时的 Buffer 迁移（关键）
+
+**问题背景：**
+
+当 `requestPartitions()` 被调用时，`SingleInputGate.convertRecoveredInputChannels()` 会将 `RecoveredInputChannel` 转换为物理 channel（`RemoteInputChannel` 或 `LocalInputChannel`）。
+
+**当前代码存在两个问题：**
+
+1. **`toInputChannel()` 检查条件错误**：当前代码检查 `stateConsumedFuture.isDone()`，但配置开启时我们在 `bufferFilteringCompleteFuture` 完成后就调用 `requestPartitions()`，此时 `stateConsumedFuture` 尚未完成，会抛出异常。
+
+2. **过滤后的 Buffer 丢失**：转换后会调用 `releaseAllResources()` 释放 `RecoveredInputChannel` 中所有剩余的 buffer。这些 buffer 虽然已完成过滤，但尚未被 Task 消费，会被直接丢弃。
+
+**修改方案：通过构造器传递 Buffer**
+
+1. 修改 `RecoveredInputChannel.toInputChannel()`：根据配置检查 `bufferFilteringCompleteFuture`（配置开启时）或 `stateConsumedFuture`（配置关闭时）。在调用 `toInputChannelInternal()` 前，取出 `receivedBuffers` 中所有剩余 buffer 并清空队列。
+
+2. 修改 `toInputChannelInternal()` 签名：新增 `ArrayDeque<Buffer> remainingBuffers` 参数，由子类传递给物理 channel 的构造器。
+
+3. 修改 `RemoteInputChannel` 和 `LocalInputChannel` 的现有构造器（不新增构造器）：新增 `@Nullable ArrayDeque<Buffer> initialRecoveredBuffers` 参数。构造器中将传入的 buffer 转换为各自的内部格式（`SequenceBuffer` 或 `BufferAndBacklog`）并加入队列。
+
+4. 更新所有调用方：`LocalRecoveredInputChannel` 和 `RemoteRecoveredInputChannel` 传递 `remainingBuffers`；`UnknownInputChannel` 和 `InputChannelBuilder`（test）传递 `null`。
+
+**Buffer 迁移时序：**
+
+```
+bufferFilteringCompleteFuture 完成
+        ↓
+requestPartitions() 调用
+        ↓
+convertRecoveredInputChannels()
+        ↓
+toInputChannel() → 取出 remainingBuffers → 创建新 channel（通过构造器传入 buffer）
+        ↓
+releaseAllResources()（此时 receivedBuffers 已空，无 buffer 被释放）
+        ↓
+Task 从新 channel 消费迁移过来的 buffer + 上游新发送的 buffer
+```
+
+### 3.4 `finishReadRecoveredState()` 行为修改
+
+**当前问题**：
+
+`RecoveredInputChannel.finishReadRecoveredState()` 无论配置是否开启都会完成 `bufferFilteringCompleteFuture`。
+
+**修改方案**：
+
+只有在配置开启时才完成 `bufferFilteringCompleteFuture`。
+
+**配置标志传递**：
+
+`RecoveredInputChannel` 需要获取 `isUnalignedDuringRecoveryEnabled` 配置标志。可通过 `SingleInputGate` 传递（`RecoveredInputChannel` 已持有 `inputGate` 引用）。`finishReadRecoveredState()` 和 `toInputChannel()` 根据配置执行不同逻辑。
+
+---
+
+### 3.5 防御性检查（Preconditions）
+
+为防止潜在的 bug，在关键位置添加 `checkState` 检查：
+
+1. **`RecoveredInputChannel.toInputChannel()` 入口检查**：在转换前根据配置检查相应 future 是否已完成。配置开启时检查 `bufferFilteringCompleteFuture`，配置关闭时检查 `stateConsumedFuture`。
+
+2. **`toInputChannel()` 后验检查**：在方法末尾验证 `receivedBuffers` 已清空，确保所有 buffer 已成功迁移。
+
+3. **物理 Channel 构造后检查**：验证队列中的 buffer 数量与传入的 `initialRecoveredBuffers` 数量一致。
+
+**注意**：配置关闭时，`bufferFilteringCompleteFuture` 不会被完成，因此不能统一检查此 future。必须根据配置区分检查逻辑。
+
+---
+
+### 3.6 Block/Unblock 上游 Task
 
 **方案：延迟 requestPartitions() 调用**
 
-**当前代码逻辑 `StreamTask.restoreInternal()` 方法：**
+**当前逻辑：** `stateConsumedFuture` 完成后调用 `requestPartitions()`。
 
-```java
-// 当前: stateConsumedFuture 完成后立即调用 requestPartitions()
-inputGate.getStateConsumedFuture()
-    .thenRun(() -> mainMailboxExecutor.execute(
-        inputGate::requestPartitions,
-        "Input gate request partitions"));
-```
-
-**修改方案：**
-
-根据配置选择触发条件：
-
-```java
-// 修改后: 根据配置选择触发 Future
-CompletableFuture<Void> triggerFuture = isRecoveryCheckpointEnabled
-    ? inputGate.getBufferFilteringCompleteFuture()
-    : inputGate.getStateConsumedFuture();
-
-triggerFuture.thenRun(() -> mainMailboxExecutor.execute(
-    inputGate::requestPartitions,
-    "Input gate request partitions"));
-```
+**修改方案：** 在 `StreamTask.restoreInternal()` 中根据配置选择触发条件：
+- 配置开启：`bufferFilteringCompleteFuture` 完成后调用 `requestPartitions()`
+- 配置关闭：`stateConsumedFuture` 完成后调用 `requestPartitions()`（保持原有行为）
 
 **Barrier 缓存机制：**
 
@@ -226,9 +266,15 @@ triggerFuture.thenRun(() -> mainMailboxExecutor.execute(
 
 | 类 | 文件位置 | 修改内容 | 优先级 |
 |----|----------|----------|--------|
-| `RecoveredInputChannel` | `flink-runtime/.../partition/consumer/` | 新增 `bufferFilteringCompleteFuture` 字段 | 高 |
+| `RecoveredInputChannel` | `flink-runtime/.../partition/consumer/` | 1. 新增 `bufferFilteringCompleteFuture` 字段<br>2. 新增 `isUnalignedDuringRecoveryEnabled` 配置标志字段<br>3. 修改 `toInputChannel()` 根据配置检查相应 future 和 buffer 传递逻辑<br>4. 修改 `toInputChannelInternal()` 签名<br>5. 修改 `finishReadRecoveredState()` 仅在配置开启时完成 `bufferFilteringCompleteFuture` | 高 |
+| `LocalRecoveredInputChannel` | `flink-runtime/.../partition/consumer/` | 修改 `toInputChannelInternal()` 传递 buffer 给新 channel | 高 |
+| `RemoteRecoveredInputChannel` | `flink-runtime/.../partition/consumer/` | 修改 `toInputChannelInternal()` 传递 buffer 给新 channel | 高 |
 | `SingleInputGate` | `flink-runtime/.../partition/consumer/` | 新增 `getBufferFilteringCompleteFuture()` 方法，聚合所有 channel 的 future | 高 |
-| `StreamTask` | `flink-runtime/.../tasks/` | 根据配置选择使用哪个 Future 触发 `requestPartitions()` 和 RUNNING 转换 | 高 |
+| `RemoteInputChannel` | `flink-runtime/.../partition/consumer/` | 修改现有构造器，新增 `@Nullable initialRecoveredBuffers` 参数 | 高 |
+| `LocalInputChannel` | `flink-runtime/.../partition/consumer/` | 修改现有构造器，新增 `@Nullable initialRecoveredBuffers` 参数 | 高 |
+| `UnknownInputChannel` | `flink-runtime/.../partition/consumer/` | 更新调用方，传 `null` 给新参数 | 中 |
+| `InputChannelBuilder` | `flink-runtime/.../test/.../consumer/` | 更新调用方，传 `null` 给新参数 | 中 |
+| `StreamTask` | `flink-streaming-java/.../tasks/` | 根据配置选择使用哪个 Future 触发 `requestPartitions()` 和 RUNNING 转换 | 高 |
 
 **注意：Checkpoint trigger 逻辑不需要修改。**
 
