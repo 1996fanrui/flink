@@ -118,8 +118,7 @@ class InputChannelRecoveredStateHandler
             //    forever.
             // Using heap memory for source buffer isolates it from the pool, breaking the cycle.
             MemorySegment memorySegment =
-                    MemorySegmentFactory.allocateUnpooledSegment(
-                            MemoryManager.DEFAULT_PAGE_SIZE);
+                    MemorySegmentFactory.allocateUnpooledSegment(MemoryManager.DEFAULT_PAGE_SIZE);
             buffer = new NetworkBuffer(memorySegment, FreeingBufferRecycler.INSTANCE);
         } else {
             buffer = channel.requestBufferBlocking();

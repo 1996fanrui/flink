@@ -261,7 +261,27 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
         checkError();
 
         if (!toBeConsumedBuffers.isEmpty()) {
-            return getBufferAndAvailability(toBeConsumedBuffers.removeFirst());
+            BufferAndBacklog next = toBeConsumedBuffers.removeFirst();
+
+            // If this is the last recovered buffer and nextDataType is NONE,
+            // dynamically check if subpartitionView has data available.
+            // The last buffer's nextDataType was preset to NONE during construction,
+            // but subpartitionView may already have data available.
+            if (toBeConsumedBuffers.isEmpty()
+                    && next.getNextDataType() == Buffer.DataType.NONE
+                    && subpartitionView != null) {
+                ResultSubpartitionView.AvailabilityWithBacklog availability =
+                        subpartitionView.getAvailabilityAndBacklog(true);
+                if (availability.isAvailable()) {
+                    next =
+                            new BufferAndBacklog(
+                                    next.buffer(),
+                                    availability.getBacklog(),
+                                    Buffer.DataType.DATA_BUFFER,
+                                    next.getSequenceNumber());
+                }
+            }
+            return getBufferAndAvailability(next);
         }
 
         ResultSubpartitionView subpartitionView = this.subpartitionView;
@@ -445,7 +465,7 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
     @Override
     int getBuffersInUseCount() {
         ResultSubpartitionView view = this.subpartitionView;
-        return view == null ? 0 : view.getNumberOfQueuedBuffers();
+        return toBeConsumedBuffers.size() + (view == null ? 0 : view.getNumberOfQueuedBuffers());
     }
 
     @Override

@@ -394,8 +394,11 @@ public class SingleInputGate extends IndexedInputGate {
                     new HashSet<>(inputChannelsForCurrentPartition.keySet());
             for (InputChannelInfo inputChannelInfo : oldInputChannelInfos) {
                 InputChannel inputChannel = inputChannelsForCurrentPartition.get(inputChannelInfo);
-                if (inputChannel instanceof RecoveredInputChannel) {
-                    try {
+                if (!(inputChannel instanceof RecoveredInputChannel)) {
+                    continue;
+                }
+                try {
+                    synchronized (inputChannelsWithData) {
                         // Remove old channel from queue if present
                         if (inputChannelsWithData.contains(inputChannel)) {
                             inputChannelsWithData.getAndRemove(ch -> ch == inputChannel);
@@ -418,10 +421,10 @@ public class SingleInputGate extends IndexedInputGate {
                             inputChannelsWithData.add(realInputChannel);
                             enqueuedInputChannelsWithData.set(realInputChannel.getChannelIndex());
                         }
-                    } catch (Throwable t) {
-                        inputChannel.setError(t);
-                        return;
                     }
+                } catch (Throwable t) {
+                    inputChannel.setError(t);
+                    return;
                 }
             }
         }

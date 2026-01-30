@@ -910,13 +910,6 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 
         List<CompletableFuture<?>> recoveredFutures = new ArrayList<>(inputGates.length);
         for (InputGate inputGate : inputGates) {
-            // For RUNNING state transition: use bufferFilteringCompleteFuture when config enabled
-            if (useBufferFilteringFuture) {
-                recoveredFutures.add(inputGate.getBufferFilteringCompleteFuture());
-            } else {
-                recoveredFutures.add(inputGate.getStateConsumedFuture());
-            }
-
             // For requestPartitions: use the same future as RUNNING state transition.
             // When buffer filtering is enabled, wait for filtering to complete;
             // otherwise, wait for state consumption to complete.
@@ -924,6 +917,8 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                     useBufferFilteringFuture
                             ? inputGate.getBufferFilteringCompleteFuture()
                             : inputGate.getStateConsumedFuture();
+
+            recoveredFutures.add(requestPartitionsTrigger);
 
             requestPartitionsTrigger.thenRun(
                     () ->

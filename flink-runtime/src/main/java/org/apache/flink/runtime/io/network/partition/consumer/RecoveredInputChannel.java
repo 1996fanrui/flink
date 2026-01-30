@@ -201,17 +201,17 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     }
 
     public void finishReadRecoveredState() throws IOException {
+        onRecoveredStateBuffer(
+                EventSerializer.toBuffer(EndOfInputChannelStateEvent.INSTANCE, false));
+        bufferManager.releaseFloatingBuffers();
+        LOG.debug("{}/{} finished recovering input.", inputGate.getOwningTaskName(), channelInfo);
+
         // Complete bufferFilteringCompleteFuture only when unaligned during recovery is enabled.
         // This signals that buffer filtering is complete, allowing earlier RUNNING state
         // transition. When the config is disabled, this future should not be completed.
         if (inputGate.isUnalignedDuringRecoveryEnabled()) {
             bufferFilteringCompleteFuture.complete(null);
         }
-
-        onRecoveredStateBuffer(
-                EventSerializer.toBuffer(EndOfInputChannelStateEvent.INSTANCE, false));
-        bufferManager.releaseFloatingBuffers();
-        LOG.debug("{}/{} finished recovering input.", inputGate.getOwningTaskName(), channelInfo);
     }
 
     @Nullable
