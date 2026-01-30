@@ -298,15 +298,17 @@ public class ChannelStateFilteringHandler<T> {
                 (GateFilterHandler<T>[]) new GateFilterHandler<?>[inputGates.length];
         boolean hasAnyVirtualChannels = false;
 
-        // Process all gates. inputConfigs array is indexed by gateIndex and may contain null
-        // for non-network inputs (e.g., SourceInputConfig).
+        // Process all gates. Each gate must have a corresponding InputFilterConfig.
+        // Source tasks (with no input gates) are already handled above by returning null.
         for (int gateIndex = 0; gateIndex < inputGates.length; gateIndex++) {
-            // Skip gates that are not network inputs (null config)
             RecordFilterContext.InputFilterConfig inputConfig =
                     filterContext.getInputConfig(gateIndex);
+            // Every physical gate must have a config. Null indicates a bug in initialization.
             if (inputConfig == null) {
-                // Leave gateHandlers[gateIndex] as null for non-network inputs
-                continue;
+                throw new IllegalStateException(
+                        "No InputFilterConfig for gateIndex "
+                                + gateIndex
+                                + ". This indicates a bug in RecordFilterContext initialization.");
             }
 
             InputGate gate = inputGates[gateIndex];

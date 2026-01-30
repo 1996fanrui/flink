@@ -1992,27 +1992,54 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
         StreamConfig.InputConfig[] inputs = configuration.getInputs(cl);
         List<StreamEdge> inEdges = configuration.getInPhysicalEdges(cl);
 
-        // Create array sized to match the number of input gates.
-        // Each position corresponds to a gate index, with null for non-network inputs.
+        // Create array sized to match the number of physical input gates.
+        // For source tasks, this will be 0. For tasks with network inputs, each physical gate
+        // must have a corresponding config entry.
         int numGates = getEnvironment().getAllInputGates().length;
         RecordFilterContext.InputFilterConfig[] inputConfigs =
                 new RecordFilterContext.InputFilterConfig[numGates];
 
-        // Iterate through all inputs and only process NetworkInputConfig entries.
-        // Use gateIndex from NetworkInputConfig to place config at correct position.
-        for (int i = 0; i < inputs.length; i++) {
-            if (inputs[i] instanceof StreamConfig.NetworkInputConfig) {
-                StreamConfig.NetworkInputConfig networkInput =
-                        (StreamConfig.NetworkInputConfig) inputs[i];
-                int gateIndex = networkInput.getInputGateIndex();
-                TypeSerializer<?> typeSerializer = networkInput.getTypeSerializer();
-                StreamPartitioner<?> partitioner = inEdges.get(i).getPartitioner();
-                int numberOfChannels = getEnvironment().getTaskInfo().getNumberOfParallelSubtasks();
+        // Defensive check: number of physical edges must match number of input gates
+        Preconditions.checkState(
+                numGates == inEdges.size(),
+                "Number of input gates (%s) does not match number of physical edges (%s)",
+                numGates,
+                inEdges.size());
 
-                inputConfigs[gateIndex] =
-                        new RecordFilterContext.InputFilterConfig(
-                                typeSerializer, partitioner, numberOfChannels);
-            }
+        // Iterate through all physical edges (inEdges) instead of logical inputs.
+        // This is critical for Union scenarios where multiple physical gates map to one logical
+        // input. The order of inEdges matches the order of physical input gates.
+        int numberOfChannels = getEnvironment().getTaskInfo().getNumberOfParallelSubtasks();
+        for (int gateIndex = 0; gateIndex < inEdges.size(); gateIndex++) {
+            StreamEdge edge = inEdges.get(gateIndex);
+            // Calculate logical input index from typeNumber
+            // typeNumber = 0 means single input, typeNumber >= 1 means multi-input (1-indexed)
+            int inputIndex = edge.getTypeNumber() == 0 ? 0 : edge.getTypeNumber() - 1;
+
+            Preconditions.checkState(
+                    inputIndex < inputs.length
+                            && inputs[inputIndex] instanceof StreamConfig.NetworkInputConfig,
+                    "Physical edge at gateIndex %s has invalid inputIndex %s or non-network input",
+                    gateIndex,
+                    inputIndex);
+
+            StreamConfig.NetworkInputConfig networkInput =
+                    (StreamConfig.NetworkInputConfig) inputs[inputIndex];
+            TypeSerializer<?> typeSerializer = networkInput.getTypeSerializer();
+            StreamPartitioner<?> partitioner = edge.getPartitioner();
+
+            inputConfigs[gateIndex] =
+                    new RecordFilterContext.InputFilterConfig(
+                            typeSerializer, partitioner, numberOfChannels);
+        }
+
+        // Defensive check: ensure all elements are properly filled
+        for (int i = 0; i < inputConfigs.length; i++) {
+            Preconditions.checkState(
+                    inputConfigs[i] != null,
+                    "InputFilterConfig at index %s is null. "
+                            + "All physical gates must have corresponding configurations.",
+                    i);
         }
 
         boolean unalignedDuringRecoveryEnabled =
