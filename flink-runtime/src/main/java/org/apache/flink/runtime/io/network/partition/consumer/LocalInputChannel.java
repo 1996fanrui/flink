@@ -46,7 +46,7 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
-import java.util.Collections;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import java.util.Optional;
@@ -79,6 +79,13 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
     private final ChannelStatePersister channelStatePersister;
 
     private final Deque<BufferAndBacklog> toBeConsumedBuffers = new ArrayDeque<>();
+
+    /**
+     * Flag indicating whether there is a pending priority event (e.g., checkpoint barrier) in the
+     * subpartitionView that should be consumed before toBeConsumedBuffers. This is set by {@link
+     * #notifyPriorityEvent} and checked in {@link #getNextBuffer()}.
+     */
+    private volatile boolean hasPendingPriorityEvent = false;
 
     public LocalInputChannel(
             SingleInputGate inputGate,
@@ -139,7 +146,15 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
     // ------------------------------------------------------------------------
 
     public void checkpointStarted(CheckpointBarrier barrier) throws CheckpointException {
-        channelStatePersister.startPersisting(barrier.getId(), Collections.emptyList());
+        // Collect inflight buffers from toBeConsumedBuffers to be persisted.
+        // These are buffers that have not been consumed yet when the checkpoint barrier arrives.
+        List<Buffer> inflightBuffers = new ArrayList<>();
+        for (BufferAndBacklog bufferAndBacklog : toBeConsumedBuffers) {
+            if (bufferAndBacklog.buffer().isBuffer()) {
+                inflightBuffers.add(bufferAndBacklog.buffer().retainBuffer());
+            }
+        }
+        channelStatePersister.startPersisting(barrier.getId(), inflightBuffers);
     }
 
     public void checkpointStopped(long checkpointId) {
@@ -261,6 +276,44 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
         checkError();
 
         if (!toBeConsumedBuffers.isEmpty()) {
+            // If there is a pending priority event (e.g., checkpoint barrier), fetch it from
+            // subpartitionView first, skipping toBeConsumedBuffers. This ensures priority events
+            // are processed immediately even when there are pending recovered buffers.
+            if (hasPendingPriorityEvent && subpartitionView != null) {
+                BufferAndBacklog next = subpartitionView.getNextBuffer();
+                if (next != null) {
+                    // Defensive check: we expect a priority event here
+                    checkState(
+                            next.buffer().getDataType().hasPriority(),
+                            "Expected priority event but got: %s",
+                            next.buffer().getDataType());
+
+                    // Check for barrier to update channel state persister.
+                    // Note: maybePersist is not needed for barriers as they are not regular data
+                    // buffers.
+                    channelStatePersister.checkForBarrier(next.buffer());
+
+                    // Check if there are more priority events pending
+                    if (!next.getNextDataType().hasPriority()) {
+                        hasPendingPriorityEvent = false;
+                    }
+
+                    // Correct nextDataType: if toBeConsumedBuffers is not empty, the actual next
+                    // element to consume is from toBeConsumedBuffers, not from subpartitionView
+                    Buffer.DataType correctedNextDataType = next.getNextDataType();
+                    if (!toBeConsumedBuffers.isEmpty()) {
+                        correctedNextDataType = toBeConsumedBuffers.peek().buffer().getDataType();
+                    }
+
+                    return getBufferAndAvailability(
+                            new BufferAndBacklog(
+                                    next.buffer(),
+                                    next.buffersInBacklog(),
+                                    correctedNextDataType,
+                                    next.getSequenceNumber()));
+                }
+            }
+
             BufferAndBacklog next = toBeConsumedBuffers.removeFirst();
 
             // If this is the last recovered buffer and nextDataType is NONE,
@@ -325,6 +378,11 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
 
         Buffer buffer = next.buffer();
 
+        // Check for barrier and persist buffer for unaligned checkpoint.
+        // This must be done before processing FullyFilledBuffer to ensure proper checkpoint state.
+        channelStatePersister.checkForBarrier(buffer);
+        channelStatePersister.maybePersist(buffer);
+
         if (buffer instanceof FullyFilledBuffer) {
             List<Buffer> partialBuffers = ((FullyFilledBuffer) buffer).getPartialBuffers();
             int seq = next.getSequenceNumber();
@@ -356,8 +414,9 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
 
         numBytesIn.inc(buffer.readableBytes());
         numBuffersIn.inc();
-        channelStatePersister.checkForBarrier(buffer);
-        channelStatePersister.maybePersist(buffer);
+        // Note: checkForBarrier and maybePersist are called at buffer acquisition points
+        // (priority event path, subpartitionView.getNextBuffer path) rather than here
+        // to ensure proper timing before buffer processing.
         NetworkActionsLogger.traceInput(
                 "LocalInputChannel#getNextBuffer",
                 buffer,
@@ -376,6 +435,14 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
     @Override
     public void notifyDataAvailable(ResultSubpartitionView view) {
         notifyChannelNonEmpty();
+    }
+
+    @Override
+    public void notifyPriorityEvent(int prioritySequenceNumber) {
+        // Set flag so that getNextBuffer() knows to fetch priority event from subpartitionView
+        // before consuming toBeConsumedBuffers.
+        hasPendingPriorityEvent = true;
+        super.notifyPriorityEvent(prioritySequenceNumber);
     }
 
     private ResultSubpartitionView checkAndWaitForSubpartitionView() {
