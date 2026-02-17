@@ -27,10 +27,12 @@ import org.apache.flink.runtime.event.TaskEvent;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
 import org.apache.flink.runtime.io.network.api.serialization.EventSerializer;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
+import org.apache.flink.runtime.io.network.buffer.LazyFileBuffer;
 import org.apache.flink.runtime.io.network.logger.NetworkActionsLogger;
 import org.apache.flink.runtime.io.network.partition.ChannelStateHolder;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 import org.apache.flink.runtime.io.network.partition.ResultSubpartitionIndexSet;
+import org.apache.flink.runtime.memory.MemoryManager;
 import org.apache.flink.util.Preconditions;
 
 import org.slf4j.Logger;
@@ -39,6 +41,7 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 
+import java.io.File;
 import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.Optional;
@@ -329,13 +332,23 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
         }
     }
 
-    public Buffer requestBufferBlocking() throws InterruptedException, IOException {
-        // not in setup to avoid assigning buffers unnecessarily if there is no state
+    public Buffer requestBuffer() throws IOException {
+        // Not in setup to avoid assigning buffers unnecessarily if there is no state
         if (!exclusiveBuffersAssigned) {
             bufferManager.requestExclusiveBuffers(networkBuffersPerChannel);
             exclusiveBuffersAssigned = true;
         }
-        return bufferManager.requestBufferBlocking();
+
+        // Try to get buffer from pool (non-blocking)
+        Buffer buffer = bufferManager.requestBuffer();
+        if (buffer != null) {
+            return buffer;
+        }
+
+        // Fallback to LazyFileBuffer when pool is exhausted
+        File tempFile = File.createTempFile("lazy-buffer-", ".tmp");
+        tempFile.deleteOnExit();
+        return new LazyFileBuffer(tempFile, MemoryManager.DEFAULT_PAGE_SIZE);
     }
 
     @Override

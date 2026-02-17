@@ -19,14 +19,16 @@ public class UnalignedCheckpointFailoverDemo {
 
     public static void main(String[] args) throws Exception {
         Configuration conf = new Configuration();
-        conf.set(RestOptions.PORT, 12345);
+        conf.set(RestOptions.PORT, 12346);
 
         conf.setString("taskmanager.numberOfTaskSlots", "100");
         conf.setString("rest.flamegraph.enabled", "true");
 
         conf.setString("execution.checkpointing.unaligned.enabled", "true");
         conf.setString("execution.checkpointing.aligned-checkpoint-timeout", "1s");
-        conf.setString("execution.checkpointing.interval", "10s");
+        conf.setString("execution.checkpointing.interval", "5s");
+        conf.setString("execution.checkpointing.num-retained", "100");
+        conf.setString("jobmanager.scheduler", "adaptive");
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(conf);
         env.setParallelism(3);
@@ -34,7 +36,7 @@ public class UnalignedCheckpointFailoverDemo {
         DataGeneratorSource<Long> generatorSource =
                 new DataGeneratorSource<>(
                         value -> value,
-                        1000,
+                        Long.MAX_VALUE,
                         RateLimiterStrategy.perSecond(1000),
                         Types.LONG);
 
@@ -42,7 +44,7 @@ public class UnalignedCheckpointFailoverDemo {
                 .rebalance()
                 .map(new FailoverMapper())
                 .map(value -> {
-                    Thread.sleep(20);
+                    Thread.sleep(500);
                     return value;
                 })
                 .print();
