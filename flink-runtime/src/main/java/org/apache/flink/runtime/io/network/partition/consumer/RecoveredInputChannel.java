@@ -19,8 +19,6 @@
 package org.apache.flink.runtime.io.network.partition.consumer;
 
 import org.apache.flink.annotation.VisibleForTesting;
-import org.apache.flink.core.memory.MemorySegment;
-import org.apache.flink.core.memory.MemorySegmentFactory;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.runtime.checkpoint.CheckpointException;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
@@ -29,8 +27,7 @@ import org.apache.flink.runtime.event.TaskEvent;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
 import org.apache.flink.runtime.io.network.api.serialization.EventSerializer;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
-import org.apache.flink.runtime.io.network.buffer.FreeingBufferRecycler;
-import org.apache.flink.runtime.io.network.buffer.NetworkBuffer;
+import org.apache.flink.runtime.io.network.buffer.LazyFileBuffer;
 import org.apache.flink.runtime.io.network.logger.NetworkActionsLogger;
 import org.apache.flink.runtime.io.network.partition.ChannelStateHolder;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
@@ -44,6 +41,7 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 
+import java.io.File;
 import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.Optional;
@@ -327,8 +325,8 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
         }
     }
 
-    public Buffer requestBufferBlocking() throws InterruptedException, IOException {
-        // not in setup to avoid assigning buffers unnecessarily if there is no state
+    public Buffer requestBuffer() throws InterruptedException, IOException {
+        // Not in setup to avoid assigning buffers unnecessarily if there is no state
         if (!exclusiveBuffersAssigned) {
             bufferManager.requestExclusiveBuffers(networkBuffersPerChannel);
             exclusiveBuffersAssigned = true;
@@ -342,9 +340,11 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
         if (buffer != null) {
             return buffer;
         }
-        MemorySegment memorySegment =
-                MemorySegmentFactory.allocateUnpooledSegment(MemoryManager.DEFAULT_PAGE_SIZE);
-        return new NetworkBuffer(memorySegment, FreeingBufferRecycler.INSTANCE);
+
+        // Fallback to LazyFileBuffer when pool is exhausted
+        File tempFile = File.createTempFile("lazy-buffer-", ".tmp");
+        tempFile.deleteOnExit();
+        return new LazyFileBuffer(tempFile, MemoryManager.DEFAULT_PAGE_SIZE);
     }
 
     @Override

@@ -25,6 +25,7 @@ import org.apache.flink.runtime.io.network.api.writer.ResultPartitionWriter;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.BufferBuilder;
 import org.apache.flink.runtime.io.network.buffer.BufferConsumer;
+import org.apache.flink.runtime.io.network.buffer.LazyFileBuffer;
 import org.apache.flink.runtime.io.network.partition.CheckpointedResultPartition;
 import org.apache.flink.runtime.io.network.partition.consumer.InputChannel;
 import org.apache.flink.runtime.io.network.partition.consumer.InputGate;
@@ -96,8 +97,14 @@ class InputChannelRecoveredStateHandler
             throws IOException, InterruptedException {
         // request the buffer from any mapped channel as they all will receive the same buffer
         RecoveredInputChannel channel = getMappedChannels(channelInfo);
-        Buffer buffer = channel.requestBufferBlocking();
-        return new BufferWithContext<>(wrap(buffer), buffer);
+        Buffer buffer = channel.requestBuffer();
+
+        if (buffer instanceof LazyFileBuffer) {
+            return new BufferWithContext<>(
+                    ChannelStateByteBuffer.wrap((LazyFileBuffer) buffer), buffer);
+        } else {
+            return new BufferWithContext<>(wrap(buffer), buffer);
+        }
     }
 
     @Override
@@ -147,7 +154,7 @@ class InputChannelRecoveredStateHandler
                             oldSubtaskIndex,
                             channelInfo.getInputChannelIdx(),
                             buffer,
-                            channel::requestBufferBlocking);
+                            channel::requestBuffer);
         } catch (Throwable t) {
             // filterAndRewrite didn't consume the buffer, release the extra ref.
             buffer.recycleBuffer();
