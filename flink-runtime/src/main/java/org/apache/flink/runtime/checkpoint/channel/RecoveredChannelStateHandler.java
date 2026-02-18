@@ -25,6 +25,7 @@ import org.apache.flink.runtime.io.network.api.writer.ResultPartitionWriter;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.BufferBuilder;
 import org.apache.flink.runtime.io.network.buffer.BufferConsumer;
+import org.apache.flink.runtime.io.network.buffer.LazyFileBuffer;
 import org.apache.flink.runtime.io.network.partition.CheckpointedResultPartition;
 import org.apache.flink.runtime.io.network.partition.consumer.InputChannel;
 import org.apache.flink.runtime.io.network.partition.consumer.InputGate;
@@ -97,12 +98,16 @@ class InputChannelRecoveredStateHandler
     }
 
     @Override
-    public BufferWithContext<Buffer> getBuffer(InputChannelInfo channelInfo)
-            throws IOException, InterruptedException {
-        // request the buffer from any mapped channel as they all will receive the same buffer
+    public BufferWithContext<Buffer> getBuffer(InputChannelInfo channelInfo) throws IOException {
         RecoveredInputChannel channel = getMappedChannels(channelInfo);
-        Buffer buffer = channel.requestBufferBlocking();
-        return new BufferWithContext<>(wrap(buffer), buffer);
+        Buffer buffer = channel.requestBuffer();
+
+        if (buffer instanceof LazyFileBuffer) {
+            return new BufferWithContext<>(
+                    ChannelStateByteBuffer.wrap((LazyFileBuffer) buffer), buffer);
+        } else {
+            return new BufferWithContext<>(wrap(buffer), buffer);
+        }
     }
 
     @Override
@@ -158,28 +163,37 @@ class InputChannelRecoveredStateHandler
             int oldSubtaskIndex,
             Buffer buffer)
             throws IOException {
-        try {
-            // Retain buffer because the deserializer will release it after consumption.
-            // The caller's finally block will also release it, so we need an extra reference.
-            buffer.retainBuffer();
+        // Retain buffer because the deserializer will release it after consumption.
+        // The caller's finally block will also release it, so we need an extra reference.
+        buffer.retainBuffer();
 
-            // Use the filtering handler to filter and rewrite the buffer.
-            // Pass gateIndex to use the correct serializer for this input gate.
-            List<Buffer> filteredBuffers =
-                    filteringHandler.filterAndRewrite(
-                            channelInfo.getGateIdx(),
-                            oldSubtaskIndex,
-                            channelInfo.getInputChannelIdx(),
-                            buffer,
-                            () -> channel.requestBufferBlocking());
+        // Use the filtering handler to filter and rewrite the buffer.
+        // Pass gateIndex to use the correct serializer for this input gate.
+        List<Buffer> filteredBuffers =
+                filteringHandler.filterAndRewrite(
+                        channelInfo.getGateIdx(),
+                        oldSubtaskIndex,
+                        channelInfo.getInputChannelIdx(),
+                        buffer,
+                        () -> {
+                            Buffer buf = channel.requestBuffer();
+                            if (buf instanceof LazyFileBuffer) {
+                                // For LazyFileBuffer, close() calls finishWriting(), not
+                                // recycleBuffer()
+                                return new BufferWithContext<>(
+                                        ChannelStateByteBuffer.wrap((LazyFileBuffer) buf), buf);
+                            } else {
+                                // For regular Buffer, use wrapWithoutRecycle() so close() does not
+                                // call recycleBuffer(). The caller (ChannelStateFilteringHandler)
+                                // is responsible for calling recycleBuffer() explicitly.
+                                return new BufferWithContext<>(
+                                        ChannelStateByteBuffer.wrapWithoutRecycle(buf), buf);
+                            }
+                        });
 
-            // Send filtered buffers to the channel (no descriptor needed since already filtered)
-            for (Buffer filteredBuffer : filteredBuffers) {
-                channel.onRecoveredStateBuffer(filteredBuffer);
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IOException("Interrupted while filtering recovered buffer", e);
+        // Send filtered buffers to the channel (no descriptor needed since already filtered)
+        for (Buffer filteredBuffer : filteredBuffers) {
+            channel.onRecoveredStateBuffer(filteredBuffer);
         }
     }
 
