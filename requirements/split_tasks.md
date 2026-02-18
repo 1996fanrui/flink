@@ -2,11 +2,11 @@
 
 ## 概述
 
-本文档将 FLIP-547 (Support Checkpoint During Recovery) 的完整需求拆分为 4 个可独立开发的任务。
+本文档将 FLIP-547 (Support Checkpoint During Recovery) 的完整需求拆分为 5 个任务。
 
 **原始需求文档**: [requirements/requirement.md](./requirement.md)
 
-## 为什么拆分为 4 个任务
+## 任务拆分背景
 
 FLIP-547 的核心目标是支持在 Recovery 阶段触发 Checkpoint，以解决以下问题：
 - Recovery 阶段可能持续数小时，期间无法触发 Checkpoint
@@ -17,35 +17,46 @@ FLIP-547 的核心目标是支持在 Recovery 阶段触发 Checkpoint，以解�
 
 解决方案的核心思路是：**在 Checkpoint 前过滤并重组 Buffer，确保每条记录只被快照一次**。
 
-基于此，我们将实现拆分为 4 个任务：
+基于此，我们将实现拆分为以下任务：
 
-| 任务 | 关注点 | 状态 | 优先级 |
-|------|--------|------|--------|
-| Task 1 | 数据路径变更（Buffer 在哪里恢复） | ✅ 已合并 (commit 686c00f8) | 必需 |
-| Task 2 | 核心过滤机制 | ✅ POC 完成 (commit 62566c4b) | 必需 |
-| Task 3 | 内存压力处理 | 首版跳过 | 可选（优化） |
-| Task 4 | 控制面变更（生命周期、Checkpoint 触发） | **待开发（当前焦点）** | 必需 |
+| 任务 | Jira ID | 关注点 | 状态 | 优先级 |
+|------|---------|--------|------|--------|
+| Task 1 | [FLINK-38542](https://issues.apache.org/jira/browse/FLINK-38542) | 数据路径变更（Buffer 在哪里恢复） | ✅ 已合并 (commit 686c00f8) | 必需 |
+| Task 2 | [FLINK-38930](https://issues.apache.org/jira/browse/FLINK-38930) | 核心过滤机制 | ✅ POC 完成 (commit 62566c4b) | 必需 |
+| Task 3 | [FLINK-39018](https://issues.apache.org/jira/browse/FLINK-39018) | LocalInputChannel Snapshot 支持 | ✅ POC 完成 | 必需 |
+| Task 4 | [FLINK-38543](https://issues.apache.org/jira/browse/FLINK-38543) | 控制面变更（生命周期、Checkpoint 触发） | ✅ POC 完成 | 必需 |
+| Task 5 | [FLINK-38544](https://issues.apache.org/jira/browse/FLINK-38544) | 内存压力处理 | ✅ POC 完成（LazyFileBuffer），整体首版跳过 | 可选（优化） |
 
 **相关 Commits:**
-- `686c00f8`: [FLINK-38541] Introducing config option: execution.checkpointing.unaligned.during-recovery.enabled
+- `686c00f8`: [FLINK-38542] Recover output buffers of upstream task on downstream task side directly
 - `62566c4b`: [FLINK-38930] Filtering record before processing without spilling strategy
+- `822d80b9`: POC for task4 + 修复 filter 前 buffer 申请完 network memory 导致 deadlock
+- `59cba66c`: 处理 LocalInputChannel 里 buffer 消费顺序 + priority event 问题
+- `0c07ef39`: 修复 Local Buffer Pool 没有 snapshot 的问题 + priority event 优先处理
+- `9543238e`: 完善 recovered input buffer 中 filtered buffers 迁移的功能
+- `4f5ef2b5`: 修复 Union downscale 场景下 RecordFilterContext 初始化问题
+- `02c49add`: 修复 Mailbox loop interrupted before recovery was finished
+- `a7b33f87`: 引入 LazyFileBuffer 优化 checkpoint 恢复内存使用
 
 ## 任务依赖关系
 
 ```
 Task 1 (✅ 已合并)
     │
-    ├──→ Task 2 (✅ POC 完成) ─────────────────┐
-    │                                          │
-    └──→ Task 4 (🔧 当前焦点) ─────────────────┼──→ 首版/POC 完成
-                                               │
-                                               └──→ Task 3 (首版跳过，后续优化)
+    ├──→ Task 2 (✅ POC 完成)
+    │        │
+    │        └──→ Task 3 (✅ POC 完成) ──────┐
+    │                                        │
+    └──→ Task 4 (✅ POC 完成) ───────────────┼──→ 首版/POC 完成
+                                             │
+                                             └──→ Task 5 (✅ POC 完成，首版跳过，后续优化)
 ```
 
 ---
 
-## Task 1: Recover Output Buffers on Downstream Task Side Directly
+## Task 1: Recover Output Buffers on Downstream Task Side Directly (FLINK-38542)
 
+**Jira**: [FLINK-38542](https://issues.apache.org/jira/browse/FLINK-38542)
 **状态**: ✅ 已合并到 Apache Flink
 
 ### 职责
@@ -73,8 +84,9 @@ Task 1 (✅ 已合并)
 
 ---
 
-## Task 2: Filtering Records in Async Thread
+## Task 2: Filtering Records in Async Thread (FLINK-38930)
 
+**Jira**: [FLINK-38930](https://issues.apache.org/jira/browse/FLINK-38930)
 **状态**: ✅ POC 完成 (commit 62566c4b: [FLINK-38930] Filtering record before processing without spilling strategy)
 
 ### 职责
@@ -86,7 +98,7 @@ Task 1 (✅ 已合并)
 ### 核心变更
 
 1. **过滤逻辑实现**
-   - 在 Channel-state-unspilling 线程（可重命名为 Channel-state-handling）中执行过滤
+   - 在 Channel-state-unspilling 线程中执行过滤
    - 根据 Key Group Range 过滤记录
    - 将过滤后的记录重组到新的 Buffer 中
 
@@ -102,9 +114,9 @@ Task 1 (✅ 已合并)
    - 这是最理想的路径
    - 当 Network Buffer 可用时，从 S3 读取数据，过滤后直接放入 Buffer
 
-### 与现有 Checkpoint 逻辑的关系
+### 与 Task 3 的关系
 
-过滤后的 Buffer 放入 InputChannel 后，就是普通的 Network Buffer。现有的 UC Checkpoint 逻辑会自动快照这些 Buffer，无需额外处理。
+过滤后的 Buffer 最初存放在 RecoveredInputChannel 中。当 RecoveredInputChannel 转换为物理 Channel 后，需要 Task 3 的工作使 LocalInputChannel 支持快照这些 Buffer。
 
 ### 收益
 
@@ -114,77 +126,35 @@ Task 1 (✅ 已合并)
 
 ---
 
-## Task 3: Spilling Buffers to Local Disk
+## Task 3: LocalInputChannel Snapshot 支持 (FLINK-39018)
 
-**状态**: 待开发
+**Jira**: [FLINK-39018](https://issues.apache.org/jira/browse/FLINK-39018)
+**状态**: ✅ POC 完成
 
-**优先级**: 可选（优化项，首版可跳过）
-
-### 为什么 Task 3 是可选的
-
-Task 3 是一个**优化项**，而非正确性必需：
-
-| 场景 | 无 Task 3 | 有 Task 3 |
-|------|-----------|-----------|
-| Network Memory 充足 | ✓ 正常工作 | ✓ 正常工作 |
-| Network Memory 不足 | ✓ 可工作（Checkpoint 延迟完成） | ✓ 可工作（Checkpoint 更快完成） |
-| 正确性保证 | ✓ 保证 | ✓ 保证 |
-
-**无 Task 3 时的行为：**
-- 当 Network Memory 充足时：Task 2 的 P1 路径正常工作，无任何问题
-- 当 Network Memory 不足时：过滤线程阻塞等待 Buffer 可用，Checkpoint 完成时间延迟（必须等待所有 S3 数据过滤完成）
-- **仍然优于现有逻辑**：现有逻辑在 Recovery 阶段完全无法触发 Checkpoint
-
-因此，首版/POC 可以仅实现 Task 2 + Task 4，Task 3 作为后续优化项。
+**详细设计文档**: [task3_local_input_channel_snapshot.md](./task3_local_input_channel_snapshot.md)
 
 ### 职责
 
-当 Network Memory 不足时，将过滤后的 Buffer 写入本地磁盘，确保 Checkpoint 能够尽早触发。并在后台异步地将磁盘数据恢复到 Network Memory。
+当 RecoveredInputChannel 转换为 LocalInputChannel 后，使 LocalInputChannel 能正确支持 Unaligned Checkpoint 的快照和事件处理。这包括将已过滤但未消费的 Buffer 迁移到 LocalInputChannel，并确保 Checkpoint 流程的正确性。
 
 ### 核心变更
 
-1. **Spill 路径（P2: S3-To-Disk-Spill Path）**
-   ```
-   S3 → Filter → Local Disk
-   ```
-   - 当 Network Buffer 不可用时，仍然从 S3 读取并过滤数据
-   - 将过滤后的结果写入本地磁盘
-   - 确保过滤工作持续进行，不被 Buffer 不足阻塞
-
-2. **Replay 路径（P3: Disk-To-Memory Path）**
-   ```
-   Local Disk → Network Buffer → Input Channel
-   ```
-   - 当 Network Buffer 可用时，优先从本地磁盘读取已过滤的数据
-   - 将数据放入 Input Channel
-
-3. **处理流程**
-
-   **Phase 1: S3 Active Loop**
-   - 主要操作模式，只要 S3 还有数据就保持在此阶段
-   - 使用非阻塞方式请求 Buffer
-   - 如果获取到 Buffer：优先执行 P3（磁盘有数据时），否则执行 P1
-   - 如果未获取到 Buffer：执行 P2，确保过滤工作持续进行
-
-   **Phase 2: Disk-Only Cleanup Loop**
-   - S3 数据处理完毕后进入此阶段
-   - 使用阻塞方式请求 Buffer
-   - 仅执行 P3，清理磁盘缓存
-   - 直到磁盘清空
-
-4. **Checkpoint 期间的磁盘数据处理**
-   - Checkpoint 时需要上传 Network Buffer 和 Local Disk 中的所有过滤后的 Buffer
+1. **Checkpoint 快照支持** - LocalInputChannel 需要在 Checkpoint 时正确快照从 RecoveredInputChannel 迁移过来的 Buffer，原始实现不会快照这些 Buffer
+2. **Priority Event 优先处理** - 当 LocalInputChannel 中有未消费的 recovered buffer 时，Checkpoint Barrier 等优先级事件仍能被优先处理，不被 recovered buffer 阻塞
+3. **Buffer 可用性修正** - 确保 recovered buffer 消费完毕后能正确衔接 subpartitionView 的数据，避免 Task 线程误认为没有数据而停止消费
 
 ### 收益
 
-- 即使 Network Buffer 不足，Checkpoint 也能触发（过滤工作不被阻塞）
-- 过滤后的数据可以从磁盘上传到 Checkpoint Storage
+- 物理 Channel 能正确快照 migrated buffer，保证 Checkpoint 完整性
+- Checkpoint Barrier 不会被 recovered buffer 阻塞，保证 Barrier 时效性
+- Buffer 消费顺序和可用性正确，数据不会丢失
 
 ---
 
-## Task 4: Change the Overall UC Restore Process
+## Task 4: Change the Overall UC Restore Process (FLINK-38543)
 
-**状态**: 🔧 待开发（当前焦点）
+**Jira**: [FLINK-38543](https://issues.apache.org/jira/browse/FLINK-38543)
+**状态**: ✅ POC 完成
 
 **详细设计文档**: [task4_design.md](./task4_design.md)
 
@@ -206,16 +176,78 @@ Task 3 是一个**优化项**，而非正确性必需：
 
 ---
 
+## Task 5: 内存压力处理 (FLINK-38544)
+
+**Jira**: [FLINK-38544](https://issues.apache.org/jira/browse/FLINK-38544)
+**状态**: ✅ POC 完成（LazyFileBuffer），整体首版跳过
+
+**优先级**: 可选（优化项，首版可跳过）
+
+### 为什么 Task 5 是可选的
+
+Task 5 是一个**优化项**，而非正确性必需：
+
+| 场景 | 无 Task 5 | 有 Task 5 |
+|------|-----------|-----------|
+| Network Memory 充足 | ✓ 正常工作 | ✓ 正常工作 |
+| Network Memory 不足 | ✓ 可工作（Checkpoint 延迟完成） | ✓ 可工作（Checkpoint 更快完成） |
+| 正确性保证 | ✓ 保证 | ✓ 保证 |
+
+**无 Task 5 时的行为：**
+- 当 Network Memory 充足时：Task 2 的 P1 路径正常工作，无任何问题
+- 当 Network Memory 不足时：过滤线程阻塞等待 Buffer 可用，Checkpoint 完成时间延迟（必须等待所有 S3 数据过滤完成）
+- **仍然优于现有逻辑**：现有逻辑在 Recovery 阶段完全无法触发 Checkpoint
+
+因此，首版/POC 可以仅实现 Task 2 + Task 3 + Task 4，Task 5 作为后续优化项。
+
+### 职责
+
+当 Network Memory 不足时，提供 fallback 机制避免过滤线程阻塞或死锁，并确保 Checkpoint 能够尽早触发。
+
+### 核心变更
+
+1. **LazyFileBuffer（✅ POC 已完成）**
+   - 当 Buffer Pool 耗尽时，使用文件后备 Buffer 避免 deadlock
+   - 写入阶段数据写入临时文件，读取时才加载到内存
+   - 解决了过滤线程阻塞式申请 buffer 导致的死锁问题
+
+2. **Spill 路径（P2: S3-To-Disk-Spill Path，待实现）**
+   ```
+   S3 → Filter → Local Disk
+   ```
+   - 当 Network Buffer 不可用时，仍然从 S3 读取并过滤数据
+   - 将过滤后的结果写入本地磁盘
+   - 确保过滤工作持续进行，不被 Buffer 不足阻塞
+
+3. **Replay 路径（P3: Disk-To-Memory Path，待实现）**
+   ```
+   Local Disk → Network Buffer → Input Channel
+   ```
+   - 当 Network Buffer 可用时，优先从本地磁盘读取已过滤的数据
+   - 将数据放入 Input Channel
+
+4. **Checkpoint 期间的磁盘数据处理（待实现）**
+   - Checkpoint 时需要上传 Network Buffer 和 Local Disk 中的所有过滤后的 Buffer
+
+### 收益
+
+- 避免 Network Memory 不足时的死锁（LazyFileBuffer 已解决）
+- 即使 Network Buffer 不足，Checkpoint 也能触发（过滤工作不被阻塞）
+- 过滤后的数据可以从磁盘上传到 Checkpoint Storage
+
+---
+
 ## 开发顺序建议
 
 ### 首版/POC（必需任务）
 
-1. ~~**Task 2** (过滤逻辑)~~ - ✅ 已完成
-2. **Task 4** (控制面变更) - **当前焦点**
+1. ~~**Task 2** (过滤逻辑)~~ - ✅ POC 完成
+2. ~~**Task 3** (LocalInputChannel Snapshot 支持)~~ - ✅ POC 完成
+3. ~~**Task 4** (控制面变更)~~ - ✅ POC 完成
 
 ### 后续优化
 
-3. **Task 3** (Spill 逻辑) - 可选优化，首版跳过
+4. ~~**Task 5** (内存压力处理)~~ - ✅ POC 完成（LazyFileBuffer），完整 Spill/Replay 逻辑首版跳过
 
 ---
 
