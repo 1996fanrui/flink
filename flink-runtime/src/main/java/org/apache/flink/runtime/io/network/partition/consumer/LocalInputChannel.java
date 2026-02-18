@@ -46,7 +46,7 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
-import java.util.Collections;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import java.util.Optional;
@@ -113,7 +113,15 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
     // ------------------------------------------------------------------------
 
     public void checkpointStarted(CheckpointBarrier barrier) throws CheckpointException {
-        channelStatePersister.startPersisting(barrier.getId(), Collections.emptyList());
+        // Collect inflight buffers from toBeConsumedBuffers to be persisted.
+        // These are buffers that have not been consumed yet when the checkpoint barrier arrives.
+        List<Buffer> inflightBuffers = new ArrayList<>();
+        for (BufferAndBacklog bufferAndBacklog : toBeConsumedBuffers) {
+            if (bufferAndBacklog.buffer().isBuffer()) {
+                inflightBuffers.add(bufferAndBacklog.buffer().retainBuffer());
+            }
+        }
+        channelStatePersister.startPersisting(barrier.getId(), inflightBuffers);
     }
 
     public void checkpointStopped(long checkpointId) {
@@ -278,6 +286,11 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
 
         Buffer buffer = next.buffer();
 
+        // Check for barrier and persist buffer for unaligned checkpoint.
+        // This must be done before processing FullyFilledBuffer to ensure proper checkpoint state.
+        channelStatePersister.checkForBarrier(buffer);
+        channelStatePersister.maybePersist(buffer);
+
         if (buffer instanceof FullyFilledBuffer) {
             List<Buffer> partialBuffers = ((FullyFilledBuffer) buffer).getPartialBuffers();
             int seq = next.getSequenceNumber();
@@ -309,8 +322,9 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
 
         numBytesIn.inc(buffer.readableBytes());
         numBuffersIn.inc();
-        channelStatePersister.checkForBarrier(buffer);
-        channelStatePersister.maybePersist(buffer);
+        // Note: checkForBarrier and maybePersist are called at buffer acquisition points
+        // (priority event path, subpartitionView.getNextBuffer path) rather than here
+        // to ensure proper timing before buffer processing.
         NetworkActionsLogger.traceInput(
                 "LocalInputChannel#getNextBuffer",
                 buffer,
