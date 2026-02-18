@@ -661,7 +661,8 @@ public class CheckpointingOptions {
             ConfigOptions.key("execution.checkpointing.unaligned.during-recovery.enabled")
                     .booleanType()
                     .defaultValue(true)
-                    .withDescription("Whether to enable unaligned checkpoint support during recovery.");
+                    .withDescription(
+                            "Whether to enable unaligned checkpoint support during recovery.");
 
     /**
      * Determines whether checkpointing is enabled based on the configuration.
