@@ -372,19 +372,37 @@ public class SingleInputGate extends IndexedInputGate {
                     new HashSet<>(inputChannelsForCurrentPartition.keySet());
             for (InputChannelInfo inputChannelInfo : oldInputChannelInfos) {
                 InputChannel inputChannel = inputChannelsForCurrentPartition.get(inputChannelInfo);
-                if (inputChannel instanceof RecoveredInputChannel) {
-                    try {
+                if (!(inputChannel instanceof RecoveredInputChannel)) {
+                    continue;
+                }
+                try {
+                    synchronized (inputChannelsWithData) {
+                        // Remove old channel from queue if present
+                        if (inputChannelsWithData.contains(inputChannel)) {
+                            inputChannelsWithData.getAndRemove(ch -> ch == inputChannel);
+                        }
+                        enqueuedInputChannelsWithData.clear(inputChannel.getChannelIndex());
+
+                        // Convert the channel
                         InputChannel realInputChannel =
                                 ((RecoveredInputChannel) inputChannel).toInputChannel();
                         inputChannel.releaseAllResources();
+
+                        // Update data structures
                         inputChannelsForCurrentPartition.remove(inputChannelInfo);
                         inputChannelsForCurrentPartition.put(
                                 realInputChannel.getChannelInfo(), realInputChannel);
                         channels[inputChannel.getChannelIndex()] = realInputChannel;
-                    } catch (Throwable t) {
-                        inputChannel.setError(t);
-                        return;
+
+                        // If the new channel has buffered data, enqueue it
+                        if (realInputChannel.getBuffersInUseCount() > 0) {
+                            inputChannelsWithData.add(realInputChannel);
+                            enqueuedInputChannelsWithData.set(realInputChannel.getChannelIndex());
+                        }
                     }
+                } catch (Throwable t) {
+                    inputChannel.setError(t);
+                    return;
                 }
             }
         }
