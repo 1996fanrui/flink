@@ -1640,6 +1640,8 @@ under the License.
 						<exclude>**/.*/**</exclude>
 						<exclude>**/*.prefs</exclude>
 						<exclude>**/*.log</exclude>
+						<!-- Generated local files -->
+						<exclude>log/**</exclude>
 						<!-- External web libraries. -->
 						<exclude>docs/**/jquery*</exclude>
 						<exclude>docs/**/bootstrap*</exclude>
@@ -1785,6 +1787,9 @@ under the License.
 
 						<!-- The most recently published version configuration file -->
 						<exclude>flink-test-utils-parent/flink-migration-test-utils/src/main/resources/most_recently_published_version</exclude>
+
+						<!-- Project-specific requirement documents -->
+						<exclude>requirements/**</exclude>
 					</excludes>
 				</configuration>
 			</plugin>
