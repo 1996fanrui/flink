@@ -182,4 +182,9 @@ public class InputGateWithMetrics extends IndexedInputGate {
 
         return bufferOrEvent;
     }
+
+    @Override
+    public void setCheckpointingDuringRecoveryEnabled(boolean enabled) {
+        inputGate.setCheckpointingDuringRecoveryEnabled(enabled);
+    }
 }
