@@ -39,6 +39,7 @@ import org.apache.flink.streaming.runtime.streamrecord.StreamElementSerializer;
 
 import javax.annotation.Nullable;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -108,7 +109,7 @@ public class ChannelStateFilteringHandler<T> {
                 int oldChannelIndex,
                 Buffer sourceBuffer,
                 BufferSupplier bufferSupplier)
-                throws IOException, InterruptedException {
+                throws IOException {
 
             SubtaskConnectionDescriptor key =
                     new SubtaskConnectionDescriptor(oldSubtaskIndex, oldChannelIndex);
@@ -144,21 +145,24 @@ public class ChannelStateFilteringHandler<T> {
          * <p>Each record is written with a 4-byte big-endian length prefix followed by the record
          * content. This matches the format expected by Flink's record deserializers.
          *
+         * <p>This method uses {@link ChannelStateByteBuffer#writeBytes} to write data, which
+         * properly handles both regular buffers and {@link
+         * org.apache.flink.runtime.io.network.buffer.LazyFileBuffer} instances.
+         *
          * @param elements The filtered stream elements to serialize.
-         * @param bufferSupplier Supplier for new buffers.
+         * @param bufferSupplier Supplier for new buffers with ChannelStateByteBuffer context.
          * @return List of buffers containing the serialized elements.
          */
         private List<Buffer> serializeToBuffers(
-                List<StreamElement> elements, BufferSupplier bufferSupplier)
-                throws IOException, InterruptedException {
+                List<StreamElement> elements, BufferSupplier bufferSupplier) throws IOException {
 
             List<Buffer> resultBuffers = new ArrayList<>();
-
             if (elements.isEmpty()) {
                 return resultBuffers;
             }
 
-            Buffer currentBuffer = bufferSupplier.requestBufferBlocking();
+            RecoveredChannelStateHandler.BufferWithContext<Buffer> currentBufferCtx =
+                    bufferSupplier.requestBuffer();
 
             for (StreamElement element : elements) {
                 outputSerializer.clear();
@@ -167,26 +171,36 @@ public class ChannelStateFilteringHandler<T> {
 
                 // Write 4-byte length prefix first (big-endian)
                 writeLengthToBuffer(recordLength);
-                currentBuffer =
+                currentBufferCtx =
                         writeDataToBuffer(
-                                lengthBuffer, 0, 4, currentBuffer, resultBuffers, bufferSupplier);
+                                lengthBuffer,
+                                0,
+                                4,
+                                currentBufferCtx,
+                                resultBuffers,
+                                bufferSupplier);
 
                 // Then write record content
                 byte[] serializedData = outputSerializer.getSharedBuffer();
-                currentBuffer =
+                currentBufferCtx =
                         writeDataToBuffer(
                                 serializedData,
                                 0,
                                 recordLength,
-                                currentBuffer,
+                                currentBufferCtx,
                                 resultBuffers,
                                 bufferSupplier);
             }
 
-            if (currentBuffer.readableBytes() > 0) {
-                resultBuffers.add(currentBuffer.retainBuffer());
+            // Finish writing and add to result.
+            // Order is important: retain first, then close/recycle.
+            // For regular NetworkBuffer, close() calls recycleBuffer() which decrements refCnt.
+            // For LazyFileBuffer, close() calls finishWriting() to complete file writing.
+            if (currentBufferCtx.context.readableBytes() > 0) {
+                resultBuffers.add(currentBufferCtx.context.retainBuffer());
             }
-            currentBuffer.recycleBuffer();
+            currentBufferCtx.close();
+            currentBufferCtx.context.recycleBuffer();
 
             return resultBuffers;
         }
@@ -200,48 +214,56 @@ public class ChannelStateFilteringHandler<T> {
         }
 
         /**
-         * Writes data to buffer, handling buffer overflow by requesting new buffers.
+         * Writes data to buffer via ChannelStateByteBuffer, handling buffer overflow by requesting
+         * new buffers.
          *
-         * @return The current buffer after writing (may be different from input if overflow
+         * <p>This method uses {@link ChannelStateByteBuffer#writeBytes} to write data, which
+         * correctly handles both regular buffers (writing to memory) and LazyFileBuffer instances
+         * (writing to file). This avoids prematurely loading LazyFileBuffer data into memory.
+         *
+         * @param data The byte array containing data to write.
+         * @param dataOffset The starting offset in the byte array.
+         * @param dataLength The number of bytes to write.
+         * @param currentBufferCtx The current buffer context for writing.
+         * @param resultBuffers The list to collect completed buffers.
+         * @param bufferSupplier Supplier for new buffers when current buffer is full.
+         * @return The current buffer context after writing (may be different from input if overflow
          *     occurred).
          */
-        private Buffer writeDataToBuffer(
+        private RecoveredChannelStateHandler.BufferWithContext<Buffer> writeDataToBuffer(
                 byte[] data,
                 int dataOffset,
                 int dataLength,
-                Buffer currentBuffer,
+                RecoveredChannelStateHandler.BufferWithContext<Buffer> currentBufferCtx,
                 List<Buffer> resultBuffers,
                 BufferSupplier bufferSupplier)
-                throws IOException, InterruptedException {
+                throws IOException {
+
             int offset = dataOffset;
             int remaining = dataLength;
 
             while (remaining > 0) {
-                int writableBytes = currentBuffer.getMaxCapacity() - currentBuffer.getSize();
-
-                if (writableBytes == 0) {
-                    if (currentBuffer.readableBytes() > 0) {
-                        resultBuffers.add(currentBuffer.retainBuffer());
+                if (!currentBufferCtx.buffer.isWritable()) {
+                    // Current buffer is full, add to results and get new one.
+                    // Order is important: retain first, then close/recycle.
+                    // For regular NetworkBuffer, close() calls recycleBuffer() which decrements
+                    // refCnt.
+                    // For LazyFileBuffer, close() calls finishWriting() to complete file writing.
+                    if (currentBufferCtx.context.readableBytes() > 0) {
+                        resultBuffers.add(currentBufferCtx.context.retainBuffer());
                     }
-                    currentBuffer.recycleBuffer();
-                    currentBuffer = bufferSupplier.requestBufferBlocking();
-                    writableBytes = currentBuffer.getMaxCapacity();
+                    currentBufferCtx.close();
+                    currentBufferCtx.context.recycleBuffer();
+                    currentBufferCtx = bufferSupplier.requestBuffer();
                 }
 
-                int bytesToWrite = Math.min(remaining, writableBytes);
-                currentBuffer
-                        .getMemorySegment()
-                        .put(
-                                currentBuffer.getMemorySegmentOffset() + currentBuffer.getSize(),
-                                data,
-                                offset,
-                                bytesToWrite);
-                currentBuffer.setSize(currentBuffer.getSize() + bytesToWrite);
-
-                offset += bytesToWrite;
-                remaining -= bytesToWrite;
+                // Write via ChannelStateByteBuffer (writes to file for LazyFileBuffer)
+                ByteArrayInputStream bais = new ByteArrayInputStream(data, offset, remaining);
+                int written = currentBufferCtx.buffer.writeBytes(bais, remaining);
+                offset += written;
+                remaining -= written;
             }
-            return currentBuffer;
+            return currentBufferCtx;
         }
 
         boolean hasPartialData() {
@@ -426,7 +448,6 @@ public class ChannelStateFilteringHandler<T> {
      * @param bufferSupplier Supplier for new buffers (will block if no buffer available).
      * @return Filtered buffers (may be empty if all records were filtered out).
      * @throws IOException If an I/O error occurs during deserialization or serialization.
-     * @throws InterruptedException If the thread is interrupted while waiting for buffers.
      */
     public List<Buffer> filterAndRewrite(
             int gateIndex,
@@ -434,7 +455,7 @@ public class ChannelStateFilteringHandler<T> {
             int oldChannelIndex,
             Buffer sourceBuffer,
             BufferSupplier bufferSupplier)
-            throws IOException, InterruptedException {
+            throws IOException {
 
         if (gateIndex < 0 || gateIndex >= gateHandlers.length) {
             throw new IllegalStateException(
@@ -479,18 +500,24 @@ public class ChannelStateFilteringHandler<T> {
     }
 
     /**
-     * Interface for supplying buffers. Implementations should block until a buffer is available
-     * (Phase 1 strategy).
+     * Interface for supplying buffers with associated ChannelStateByteBuffer context.
+     *
+     * <p>Implementations use a two-layer strategy: first try to get buffer from pool
+     * (non-blocking), and if not available, create a LazyFileBuffer as fallback.
      */
     @FunctionalInterface
     public interface BufferSupplier {
         /**
-         * Requests a Buffer, blocking until one is available.
+         * Requests a BufferWithContext containing a ChannelStateByteBuffer and its backing Buffer.
          *
-         * @return A Buffer for writing data (should be writable with size 0).
+         * <p>This method first tries to get a buffer from the pool non-blocking. If no buffer is
+         * available, it creates a LazyFileBuffer as fallback. The returned BufferWithContext
+         * contains a ChannelStateByteBuffer wrapper for writing and the underlying Buffer as
+         * context.
+         *
+         * @return A BufferWithContext for writing data.
          * @throws IOException If an I/O error occurs.
-         * @throws InterruptedException If the thread is interrupted while waiting.
          */
-        Buffer requestBufferBlocking() throws IOException, InterruptedException;
+        RecoveredChannelStateHandler.BufferWithContext<Buffer> requestBuffer() throws IOException;
     }
 }
