@@ -39,7 +39,7 @@ log_dir="log"
 # TIMEOUT=${TIMEOUT:-1800}
 TIMEOUT=${TIMEOUT:-21600}   # 6 hours
 
-./mvnw -T 20 clean install -U -Pfast -DskipTests -Dmaven.javadoc.skip=true -Drat.skip=true -Dcheckstyle.skip=true -Denforcer.skip=true -P java11-target -P java11 -pl flink-tests -am
+# ./mvnw -T 20 clean install -U -Pfast -DskipTests -Dmaven.javadoc.skip=true -Drat.skip=true -Dcheckstyle.skip=true -Denforcer.skip=true -P java11-target -P java11 -pl flink-tests -am
 
 # Function to handle Ctrl+C
 cleanup() {
