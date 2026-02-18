@@ -67,6 +67,7 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.IOException;
+import java.util.ArrayDeque;
 import java.net.InetSocketAddress;
 import java.util.stream.Stream;
 
@@ -951,7 +952,8 @@ class CreditBasedPartitionRequestClientHandlerTest {
                     2,
                     new SimpleCounter(),
                     new SimpleCounter(),
-                    ChannelStateWriter.NO_OP);
+                    ChannelStateWriter.NO_OP,
+                    new ArrayDeque<>());
             this.expectedMessage = expectedMessage;
         }
 
