@@ -25,7 +25,7 @@ under the License.
 	<parent>
 		<artifactId>flink-external-resources</artifactId>
 		<groupId>org.apache.flink</groupId>
-		<version>os-troubleshooting-4c83eeb9d12</version>
+		<version>os-troubleshooting-b55557f2dfe</version>
 	</parent>
 
 	<artifactId>flink-external-resource-gpu</artifactId>
