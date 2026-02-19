@@ -25,7 +25,7 @@ under the License.
 	<parent>
 		<groupId>org.apache.flink</groupId>
 		<artifactId>flink-connectors</artifactId>
-		<version>os-troubleshooting-f9a4737506b</version>
+		<version>os-troubleshooting-4c83eeb9d12</version>
 	</parent>
 
 	<artifactId>flink-hadoop-compatibility</artifactId>
