@@ -52,7 +52,7 @@ static class VirtualChannel<T> {
     // 每个 Virtual Channel 有独立的 deserializer，用于处理 spanning record
     private final RecordDeserializer<DeserializationDelegate<StreamElement>> deserializer;
     // 过滤逻辑，只有 ambiguous 的 VC 才使用真正的过滤器
-    private final Predicate<StreamRecord<T>> recordFilter;
+    private final RecordFilter<T> recordFilter;
     // 用于 Watermark 聚合
     Watermark lastWatermark = Watermark.UNINITIALIZED;
     WatermarkStatus watermarkStatus = WatermarkStatus.ACTIVE;
@@ -107,7 +107,7 @@ Physical Channel
 │      ↓                                                                       │
 │  VirtualChannel.getNextRecord()                                             │
 │      - 使用 deserializer 反序列化（处理 spanning record）                   │
-│      - 使用 RecordFilter.test() 过滤记录                                    │
+│      - 使用 RecordFilter.filter() 过滤记录                                   │
 │      ↓                                                                       │
 │  处理过滤后的记录                                                           │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -124,7 +124,7 @@ Physical Channel
 | `DemultiplexingRecordDeserializer` | `select()` | 根据 SubtaskConnectionDescriptor 选择 Virtual Channel |
 | `DemultiplexingRecordDeserializer` | `getNextRecord()` | 聚合多个 Virtual Channel 的 Watermark |
 | `VirtualChannel` | `getNextRecord()` | **核心逻辑**：反序列化 + 过滤 |
-| `RecordFilter` | `test()` | 判断记录是否属于当前 subtask |
+| `RecordFilter` | `filter()` | 判断记录是否属于当前 subtask |
 
 ### 3.3 过滤逻辑判断
 
@@ -134,15 +134,15 @@ Physical Channel
 // DemultiplexingRecordDeserializer.create() 中
 rescalingDescriptor.isAmbiguous(channelInfo.getGateIdx(), subtask)
         ? recordFilterFactory.apply(channelInfo)  // 需要过滤
-        : RecordFilter.all()                       // 不需要过滤，返回所有记录
+        : RecordFilter.acceptAll()                  // 不需要过滤，返回所有记录
 ```
 
 **第二层：记录是否属于当前 subtask（Record 级别）**
 
 ```java
-// RecordFilter.java:59-62
+// PartitionerRecordFilter.filter()
 // 只有 ambiguous 的 Virtual Channel 才执行此判断
-public boolean test(StreamRecord<T> streamRecord) {
+public boolean filter(StreamRecord<T> streamRecord) {
     delegate.setInstance(streamRecord);
     return partitioner.selectChannel(delegate) == subtaskIndex;
 }
@@ -160,8 +160,8 @@ public DeserializationResult getNextRecord(DeserializationDelegate<StreamElement
 
         if (lastResult.isFullRecord()) {
             final StreamElement element = delegate.getInstance();
-            // 对于 Record，使用 recordFilter.test() 过滤
-            if (element.isRecord() && recordFilter.test(element.asRecord())) {
+            // 对于 Record，使用 recordFilter.filter() 过滤
+            if (element.isRecord() && recordFilter.filter(element.asRecord())) {
                 return lastResult;
             // 对于 Watermark/WatermarkStatus，直接返回（不过滤）
             } else if (element.isWatermark()) {
@@ -251,7 +251,7 @@ public DeserializationResult getNextRecord(DeserializationDelegate<StreamElement
  */
 public class VirtualChannel<T> {
     private final RecordDeserializer<DeserializationDelegate<StreamElement>> deserializer;
-    private final Predicate<StreamRecord<T>> recordFilter;
+    private final RecordFilter<T> recordFilter;
     private Watermark lastWatermark = Watermark.UNINITIALIZED;
     private WatermarkStatus watermarkStatus = WatermarkStatus.ACTIVE;
     private DeserializationResult lastResult;
@@ -384,7 +384,7 @@ Task 线程: StreamTaskNetworkInput.emitNext() (不需要 demultiplexing)
 
 ### 7.1 不需要过滤的情况
 
-当 Virtual Channel 不是 ambiguous 时，使用 `RecordFilter.all()`（返回所有记录）。
+当 Virtual Channel 不是 ambiguous 时，使用 `RecordFilter.acceptAll()`（返回所有记录）。
 
 判断条件：
 ```java

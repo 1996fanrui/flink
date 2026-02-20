@@ -15,8 +15,8 @@
 
 | 是否采纳 | 已修复 | 重要等级 | commit 来源 | 文件 | 行号 | 问题描述 | 修改建议 |
 |---------|-------|---------|------------|------|------|---------|---------|
-| [x] | [ ] | Minor | `6638b142cfd` | `PartitionerRecordFilter.java` | L35 | 缺少 `@Internal` 注解，同包的 `RecordFilter` 和 `VirtualChannelRecordFilterFactory` 都标注了 `@Internal` | 添加 `@Internal` 注解 |
-| [x] | [ ] | Minor | `6638b142cfd` | `requirements/FLINK-38930-specs/design.md` | L55, L137, L254, L387 | 设计文档仍引用旧 API `Predicate<StreamRecord<T>>` 和 `RecordFilter.all()`，与当前代码 `RecordFilter<T>` 接口和 `acceptAll()` 不一致 | 同步更新设计文档中的类型和方法名引用 |
+| [x] | [x] | Minor | `6638b142cfd` | `PartitionerRecordFilter.java` | L35 | 缺少 `@Internal` 注解，同包的 `RecordFilter` 和 `VirtualChannelRecordFilterFactory` 都标注了 `@Internal` | 添加 `@Internal` 注解 |
+| [x] | [x] | Minor | `6638b142cfd` | `requirements/FLINK-38930-specs/design.md` | L55, L137, L254, L387 | 设计文档仍引用旧 API `Predicate<StreamRecord<T>>` 和 `RecordFilter.all()`，与当前代码 `RecordFilter<T>` 接口和 `acceptAll()` 不一致 | 同步更新设计文档中的类型和方法名引用 |
 | [ ] | [ ] | Suggestion | `6638b142cfd` | `DemultiplexingRecordDeserializer.java` | L59-L85 | 内部类 `VirtualChannel` 与同包的顶层 `VirtualChannel.java` 同名并存，可能在维护中造成混淆 | 确认是否有统一计划，或在 Javadoc 中说明各自使用场景 |
 | [ ] | [ ] | Suggestion | `6638b142cfd` | `RecordFilter.java` | L43 | 方法名 `filter` 语义有歧义（保留 vs 过滤掉），虽然 Javadoc 已说明 `true` = accept | 考虑使用更明确的命名如 `shouldAccept` 或 `matches` |
 
