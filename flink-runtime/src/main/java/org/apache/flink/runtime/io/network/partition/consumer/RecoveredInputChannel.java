@@ -334,6 +334,15 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     }
 
     public Buffer requestBufferBlocking() throws InterruptedException, IOException {
+        // not in setup to avoid assigning buffers unnecessarily if there is no state
+        if (!exclusiveBuffersAssigned) {
+            bufferManager.requestExclusiveBuffers(networkBuffersPerChannel);
+            exclusiveBuffersAssigned = true;
+        }
+        Buffer buffer = bufferManager.requestBuffer();
+        if (buffer != null) {
+            return buffer;
+        }
         MemorySegment memorySegment =
                 MemorySegmentFactory.allocateUnpooledSegment(MemoryManager.DEFAULT_PAGE_SIZE);
         return new NetworkBuffer(memorySegment, FreeingBufferRecycler.INSTANCE);
