@@ -86,16 +86,16 @@
 | 是否采纳 | 已修复 | 重要等级 | commit 来源 | 文件 | 行号 | 问题描述 | 修改建议 |
 |---------|-------|---------|------------|------|------|---------|---------|
 | [ ] | [ ] | Major | `f8054661577` | 整体 | N/A | `ChannelStateFilteringHandler`、`RecordFilterContext`、`VirtualChannelRecordFilterFactory` 三个核心新增类缺少单元测试 | 添加覆盖过滤路径、边界情况、spanning record 等场景的单元测试 |
-| [x] | [ ] | Major | `f8054661577` | `ChannelStateFilteringHandler.java` | L63 | 泛型 `T` 在多输入场景下不正确，不同 gate 处理不同类型但被强制为同一类型参数 | 将 `gateHandlers` 类型改为 `GateFilterHandler<?>[]`，或将类设计为非泛型 |
-| [x] | [ ] | Major | `f8054661577` | `RecoveredChannelStateHandler.java` | L155-L184 | `recoverWithFiltering` 中 `retainBuffer()` 后如果 `filterAndRewrite` 在 `setNextBuffer` 之前抛异常，retained 的额外引用不会被释放，导致 buffer 引用泄漏 | 在异常路径中（catch 或 finally）确保 retained 的额外引用被正确释放 |
-| [x] | [ ] | Minor | `f8054661577` | `ChannelStateFilteringHandler.java` | L289 | Javadoc 说 `gateHandlers` 元素 "may be null for non-network inputs"，但代码实际不允许 null 并抛异常 | 统一 Javadoc 与实际行为 |
-| [x] | [ ] | Minor | `f8054661577` | `RecordFilterContext.java` | L213 | `disabled()` 方法 Javadoc 引用了不存在的方法 `needsFiltering()` | 改为 `isUnalignedDuringRecoveryEnabled()` 或删除引用 |
-| [x] | [ ] | Minor | `f8054661577` | `StreamTask.java` | L1996-L2061 | `createRecordFilterContext()` 当 `unalignedDuringRecoveryEnabled=false` 时仍构建完整 input config，是无用计算 | 在方法开头检查标志，为 false 则直接返回 `RecordFilterContext.disabled()` |
-| [x] | [ ] | Minor | `f8054661577` | `SequentialChannelStateReaderImpl.java` | L62-L95 | `filteringHandler` 缺少异常路径的资源清理，`SpillingAdaptiveSpanningRecordDeserializer` 可能持有临时文件 | 在方法结束时（无论成功与否）调用 `filteringHandler.clear()` |
+| [x] | [x] | Major | `f8054661577` | `ChannelStateFilteringHandler.java` | L63 | 泛型 `T` 在多输入场景下不正确，不同 gate 处理不同类型但被强制为同一类型参数 | 将 `gateHandlers` 类型改为 `GateFilterHandler<?>[]`，或将类设计为非泛型 |
+| [x] | [x] | Major | `f8054661577` | `RecoveredChannelStateHandler.java` | L155-L184 | `recoverWithFiltering` 中 `retainBuffer()` 后如果 `filterAndRewrite` 在 `setNextBuffer` 之前抛异常，retained 的额外引用不会被释放，导致 buffer 引用泄漏 | 在异常路径中（catch 或 finally）确保 retained 的额外引用被正确释放 |
+| [x] | [x] | Minor | `f8054661577` | `ChannelStateFilteringHandler.java` | L289 | Javadoc 说 `gateHandlers` 元素 "may be null for non-network inputs"，但代码实际不允许 null 并抛异常 | 统一 Javadoc 与实际行为 |
+| [x] | [x] | Minor | `f8054661577` | `RecordFilterContext.java` | L213 | `disabled()` 方法 Javadoc 引用了不存在的方法 `needsFiltering()` | 改为 `isUnalignedDuringRecoveryEnabled()` 或删除引用 |
+| [x] | [x] | Minor | `f8054661577` | `StreamTask.java` | L1996-L2061 | `createRecordFilterContext()` 当 `unalignedDuringRecoveryEnabled=false` 时仍构建完整 input config，是无用计算 | 在方法开头检查标志，为 false 则直接返回 `RecordFilterContext.disabled()` |
+| [x] | [x] | Minor | `f8054661577` | `SequentialChannelStateReaderImpl.java` | L62-L95 | `filteringHandler` 缺少异常路径的资源清理，`SpillingAdaptiveSpanningRecordDeserializer` 可能持有临时文件 | 在方法结束时（无论成功与否）调用 `filteringHandler.clear()` |
 | [ ] | [ ] | Minor | `f8054661577` | `VirtualChannelRecordFilterFactory.java` | L59-L65 | 构造函数缺少 `checkNotNull` | 添加 null 检查 |
 | [ ] | [ ] | Suggestion | `f8054661577` | `ChannelStateFilteringHandler.java` | L126-L138 | `filteredElements` 列表命名有歧义——实际包含通过过滤**保留**的元素 | 改为 `acceptedElements` 或 `keptElements` |
 | [ ] | [ ] | Suggestion | `f8054661577` | `ChannelStateFilteringHandler.java` | L387-L398 | `getOldChannelIndexes` 使用 `List.contains` 去重，O(n^2) 复杂度 | 使用 `LinkedHashSet<Integer>` 替代 |
-| [x] | [ ] | Suggestion | `f8054661577` | `StreamTask.java` | L2018 | `InputFilterConfig.numberOfChannels` 的 Javadoc 写 "The parallelism of this input"，但实际传入的是当前任务自身并行度 | 修正 Javadoc 为 "The parallelism of the current operator" |
+| [x] | [x] | Suggestion | `f8054661577` | `StreamTask.java` | L2018 | `InputFilterConfig.numberOfChannels` 的 Javadoc 写 "The parallelism of this input"，但实际传入的是当前任务自身并行度 | 修正 Javadoc 为 "The parallelism of the current operator" |
 
 > **不采纳理由**:
 > - #1 (单元测试): 测试后期统一处理
