@@ -32,7 +32,7 @@
 
 | 是否采纳 | 已修复 | 重要等级 | commit 来源 | 文件 | 行号 | 问题描述 | 修改建议 |
 |---------|-------|---------|------------|------|------|---------|---------|
-| [x] | [ ] | Minor | `165c4eeac47` | `VirtualChannel.java` | L38 | 缺少 `@Internal` 注解，与同 package 下其他 public 类不一致 | 在 `public class VirtualChannel<T>` 上方添加 `@Internal` 注解 |
+| [x] | [x] | Minor | `165c4eeac47` | `VirtualChannel.java` | L38 | 缺少 `@Internal` 注解，与同 package 下其他 public 类不一致 | 在 `public class VirtualChannel<T>` 上方添加 `@Internal` 注解 |
 
 ---
 
