@@ -17,6 +17,7 @@
 
 package org.apache.flink.streaming.runtime.io.recovery;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.runtime.io.network.api.writer.ChannelSelector;
 import org.apache.flink.runtime.plugable.SerializationDelegate;
@@ -32,6 +33,7 @@ import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
  *
  * @param <T> The type of the record value.
  */
+@Internal
 public class PartitionerRecordFilter<T> implements RecordFilter<T> {
     private final ChannelSelector<SerializationDelegate<StreamRecord<T>>> partitioner;
 
