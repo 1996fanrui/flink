@@ -72,7 +72,7 @@
 
 | 是否采纳 | 已修复 | 重要等级 | commit 来源 | 文件 | 行号 | 问题描述 | 修改建议 |
 |---------|-------|---------|------------|------|------|---------|---------|
-| [X] | [ ] | Minor | `fa5323ea5a5` | `TestStreamEnvironment.java` | L148 | `UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM` 被固定为 `true`，`=false` 的路径不再被随机化测试覆盖 | 确认是否有意为之，方便测试，后期合并前再修改，可以加一个 TODO，PR 合并前需要保证随机 |
+| [X] | [x] | Minor | `fa5323ea5a5` | `TestStreamEnvironment.java` | L148 | `UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM` 被固定为 `true`，`=false` 的路径不再被随机化测试覆盖 | 确认是否有意为之，方便测试，后期合并前再修改，可以加一个 TODO，PR 合并前需要保证随机 |
 | [] | [ ] | Suggestion | `fa5323ea5a5` | `TestStreamEnvironment.java` | L148-L149 | 缺少注释说明为什么 `UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM` 只传单个候选值 `true` | 添加注释说明：该选项是 `UNALIGNED_DURING_RECOVERY_ENABLED` 的前置依赖 |
 
 > **不采纳理由**: 确认是否有意为之，方便测试，后期合并前再修改，可以加一个 TODO，PR 合并前需要保证随机
