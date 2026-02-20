@@ -385,6 +385,20 @@ public class SingleInputGate extends IndexedInputGate {
         }
     }
 
+    /**
+     * Converts all {@link RecoveredInputChannel}s to their real channel types
+     * ({@link LocalInputChannel} or {@link RemoteInputChannel}).
+     *
+     * <p><b>Lock ordering note:</b> This method acquires {@code inputChannelsWithData} and then
+     * may indirectly acquire {@code receivedBuffers} (via {@code toInputChannel()} and
+     * {@code releaseAllResources()}). This is the reverse order of {@link
+     * RecoveredInputChannel#onRecoveredStateBuffer}, which acquires {@code receivedBuffers}
+     * first and then {@code inputChannelsWithData} (via {@code notifyChannelNonEmpty()}).
+     * This is safe because {@code convertRecoveredInputChannels()} is only called from
+     * {@link #requestPartitions()}, which happens after all state recovery is complete
+     * (buffer filtering future is done), so {@code onRecoveredStateBuffer()} is no longer
+     * being called concurrently.
+     */
     @VisibleForTesting
     public void convertRecoveredInputChannels() {
         LOG.debug("Converting recovered input channels ({} channels)", getNumberOfInputChannels());

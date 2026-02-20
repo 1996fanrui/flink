@@ -166,7 +166,11 @@ public class RemoteInputChannel extends InputChannel {
             // Sequence number starts at Integer.MIN_VALUE, consistent with RecoveredInputChannel.
             int seqNum = Integer.MIN_VALUE;
             for (Buffer buffer : initialRecoveredBuffers) {
-                // subpartitionId is set to 0 as recovered buffers don't have subpartition context
+                // subpartitionId is set to 0 for recovered buffers. This is correct because:
+                // 1) For single-subpartition channels, the only valid subpartition is 0.
+                // 2) For multi-subpartition channels (consumedSubpartitionIndexSet.size() > 1),
+                //    RecoveryMetadata events embedded in the recovered buffer sequence track
+                //    the actual subpartition context for proper routing.
                 SequenceBuffer sequenceBuffer = new SequenceBuffer(buffer, seqNum++, 0);
                 receivedBuffers.add(sequenceBuffer);
                 totalQueueSizeInBytes += buffer.getSize();
@@ -259,11 +263,16 @@ public class RemoteInputChannel extends InputChannel {
 
     @Override
     protected int peekNextBufferSubpartitionIdInternal() throws IOException {
-        // Only check for errors, not for client initialization.
-        // Migrated buffers from RecoveredInputChannel can be read before requestSubpartitions().
-        checkError();
-
         synchronized (receivedBuffers) {
+            if (receivedBuffers.isEmpty()) {
+                // No migrated buffers - require full client initialization check
+                checkPartitionRequestQueueInitialized();
+            } else {
+                // Migrated buffers from RecoveredInputChannel can be read before
+                // requestSubpartitions(), so only check for errors.
+                checkError();
+            }
+
             final SequenceBuffer next = receivedBuffers.peek();
 
             if (next != null) {
@@ -276,14 +285,19 @@ public class RemoteInputChannel extends InputChannel {
 
     @Override
     public Optional<BufferAndAvailability> getNextBuffer() throws IOException {
-        // Only check for errors, not for client initialization.
-        // Migrated buffers from RecoveredInputChannel can be read before requestSubpartitions().
-        checkError();
-
         final SequenceBuffer next;
         final DataType nextDataType;
 
         synchronized (receivedBuffers) {
+            // When receivedBuffers contains migrated buffers from RecoveredInputChannel,
+            // they can be read before requestSubpartitions(). In that case only check
+            // for errors. Once migrated buffers are drained, require full client init.
+            if (receivedBuffers.isEmpty()) {
+                checkPartitionRequestQueueInitialized();
+            } else {
+                checkError();
+            }
+
             next = receivedBuffers.poll();
 
             if (next != null) {
