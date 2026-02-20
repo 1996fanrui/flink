@@ -224,9 +224,9 @@
 
 | 是否采纳 | 已修复 | 重要等级 | commit 来源 | 文件 | 行号 | 问题描述 | 修改建议 |
 |---------|-------|---------|------------|------|------|---------|---------|
-| [x] | [ ] | Minor | `812481f112d` | `IndexedInputGate.java` | L83-L84 | Javadoc 声称 "The default implementation does nothing" 但方法是 `abstract` 的 | 修改 Javadoc 或改为非 abstract 提供空默认实现 |
-| [x] | [ ] | Minor | `812481f112d` | `StreamTask.java` | L908-L909 | 原始代码中关于增量 checkpointing 和 `FULL_CHECKPOINT` 的重要警告注释被完全删除 | 在新代码中保留相关警告注释 |
-| [x] | [ ] | Minor | `812481f112d` | `RecoveredInputChannelTest.java` | L209-L224 | `TestableRecoveredInputChannel` 中 `inputGate` 字段遮蔽了父类同名字段（field shadowing） | 移除子类中冗余的 `inputGate` 字段声明 |
+| [x] | [x] | Minor | `812481f112d` | `IndexedInputGate.java` | L83-L84 | Javadoc 声称 "The default implementation does nothing" 但方法是 `abstract` 的 | 修改 Javadoc 或改为非 abstract 提供空默认实现 |
+| [x] | [x] | Minor | `812481f112d` | `StreamTask.java` | L908-L909 | 原始代码中关于增量 checkpointing 和 `FULL_CHECKPOINT` 的重要警告注释被完全删除 | 在新代码中保留相关警告注释 |
+| [x] | [x] | Minor | `812481f112d` | `RecoveredInputChannelTest.java` | L209-L224 | `TestableRecoveredInputChannel` 中 `inputGate` 字段遮蔽了父类同名字段（field shadowing） | 移除子类中冗余的 `inputGate` 字段声明 |
 | [ ] | [ ] | Suggestion | `812481f112d` | `RecoveredInputChannelTest.java` | L147-L165 | 手动 for 循环测试两种配置，失败时无法区分哪种配置导致 | 使用 `@ParameterizedTest` + `@ValueSource` |
 | [ ] | [ ] | Suggestion | `812481f112d` | `SingleInputGateTest.java` | L145-L175 | 缺少 config 关闭时 gate 级别 future 不完成的测试场景 | 补充对照测试 |
 | [ ] | [ ] | Suggestion | `812481f112d` | `RecoveredInputChannelTest.java` | L185 | `AssertionError("channel conversion succeeded")` 消息容易引起困惑 | 改为描述性消息 |
