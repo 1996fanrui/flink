@@ -80,9 +80,6 @@ public abstract class IndexedInputGate extends InputGate implements Checkpointab
      * RecoveredInputChannel will use bufferFilteringCompleteFuture instead of stateConsumedFuture
      * for RUNNING state transition.
      *
-     * <p>The default implementation does nothing, allowing subclasses that don't support this
-     * feature to ignore the setting.
-     *
      * @param enabled true to enable unaligned checkpoint during recovery
      */
     public abstract void setUnalignedDuringRecoveryEnabled(boolean enabled);

@@ -207,8 +207,6 @@ class RecoveredInputChannelTest {
      * A RecoveredInputChannel that returns a TestInputChannel when converted, for testing purposes.
      */
     private static class TestableRecoveredInputChannel extends RecoveredInputChannel {
-        private final SingleInputGate inputGate;
-
         TestableRecoveredInputChannel(SingleInputGate inputGate) {
             super(
                     inputGate,
@@ -220,7 +218,6 @@ class RecoveredInputChannelTest {
                     new SimpleCounter(),
                     new SimpleCounter(),
                     10);
-            this.inputGate = inputGate;
         }
 
         @Override

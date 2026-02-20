@@ -908,6 +908,9 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                     }
                 });
 
+        // We wait for all input channel state to recover before we go into RUNNING state, and
+        // thus start checkpointing. If we implement incremental checkpointing of input channel
+        // state we must make sure it supports CheckpointType#FULL_CHECKPOINT.
         List<CompletableFuture<?>> recoveredFutures = new ArrayList<>(inputGates.length);
         for (InputGate inputGate : inputGates) {
             // For requestPartitions: use the same future as RUNNING state transition.
