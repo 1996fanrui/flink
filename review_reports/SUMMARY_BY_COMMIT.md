@@ -111,8 +111,8 @@
 
 | 是否采纳 | 已修复 | 重要等级 | commit 来源 | 文件 | 行号 | 问题描述 | 修改建议 |
 |---------|-------|---------|------------|------|------|---------|---------|
-| [x] | [ ] | Critical | `12df3a85093` | `LocalInputChannel.java` | L510-L520 | `releaseAllResources()` 未清理 `toBeConsumedBuffers` 中的缓冲区，导致内存泄漏 | 在 `releaseAllResources()` 中遍历 `toBeConsumedBuffers` 并逐个 `recycleBuffer()`，然后 `clear()` |
-| [x] | [ ] | Major | `12df3a85093` | `LocalInputChannel.java` | L539-L547 | `unsynchronizedGetNumberOfQueuedBuffers()` 也未包含 `toBeConsumedBuffers.size()`，导致 `inputQueueLength` metrics 在 Recovery 场景下少报 | 在返回值中加入 `toBeConsumedBuffers.size()` |
+| [x] | [x] | Critical | `12df3a85093` | `LocalInputChannel.java` | L510-L520 | `releaseAllResources()` 未清理 `toBeConsumedBuffers` 中的缓冲区，导致内存泄漏 | 在 `releaseAllResources()` 中遍历 `toBeConsumedBuffers` 并逐个 `recycleBuffer()`，然后 `clear()` |
+| [x] | [x] | Major | `12df3a85093` | `LocalInputChannel.java` | L539-L547 | `unsynchronizedGetNumberOfQueuedBuffers()` 也未包含 `toBeConsumedBuffers.size()`，导致 `inputQueueLength` metrics 在 Recovery 场景下少报 | 在返回值中加入 `toBeConsumedBuffers.size()` |
 | [ ] | [ ] | Minor | `12df3a85093` | `LocalInputChannelTest.java` | L642-L665 | bugfix 缺少回归测试，未验证 `toBeConsumedBuffers` 非空时正确性 | 添加测试：传入非空 `initialRecoveredBuffers` 后断言 `getBuffersInUseCount()` 正确 |
 
 > **不采纳理由**:
