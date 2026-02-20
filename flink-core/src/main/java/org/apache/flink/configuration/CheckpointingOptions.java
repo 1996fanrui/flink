@@ -647,22 +647,48 @@ public class CheckpointingOptions {
                                     + "Each subtask will create a new channel state file when this is configured to 1.");
 
     @Experimental
+    @Documentation.Section(Documentation.Sections.COMMON_CHECKPOINTING)
     public static final ConfigOption<Boolean> UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM =
             ConfigOptions.key(
                             "execution.checkpointing.unaligned.recover-output-on-downstream.enabled")
                     .booleanType()
-                    .defaultValue(true)
+                    .defaultValue(false)
                     .withDescription(
                             "Whether recovering output buffers of upstream task on downstream task directly "
                                     + "when job restores from the unaligned checkpoint.");
 
+    /**
+     * Whether to enable checkpointing during recovery from an unaligned checkpoint.
+     *
+     * <p>When enabled, the job can take checkpoints while still recovering channel state (inflight
+     * data) from a previous unaligned checkpoint. This avoids the need to wait for full recovery
+     * before the first checkpoint can be triggered, which reduces the window of vulnerability to
+     * failures during recovery.
+     *
+     * <p>This option requires {@link #UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM} to be enabled. It
+     * does not require unaligned checkpoints to be currently enabled, because a job may restore
+     * from an unaligned checkpoint while having unaligned checkpoints disabled for the new
+     * execution.
+     */
     @Experimental
+    @Documentation.Section(Documentation.Sections.COMMON_CHECKPOINTING)
     public static final ConfigOption<Boolean> UNALIGNED_DURING_RECOVERY_ENABLED =
             ConfigOptions.key("execution.checkpointing.unaligned.during-recovery.enabled")
                     .booleanType()
-                    .defaultValue(true)
+                    .defaultValue(false)
                     .withDescription(
-                            "Whether to enable unaligned checkpoint support during recovery.");
+                            Description.builder()
+                                    .text(
+                                            "Whether to enable checkpointing during recovery from an unaligned checkpoint. "
+                                                    + "When enabled, the job can take checkpoints while still recovering channel state "
+                                                    + "(inflight data), reducing the window of vulnerability to failures during recovery.")
+                                    .linebreak()
+                                    .linebreak()
+                                    .text(
+                                            "This option requires %s to be enabled.",
+                                            TextElement.code(
+                                                    UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM.key()))
+                                    .build());
 
     /**
      * Determines whether checkpointing is enabled based on the configuration.
