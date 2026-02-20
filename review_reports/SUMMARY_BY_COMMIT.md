@@ -54,12 +54,12 @@
 
 | 是否采纳 | 已修复 | 重要等级 | commit 来源 | 文件 | 行号 | 问题描述 | 修改建议 |
 |---------|-------|---------|------------|------|------|---------|---------|
-| [x] | [ ] | Major | `c42a98f1293` | `CheckpointingOptions.java` | L659-L665 | `UNALIGNED_DURING_RECOVERY_ENABLED` 默认值为 `true`，但 `requirements/requirement.md` 第 98 行明确写默认值为 `false`，且第 100 行注明 "New changes will be disabled by default until they are stable" | 将默认值改为 `false` |
-| [x] | [ ] | Major | `c42a98f1293` | `CheckpointingOptions.java` | L654 | `UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM` 默认值从 `false` 改为 `true`，commit message 未说明此行为变更，requirements 文档和 HTML 文档均未同步更新 | 请还原成 false |
+| [x] | [x] | Major | `c42a98f1293` | `CheckpointingOptions.java` | L659-L665 | `UNALIGNED_DURING_RECOVERY_ENABLED` 默认值为 `true`，但 `requirements/requirement.md` 第 98 行明确写默认值为 `false`，且第 100 行注明 "New changes will be disabled by default until they are stable" | 将默认值改为 `false` |
+| [x] | [x] | Major | `c42a98f1293` | `CheckpointingOptions.java` | L654 | `UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM` 默认值从 `false` 改为 `true`，commit message 未说明此行为变更，requirements 文档和 HTML 文档均未同步更新 | 请还原成 false |
 | [ ] | [ ] | Major | `c42a98f1293` | `CheckpointingOptions.java` | L776-L781 | `isUnalignedDuringRecoveryEnabled` 方法缺少单元测试，而同文件中 `isCheckpointingEnabled`、`isUnalignedCheckpointEnabled` 等都有详尽测试 | 补充覆盖所有配置组合（4 种）的单元测试 |
-| [x] | [ ] | Minor | `c42a98f1293` | `CheckpointingOptions.java` | L659-L665 | 缺少 `@Documentation.Section` 注解，新配置项在生成的 Flink 配置文档中不可见 | 补充 `@Documentation.Section` 注解 |
-| [x] | [ ] | Minor | `c42a98f1293` | `CheckpointingOptions.java` | L659-L665 | 缺少 Javadoc 注释，不符合文件中其他配置项的风格 | 补充 Javadoc，说明功能语义和对 `UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM` 的依赖关系 |
-| [x] | [ ] | Minor | `c42a98f1293` | `CheckpointingOptions.java` | L664-L665 | `withDescription` 过于简略，未说明前置依赖等关键信息 | 补充前置条件（依赖 `UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM` 为 true）说明 |
+| [x] | [x] | Minor | `c42a98f1293` | `CheckpointingOptions.java` | L659-L665 | 缺少 `@Documentation.Section` 注解，新配置项在生成的 Flink 配置文档中不可见 | 补充 `@Documentation.Section` 注解 |
+| [x] | [x] | Minor | `c42a98f1293` | `CheckpointingOptions.java` | L659-L665 | 缺少 Javadoc 注释，不符合文件中其他配置项的风格 | 补充 Javadoc，说明功能语义和对 `UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM` 的依赖关系 |
+| [x] | [x] | Minor | `c42a98f1293` | `CheckpointingOptions.java` | L664-L665 | `withDescription` 过于简略，未说明前置依赖等关键信息 | 补充前置条件（依赖 `UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM` 为 true）说明 |
 
 > **不采纳理由**:
 > - #3 (单元测试): 测试后期统一处理
