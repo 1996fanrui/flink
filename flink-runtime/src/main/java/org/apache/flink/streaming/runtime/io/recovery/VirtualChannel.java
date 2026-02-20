@@ -17,6 +17,7 @@
 
 package org.apache.flink.streaming.runtime.io.recovery;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.runtime.io.network.api.serialization.RecordDeserializer;
 import org.apache.flink.runtime.io.network.api.serialization.RecordDeserializer.DeserializationResult;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
@@ -35,6 +36,7 @@ import java.io.IOException;
  *
  * @param <T> The type of record values.
  */
+@Internal
 public class VirtualChannel<T> {
     private final RecordDeserializer<DeserializationDelegate<StreamElement>> deserializer;
     private final RecordFilter<T> recordFilter;
