@@ -1994,6 +1994,12 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
      *     inputConfigs (e.g., for source tasks) or enabled=false when filtering is not needed.
      */
     protected RecordFilterContext createRecordFilterContext() {
+        boolean unalignedDuringRecoveryEnabled =
+                CheckpointingOptions.isUnalignedDuringRecoveryEnabled(getJobConfiguration());
+        if (!unalignedDuringRecoveryEnabled) {
+            return RecordFilterContext.disabled();
+        }
+
         ClassLoader cl = getUserCodeClassLoader();
         StreamConfig.InputConfig[] inputs = configuration.getInputs(cl);
         List<StreamEdge> inEdges = configuration.getInPhysicalEdges(cl);
@@ -2047,9 +2053,6 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                             + "All physical gates must have corresponding configurations.",
                     i);
         }
-
-        boolean unalignedDuringRecoveryEnabled =
-                CheckpointingOptions.isUnalignedDuringRecoveryEnabled(getJobConfiguration());
 
         return new RecordFilterContext(
                 inputConfigs,

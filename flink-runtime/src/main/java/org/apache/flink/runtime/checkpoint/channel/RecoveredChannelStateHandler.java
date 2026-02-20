@@ -80,7 +80,7 @@ class InputChannelRecoveredStateHandler
      * Optional filtering handler for filtering recovered buffers. When non-null, filtering is
      * performed during recovery in the channel-state-unspilling thread.
      */
-    @Nullable private final ChannelStateFilteringHandler<?> filteringHandler;
+    @Nullable private final ChannelStateFilteringHandler filteringHandler;
 
     InputChannelRecoveredStateHandler(
             InputGate[] inputGates, InflightDataRescalingDescriptor channelMapping) {
@@ -90,7 +90,7 @@ class InputChannelRecoveredStateHandler
     InputChannelRecoveredStateHandler(
             InputGate[] inputGates,
             InflightDataRescalingDescriptor channelMapping,
-            @Nullable ChannelStateFilteringHandler<?> filteringHandler) {
+            @Nullable ChannelStateFilteringHandler filteringHandler) {
         this.inputGates = inputGates;
         this.channelMapping = channelMapping;
         this.filteringHandler = filteringHandler;
@@ -158,11 +158,11 @@ class InputChannelRecoveredStateHandler
             int oldSubtaskIndex,
             Buffer buffer)
             throws IOException {
+        // Retain buffer because the deserializer will release it after consumption.
+        // The caller's finally block will also release it, so we need an extra reference.
+        buffer.retainBuffer();
+        boolean success = false;
         try {
-            // Retain buffer because the deserializer will release it after consumption.
-            // The caller's finally block will also release it, so we need an extra reference.
-            buffer.retainBuffer();
-
             // Use the filtering handler to filter and rewrite the buffer.
             // Pass gateIndex to use the correct serializer for this input gate.
             List<Buffer> filteredBuffers =
@@ -177,9 +177,16 @@ class InputChannelRecoveredStateHandler
             for (Buffer filteredBuffer : filteredBuffers) {
                 channel.onRecoveredStateBuffer(filteredBuffer);
             }
+            success = true;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IOException("Interrupted while filtering recovered buffer", e);
+        } finally {
+            if (!success) {
+                // Release the extra reference on error to prevent buffer leak.
+                // On the happy path, filterAndRewrite consumes the buffer internally.
+                buffer.recycleBuffer();
+            }
         }
     }
 

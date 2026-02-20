@@ -60,7 +60,7 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  * SubtaskConnectionDescriptor}.
  */
 @Internal
-public class ChannelStateFilteringHandler<T> {
+public class ChannelStateFilteringHandler {
 
     /**
      * Handles filtering for a single input gate.
@@ -254,18 +254,18 @@ public class ChannelStateFilteringHandler<T> {
     }
 
     /**
-     * Per-gate filter handlers indexed by gate index. Elements may be null for non-network inputs
-     * (e.g., SourceInputConfig).
+     * Per-gate filter handlers indexed by gate index. Each gate may have a different record type,
+     * so wildcard is used to allow heterogeneous types across gates.
      */
-    private final GateFilterHandler<T>[] gateHandlers;
+    private final GateFilterHandler<?>[] gateHandlers;
 
     /**
      * Creates a new ChannelStateFilteringHandler.
      *
-     * @param gateHandlers Array of per-gate filter handlers indexed by gate index. Elements may be
-     *     null for non-network inputs.
+     * @param gateHandlers Array of per-gate filter handlers indexed by gate index. Each element
+     *     handles a specific gate with its own record type.
      */
-    public ChannelStateFilteringHandler(GateFilterHandler<T>[] gateHandlers) {
+    ChannelStateFilteringHandler(GateFilterHandler<?>[] gateHandlers) {
         this.gateHandlers = checkNotNull(gateHandlers);
     }
 
@@ -278,12 +278,10 @@ public class ChannelStateFilteringHandler<T> {
      *
      * @param filterContext The filter context containing input configs and rescaling info.
      * @param inputGates The input gates being recovered.
-     * @param <T> The type of record values.
      * @return A new ChannelStateFilteringHandler instance, or null if no filtering is needed.
      */
     @Nullable
-    @SuppressWarnings("unchecked")
-    public static <T> ChannelStateFilteringHandler<T> createFromContext(
+    public static ChannelStateFilteringHandler createFromContext(
             RecordFilterContext filterContext, InputGate[] inputGates) {
         // Source tasks have no network inputs, so no filtering is needed
         if (filterContext.getNumberOfGates() == 0) {
@@ -293,80 +291,18 @@ public class ChannelStateFilteringHandler<T> {
         InflightDataRescalingDescriptor rescalingDescriptor =
                 filterContext.getRescalingDescriptor();
 
-        // Use array indexed by gateIndex. Elements may be null for non-network inputs.
-        GateFilterHandler<T>[] gateHandlers =
-                (GateFilterHandler<T>[]) new GateFilterHandler<?>[inputGates.length];
+        // Use array indexed by gateIndex.
+        GateFilterHandler<?>[] gateHandlers = new GateFilterHandler<?>[inputGates.length];
         boolean hasAnyVirtualChannels = false;
 
         // Process all gates. Each gate must have a corresponding InputFilterConfig.
         // Source tasks (with no input gates) are already handled above by returning null.
         for (int gateIndex = 0; gateIndex < inputGates.length; gateIndex++) {
-            RecordFilterContext.InputFilterConfig inputConfig =
-                    filterContext.getInputConfig(gateIndex);
-            // Every physical gate must have a config. Null indicates a bug in initialization.
-            if (inputConfig == null) {
-                throw new IllegalStateException(
-                        "No InputFilterConfig for gateIndex "
-                                + gateIndex
-                                + ". This indicates a bug in RecordFilterContext initialization.");
-            }
-
-            InputGate gate = inputGates[gateIndex];
-            int[] oldSubtaskIndexes = rescalingDescriptor.getOldSubtaskIndexes(gateIndex);
-            RescaleMappings channelMapping = rescalingDescriptor.getChannelMapping(gateIndex);
-
-            // Create serializer for this gate's input type
-            TypeSerializer<T> typeSerializer = (TypeSerializer<T>) inputConfig.getTypeSerializer();
-            StreamElementSerializer<T> elementSerializer =
-                    new StreamElementSerializer<>(typeSerializer);
-
-            // Create filter factory for this gate's input
-            VirtualChannelRecordFilterFactory<T> filterFactory =
-                    VirtualChannelRecordFilterFactory.fromContext(filterContext, gateIndex);
-
-            // Build virtual channels for this gate
-            Map<SubtaskConnectionDescriptor, VirtualChannel<T>> gateVirtualChannels =
-                    new HashMap<>();
-
-            // For each old subtask that contributed state
-            for (int oldSubtaskIndex : oldSubtaskIndexes) {
-                // For each channel in the gate
-                int numChannels = gate.getNumberOfInputChannels();
-                int[] oldChannelIndexes = getOldChannelIndexes(channelMapping, numChannels);
-
-                for (int oldChannelIndex : oldChannelIndexes) {
-                    SubtaskConnectionDescriptor key =
-                            new SubtaskConnectionDescriptor(oldSubtaskIndex, oldChannelIndex);
-
-                    // Avoid creating duplicate channels
-                    if (gateVirtualChannels.containsKey(key)) {
-                        continue;
-                    }
-
-                    // Determine if this channel needs filtering
-                    boolean isAmbiguous =
-                            rescalingDescriptor.isAmbiguous(gateIndex, oldSubtaskIndex);
-
-                    RecordFilter<T> recordFilter =
-                            isAmbiguous
-                                    ? filterFactory.createFilter()
-                                    : VirtualChannelRecordFilterFactory.createPassThroughFilter();
-
-                    // Create deserializer for this virtual channel
-                    RecordDeserializer<DeserializationDelegate<StreamElement>> deserializer =
-                            createDeserializer(filterContext.getTmpDirectories());
-
-                    VirtualChannel<T> vc = new VirtualChannel<>(deserializer, recordFilter);
-                    gateVirtualChannels.put(key, vc);
-                }
-            }
-
-            if (!gateVirtualChannels.isEmpty()) {
+            gateHandlers[gateIndex] =
+                    createGateHandler(filterContext, inputGates, rescalingDescriptor, gateIndex);
+            if (gateHandlers[gateIndex] != null) {
                 hasAnyVirtualChannels = true;
             }
-
-            gateHandlers[gateIndex] =
-                    new GateFilterHandler<>(gateVirtualChannels, elementSerializer);
         }
 
         // Return null if no virtual channels were created
@@ -374,7 +310,82 @@ public class ChannelStateFilteringHandler<T> {
             return null;
         }
 
-        return new ChannelStateFilteringHandler<>(gateHandlers);
+        return new ChannelStateFilteringHandler(gateHandlers);
+    }
+
+    /**
+     * Creates a GateFilterHandler for a single gate. Uses a method-level type parameter to ensure
+     * type safety within each gate, while allowing different gates to have different types.
+     */
+    @SuppressWarnings("unchecked")
+    @Nullable
+    private static <T> GateFilterHandler<T> createGateHandler(
+            RecordFilterContext filterContext,
+            InputGate[] inputGates,
+            InflightDataRescalingDescriptor rescalingDescriptor,
+            int gateIndex) {
+        RecordFilterContext.InputFilterConfig inputConfig = filterContext.getInputConfig(gateIndex);
+        // Every physical gate must have a config. Null indicates a bug in initialization.
+        if (inputConfig == null) {
+            throw new IllegalStateException(
+                    "No InputFilterConfig for gateIndex "
+                            + gateIndex
+                            + ". This indicates a bug in RecordFilterContext initialization.");
+        }
+
+        InputGate gate = inputGates[gateIndex];
+        int[] oldSubtaskIndexes = rescalingDescriptor.getOldSubtaskIndexes(gateIndex);
+        RescaleMappings channelMapping = rescalingDescriptor.getChannelMapping(gateIndex);
+
+        // Create serializer for this gate's input type
+        TypeSerializer<T> typeSerializer = (TypeSerializer<T>) inputConfig.getTypeSerializer();
+        StreamElementSerializer<T> elementSerializer =
+                new StreamElementSerializer<>(typeSerializer);
+
+        // Create filter factory for this gate's input
+        VirtualChannelRecordFilterFactory<T> filterFactory =
+                VirtualChannelRecordFilterFactory.fromContext(filterContext, gateIndex);
+
+        // Build virtual channels for this gate
+        Map<SubtaskConnectionDescriptor, VirtualChannel<T>> gateVirtualChannels = new HashMap<>();
+
+        // For each old subtask that contributed state
+        for (int oldSubtaskIndex : oldSubtaskIndexes) {
+            // For each channel in the gate
+            int numChannels = gate.getNumberOfInputChannels();
+            int[] oldChannelIndexes = getOldChannelIndexes(channelMapping, numChannels);
+
+            for (int oldChannelIndex : oldChannelIndexes) {
+                SubtaskConnectionDescriptor key =
+                        new SubtaskConnectionDescriptor(oldSubtaskIndex, oldChannelIndex);
+
+                // Avoid creating duplicate channels
+                if (gateVirtualChannels.containsKey(key)) {
+                    continue;
+                }
+
+                // Determine if this channel needs filtering
+                boolean isAmbiguous = rescalingDescriptor.isAmbiguous(gateIndex, oldSubtaskIndex);
+
+                RecordFilter<T> recordFilter =
+                        isAmbiguous
+                                ? filterFactory.createFilter()
+                                : VirtualChannelRecordFilterFactory.createPassThroughFilter();
+
+                // Create deserializer for this virtual channel
+                RecordDeserializer<DeserializationDelegate<StreamElement>> deserializer =
+                        createDeserializer(filterContext.getTmpDirectories());
+
+                VirtualChannel<T> vc = new VirtualChannel<>(deserializer, recordFilter);
+                gateVirtualChannels.put(key, vc);
+            }
+        }
+
+        if (gateVirtualChannels.isEmpty()) {
+            return null;
+        }
+
+        return new GateFilterHandler<>(gateVirtualChannels, elementSerializer);
     }
 
     /**
@@ -444,7 +455,7 @@ public class ChannelStateFilteringHandler<T> {
                             + gateHandlers.length);
         }
 
-        GateFilterHandler<T> gateHandler = gateHandlers[gateIndex];
+        GateFilterHandler<?> gateHandler = gateHandlers[gateIndex];
         if (gateHandler == null) {
             throw new IllegalStateException(
                     "No handler for gateIndex "
@@ -461,7 +472,7 @@ public class ChannelStateFilteringHandler<T> {
      * @return true if any VirtualChannel has partial data.
      */
     public boolean hasPartialData() {
-        for (GateFilterHandler<T> handler : gateHandlers) {
+        for (GateFilterHandler<?> handler : gateHandlers) {
             if (handler != null && handler.hasPartialData()) {
                 return true;
             }
@@ -471,7 +482,7 @@ public class ChannelStateFilteringHandler<T> {
 
     /** Clears the state of all VirtualChannels. */
     public void clear() {
-        for (GateFilterHandler<T> handler : gateHandlers) {
+        for (GateFilterHandler<?> handler : gateHandlers) {
             if (handler != null) {
                 handler.clear();
             }

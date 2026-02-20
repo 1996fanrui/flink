@@ -51,7 +51,7 @@ public class RecordFilterContext {
          *
          * @param typeSerializer Serializer for the record type.
          * @param partitioner Partitioner used to determine record ownership.
-         * @param numberOfChannels The parallelism of this input.
+         * @param numberOfChannels The parallelism of the current operator.
          */
         public InputFilterConfig(
                 TypeSerializer<?> typeSerializer,
@@ -210,8 +210,8 @@ public class RecordFilterContext {
     /**
      * Creates a disabled RecordFilterContext for testing or when filtering is not needed.
      *
-     * <p>The returned context has empty inputConfigs and enabled=false, so needsFiltering() will
-     * always return false.
+     * <p>The returned context has empty inputConfigs and enabled=false, so {@link
+     * #isUnalignedDuringRecoveryEnabled()} will always return false.
      *
      * @return A disabled RecordFilterContext.
      */

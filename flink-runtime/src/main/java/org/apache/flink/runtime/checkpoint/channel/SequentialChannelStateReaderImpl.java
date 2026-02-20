@@ -64,7 +64,7 @@ public class SequentialChannelStateReaderImpl implements SequentialChannelStateR
             throws IOException, InterruptedException {
 
         // Create filtering handler if filtering is needed
-        ChannelStateFilteringHandler<?> filteringHandler = null;
+        ChannelStateFilteringHandler filteringHandler = null;
         if (filterContext.isUnalignedDuringRecoveryEnabled()) {
             filteringHandler =
                     ChannelStateFilteringHandler.createFromContext(filterContext, inputGates);
@@ -90,6 +90,12 @@ public class SequentialChannelStateReaderImpl implements SequentialChannelStateR
                 checkState(
                         !filteringHandler.hasPartialData(),
                         "Not all data has been fully consumed during filtering");
+            }
+        } finally {
+            // Clean up filtering handler resources (e.g., temp files from
+            // SpillingAdaptiveSpanningRecordDeserializer) on both success and error paths
+            if (filteringHandler != null) {
+                filteringHandler.clear();
             }
         }
     }
