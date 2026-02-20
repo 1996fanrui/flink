@@ -167,11 +167,11 @@
 
 | 是否采纳 | 已修复 | 重要等级 | commit 来源 | 文件 | 行号 | 问题描述 | 修改建议 |
 |---------|-------|---------|------------|------|------|---------|---------|
-| [x] | [ ] | Critical | `36ab9a1fc6f` | `LocalInputChannel.java` | L510-L520 | `releaseAllResources()` 中 `toBeConsumedBuffers` 的迁移 buffer 在 channel release 时不会被 recycle，导致 buffer 泄漏 | 在 `releaseAllResources()` 中遍历并 recycle 每个 buffer，然后 `clear()` |
-| [x] | [ ] | Major | `36ab9a1fc6f` | `RemoteInputChannel.java` | L261-L264, L278-L281 | `checkPartitionRequestQueueInitialized()` 被替换为 `checkError()`，非 recovery 场景下降低防护能力 | 仅在 `receivedBuffers` 非空时跳过 client 初始化检查，为空时仍执行原有检查 |
-| [x] | [ ] | Major | `36ab9a1fc6f` | `SingleInputGate.java` | L400-L424 | 嵌套锁 `inputChannelsWithData` -> `receivedBuffers` 与 `onRecoveredStateBuffer` 中反向锁顺序存在潜在死锁风险 | 将 buffer 提取移到 `synchronized (inputChannelsWithData)` 之外，或明确文档化锁顺序约束 |
+| [x] | [x] | Critical | `36ab9a1fc6f` | `LocalInputChannel.java` | L510-L520 | `releaseAllResources()` 中 `toBeConsumedBuffers` 的迁移 buffer 在 channel release 时不会被 recycle，导致 buffer 泄漏 | 已在 commit 7 (`12df3a85093`) 的修复中处理 |
+| [x] | [x] | Major | `36ab9a1fc6f` | `RemoteInputChannel.java` | L261-L264, L278-L281 | `checkPartitionRequestQueueInitialized()` 被替换为 `checkError()`，非 recovery 场景下降低防护能力 | 仅在 `receivedBuffers` 非空时跳过 client 初始化检查，为空时仍执行原有检查 |
+| [x] | [x] | Major | `36ab9a1fc6f` | `SingleInputGate.java` | L400-L424 | 嵌套锁 `inputChannelsWithData` -> `receivedBuffers` 与 `onRecoveredStateBuffer` 中反向锁顺序存在潜在死锁风险 | 将 buffer 提取移到 `synchronized (inputChannelsWithData)` 之外，或明确文档化锁顺序约束 |
 | [ ] | [ ] | Minor | `36ab9a1fc6f` | `RecoveredInputChannel.java` | L140-L143 | `receivedBuffers.isEmpty()` 的 post-condition 检查未持有 `receivedBuffers` 锁 | 删除该检查或放入 `synchronized (receivedBuffers)` 块 |
-| [x] | [ ] | Minor | `36ab9a1fc6f` | `RemoteInputChannel.java` | L168-L171 | `subpartitionId` 硬编码为 0，可能在多子分区场景下不正确 | 验证多子分区场景正确性，或从 `consumedSubpartitionIndexSet` 获取实际值 |
+| [x] | [x] | Minor | `36ab9a1fc6f` | `RemoteInputChannel.java` | L168-L171 | `subpartitionId` 硬编码为 0，可能在多子分区场景下不正确 | 验证多子分区场景正确性，或从 `consumedSubpartitionIndexSet` 获取实际值 |
 | [ ] | [ ] | Suggestion | `36ab9a1fc6f` | `RemoteInputChannel.java` | L162-L179 | buffer 迁移未在 `synchronized (receivedBuffers)` 中执行 | 为代码一致性，包裹在 `synchronized (receivedBuffers)` 中 |
 
 > **不采纳理由**:
