@@ -549,6 +549,7 @@ public class UnalignedCheckpointRescaleITCase extends UnalignedCheckpointTestBas
         // captured in-flight records, see FLINK-31963.
         Object[][] parameters =
                 new Object[][] {
+                    new Object[] {"upscale", Topology.CUSTOM_PARTITIONER, 2, 3, 0L},
                     new Object[] {"downscale", Topology.CUSTOM_PARTITIONER, 3, 2, 0L},
                     new Object[] {"downscale", Topology.KEYED_DIFFERENT_PARALLELISM, 12, 7, 0L},
                     new Object[] {"upscale", Topology.KEYED_DIFFERENT_PARALLELISM, 7, 12, 0L},
