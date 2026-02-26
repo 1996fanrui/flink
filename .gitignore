@@ -7,10 +7,11 @@ scalastyle-output.xml
 !.idea/vcs.xml
 !.idea/icon.png
 .vscode
+!.claude/agents/
+!.claude/skills/
 .metals
 .bloop
 .cursor
-.claude
 .worktrees
 .metadata
 .settings
