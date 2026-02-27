@@ -213,6 +213,50 @@ Delegate to a sub agent with the following instructions:
 4. If any check fails, report the failure and re-run the execution sub agent above
 5. Only proceed to the next phase when all checks pass
 
+## Phase 6.5: Root Cause Analysis
+
+**Skip this phase entirely if there are no failed tests (all tests passed in Phase 6).**
+
+Delegate to a sub agent with the following instructions:
+
+1. **Deduplicate failures**: Run the deduplication script to group failures by root cause:
+   ```bash
+   cd {WORKTREE_PATH}
+   python .claude/skills/flink-test-analyzer/scripts/deduplicate_failures.py \
+     {LOG_DIR}/parse_results.json \
+     > {LOG_DIR}/deduplicated_failures.json
+   ```
+
+2. **Analyze each failure group**: Read `{LOG_DIR}/deduplicated_failures.json`. For each group where `analysis_status` is `"needs_analysis"`:
+   - Read the error message, stack trace, and affected test list from the group
+   - Read the corresponding split failure logs from `{LOG_DIR}/split_failures/` for additional context
+   - Analyze the error pattern and determine the root cause
+   - Provide a fix suggestion
+   - Assess the impact scope
+
+   For groups where `analysis_status` is NOT `"needs_analysis"` (e.g., low-frequency groups marked as potentially similar to a high-frequency group), note them in the report without performing full analysis.
+
+3. **Generate report**: Produce `{LOG_DIR}/root_cause_report.md` with the following structure:
+   - **Summary**: Total root cause count, total affected test count, analysis timestamp
+   - **Root Cause Groups** (ordered by frequency, highest first): For each group:
+     - Affected tests list
+     - Error pattern description
+     - Root cause analysis
+     - Fix suggestion
+   - **Unanalyzed Groups** (if any): Low-frequency groups with notes on which high-frequency group they may be similar to
+
+**Checklist before proceeding:**
+- [ ] `deduplicated_failures.json` generated in `{LOG_DIR}`
+- [ ] All `needs_analysis` groups analyzed
+- [ ] `root_cause_report.md` generated in `{LOG_DIR}`
+
+**Verification**: Delegate to a SEPARATE verification sub agent:
+1. Verify that `deduplicated_failures.json` exists in `{LOG_DIR}` and is valid JSON
+2. Verify that `root_cause_report.md` exists in `{LOG_DIR}` and is non-empty
+3. Verify that every `needs_analysis` group from `deduplicated_failures.json` has a corresponding section in the report
+4. If any check fails, report the failure and re-run the execution sub agent above
+5. Only proceed to the next phase when all checks pass
+
 ## Phase 7: Archive
 
 Delegate to a sub agent with the following instructions:
@@ -244,18 +288,29 @@ Delegate to a sub agent with the following instructions:
      ```
      sed -i '' "s|{LOG_DIR}/split_failures|{ARCHIVE_DIR}/split_failures|g" {ARCHIVE_DIR}/failure_details.md
      ```
+   - The root cause report (if it exists):
+     ```
+     cp {LOG_DIR}/root_cause_report.md {ARCHIVE_DIR}/ 2>/dev/null || true
+     ```
+   - The deduplicated failures data (if it exists):
+     ```
+     cp {LOG_DIR}/deduplicated_failures.json {ARCHIVE_DIR}/ 2>/dev/null || true
+     ```
 
 **Checklist before proceeding:**
 - [ ] Archive directory exists at `{ARCHIVE_DIR}`
 - [ ] `report.md` copied
 - [ ] `failure_details.md` copied
 - [ ] Failure logs and split failures copied (if any)
+- [ ] `root_cause_report.md` copied (if failures existed)
+- [ ] `deduplicated_failures.json` copied (if failures existed)
 
 **Verification**: Delegate to a SEPARATE verification sub agent:
 1. Verify the archive directory exists and contains `report.md` and `failure_details.md`
-2. Verify that paths inside the archived files reference `{ARCHIVE_DIR}` instead of `{LOG_DIR}`
-3. If any check fails, report the failure and re-run the execution sub agent above
-4. Only proceed to the next phase when all checks pass
+2. If failures existed, verify that `root_cause_report.md` and `deduplicated_failures.json` are also in the archive
+3. Verify that paths inside the archived files reference `{ARCHIVE_DIR}` instead of `{LOG_DIR}`
+4. If any check fails, report the failure and re-run the execution sub agent above
+5. Only proceed to the next phase when all checks pass
 
 ## Phase 8: Cleanup
 
@@ -295,6 +350,7 @@ If there are failures, also mention:
 
 ```
 Failure details: {ARCHIVE_DIR}/failure_details.md
+Root cause analysis: {ARCHIVE_DIR}/root_cause_report.md
 ```
 
 ## Error Handling
