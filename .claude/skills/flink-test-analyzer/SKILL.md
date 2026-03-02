@@ -94,7 +94,7 @@ Delegate to a sub agent with the following instructions:
    ```
    cd {WORKTREE_PATH} && zsh rui_tools/build_with_specific_version.sh
    ```
-3. Check the exit code and scan output for `BUILD SUCCESS`
+3. Check the exit code is 0 and the last 30 lines of output contain `BUILD SUCCESS`
 4. If the build fails:
    - Try a clean rebuild: run the same script again
    - If still failing, report the build error and **stop the entire workflow**
@@ -104,10 +104,11 @@ Delegate to a sub agent with the following instructions:
 - [ ] No build errors
 
 **Verification**: Delegate to a SEPARATE verification sub agent:
-1. Verify the build output contains `BUILD SUCCESS`
-2. Verify no compilation errors remain in the output
-3. If any check fails, report the failure and re-run the execution sub agent above
-4. Only proceed to the next phase when all checks pass
+1. Verify the build script exit code is 0
+2. Verify the last 30 lines of the build output contain `BUILD SUCCESS`
+3. Both conditions must be met to consider the build successful
+4. If any check fails, report the failure and re-run the execution sub agent above
+5. Only proceed to the next phase when all checks pass
 
 ## Phase 4: Pre-execution Expectations
 
