@@ -806,7 +806,8 @@ class LocalInputChannelTest {
         // Notify that priority event is available
         channel.notifyPriorityEvent(0);
 
-        // then: The first buffer returned should be the priority event (barrier), not recovered data
+        // then: The first buffer returned should be the priority event (barrier), not recovered
+        // data
         Optional<InputChannel.BufferAndAvailability> firstResult = channel.getNextBuffer();
         assertThat(firstResult).isPresent();
         assertThat(firstResult.get().buffer().getDataType().hasPriority()).isTrue();
