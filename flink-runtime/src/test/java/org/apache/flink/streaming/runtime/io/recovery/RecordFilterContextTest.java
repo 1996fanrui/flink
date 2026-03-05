@@ -24,8 +24,6 @@ import org.apache.flink.streaming.runtime.partitioner.ForwardPartitioner;
 
 import org.junit.jupiter.api.Test;
 
-import java.util.Collections;
-
 import static org.apache.flink.runtime.checkpoint.InflightDataRescalingDescriptorUtil.mappings;
 import static org.apache.flink.runtime.checkpoint.InflightDataRescalingDescriptorUtil.rescalingDescriptor;
 import static org.apache.flink.runtime.checkpoint.InflightDataRescalingDescriptorUtil.set;
@@ -140,8 +138,7 @@ class RecordFilterContextTest {
         // Create a rescaling descriptor where oldSubtask 0 is ambiguous but oldSubtask 1 is not
         RescaleMappings mapping = mappings(new int[] {0});
         InflightDataRescalingDescriptor descriptor =
-                rescalingDescriptor(
-                        new int[] {0, 1}, new RescaleMappings[] {mapping}, set(0));
+                rescalingDescriptor(new int[] {0, 1}, new RescaleMappings[] {mapping}, set(0));
 
         RecordFilterContext context =
                 new RecordFilterContext(
@@ -162,8 +159,7 @@ class RecordFilterContextTest {
     void testInputFilterConfigGetters() {
         ForwardPartitioner<Long> partitioner = new ForwardPartitioner<>();
         RecordFilterContext.InputFilterConfig config =
-                new RecordFilterContext.InputFilterConfig(
-                        LongSerializer.INSTANCE, partitioner, 4);
+                new RecordFilterContext.InputFilterConfig(LongSerializer.INSTANCE, partitioner, 4);
 
         assertThat(config.getTypeSerializer()).isSameAs(LongSerializer.INSTANCE);
         assertThat(config.getPartitioner()).isSameAs(partitioner);

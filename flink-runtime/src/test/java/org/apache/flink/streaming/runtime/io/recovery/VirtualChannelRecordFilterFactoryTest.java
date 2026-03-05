@@ -54,8 +54,7 @@ class VirtualChannelRecordFilterFactoryTest {
     void testFromContextCreatesFactory() {
         RebalancePartitioner<Long> partitioner = new RebalancePartitioner<>();
         RecordFilterContext.InputFilterConfig config =
-                new RecordFilterContext.InputFilterConfig(
-                        LongSerializer.INSTANCE, partitioner, 4);
+                new RecordFilterContext.InputFilterConfig(LongSerializer.INSTANCE, partitioner, 4);
 
         RecordFilterContext context =
                 new RecordFilterContext(
