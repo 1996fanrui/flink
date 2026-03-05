@@ -750,8 +750,7 @@ class LocalInputChannelTest {
         channel.checkpointStarted(barrier);
 
         // then: All 3 recovered buffers should be persisted as inflight data
-        List<Buffer> persistedBuffers =
-                stateWriter.getAddedInput().get(channel.getChannelInfo());
+        List<Buffer> persistedBuffers = stateWriter.getAddedInput().get(channel.getChannelInfo());
         assertThat(persistedBuffers).isNotNull().hasSize(3);
         assertThat(persistedBuffers.stream().mapToInt(Buffer::getSize).toArray())
                 .containsExactly(10, 20, 30);
