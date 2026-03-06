@@ -378,11 +378,6 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
 
         Buffer buffer = next.buffer();
 
-        // Check for barrier and persist buffer for unaligned checkpoint.
-        // This must be done before processing FullyFilledBuffer to ensure proper checkpoint state.
-        channelStatePersister.checkForBarrier(buffer);
-        channelStatePersister.maybePersist(buffer);
-
         if (buffer instanceof FullyFilledBuffer) {
             List<Buffer> partialBuffers = ((FullyFilledBuffer) buffer).getPartialBuffers();
             int seq = next.getSequenceNumber();
@@ -414,9 +409,8 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
 
         numBytesIn.inc(buffer.readableBytes());
         numBuffersIn.inc();
-        // Note: checkForBarrier and maybePersist are called at buffer acquisition points
-        // (priority event path, subpartitionView.getNextBuffer path) rather than here
-        // to ensure proper timing before buffer processing.
+        channelStatePersister.checkForBarrier(buffer);
+        channelStatePersister.maybePersist(buffer);
         NetworkActionsLogger.traceInput(
                 "LocalInputChannel#getNextBuffer",
                 buffer,
