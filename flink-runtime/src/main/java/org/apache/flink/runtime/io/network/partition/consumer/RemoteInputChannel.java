@@ -264,14 +264,7 @@ public class RemoteInputChannel extends InputChannel {
     @Override
     protected int peekNextBufferSubpartitionIdInternal() throws IOException {
         synchronized (receivedBuffers) {
-            if (receivedBuffers.isEmpty()) {
-                // No migrated buffers - require full client initialization check
-                checkPartitionRequestQueueInitialized();
-            } else {
-                // Migrated buffers from RecoveredInputChannel can be read before
-                // requestSubpartitions(), so only check for errors.
-                checkError();
-            }
+            checkReadability();
 
             final SequenceBuffer next = receivedBuffers.peek();
 
@@ -289,14 +282,7 @@ public class RemoteInputChannel extends InputChannel {
         final DataType nextDataType;
 
         synchronized (receivedBuffers) {
-            // When receivedBuffers contains migrated buffers from RecoveredInputChannel,
-            // they can be read before requestSubpartitions(). In that case only check
-            // for errors. Once migrated buffers are drained, require full client init.
-            if (receivedBuffers.isEmpty()) {
-                checkPartitionRequestQueueInitialized();
-            } else {
-                checkError();
-            }
+            checkReadability();
 
             next = receivedBuffers.poll();
 
@@ -915,6 +901,20 @@ public class RemoteInputChannel extends InputChannel {
 
     public void onError(Throwable cause) {
         setError(cause);
+    }
+
+    /**
+     * When receivedBuffers contains migrated buffers from RecoveredInputChannel, they can be read
+     * before requestSubpartitions(). In that case only check for errors. Once migrated buffers are
+     * drained, require full client initialization check.
+     */
+    private void checkReadability() throws IOException {
+        assert Thread.holdsLock(receivedBuffers);
+        if (receivedBuffers.isEmpty()) {
+            checkPartitionRequestQueueInitialized();
+        } else {
+            checkError();
+        }
     }
 
     private void checkPartitionRequestQueueInitialized() throws IOException {
