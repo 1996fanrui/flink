@@ -163,9 +163,6 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
 
     @Override
     protected void requestSubpartitions() throws IOException {
-        // toBeConsumedBuffers may contain migrated buffers from RecoveredInputChannel.
-        // This is expected when unaligned checkpoint during recovery is enabled.
-
         boolean retriggerRequest = false;
         boolean notifyDataAvailable = false;
 
@@ -276,42 +273,40 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
         checkError();
 
         if (!toBeConsumedBuffers.isEmpty()) {
-            // If there is a pending priority event (e.g., checkpoint barrier), fetch it from
-            // subpartitionView first, skipping toBeConsumedBuffers. This ensures priority events
-            // are processed immediately even when there are pending recovered buffers.
-            if (hasPendingPriorityEvent && subpartitionView != null) {
+            // If there is a pending priority event (e.g., unaligned checkpoint barrier), fetch it
+            // from subpartitionView first, skipping toBeConsumedBuffers. This ensures priority
+            // events are processed immediately even when there are pending recovered buffers.
+            if (hasPendingPriorityEvent) {
+                checkState(subpartitionView != null, "No subpartition view available");
                 BufferAndBacklog next = subpartitionView.getNextBuffer();
-                if (next != null) {
-                    // Defensive check: we expect a priority event here
-                    checkState(
-                            next.buffer().getDataType().hasPriority(),
-                            "Expected priority event but got: %s",
-                            next.buffer().getDataType());
+                checkState(
+                        next != null && next.buffer().getDataType().hasPriority(),
+                        "Expected priority event, but got %s",
+                        next == null ? "null" : next.buffer().getDataType());
 
-                    // Check for barrier to update channel state persister.
-                    // Note: maybePersist is not needed for barriers as they are not regular data
-                    // buffers.
-                    channelStatePersister.checkForBarrier(next.buffer());
+                // Check for barrier to update channel state persister.
+                // Note: maybePersist is not needed for barriers as they are not regular data
+                // buffers.
+                channelStatePersister.checkForBarrier(next.buffer());
 
-                    // Check if there are more priority events pending
-                    if (!next.getNextDataType().hasPriority()) {
-                        hasPendingPriorityEvent = false;
-                    }
-
-                    // Correct nextDataType: if toBeConsumedBuffers is not empty, the actual next
-                    // element to consume is from toBeConsumedBuffers, not from subpartitionView
-                    Buffer.DataType correctedNextDataType = next.getNextDataType();
+                Buffer.DataType expectedNextDataType = next.getNextDataType();
+                if (!expectedNextDataType.hasPriority()) {
+                    // Reset hasPendingPriorityEvent to false if no more priority event
+                    hasPendingPriorityEvent = false;
                     if (!toBeConsumedBuffers.isEmpty()) {
-                        correctedNextDataType = toBeConsumedBuffers.peek().buffer().getDataType();
+                        // Correct nextDataType: if toBeConsumedBuffers is not empty, the actual
+                        // next
+                        // element to consume is from toBeConsumedBuffers, not from subpartitionView
+                        expectedNextDataType = toBeConsumedBuffers.peek().buffer().getDataType();
                     }
-
-                    return getBufferAndAvailability(
-                            new BufferAndBacklog(
-                                    next.buffer(),
-                                    next.buffersInBacklog(),
-                                    correctedNextDataType,
-                                    next.getSequenceNumber()));
                 }
+
+                return getBufferAndAvailability(
+                        new BufferAndBacklog(
+                                next.buffer(),
+                                next.buffersInBacklog(),
+                                expectedNextDataType,
+                                next.getSequenceNumber()));
             }
 
             BufferAndBacklog next = toBeConsumedBuffers.removeFirst();
