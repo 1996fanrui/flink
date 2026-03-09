@@ -88,8 +88,8 @@ class RecoveredInputChannelTest {
 
         // After finishReadRecoveredState(), bufferFilteringCompleteFuture should be done
         channel.finishReadRecoveredState();
-        assertThat(channel.getBufferFilteringCompleteFuture().isDone()).isTrue();
-        assertThat(channel.getStateConsumedFuture().isDone()).isFalse();
+        assertThat(channel.getBufferFilteringCompleteFuture()).isDone();
+        assertThat(channel.getStateConsumedFuture()).isNotDone();
 
         // Conversion should now succeed (no exception)
         InputChannel converted = channel.toInputChannel();
@@ -109,19 +109,18 @@ class RecoveredInputChannelTest {
         // After finishReadRecoveredState(), bufferFilteringCompleteFuture should NOT be done
         // because config is disabled
         channel.finishReadRecoveredState();
-        assertThat(channel.getBufferFilteringCompleteFuture().isDone()).isFalse();
-        assertThat(channel.getStateConsumedFuture().isDone()).isFalse();
+        assertThat(channel.getBufferFilteringCompleteFuture()).isNotDone();
+        assertThat(channel.getStateConsumedFuture()).isNotDone();
 
         // Conversion should still fail because stateConsumedFuture is not done
         assertThatThrownBy(() -> channel.toInputChannel())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("recovered state is not fully consumed");
 
-        // Consume the EndOfInputChannelStateEvent to complete stateConsumedFuture
-        while (!channel.getStateConsumedFuture().isDone()) {
-            channel.getNextBuffer();
-        }
-        assertThat(channel.getStateConsumedFuture().isDone()).isTrue();
+        // Consume the EndOfInputChannelStateEvent to complete stateConsumedFuture.
+        // getNextBuffer() returns empty when it encounters the event internally.
+        assertThat(channel.getNextBuffer()).isNotPresent();
+        assertThat(channel.getStateConsumedFuture()).isDone();
 
         // Now conversion should succeed
         InputChannel converted = channel.toInputChannel();
@@ -132,16 +131,16 @@ class RecoveredInputChannelTest {
     void testBufferFilteringCompleteFutureOnlyCompletesWhenConfigEnabled() throws IOException {
         // Config enabled: finishReadRecoveredState() completes bufferFilteringCompleteFuture
         RecoveredInputChannel channelEnabled = buildChannel(true);
-        assertThat(channelEnabled.getBufferFilteringCompleteFuture().isDone()).isFalse();
+        assertThat(channelEnabled.getBufferFilteringCompleteFuture()).isNotDone();
         channelEnabled.finishReadRecoveredState();
-        assertThat(channelEnabled.getBufferFilteringCompleteFuture().isDone()).isTrue();
+        assertThat(channelEnabled.getBufferFilteringCompleteFuture()).isDone();
 
         // Config disabled: finishReadRecoveredState() does NOT complete
         // bufferFilteringCompleteFuture
         RecoveredInputChannel channelDisabled = buildChannel(false);
-        assertThat(channelDisabled.getBufferFilteringCompleteFuture().isDone()).isFalse();
+        assertThat(channelDisabled.getBufferFilteringCompleteFuture()).isNotDone();
         channelDisabled.finishReadRecoveredState();
-        assertThat(channelDisabled.getBufferFilteringCompleteFuture().isDone()).isFalse();
+        assertThat(channelDisabled.getBufferFilteringCompleteFuture()).isNotDone();
     }
 
     @Test
@@ -151,16 +150,15 @@ class RecoveredInputChannelTest {
         for (boolean configEnabled : new boolean[] {true, false}) {
             RecoveredInputChannel channel = buildChannel(configEnabled);
 
-            assertThat(channel.getStateConsumedFuture().isDone()).isFalse();
+            assertThat(channel.getStateConsumedFuture()).isNotDone();
 
             channel.finishReadRecoveredState();
-            assertThat(channel.getStateConsumedFuture().isDone()).isFalse();
+            assertThat(channel.getStateConsumedFuture()).isNotDone();
 
-            // Consume the EndOfInputChannelStateEvent
-            while (!channel.getStateConsumedFuture().isDone()) {
-                channel.getNextBuffer();
-            }
-            assertThat(channel.getStateConsumedFuture().isDone()).isTrue();
+            // Consuming the EndOfInputChannelStateEvent should complete the future.
+            // getNextBuffer() returns empty when it encounters the event internally.
+            assertThat(channel.getNextBuffer()).isNotPresent();
+            assertThat(channel.getStateConsumedFuture()).isDone();
         }
     }
 

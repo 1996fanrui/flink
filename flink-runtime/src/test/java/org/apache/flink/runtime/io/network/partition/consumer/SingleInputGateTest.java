@@ -156,21 +156,19 @@ class SingleInputGateTest extends InputGateTestBase {
             inputGate.setup();
 
             // Initially, the aggregated future should not be completed
-            assertThat(inputGate.getBufferFilteringCompleteFuture().isDone()).isFalse();
+            assertThat(inputGate.getBufferFilteringCompleteFuture()).isNotDone();
 
             // After finishing read recovered state, bufferFilteringCompleteFuture should be
             // completed (only when config is enabled)
             inputGate.finishReadRecoveredState();
-            assertThat(inputGate.getBufferFilteringCompleteFuture().isDone()).isTrue();
+            assertThat(inputGate.getBufferFilteringCompleteFuture()).isDone();
 
             // stateConsumedFuture should not be completed until data is consumed
-            assertThat(inputGate.getStateConsumedFuture().isDone()).isFalse();
+            assertThat(inputGate.getStateConsumedFuture()).isNotDone();
 
-            // After consuming all data, stateConsumedFuture should be completed
-            while (!inputGate.getStateConsumedFuture().isDone()) {
-                inputGate.pollNext();
-            }
-            assertThat(inputGate.getStateConsumedFuture().isDone()).isTrue();
+            // Consuming the EndOfInputChannelStateEvent should complete stateConsumedFuture
+            inputGate.pollNext();
+            assertThat(inputGate.getStateConsumedFuture()).isDone();
         }
     }
 
