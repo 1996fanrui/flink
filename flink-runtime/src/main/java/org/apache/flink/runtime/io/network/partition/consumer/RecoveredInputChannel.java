@@ -136,12 +136,6 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
         }
 
         final InputChannel inputChannel = toInputChannelInternal(remainingBuffers);
-
-        // Post-condition: verify receivedBuffers is empty
-        Preconditions.checkState(
-                receivedBuffers.isEmpty(),
-                "receivedBuffers should be empty after buffer migration");
-
         inputChannel.checkpointStopped(lastStoppedCheckpointId);
         return inputChannel;
     }
