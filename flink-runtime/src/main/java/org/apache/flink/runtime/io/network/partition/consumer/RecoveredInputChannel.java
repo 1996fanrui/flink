@@ -336,8 +336,8 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
         if (!inputGate.isUnalignedDuringRecoveryEnabled()) {
             return bufferManager.requestBufferBlocking();
         }
-        // FLINK-38544: Simplified spilling logic - use a heap buffer as fallback to avoid
-        // hanging if the buffer pool is not yet available during recovery.
+        // TODO FLINK-38544: Simplified spilling logic - use a heap buffer as fallback to avoid
+        // hanging if the buffer pool is insufficient during recovery.
         Buffer buffer = bufferManager.requestBuffer();
         if (buffer != null) {
             return buffer;
