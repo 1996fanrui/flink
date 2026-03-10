@@ -881,9 +881,6 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                 INITIALIZE_STATE_DURATION, initializeStateEndTs - readOutputDataTs);
         IndexedInputGate[] inputGates = getEnvironment().getAllInputGates();
 
-        // Create record filter context for filtering during recovery
-        final RecordFilterContext filterContext = createRecordFilterContext();
-
         // Determine whether to use bufferFilteringCompleteFuture for earlier RUNNING state
         // transition. When unaligned checkpoint during recovery is enabled, we can enter RUNNING
         // state as soon as buffer filtering is complete, allowing checkpoint to be triggered
@@ -901,7 +898,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
         channelIOExecutor.execute(
                 () -> {
                     try {
-                        reader.readInputData(inputGates, filterContext);
+                        reader.readInputData(inputGates, createRecordFilterContext());
                     } catch (Exception e) {
                         asyncExceptionHandler.handleAsyncException(
                                 "Unable to read channel state", e);
@@ -2014,7 +2011,6 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
         RecordFilterContext.InputFilterConfig[] inputConfigs =
                 new RecordFilterContext.InputFilterConfig[numGates];
 
-        // Defensive check: number of physical edges must match number of input gates
         Preconditions.checkState(
                 numGates == inEdges.size(),
                 "Number of input gates (%s) does not match number of physical edges (%s)",
@@ -2048,7 +2044,6 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                             typeSerializer, partitioner, numberOfChannels);
         }
 
-        // Defensive check: ensure all elements are properly filled
         for (int i = 0; i < inputConfigs.length; i++) {
             Preconditions.checkState(
                     inputConfigs[i] != null,
@@ -2063,7 +2058,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                 getEnvironment().getTaskInfo().getIndexOfThisSubtask(),
                 getEnvironment().getTaskInfo().getMaxNumberOfParallelSubtasks(),
                 getEnvironment().getIOManager().getSpillingDirectoriesPaths(),
-                unalignedDuringRecoveryEnabled);
+                true);
     }
 
     /** Check whether records can be emitted in batch. */

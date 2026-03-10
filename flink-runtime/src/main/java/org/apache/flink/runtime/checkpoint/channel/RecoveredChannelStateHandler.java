@@ -64,7 +64,7 @@ interface RecoveredChannelStateHandler<Info, Context> extends AutoCloseable {
      * case of an error.
      */
     void recover(Info info, int oldSubtaskIndex, BufferWithContext<Context> bufferWithContext)
-            throws IOException;
+            throws IOException, InterruptedException;
 }
 
 class InputChannelRecoveredStateHandler
@@ -81,11 +81,6 @@ class InputChannelRecoveredStateHandler
      * performed during recovery in the channel-state-unspilling thread.
      */
     @Nullable private final ChannelStateFilteringHandler filteringHandler;
-
-    InputChannelRecoveredStateHandler(
-            InputGate[] inputGates, InflightDataRescalingDescriptor channelMapping) {
-        this(inputGates, channelMapping, null);
-    }
 
     InputChannelRecoveredStateHandler(
             InputGate[] inputGates,
@@ -110,7 +105,7 @@ class InputChannelRecoveredStateHandler
             InputChannelInfo channelInfo,
             int oldSubtaskIndex,
             BufferWithContext<Buffer> bufferWithContext)
-            throws IOException {
+            throws IOException, InterruptedException {
         Buffer buffer = bufferWithContext.context;
         try {
             if (buffer.readableBytes() > 0) {
@@ -121,7 +116,12 @@ class InputChannelRecoveredStateHandler
                     recoverWithFiltering(channel, channelInfo, oldSubtaskIndex, buffer);
                 } else {
                     // Non-filtering mode: pass through original buffer with descriptor
-                    recoverWithoutFiltering(channel, channelInfo, oldSubtaskIndex, buffer);
+                    channel.onRecoveredStateBuffer(
+                            EventSerializer.toBuffer(
+                                    new SubtaskConnectionDescriptor(
+                                            oldSubtaskIndex, channelInfo.getInputChannelIdx()),
+                                    false));
+                    channel.onRecoveredStateBuffer(buffer.retainBuffer());
                 }
             }
         } finally {
@@ -129,64 +129,33 @@ class InputChannelRecoveredStateHandler
         }
     }
 
-    /**
-     * Recovers buffer without filtering (original behavior). Sends SubtaskConnectionDescriptor
-     * event followed by the original buffer.
-     */
-    private void recoverWithoutFiltering(
-            RecoveredInputChannel channel,
-            InputChannelInfo channelInfo,
-            int oldSubtaskIndex,
-            Buffer buffer)
-            throws IOException {
-        channel.onRecoveredStateBuffer(
-                EventSerializer.toBuffer(
-                        new SubtaskConnectionDescriptor(
-                                oldSubtaskIndex, channelInfo.getInputChannelIdx()),
-                        false));
-        channel.onRecoveredStateBuffer(buffer.retainBuffer());
-    }
-
-    /**
-     * Recovers buffer with filtering. Filters records using ChannelStateFilteringHandler and sends
-     * filtered buffers directly without SubtaskConnectionDescriptor (since filtering is already
-     * done).
-     */
     private void recoverWithFiltering(
             RecoveredInputChannel channel,
             InputChannelInfo channelInfo,
             int oldSubtaskIndex,
             Buffer buffer)
-            throws IOException {
-        // Retain buffer because the deserializer will release it after consumption.
-        // The caller's finally block will also release it, so we need an extra reference.
+            throws IOException, InterruptedException {
+        checkState(filteringHandler != null, "filtering handler not set.");
+        // Extra retain: filterAndRewrite consumes one ref, caller's finally releases another.
         buffer.retainBuffer();
-        boolean success = false;
+
+        List<Buffer> filteredBuffers;
         try {
-            // Use the filtering handler to filter and rewrite the buffer.
-            // Pass gateIndex to use the correct serializer for this input gate.
-            List<Buffer> filteredBuffers =
+            filteredBuffers =
                     filteringHandler.filterAndRewrite(
                             channelInfo.getGateIdx(),
                             oldSubtaskIndex,
                             channelInfo.getInputChannelIdx(),
                             buffer,
-                            () -> channel.requestBufferBlocking());
+                            channel::requestBufferBlocking);
+        } catch (Throwable t) {
+            // filterAndRewrite didn't consume the buffer, release the extra ref.
+            buffer.recycleBuffer();
+            throw t;
+        }
 
-            // Send filtered buffers to the channel (no descriptor needed since already filtered)
-            for (Buffer filteredBuffer : filteredBuffers) {
-                channel.onRecoveredStateBuffer(filteredBuffer);
-            }
-            success = true;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IOException("Interrupted while filtering recovered buffer", e);
-        } finally {
-            if (!success) {
-                // Release the extra reference on error to prevent buffer leak.
-                // On the happy path, filterAndRewrite consumes the buffer internally.
-                buffer.recycleBuffer();
-            }
+        for (Buffer filteredBuffer : filteredBuffers) {
+            channel.onRecoveredStateBuffer(filteredBuffer);
         }
     }
 
@@ -269,7 +238,7 @@ class ResultSubpartitionRecoveredStateHandler
             ResultSubpartitionInfo subpartitionInfo,
             int oldSubtaskIndex,
             BufferWithContext<BufferBuilder> bufferWithContext)
-            throws IOException {
+            throws IOException, InterruptedException {
         try (BufferBuilder bufferBuilder = bufferWithContext.context;
                 BufferConsumer bufferConsumer = bufferBuilder.createBufferConsumerFromBeginning()) {
             bufferBuilder.finish();

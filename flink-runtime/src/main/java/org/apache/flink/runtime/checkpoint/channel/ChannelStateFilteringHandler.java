@@ -48,41 +48,26 @@ import java.util.Map;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
- * Filters recovered channel state buffers in the channel-state-unspilling thread.
+ * Filters recovered channel state buffers during the channel-state-unspilling phase, removing
+ * records that do not belong to the current subtask after rescaling.
  *
- * <p>This handler uses a layered design where each input gate has its own {@link GateFilterHandler}
- * that manages the gate's virtual channels with the correct serializer. This ensures that
- * multi-input tasks (e.g., TwoInputStreamTask) correctly use different serializers for different
- * input gates.
- *
- * <p>The design follows the pattern used in {@code DemultiplexingRecordDeserializer} where each
- * physical channel maintains its own map of virtual channels keyed by {@link
- * SubtaskConnectionDescriptor}.
+ * <p>Uses a per-gate architecture: each {@link InputGate} gets its own {@link GateFilterHandler}
+ * with the correct serializer, so multi-input tasks (e.g., TwoInputStreamTask) correctly
+ * deserialize different record types on different gates.
  */
 @Internal
 public class ChannelStateFilteringHandler {
 
     /**
-     * Handles filtering for a single input gate.
-     *
-     * <p>Each gate has its own serializer and virtual channels. This ensures correct serialization
-     * for multi-input tasks where different gates have different record types.
+     * Handles record filtering for a single input gate. Each gate has its own serializer and set of
+     * virtual channels, allowing different gates to handle different record types independently.
      */
     static class GateFilterHandler<T> {
 
-        /** Virtual channels for this gate, keyed by (oldSubtaskIndex, oldChannelIndex). */
         private final Map<SubtaskConnectionDescriptor, VirtualChannel<T>> virtualChannels;
-
-        /** Serializer for this gate's element type. */
         private final StreamElementSerializer<T> serializer;
-
-        /** Deserialization delegate for this gate. */
         private final DeserializationDelegate<StreamElement> deserializationDelegate;
-
-        /** Reusable output serializer for writing records. */
         private final DataOutputSerializer outputSerializer;
-
-        /** Temporary buffer for writing 4-byte length prefix (big-endian). */
         private final byte[] lengthBuffer = new byte[4];
 
         GateFilterHandler(
@@ -95,13 +80,8 @@ public class ChannelStateFilteringHandler {
         }
 
         /**
-         * Filters a buffer from a specific virtual channel.
-         *
-         * @param oldSubtaskIndex The old subtask index.
-         * @param oldChannelIndex The old channel index.
-         * @param sourceBuffer Original buffer to filter.
-         * @param bufferSupplier Supplier for new buffers.
-         * @return Filtered buffers.
+         * Deserializes records from {@code sourceBuffer}, applies the virtual channel's record
+         * filter, and re-serializes the surviving records into new buffers.
          */
         List<Buffer> filterAndRewrite(
                 int oldSubtaskIndex,
@@ -139,14 +119,8 @@ public class ChannelStateFilteringHandler {
         }
 
         /**
-         * Serializes filtered stream elements to new buffers.
-         *
-         * <p>Each record is written with a 4-byte big-endian length prefix followed by the record
-         * content. This matches the format expected by Flink's record deserializers.
-         *
-         * @param elements The filtered stream elements to serialize.
-         * @param bufferSupplier Supplier for new buffers.
-         * @return List of buffers containing the serialized elements.
+         * Serializes stream elements into buffers using the length-prefixed format (4-byte
+         * big-endian length + record bytes) expected by Flink's record deserializers.
          */
         private List<Buffer> serializeToBuffers(
                 List<StreamElement> elements, BufferSupplier bufferSupplier)
@@ -165,13 +139,11 @@ public class ChannelStateFilteringHandler {
                 serializer.serialize(element, outputSerializer);
                 int recordLength = outputSerializer.length();
 
-                // Write 4-byte length prefix first (big-endian)
                 writeLengthToBuffer(recordLength);
                 currentBuffer =
                         writeDataToBuffer(
                                 lengthBuffer, 0, 4, currentBuffer, resultBuffers, bufferSupplier);
 
-                // Then write record content
                 byte[] serializedData = outputSerializer.getSharedBuffer();
                 currentBuffer =
                         writeDataToBuffer(
@@ -191,7 +163,6 @@ public class ChannelStateFilteringHandler {
             return resultBuffers;
         }
 
-        /** Writes a 4-byte big-endian length prefix to the lengthBuffer. */
         private void writeLengthToBuffer(int length) {
             lengthBuffer[0] = (byte) (length >> 24);
             lengthBuffer[1] = (byte) (length >> 16);
@@ -200,10 +171,10 @@ public class ChannelStateFilteringHandler {
         }
 
         /**
-         * Writes data to buffer, handling buffer overflow by requesting new buffers.
+         * Writes data to the current buffer, spilling into new buffers from {@code bufferSupplier}
+         * when the current one is full.
          *
-         * @return The current buffer after writing (may be different from input if overflow
-         *     occurred).
+         * @return the buffer to continue writing into (may differ from the input buffer).
          */
         private Buffer writeDataToBuffer(
                 byte[] data,
@@ -253,37 +224,22 @@ public class ChannelStateFilteringHandler {
         }
     }
 
-    /**
-     * Per-gate filter handlers indexed by gate index. Each gate may have a different record type,
-     * so wildcard is used to allow heterogeneous types across gates.
-     */
+    // Wildcard allows heterogeneous record types across gates.
     private final GateFilterHandler<?>[] gateHandlers;
 
-    /**
-     * Creates a new ChannelStateFilteringHandler.
-     *
-     * @param gateHandlers Array of per-gate filter handlers indexed by gate index. Each element
-     *     handles a specific gate with its own record type.
-     */
     ChannelStateFilteringHandler(GateFilterHandler<?>[] gateHandlers) {
         this.gateHandlers = checkNotNull(gateHandlers);
     }
 
     /**
-     * Creates a ChannelStateFilteringHandler from a RecordFilterContext and InputGates.
-     *
-     * <p>This factory method creates a {@link GateFilterHandler} for each input gate, with each
-     * handler using the correct serializer for that gate's input type. Virtual channels are keyed
-     * by {@link SubtaskConnectionDescriptor} within each gate.
-     *
-     * @param filterContext The filter context containing input configs and rescaling info.
-     * @param inputGates The input gates being recovered.
-     * @return A new ChannelStateFilteringHandler instance, or null if no filtering is needed.
+     * Creates a handler from the recovery context, building per-gate virtual channels based on
+     * rescaling descriptors. Returns {@code null} if no filtering is needed (e.g., source tasks or
+     * no rescaling).
      */
     @Nullable
     public static ChannelStateFilteringHandler createFromContext(
             RecordFilterContext filterContext, InputGate[] inputGates) {
-        // Source tasks have no network inputs, so no filtering is needed
+        // Source tasks have no network inputs
         if (filterContext.getNumberOfGates() == 0) {
             return null;
         }
@@ -291,12 +247,9 @@ public class ChannelStateFilteringHandler {
         InflightDataRescalingDescriptor rescalingDescriptor =
                 filterContext.getRescalingDescriptor();
 
-        // Use array indexed by gateIndex.
         GateFilterHandler<?>[] gateHandlers = new GateFilterHandler<?>[inputGates.length];
         boolean hasAnyVirtualChannels = false;
 
-        // Process all gates. Each gate must have a corresponding InputFilterConfig.
-        // Source tasks (with no input gates) are already handled above by returning null.
         for (int gateIndex = 0; gateIndex < inputGates.length; gateIndex++) {
             gateHandlers[gateIndex] =
                     createGateHandler(filterContext, inputGates, rescalingDescriptor, gateIndex);
@@ -305,7 +258,6 @@ public class ChannelStateFilteringHandler {
             }
         }
 
-        // Return null if no virtual channels were created
         if (!hasAnyVirtualChannels) {
             return null;
         }
@@ -314,8 +266,8 @@ public class ChannelStateFilteringHandler {
     }
 
     /**
-     * Creates a GateFilterHandler for a single gate. Uses a method-level type parameter to ensure
-     * type safety within each gate, while allowing different gates to have different types.
+     * Creates a {@link GateFilterHandler} for a single gate. The method-level type parameter
+     * ensures type safety within each gate while allowing different gates to have different types.
      */
     @SuppressWarnings("unchecked")
     @Nullable
@@ -325,7 +277,6 @@ public class ChannelStateFilteringHandler {
             InflightDataRescalingDescriptor rescalingDescriptor,
             int gateIndex) {
         RecordFilterContext.InputFilterConfig inputConfig = filterContext.getInputConfig(gateIndex);
-        // Every physical gate must have a config. Null indicates a bug in initialization.
         if (inputConfig == null) {
             throw new IllegalStateException(
                     "No InputFilterConfig for gateIndex "
@@ -337,21 +288,16 @@ public class ChannelStateFilteringHandler {
         int[] oldSubtaskIndexes = rescalingDescriptor.getOldSubtaskIndexes(gateIndex);
         RescaleMappings channelMapping = rescalingDescriptor.getChannelMapping(gateIndex);
 
-        // Create serializer for this gate's input type
         TypeSerializer<T> typeSerializer = (TypeSerializer<T>) inputConfig.getTypeSerializer();
         StreamElementSerializer<T> elementSerializer =
                 new StreamElementSerializer<>(typeSerializer);
 
-        // Create filter factory for this gate's input
         VirtualChannelRecordFilterFactory<T> filterFactory =
                 VirtualChannelRecordFilterFactory.fromContext(filterContext, gateIndex);
 
-        // Build virtual channels for this gate
         Map<SubtaskConnectionDescriptor, VirtualChannel<T>> gateVirtualChannels = new HashMap<>();
 
-        // For each old subtask that contributed state
         for (int oldSubtaskIndex : oldSubtaskIndexes) {
-            // For each channel in the gate
             int numChannels = gate.getNumberOfInputChannels();
             int[] oldChannelIndexes = getOldChannelIndexes(channelMapping, numChannels);
 
@@ -359,12 +305,11 @@ public class ChannelStateFilteringHandler {
                 SubtaskConnectionDescriptor key =
                         new SubtaskConnectionDescriptor(oldSubtaskIndex, oldChannelIndex);
 
-                // Avoid creating duplicate channels
                 if (gateVirtualChannels.containsKey(key)) {
                     continue;
                 }
 
-                // Determine if this channel needs filtering
+                // Only ambiguous channels need actual filtering; non-ambiguous ones pass through
                 boolean isAmbiguous = rescalingDescriptor.isAmbiguous(gateIndex, oldSubtaskIndex);
 
                 RecordFilter<T> recordFilter =
@@ -372,7 +317,6 @@ public class ChannelStateFilteringHandler {
                                 ? filterFactory.createFilter()
                                 : VirtualChannelRecordFilterFactory.createPassThroughFilter();
 
-                // Create deserializer for this virtual channel
                 RecordDeserializer<DeserializationDelegate<StreamElement>> deserializer =
                         createDeserializer(filterContext.getTmpDirectories());
 
@@ -389,14 +333,10 @@ public class ChannelStateFilteringHandler {
     }
 
     /**
-     * Gets all old channel indexes that map to channels in this gate.
-     *
-     * @param channelMapping The channel mapping from rescaling.
-     * @param numChannels Number of channels in the current gate.
-     * @return Array of old channel indexes.
+     * Collects all old channel indexes that are mapped from any new channel index in this gate.
+     * channelMapping is new-to-old, so we iterate new indexes and collect their old counterparts.
      */
     private static int[] getOldChannelIndexes(RescaleMappings channelMapping, int numChannels) {
-        // channelMapping is new -> old mapping, so getMappedIndexes(newIndex) returns old indexes
         List<Integer> oldIndexes = new ArrayList<>();
         for (int newIndex = 0; newIndex < numChannels; newIndex++) {
             int[] mapped = channelMapping.getMappedIndexes(newIndex);
@@ -409,35 +349,21 @@ public class ChannelStateFilteringHandler {
         return oldIndexes.stream().mapToInt(Integer::intValue).toArray();
     }
 
-    /**
-     * Creates a RecordDeserializer for a Virtual Channel.
-     *
-     * @param tmpDirectories Temporary directories for spilling.
-     * @return A new RecordDeserializer instance.
-     */
     private static RecordDeserializer<DeserializationDelegate<StreamElement>> createDeserializer(
             String[] tmpDirectories) {
         if (tmpDirectories != null && tmpDirectories.length > 0) {
             return new SpillingAdaptiveSpanningRecordDeserializer<>(tmpDirectories);
         } else {
-            // Use default temp directories if not provided
             String[] defaultDirs = new String[] {System.getProperty("java.io.tmpdir")};
             return new SpillingAdaptiveSpanningRecordDeserializer<>(defaultDirs);
         }
     }
 
     /**
-     * Process a buffer from a specific Virtual Channel, filtering records and rewriting to new
-     * buffers.
+     * Filters a recovered buffer from the specified virtual channel, returning new buffers
+     * containing only the records that belong to the current subtask.
      *
-     * @param gateIndex The input gate index.
-     * @param oldSubtaskIndex The old subtask index from rescaling.
-     * @param oldChannelIndex The old channel index from rescaling.
-     * @param sourceBuffer Original buffer to filter.
-     * @param bufferSupplier Supplier for new buffers (will block if no buffer available).
-     * @return Filtered buffers (may be empty if all records were filtered out).
-     * @throws IOException If an I/O error occurs during deserialization or serialization.
-     * @throws InterruptedException If the thread is interrupted while waiting for buffers.
+     * @return filtered buffers, possibly empty if all records were filtered out.
      */
     public List<Buffer> filterAndRewrite(
             int gateIndex,
@@ -466,11 +392,7 @@ public class ChannelStateFilteringHandler {
                 oldSubtaskIndex, oldChannelIndex, sourceBuffer, bufferSupplier);
     }
 
-    /**
-     * Checks if there is any partial (spanning) record remaining in any VirtualChannel.
-     *
-     * @return true if any VirtualChannel has partial data.
-     */
+    /** Returns {@code true} if any virtual channel has a partial (spanning) record pending. */
     public boolean hasPartialData() {
         for (GateFilterHandler<?> handler : gateHandlers) {
             if (handler != null && handler.hasPartialData()) {
@@ -480,7 +402,6 @@ public class ChannelStateFilteringHandler {
         return false;
     }
 
-    /** Clears the state of all VirtualChannels. */
     public void clear() {
         for (GateFilterHandler<?> handler : gateHandlers) {
             if (handler != null) {
@@ -489,19 +410,9 @@ public class ChannelStateFilteringHandler {
         }
     }
 
-    /**
-     * Interface for supplying buffers. Implementations should block until a buffer is available
-     * (Phase 1 strategy).
-     */
+    /** Provides buffers for re-serializing filtered records. Implementations may block. */
     @FunctionalInterface
     public interface BufferSupplier {
-        /**
-         * Requests a Buffer, blocking until one is available.
-         *
-         * @return A Buffer for writing data (should be writable with size 0).
-         * @throws IOException If an I/O error occurs.
-         * @throws InterruptedException If the thread is interrupted while waiting.
-         */
         Buffer requestBufferBlocking() throws IOException, InterruptedException;
     }
 }
