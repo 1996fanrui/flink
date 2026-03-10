@@ -881,18 +881,13 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                 INITIALIZE_STATE_DURATION, initializeStateEndTs - readOutputDataTs);
         IndexedInputGate[] inputGates = getEnvironment().getAllInputGates();
 
-        // Determine whether to use bufferFilteringCompleteFuture for earlier RUNNING state
-        // transition. When unaligned checkpoint during recovery is enabled, we can enter RUNNING
-        // state as soon as buffer filtering is complete, allowing checkpoint to be triggered
-        // earlier.
-        boolean useBufferFilteringFuture =
+        boolean unalignedDuringRecoveryEnabled =
                 CheckpointingOptions.isUnalignedDuringRecoveryEnabled(getJobConfiguration());
 
-        // IMPORTANT: Must set the flag on input gates BEFORE starting the async read task.
-        // The async task will call finishReadRecoveredState() when done, which checks this flag
-        // to decide whether to complete the bufferFilteringCompleteFuture.
+        // Must set the flag on input gates BEFORE starting the async read task, because
+        // finishReadRecoveredState() checks this flag to complete bufferFilteringCompleteFuture.
         for (IndexedInputGate inputGate : inputGates) {
-            inputGate.setUnalignedDuringRecoveryEnabled(useBufferFilteringFuture);
+            inputGate.setUnalignedDuringRecoveryEnabled(unalignedDuringRecoveryEnabled);
         }
 
         channelIOExecutor.execute(
@@ -905,16 +900,13 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                     }
                 });
 
-        // We wait for all input channel state to recover before we go into RUNNING state, and
-        // thus start checkpointing. If we implement incremental checkpointing of input channel
-        // state we must make sure it supports CheckpointType#FULL_CHECKPOINT.
+        // We wait for all input channel state to recover before we go into RUNNING state, and thus
+        // start checkpointing. If we implement incremental checkpointing of input channel state
+        // we must make sure it supports CheckpointType#FULL_CHECKPOINT.
         List<CompletableFuture<?>> recoveredFutures = new ArrayList<>(inputGates.length);
         for (InputGate inputGate : inputGates) {
-            // For requestPartitions: use the same future as RUNNING state transition.
-            // When buffer filtering is enabled, wait for filtering to complete;
-            // otherwise, wait for state consumption to complete.
             CompletableFuture<?> requestPartitionsTrigger =
-                    useBufferFilteringFuture
+                    unalignedDuringRecoveryEnabled
                             ? inputGate.getBufferFilteringCompleteFuture()
                             : inputGate.getStateConsumedFuture();
 
