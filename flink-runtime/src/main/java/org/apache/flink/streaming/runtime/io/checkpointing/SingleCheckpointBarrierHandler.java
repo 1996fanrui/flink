@@ -242,6 +242,13 @@ public class SingleCheckpointBarrierHandler extends CheckpointBarrierHandler {
             throws IOException {
 
         alignedChannels.add(alignedChannel);
+        LOG.info(
+                "{}: Checkpoint {} barrier received from channel {}, progress {}/{}",
+                taskName,
+                barrier.getId(),
+                alignedChannel,
+                alignedChannels.size(),
+                targetChannelCount);
         if (alignedChannels.size() == 1) {
             if (targetChannelCount == 1) {
                 markAlignmentStartAndEnd(barrier.getId(), barrier.getTimestamp());
@@ -269,9 +276,11 @@ public class SingleCheckpointBarrierHandler extends CheckpointBarrierHandler {
         if (alignedChannels.size() == targetChannelCount) {
             alignedChannels.clear();
             lastCancelledOrCompletedCheckpointId = currentCheckpointId;
-            LOG.debug(
-                    "{}: All the channels are aligned for checkpoint {}.",
+            LOG.info(
+                    "{}: All {}/{} barriers received for checkpoint {}, completing allBarriersReceivedFuture",
                     taskName,
+                    targetChannelCount,
+                    targetChannelCount,
                     currentCheckpointId);
             resetAlignmentTimer();
             allBarriersReceivedFuture.complete(null);

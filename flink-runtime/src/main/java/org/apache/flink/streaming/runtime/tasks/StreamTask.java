@@ -444,6 +444,8 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
             this.mainMailboxExecutor = mailboxProcessor.getMainMailboxExecutor();
             this.asyncExceptionHandler = new StreamTaskAsyncExceptionHandler(environment);
 
+            String asyncOperationsThreadPrefix =
+                    String.format("AsyncOperations-%s", getTaskNameWithSubtaskAndId());
             // With maxConcurrentCheckpoints + 1 we more or less adhere to the
             // maxConcurrentCheckpoints configuration, but allow for a small leeway with allowing
             // for simultaneous N ongoing concurrent checkpoints and for example clean up of one
@@ -462,7 +464,8 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                                     TimeUnit.SECONDS,
                                     new LinkedBlockingQueue<>(),
                                     new ExecutorThreadFactory(
-                                            "AsyncOperations", uncaughtExceptionHandler)));
+                                            asyncOperationsThreadPrefix,
+                                            uncaughtExceptionHandler)));
 
             // Register all asynchronous checkpoint threads.
             resourceCloser.registerCloseable(this::shutdownAsyncThreads);

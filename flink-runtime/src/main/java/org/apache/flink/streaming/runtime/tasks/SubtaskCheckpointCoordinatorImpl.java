@@ -349,6 +349,9 @@ class SubtaskCheckpointCoordinatorImpl implements SubtaskCheckpointCoordinator {
         // Step (4): Prepare to spill the in-flight buffers for input and output
         if (options.needsChannelState()) {
             // output data already written while broadcasting event
+            LOG.info(
+                    "Checkpoint {}: calling finishOutput in checkpointState",
+                    metadata.getCheckpointId());
             channelStateWriter.finishOutput(metadata.getCheckpointId());
         }
 
@@ -671,16 +674,27 @@ class SubtaskCheckpointCoordinatorImpl implements SubtaskCheckpointCoordinator {
     }
 
     private void prepareInflightDataSnapshot(long checkpointId) throws CheckpointException {
+        long startNanos = System.nanoTime();
+        LOG.info("Checkpoint {}: prepareInflightDataSnapshot started", checkpointId);
         prepareInputSnapshot
                 .apply(channelStateWriter, checkpointId)
                 .whenComplete(
                         (unused, ex) -> {
+                            long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000;
                             if (ex != null) {
+                                LOG.info(
+                                        "Checkpoint {}: prepareInputSnapshot failed after {}ms",
+                                        checkpointId,
+                                        elapsedMs);
                                 channelStateWriter.abort(
                                         checkpointId,
                                         ex,
                                         false /* result is needed and cleaned by getWriteResult */);
                             } else {
+                                LOG.info(
+                                        "Checkpoint {}: prepareInputSnapshot completed after {}ms, calling finishInput",
+                                        checkpointId,
+                                        elapsedMs);
                                 channelStateWriter.finishInput(checkpointId);
                             }
                         });

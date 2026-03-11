@@ -1252,6 +1252,12 @@ public class SingleInputGate extends IndexedInputGate {
      * boolean)} to avoid spurious priority wake-ups.
      */
     void notifyPriorityEvent(InputChannel inputChannel, int prioritySequenceNumber) {
+        LOG.info(
+                "SingleInputGate notifyPriorityEvent: task={}, channelIdx={}, channelInfo={}, seqNum={}",
+                owningTaskName,
+                inputChannel.getChannelIndex(),
+                inputChannel.getChannelInfo(),
+                prioritySequenceNumber);
         queueChannel(checkNotNull(inputChannel), prioritySequenceNumber, false);
     }
 
@@ -1294,6 +1300,12 @@ public class SingleInputGate extends IndexedInputGate {
                     // priority event at the given offset already polled (notification is not atomic
                     // in respect to
                     // buffer enqueuing), so just ignore the notification
+                    LOG.info(
+                            "SingleInputGate queueChannel OUTDATED: task={}, channelIdx={}, seqNum={}, lastSeqNum={}",
+                            owningTaskName,
+                            channel.getChannelIndex(),
+                            prioritySequenceNumber,
+                            lastPrioritySequenceNumber[channel.getChannelIndex()]);
                     return;
                 }
 

@@ -222,6 +222,14 @@ public class PipelinedSubpartition extends ResultSubpartition implements Channel
 
         CheckpointBarrier barrier = parseCheckpointBarrier(bufferConsumer);
         if (barrier != null) {
+            LOG.info(
+                    "PipelinedSubpartition processPriorityBuffer: task={}, subpartition={}, checkpointId={}, isUnaligned={}, isBlocked={}, buffersInQueue={}",
+                    parent.getOwningTaskName(),
+                    subpartitionInfo,
+                    barrier.getId(),
+                    barrier.getCheckpointOptions().isUnalignedCheckpoint(),
+                    isBlocked,
+                    buffers.size());
             checkState(
                     barrier.getCheckpointOptions().isUnalignedCheckpoint(),
                     "Only unaligned checkpoints should be priority events");
@@ -253,7 +261,16 @@ public class PipelinedSubpartition extends ResultSubpartition implements Channel
     private boolean needNotifyPriorityEvent() {
         assert Thread.holdsLock(buffers);
         // if subpartition is blocked then downstream doesn't expect any notifications
-        return buffers.getNumPriorityElements() == 1 && !isBlocked;
+        boolean result = buffers.getNumPriorityElements() == 1 && !isBlocked;
+        if (!result) {
+            LOG.info(
+                    "PipelinedSubpartition needNotifyPriorityEvent=false: task={}, subpartition={}, numPriorityElements={}, isBlocked={}",
+                    parent.getOwningTaskName(),
+                    subpartitionInfo,
+                    buffers.getNumPriorityElements(),
+                    isBlocked);
+        }
+        return result;
     }
 
     @GuardedBy("buffers")
@@ -549,11 +566,21 @@ public class PipelinedSubpartition extends ResultSubpartition implements Channel
     }
 
     void resumeConsumption() {
+        int prioritySequenceNumber = DEFAULT_PRIORITY_SEQUENCE_NUMBER;
         synchronized (buffers) {
             checkState(isBlocked, "Should be blocked by checkpoint.");
 
             isBlocked = false;
+
+            // If a priority event (e.g. unaligned checkpoint barrier) arrived while blocked,
+            // its notification was suppressed by needNotifyPriorityEvent(). Now that we are
+            // unblocked, notify downstream so it can process the priority event promptly.
+            if (buffers.getNumPriorityElements() > 0) {
+                prioritySequenceNumber = sequenceNumber;
+            }
         }
+        // Notify outside the lock to avoid deadlock (same pattern as alignedBarrierTimeout).
+        notifyPriorityEvent(prioritySequenceNumber);
     }
 
     public void acknowledgeAllDataProcessed() {
@@ -767,7 +794,19 @@ public class PipelinedSubpartition extends ResultSubpartition implements Channel
     private void notifyPriorityEvent(int prioritySequenceNumber) {
         final PipelinedSubpartitionView readView = this.readView;
         if (readView != null && prioritySequenceNumber != DEFAULT_PRIORITY_SEQUENCE_NUMBER) {
+            LOG.info(
+                    "PipelinedSubpartition notifyPriorityEvent: task={}, subpartition={}, seqNum={}, readView={}",
+                    parent.getOwningTaskName(),
+                    subpartitionInfo,
+                    prioritySequenceNumber,
+                    readView);
             readView.notifyPriorityEvent(prioritySequenceNumber);
+        } else if (prioritySequenceNumber != DEFAULT_PRIORITY_SEQUENCE_NUMBER) {
+            LOG.warn(
+                    "PipelinedSubpartition notifyPriorityEvent SKIPPED (readView=null): task={}, subpartition={}, seqNum={}",
+                    parent.getOwningTaskName(),
+                    subpartitionInfo,
+                    prioritySequenceNumber);
         }
     }
 

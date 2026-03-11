@@ -545,6 +545,42 @@ class PipelinedSubpartitionWithReadViewTest {
         assertNoNextBuffer(readView);
     }
 
+    @TestTemplate
+    void testResumeConsumptionNotifiesPendingPriorityEvent() throws Exception {
+        subpartition.setChannelStateWriter(ChannelStateWriter.NO_OP);
+
+        // 1. Block the subpartition by consuming an aligned checkpoint barrier
+        blockSubpartitionByCheckpoint(1);
+        assertThat(availablityListener.getNumPriorityEvents()).isZero();
+
+        // 2. While blocked, add an unaligned checkpoint barrier (priority event).
+        //    Because isBlocked=true, needNotifyPriorityEvent() returns false,
+        //    so the priority event notification is suppressed.
+        CheckpointOptions options =
+                CheckpointOptions.unaligned(
+                        CheckpointType.CHECKPOINT,
+                        new CheckpointStorageLocationReference(new byte[] {0, 1, 2}));
+        BufferConsumer barrierBuffer =
+                EventSerializer.toBufferConsumer(new CheckpointBarrier(0, 0, options), true);
+        subpartition.add(barrierBuffer);
+        // Priority notification was suppressed because isBlocked=true
+        assertThat(availablityListener.getNumPriorityEvents()).isZero();
+
+        // 3. Resume consumption — should trigger the pending priority event notification
+        readView.resumeConsumption();
+        assertThat(availablityListener.getNumPriorityEvents()).isOne();
+
+        // 4. Verify the barrier can be read as the first (priority) buffer
+        assertNextEvent(
+                readView,
+                barrierBuffer.getWrittenBytes(),
+                CheckpointBarrier.class,
+                false,
+                0,
+                false,
+                true);
+    }
+
     // ------------------------------------------------------------------------
 
     private void blockSubpartitionByCheckpoint(int numNotifications)
