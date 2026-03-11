@@ -549,11 +549,21 @@ public class PipelinedSubpartition extends ResultSubpartition implements Channel
     }
 
     void resumeConsumption() {
+        int prioritySequenceNumber = DEFAULT_PRIORITY_SEQUENCE_NUMBER;
         synchronized (buffers) {
             checkState(isBlocked, "Should be blocked by checkpoint.");
 
             isBlocked = false;
+
+            // If a priority event (e.g. unaligned checkpoint barrier) arrived while blocked,
+            // its notification was suppressed by needNotifyPriorityEvent(). Now that we are
+            // unblocked, notify downstream so it can process the priority event promptly.
+            if (buffers.getNumPriorityElements() > 0) {
+                prioritySequenceNumber = sequenceNumber;
+            }
         }
+        // Notify outside the lock to avoid deadlock (same pattern as alignedBarrierTimeout).
+        notifyPriorityEvent(prioritySequenceNumber);
     }
 
     public void acknowledgeAllDataProcessed() {
