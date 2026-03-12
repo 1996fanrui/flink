@@ -43,6 +43,7 @@ public class UnalignedCheckpointDemo {
         conf.setString("state.checkpoints.dir", "file:///tmp/flinkjob");
         conf.set(WebOptions.CHECKPOINTS_HISTORY_SIZE, 100);
         conf.set(CheckpointingOptions.UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM, true);
+        conf.set(CheckpointingOptions.UNALIGNED_DURING_RECOVERY_ENABLED, true);
 
         StreamExecutionEnvironment env =
                 StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(conf);

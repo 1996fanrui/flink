@@ -144,6 +144,7 @@ public class UnalignedCheckpointBenchmark {
         conf.setString("state.checkpoints.dir", CHECKPOINT_DIR);
         conf.set(WebOptions.CHECKPOINTS_HISTORY_SIZE, 100);
         conf.set(CheckpointingOptions.UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM, true);
+        conf.set(CheckpointingOptions.UNALIGNED_DURING_RECOVERY_ENABLED, true);
         conf.setString(
                 "execution.checkpointing.externalized-checkpoint-retention",
                 "RETAIN_ON_CANCELLATION");
