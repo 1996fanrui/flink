@@ -77,6 +77,7 @@ tools/flink
 tools/flink-*
 tools/releasing/release
 tools/japicmp-output
+benchmark_result
 /docs/go.mod
 /docs/go.sum
 /docs/.hugo_build.lock
