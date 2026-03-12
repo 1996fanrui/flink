@@ -87,6 +87,9 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
      */
     private volatile boolean hasPendingPriorityEvent = false;
 
+    /** Timestamp (nanoTime) when the priority event notification was received. */
+    private volatile long priorityEventNotifiedTimeNanos = 0;
+
     public LocalInputChannel(
             SingleInputGate inputGate,
             int channelIndex,
@@ -277,8 +280,19 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
             // from subpartitionView first, skipping toBeConsumedBuffers. This ensures priority
             // events are processed immediately even when there are pending recovered buffers.
             if (hasPendingPriorityEvent) {
+                long notifiedTime = priorityEventNotifiedTimeNanos;
                 checkState(subpartitionView != null, "No subpartition view available");
                 BufferAndBacklog next = subpartitionView.getNextBuffer();
+                long delayMs =
+                        notifiedTime > 0 ? (System.nanoTime() - notifiedTime) / 1_000_000 : -1;
+                LOG.info(
+                        "LocalInputChannel getNextBuffer priority: task={}, channelIdx={}, channelInfo={}, dataType={}, delayMs={}, toBeConsumedBuffersSize={}",
+                        inputGate.getOwningTaskName(),
+                        getChannelIndex(),
+                        channelInfo,
+                        next == null ? "null" : next.buffer().getDataType(),
+                        delayMs,
+                        toBeConsumedBuffers.size());
                 checkState(
                         next != null && next.buffer().getDataType().hasPriority(),
                         "Expected priority event, but got %s",
@@ -430,7 +444,15 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
     public void notifyPriorityEvent(int prioritySequenceNumber) {
         // Set flag so that getNextBuffer() knows to fetch priority event from subpartitionView
         // before consuming toBeConsumedBuffers.
+        priorityEventNotifiedTimeNanos = System.nanoTime();
         hasPendingPriorityEvent = true;
+        LOG.info(
+                "LocalInputChannel notifyPriorityEvent: task={}, channelIdx={}, channelInfo={}, seqNum={}, toBeConsumedBuffersSize={}",
+                inputGate.getOwningTaskName(),
+                getChannelIndex(),
+                channelInfo,
+                prioritySequenceNumber,
+                toBeConsumedBuffers.size());
         super.notifyPriorityEvent(prioritySequenceNumber);
     }
 

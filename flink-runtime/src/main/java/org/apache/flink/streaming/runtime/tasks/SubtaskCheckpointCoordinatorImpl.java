@@ -333,15 +333,21 @@ class SubtaskCheckpointCoordinatorImpl implements SubtaskCheckpointCoordinator {
         operatorChain.prepareSnapshotPreBarrier(metadata.getCheckpointId());
 
         // Step (2): Send the checkpoint barrier downstream
-        LOG.debug(
-                "Task {} broadcastEvent at {}, triggerTime {}, passed time {}",
+        long broadcastStartMs = System.currentTimeMillis();
+        LOG.info(
+                "SubtaskCheckpointCoordinator checkpointState: task={}, checkpointId={}, broadcastStart, triggerTime={}, delayFromTriggerMs={}",
                 taskName,
-                System.currentTimeMillis(),
+                metadata.getCheckpointId(),
                 metadata.getTimestamp(),
-                System.currentTimeMillis() - metadata.getTimestamp());
+                broadcastStartMs - metadata.getTimestamp());
         CheckpointBarrier checkpointBarrier =
                 new CheckpointBarrier(metadata.getCheckpointId(), metadata.getTimestamp(), options);
         operatorChain.broadcastEvent(checkpointBarrier, options.isUnalignedCheckpoint());
+        LOG.info(
+                "SubtaskCheckpointCoordinator checkpointState: task={}, checkpointId={}, broadcastDone, durationMs={}",
+                taskName,
+                metadata.getCheckpointId(),
+                System.currentTimeMillis() - broadcastStartMs);
 
         // Step (3): Register alignment timer to timeout aligned barrier to unaligned barrier
         registerAlignmentTimer(metadata.getCheckpointId(), operatorChain, checkpointBarrier);
@@ -349,6 +355,9 @@ class SubtaskCheckpointCoordinatorImpl implements SubtaskCheckpointCoordinator {
         // Step (4): Prepare to spill the in-flight buffers for input and output
         if (options.needsChannelState()) {
             // output data already written while broadcasting event
+            LOG.info(
+                    "Checkpoint {}: calling finishOutput in checkpointState",
+                    metadata.getCheckpointId());
             channelStateWriter.finishOutput(metadata.getCheckpointId());
         }
 
@@ -671,16 +680,27 @@ class SubtaskCheckpointCoordinatorImpl implements SubtaskCheckpointCoordinator {
     }
 
     private void prepareInflightDataSnapshot(long checkpointId) throws CheckpointException {
+        long startNanos = System.nanoTime();
+        LOG.info("Checkpoint {}: prepareInflightDataSnapshot started", checkpointId);
         prepareInputSnapshot
                 .apply(channelStateWriter, checkpointId)
                 .whenComplete(
                         (unused, ex) -> {
+                            long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000;
                             if (ex != null) {
+                                LOG.info(
+                                        "Checkpoint {}: prepareInputSnapshot failed after {}ms",
+                                        checkpointId,
+                                        elapsedMs);
                                 channelStateWriter.abort(
                                         checkpointId,
                                         ex,
                                         false /* result is needed and cleaned by getWriteResult */);
                             } else {
+                                LOG.info(
+                                        "Checkpoint {}: prepareInputSnapshot completed after {}ms, calling finishInput",
+                                        checkpointId,
+                                        elapsedMs);
                                 channelStateWriter.finishInput(checkpointId);
                             }
                         });
@@ -762,8 +782,8 @@ class SubtaskCheckpointCoordinatorImpl implements SubtaskCheckpointCoordinator {
 
         checkpointMetrics.setSyncDurationMillis((System.nanoTime() - started) / 1_000_000);
 
-        LOG.debug(
-                "{} - finished synchronous part of checkpoint {}. Alignment duration: {} ms, snapshot duration {} ms, is unaligned checkpoint : {}",
+        LOG.info(
+                "SubtaskCheckpointCoordinator takeSnapshotSync: task={}, checkpointId={}, alignmentDurationMs={}, snapshotDurationMs={}, isUnaligned={}",
                 taskName,
                 checkpointId,
                 checkpointMetrics.getAlignmentDurationNanosOrDefault() / 1_000_000,

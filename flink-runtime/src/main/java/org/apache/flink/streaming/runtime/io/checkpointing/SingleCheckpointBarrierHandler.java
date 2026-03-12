@@ -76,6 +76,7 @@ public class SingleCheckpointBarrierHandler extends CheckpointBarrierHandler {
      * same barrier from different channels.
      */
     private long currentCheckpointId = -1L;
+    private long currentCheckpointStartMs = 0L;
 
     /**
      * The checkpoint barrier of the current pending checkpoint. It is to allow us to access the
@@ -216,6 +217,15 @@ public class SingleCheckpointBarrierHandler extends CheckpointBarrierHandler {
             throws IOException {
         long barrierId = barrier.getId();
         LOG.debug("{}: Received barrier from channel {} @ {}.", taskName, channelInfo, barrierId);
+        LOG.info(
+                "SingleCheckpointBarrierHandler processBarrier: task={}, checkpointId={}, channel={}, isRpcTriggered={}, currentCheckpointId={}, isPending={}, wallClockMs={}",
+                taskName,
+                barrierId,
+                channelInfo,
+                isRpcTriggered,
+                currentCheckpointId,
+                isCheckpointPending(),
+                System.currentTimeMillis());
 
         if (currentCheckpointId > barrierId
                 || (currentCheckpointId == barrierId && !isCheckpointPending())) {
@@ -242,6 +252,14 @@ public class SingleCheckpointBarrierHandler extends CheckpointBarrierHandler {
             throws IOException {
 
         alignedChannels.add(alignedChannel);
+        LOG.info(
+                "SingleCheckpointBarrierHandler barrierReceived: task={}, checkpointId={}, channel={}, progress={}/{}, elapsedFromStartMs={}",
+                taskName,
+                barrier.getId(),
+                alignedChannel,
+                alignedChannels.size(),
+                targetChannelCount,
+                currentCheckpointStartMs > 0 ? System.currentTimeMillis() - currentCheckpointStartMs : -1);
         if (alignedChannels.size() == 1) {
             if (targetChannelCount == 1) {
                 markAlignmentStartAndEnd(barrier.getId(), barrier.getTimestamp());
@@ -269,10 +287,12 @@ public class SingleCheckpointBarrierHandler extends CheckpointBarrierHandler {
         if (alignedChannels.size() == targetChannelCount) {
             alignedChannels.clear();
             lastCancelledOrCompletedCheckpointId = currentCheckpointId;
-            LOG.debug(
-                    "{}: All the channels are aligned for checkpoint {}.",
+            LOG.info(
+                    "SingleCheckpointBarrierHandler allBarriersReceived: task={}, checkpointId={}, channelCount={}, totalElapsedMs={}",
                     taskName,
-                    currentCheckpointId);
+                    currentCheckpointId,
+                    targetChannelCount,
+                    currentCheckpointStartMs > 0 ? System.currentTimeMillis() - currentCheckpointStartMs : -1);
             resetAlignmentTimer();
             allBarriersReceivedFuture.complete(null);
         }
@@ -346,6 +366,13 @@ public class SingleCheckpointBarrierHandler extends CheckpointBarrierHandler {
         alignedChannels.clear();
         targetChannelCount = numOpenChannels;
         allBarriersReceivedFuture = new CompletableFuture<>();
+        LOG.info(
+                "SingleCheckpointBarrierHandler checkNewCheckpoint: task={}, checkpointId={}, targetChannelCount={}, wallClockMs={}",
+                taskName,
+                barrierId,
+                numOpenChannels,
+                System.currentTimeMillis());
+        currentCheckpointStartMs = System.currentTimeMillis();
 
         if (alternating && barrier.getCheckpointOptions().isTimeoutable()) {
             registerAlignmentTimer(barrier);

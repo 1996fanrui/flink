@@ -69,6 +69,9 @@ class ChannelStateCheckpointWriter {
     private final long checkpointId;
     private final RunnableWithException onComplete;
 
+    /** Timestamp (nanoTime) when this writer was created, used for elapsed time logging. */
+    private final long createdTimeNanos;
+
     // Subtasks that have not yet register writer result.
     private final Set<SubtaskID> subtasksToRegister;
 
@@ -114,6 +117,8 @@ class ChannelStateCheckpointWriter {
         this.serializer = checkNotNull(serializer);
         this.dataStream = checkNotNull(dataStream);
         this.onComplete = checkNotNull(onComplete);
+        this.createdTimeNanos = System.nanoTime();
+        LOG.info("Checkpoint {}: writer created, expecting subtasks: {}", checkpointId, subtasks);
         runWithChecks(() -> serializer.writeHeader(dataStream));
     }
 
@@ -131,10 +136,25 @@ class ChannelStateCheckpointWriter {
                 new ChannelStatePendingResult(
                         subtaskID.getSubtaskIndex(), checkpointId, result, serializer);
         pendingResults.put(subtaskID, pendingResult);
+        LOG.info(
+                "Checkpoint {}: subtask {} registered, elapsedMs={}, remaining unregistered: {}",
+                checkpointId,
+                subtaskID,
+                (System.nanoTime() - createdTimeNanos) / 1_000_000,
+                subtasksToRegister);
     }
 
     void releaseSubtask(SubtaskID subtaskID) throws Exception {
-        if (subtasksToRegister.remove(subtaskID)) {
+        boolean wasInRegister = subtasksToRegister.remove(subtaskID);
+        boolean wasInPending = pendingResults.containsKey(subtaskID);
+        LOG.info(
+                "Checkpoint {}: releaseSubtask {}, wasInSubtasksToRegister={}, wasInPendingResults={}, elapsedMs={}",
+                checkpointId,
+                subtaskID,
+                wasInRegister,
+                wasInPending,
+                (System.nanoTime() - createdTimeNanos) / 1_000_000);
+        if (wasInRegister) {
             // If all checkpoint of other subtasks of this writer are completed, and
             // writer is waiting for the last subtask. After the last subtask is finished,
             // the writer should be completed.
@@ -204,6 +224,12 @@ class ChannelStateCheckpointWriter {
         if (isDone()) {
             return;
         }
+        LOG.info(
+                "Checkpoint {}: completeInput for subtask [{}, {}], elapsedMs={}",
+                checkpointId,
+                jobVertexID,
+                subtaskIndex,
+                (System.nanoTime() - createdTimeNanos) / 1_000_000);
         getChannelStatePendingResult(jobVertexID, subtaskIndex).completeInput();
         tryFinishResult();
     }
@@ -212,6 +238,12 @@ class ChannelStateCheckpointWriter {
         if (isDone()) {
             return;
         }
+        LOG.info(
+                "Checkpoint {}: completeOutput for subtask [{}, {}], elapsedMs={}",
+                checkpointId,
+                jobVertexID,
+                subtaskIndex,
+                (System.nanoTime() - createdTimeNanos) / 1_000_000);
         getChannelStatePendingResult(jobVertexID, subtaskIndex).completeOutput();
         tryFinishResult();
     }
@@ -219,16 +251,31 @@ class ChannelStateCheckpointWriter {
     public void tryFinishResult() throws Exception {
         if (!subtasksToRegister.isEmpty()) {
             // Some subtasks are not registered yet
+            LOG.info(
+                    "Checkpoint {}: tryFinishResult blocked by unregistered subtasks: {}",
+                    checkpointId,
+                    subtasksToRegister);
             return;
         }
-        for (ChannelStatePendingResult result : pendingResults.values()) {
+        for (Map.Entry<SubtaskID, ChannelStatePendingResult> entry : pendingResults.entrySet()) {
+            ChannelStatePendingResult result = entry.getValue();
             if (result.isAllInputsReceived() && result.isAllOutputsReceived()) {
                 continue;
             }
             // Some subtasks did not receive all buffers
+            LOG.info(
+                    "Checkpoint {}: tryFinishResult blocked by subtask {}, inputReceived={}, outputReceived={}",
+                    checkpointId,
+                    entry.getKey(),
+                    result.isAllInputsReceived(),
+                    result.isAllOutputsReceived());
             return;
         }
 
+        LOG.info(
+                "Checkpoint {}: all subtasks completed input and output, finishing writer, elapsedMs={}",
+                checkpointId,
+                (System.nanoTime() - createdTimeNanos) / 1_000_000);
         if (isDone()) {
             // likely after abort - only need to set the flag run onComplete callback
             doComplete(onComplete);
