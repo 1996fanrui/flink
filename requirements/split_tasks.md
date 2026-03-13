@@ -22,34 +22,61 @@ FLIP-547 的核心目标是支持在 Recovery 阶段触发 Checkpoint，以解�
 | 任务 | Jira ID | 关注点 | 状态 | 优先级 |
 |------|---------|--------|------|--------|
 | Task 1 | [FLINK-38542](https://issues.apache.org/jira/browse/FLINK-38542) | 数据路径变更（Buffer 在哪里恢复） | ✅ 已合并 (commit 686c00f8) | 必需 |
-| Task 2 | [FLINK-38930](https://issues.apache.org/jira/browse/FLINK-38930) | 核心过滤机制 | ✅ POC 完成 (commit 62566c4b) | 必需 |
-| Task 3 | [FLINK-39018](https://issues.apache.org/jira/browse/FLINK-39018) | LocalInputChannel Snapshot 支持 | ✅ POC 完成 | 必需 |
-| Task 4 | [FLINK-38543](https://issues.apache.org/jira/browse/FLINK-38543) | 控制面变更（生命周期、Checkpoint 触发） | ✅ POC 完成 | 必需 |
+| Task 2 | [FLINK-38930](https://issues.apache.org/jira/browse/FLINK-38930) | 核心过滤机制 | 🔍 社区 Review 中 | 必需 |
+| Task 3 | [FLINK-39018](https://issues.apache.org/jira/browse/FLINK-39018) | LocalInputChannel Snapshot 支持 | 🔍 社区 Review 中 | 必需 |
+| Task 4 | [FLINK-38543](https://issues.apache.org/jira/browse/FLINK-38543) | 控制面变更（生命周期、Checkpoint 触发） | 🔍 社区 Review 中 | 必需 |
 | Task 5 | [FLINK-38544](https://issues.apache.org/jira/browse/FLINK-38544) | 内存压力处理 | ✅ POC 完成（LazyFileBuffer），整体首版跳过 | 可选（优化） |
 
-**相关 Commits:**
-- `686c00f8`: [FLINK-38542] Recover output buffers of upstream task on downstream task side directly
-- `62566c4b`: [FLINK-38930] Filtering record before processing without spilling strategy
-- `822d80b9`: POC for task4 + 修复 filter 前 buffer 申请完 network memory 导致 deadlock
-- `59cba66c`: 处理 LocalInputChannel 里 buffer 消费顺序 + priority event 问题
-- `0c07ef39`: 修复 Local Buffer Pool 没有 snapshot 的问题 + priority event 优先处理
-- `9543238e`: 完善 recovered input buffer 中 filtered buffers 迁移的功能
-- `4f5ef2b5`: 修复 Union downscale 场景下 RecordFilterContext 初始化问题
-- `02c49add`: 修复 Mailbox loop interrupted before recovery was finished
-- `a7b33f87`: 引入 LazyFileBuffer 优化 checkpoint 恢复内存使用
+**相关 Commits（按任务分组，commit ID 可能因 rebase 变化，以 message 为准）:**
+
+**Task 1 (FLINK-38542):**
+- [FLINK-38542][checkpoint] Recover output buffers of upstream task on downstream task side directly
+- [FLINK-38542][checkpoint] Randomize UNALIGNED_ALLOW_ON_RECOVERY for testing
+
+**Task 2 (FLINK-38930) 前置重构:**
+- [hotfix][runtime] Extract RecordFilter as the interface
+- [hotfix] Extract VirtualChannel as the public class
+- [FLINK-38541][checkpoint] Introducing config option: execution.checkpointing.unaligned.during-recovery.enabled
+- [FLINK-38541][checkpoint] Randomize UNALIGNED_DURING_RECOVERY_ENABLED for testing
+
+**Task 2 (FLINK-38930) 核心:**
+- [FLINK-38930][checkpoint] Filtering record before processing without spilling strategy
+
+**Task 3 (FLINK-39018):**
+- [hotfix][network] Fix LocalInputChannel.getBuffersInUseCount to include toBeConsumedBuffers
+- [FLINK-39018][checkpoint] Support LocalInputChannel checkpoint snapshot for recovered buffers
+- [FLINK-39018][network] Fix LocalInputChannel priority event and buffer availability for recovered buffers
+
+**Task 4 (FLINK-38543):**
+- [FLINK-38543][network] Buffer migration from RecoveredInputChannel to physical channels
+- [FLINK-38543][checkpoint] Fix Mailbox loop interrupted before recovery finished
+- [FLINK-38543][checkpoint] Introduce bufferFilteringCompleteFuture for earlier RUNNING state transition
+- [FLINK-38543][checkpoint] Change overall UC restore process for checkpoint during recovery
+- [FLINK-39018][checkpoint] Notify PriorityEvent to downstream task even if it is blocked to ensure the checkpoint barrier can be handled by downstream task
+
+**Task 5 (FLINK-38544，首版跳过):**
+- [FLINK-38544][checkpoint] Use heap buffer as simplified spilling logic during recovery
+- [hotfix] 引入 LazyFileBuffer 优化 checkpoint 恢复内存使用
+
+**测试相关:**
+- [FLINK-39140][test] Allow multiple rescales in Unaligned Checkpoint ITCases to perform checkpointing during recovery
+- [FLINK-39140][test] Disable CUSTOM_PARTITIONER in unaligned checkpoint it case since it does not work well
+- [FLINK-39140][test] Fix MAX_RETAINED_CHECKPOINTS not effective in UnalignedCheckpointRescaleWithMixedExchangesITCase
+- [FLINK-39140][test] Change record type from Long to String in UnalignedCheckpointRescaleWithMixedExchangesITCase
+- [hotfix][runtime] Including task name and subtask index into channel-state-unspilling thread name
 
 ## 任务依赖关系
 
 ```
 Task 1 (✅ 已合并)
     │
-    ├──→ Task 2 (✅ POC 完成)
+    ├──→ Task 2 (🔍 社区 Review 中)
     │        │
-    │        └──→ Task 3 (✅ POC 完成) ──────┐
-    │                                        │
-    └──→ Task 4 (✅ POC 完成) ───────────────┼──→ 首版/POC 完成
-                                             │
-                                             └──→ Task 5 (✅ POC 完成，首版跳过，后续优化)
+    │        └──→ Task 3 (🔍 社区 Review 中) ──────┐
+    │                                              │
+    └──→ Task 4 (🔍 社区 Review 中) ───────────────┼──→ 首版开发完成，等待社区 Review
+                                                   │
+                                                   └──→ Task 5 (✅ POC 完成，首版跳过，后续优化)
 ```
 
 ---
@@ -87,7 +114,7 @@ Task 1 (✅ 已合并)
 ## Task 2: Filtering Records in Async Thread (FLINK-38930)
 
 **Jira**: [FLINK-38930](https://issues.apache.org/jira/browse/FLINK-38930)
-**状态**: ✅ POC 完成 (commit 62566c4b: [FLINK-38930] Filtering record before processing without spilling strategy)
+**状态**: 🔍 已提交 PR，社区 Review 中
 
 ### 职责
 
@@ -129,7 +156,7 @@ Task 1 (✅ 已合并)
 ## Task 3: LocalInputChannel Snapshot 支持 (FLINK-39018)
 
 **Jira**: [FLINK-39018](https://issues.apache.org/jira/browse/FLINK-39018)
-**状态**: ✅ POC 完成
+**状态**: 🔍 已提交 PR，社区 Review 中
 
 **详细设计文档**: [task3_local_input_channel_snapshot.md](./task3_local_input_channel_snapshot.md)
 
@@ -154,7 +181,7 @@ Task 1 (✅ 已合并)
 ## Task 4: Change the Overall UC Restore Process (FLINK-38543)
 
 **Jira**: [FLINK-38543](https://issues.apache.org/jira/browse/FLINK-38543)
-**状态**: ✅ POC 完成
+**状态**: 🔍 已提交 PR，社区 Review 中
 
 **详细设计文档**: [task4_design.md](./task4_design.md)
 
@@ -241,9 +268,9 @@ Task 5 是一个**优化项**，而非正确性必需：
 
 ### 首版/POC（必需任务）
 
-1. ~~**Task 2** (过滤逻辑)~~ - ✅ POC 完成
-2. ~~**Task 3** (LocalInputChannel Snapshot 支持)~~ - ✅ POC 完成
-3. ~~**Task 4** (控制面变更)~~ - ✅ POC 完成
+1. ~~**Task 2** (过滤逻辑)~~ - 🔍 社区 Review 中
+2. ~~**Task 3** (LocalInputChannel Snapshot 支持)~~ - 🔍 社区 Review 中
+3. ~~**Task 4** (控制面变更)~~ - 🔍 社区 Review 中
 
 ### 后续优化
 
