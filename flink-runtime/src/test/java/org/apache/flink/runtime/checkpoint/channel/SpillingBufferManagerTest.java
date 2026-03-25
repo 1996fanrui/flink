@@ -22,6 +22,7 @@ import org.apache.flink.core.memory.MemorySegmentFactory;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.FreeingBufferRecycler;
 import org.apache.flink.runtime.io.network.buffer.NetworkBuffer;
+import org.apache.flink.util.CloseableIterator;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -212,6 +213,96 @@ class SpillingBufferManagerTest {
             assertThat(result).isNotNull();
             assertThat(result.buffer.getDataType()).isEqualTo(Buffer.DataType.EVENT_BUFFER);
             result.buffer.recycleBuffer();
+        }
+    }
+
+    @Test
+    void testCheckpointWithDiskData() throws Exception {
+        try (SpillingBufferManager manager = createManager()) {
+            // Spill two buffers with different channel contexts
+            byte[] data1 = {10, 20, 30};
+            byte[] data2 = {40, 50};
+            Buffer buf1 = createDataBuffer(data1);
+            Buffer buf2 = createDataBuffer(data2);
+            manager.spillBuffer(buf1, 0, 1);
+            manager.spillBuffer(buf2, 2, 3);
+            buf1.recycleBuffer();
+            buf2.recycleBuffer();
+
+            // Create checkpoint iterator - should return both buffers
+            try (CloseableIterator<Buffer> iter = manager.createCheckpointIterator()) {
+                assertThat(iter.hasNext()).isTrue();
+                Buffer ckBuf1 = iter.next();
+                assertThat(ckBuf1.readableBytes()).isEqualTo(3);
+                byte[] read1 = new byte[3];
+                ckBuf1.getMemorySegment()
+                        .get(ckBuf1.getMemorySegmentOffset(), read1, 0, read1.length);
+                assertThat(read1).isEqualTo(data1);
+                ckBuf1.recycleBuffer();
+
+                assertThat(iter.hasNext()).isTrue();
+                Buffer ckBuf2 = iter.next();
+                assertThat(ckBuf2.readableBytes()).isEqualTo(2);
+                byte[] read2 = new byte[2];
+                ckBuf2.getMemorySegment()
+                        .get(ckBuf2.getMemorySegmentOffset(), read2, 0, read2.length);
+                assertThat(read2).isEqualTo(data2);
+                ckBuf2.recycleBuffer();
+
+                assertThat(iter.hasNext()).isFalse();
+            }
+        }
+    }
+
+    @Test
+    void testCheckpointAfterFullReplay() throws Exception {
+        try (SpillingBufferManager manager = createManager()) {
+            // Spill and replay all data
+            Buffer buf = createDataBuffer(new byte[] {1, 2, 3});
+            manager.spillBuffer(buf, 0, 0);
+            buf.recycleBuffer();
+
+            Buffer networkBuf = createEmptyBuffer(1024);
+            SpillingBufferManager.ReplayResult result = manager.replayToBuffer(networkBuf);
+            assertThat(result).isNotNull();
+            result.buffer.recycleBuffer();
+
+            assertThat(manager.hasDiskData()).isFalse();
+
+            // Checkpoint iterator should be empty since all data was replayed
+            try (CloseableIterator<Buffer> iter = manager.createCheckpointIterator()) {
+                assertThat(iter.hasNext()).isFalse();
+            }
+        }
+    }
+
+    @Test
+    void testCheckpointIteratorRefCounting() throws Exception {
+        try (SpillingBufferManager manager = createManager()) {
+            // Spill data
+            Buffer buf = createDataBuffer(new byte[] {1, 2, 3});
+            manager.spillBuffer(buf, 0, 0);
+            buf.recycleBuffer();
+
+            // Create checkpoint iterator (holds ref count on spill files)
+            CloseableIterator<Buffer> iter = manager.createCheckpointIterator();
+
+            // Replay all data - file should NOT be deleted because iterator holds a ref
+            Buffer networkBuf = createEmptyBuffer(1024);
+            SpillingBufferManager.ReplayResult result = manager.replayToBuffer(networkBuf);
+            assertThat(result).isNotNull();
+            result.buffer.recycleBuffer();
+
+            // Spill files should still exist on disk (ref held by iterator)
+            File[] spillFilesOnDisk = findSpillFiles();
+            assertThat(spillFilesOnDisk.length).isGreaterThan(0);
+
+            // Close iterator (releases ref counts)
+            iter.close();
+
+            // Now the checkpoint iterator's data was consumed by close, but the file
+            // should still exist until next replay attempt deletes it or manager closes.
+            // The key point: the file was NOT deleted during replay because of the ref count.
         }
     }
 

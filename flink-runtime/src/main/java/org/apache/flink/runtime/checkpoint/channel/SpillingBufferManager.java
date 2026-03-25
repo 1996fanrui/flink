@@ -18,6 +18,7 @@
 package org.apache.flink.runtime.checkpoint.channel;
 
 import org.apache.flink.runtime.io.network.buffer.Buffer;
+import org.apache.flink.util.CloseableIterator;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,7 +28,9 @@ import javax.annotation.Nullable;
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayDeque;
+import java.util.NoSuchElementException;
 import java.util.Queue;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Manages spilling and replaying of filtered buffers during channel state recovery.
@@ -117,7 +120,9 @@ class SpillingBufferManager implements AutoCloseable {
                     // Eagerly clean up if no more data remains in this file
                     if (!spillFile.reader.hasRemaining()) {
                         spillFile.close();
-                        spillFile.file.delete();
+                        if (spillFile.refCount.get() <= 0) {
+                            spillFile.file.delete();
+                        }
                         spillFiles.poll();
                     }
 
@@ -130,7 +135,9 @@ class SpillingBufferManager implements AutoCloseable {
 
             // Current file exhausted (empty file or read returned null), clean up
             spillFile.close();
-            spillFile.file.delete();
+            if (spillFile.refCount.get() <= 0) {
+                spillFile.file.delete();
+            }
             spillFiles.poll();
         }
         return null;
@@ -242,9 +249,113 @@ class SpillingBufferManager implements AutoCloseable {
         target.setSize(dataLength);
     }
 
-    /** Tracks a spill file and its reader state. */
+    /**
+     * Creates an iterator for Checkpoint to read all unloaded spill data. The iterator holds
+     * references on the snapshotted spill files to prevent file deletion during iteration. Callers
+     * must close the iterator to release the references.
+     */
+    CloseableIterator<Buffer> createCheckpointIterator() throws IOException {
+        // Finalize current writer so all spilled data is available
+        if (currentWriter != null) {
+            finalizeCurrentWriter();
+        }
+
+        // Snapshot current files and increase ref counts
+        Queue<SpillFile> snapshot = new ArrayDeque<>();
+        for (SpillFile sf : spillFiles) {
+            sf.refCount.incrementAndGet();
+            snapshot.add(sf);
+        }
+
+        return new CheckpointSpillIterator(snapshot);
+    }
+
+    /**
+     * Iterator that reads spill files for checkpoint snapshotting. Each returned buffer is an
+     * independent copy allocated with {@link
+     * org.apache.flink.runtime.io.network.buffer.FreeingBufferRecycler} and must be recycled by the
+     * caller. On close, decrements ref counts on remaining (unconsumed) spill files.
+     */
+    private static class CheckpointSpillIterator implements CloseableIterator<Buffer> {
+        private final Queue<SpillFile> files;
+        @Nullable private SpillFileReader currentReader;
+        @Nullable private Buffer nextBuffer;
+
+        CheckpointSpillIterator(Queue<SpillFile> files) {
+            this.files = files;
+        }
+
+        @Override
+        public boolean hasNext() {
+            if (nextBuffer != null) {
+                return true;
+            }
+            try {
+                nextBuffer = readNextBuffer();
+                return nextBuffer != null;
+            } catch (IOException e) {
+                throw new RuntimeException("Failed to read spill file for checkpoint", e);
+            }
+        }
+
+        @Override
+        public Buffer next() {
+            if (!hasNext()) {
+                throw new NoSuchElementException();
+            }
+            Buffer result = nextBuffer;
+            nextBuffer = null;
+            return result;
+        }
+
+        @Nullable
+        private Buffer readNextBuffer() throws IOException {
+            while (true) {
+                if (currentReader != null) {
+                    SpillFileReader.SpillEntry entry = currentReader.readNext();
+                    if (entry != null) {
+                        // For checkpoint, we only need the buffer data.
+                        // Channel context is not needed since checkpoint stores channel info
+                        // separately.
+                        return entry.buffer;
+                    }
+                    currentReader.close();
+                    currentReader = null;
+                }
+
+                if (files.isEmpty()) {
+                    return null;
+                }
+
+                SpillFile sf = files.poll();
+                sf.refCount.decrementAndGet();
+                currentReader = new SpillFileReader(sf.file);
+            }
+        }
+
+        @Override
+        public void close() throws Exception {
+            if (currentReader != null) {
+                currentReader.close();
+                currentReader = null;
+            }
+            // Release ref counts for remaining unconsumed files
+            for (SpillFile sf : files) {
+                sf.refCount.decrementAndGet();
+            }
+            files.clear();
+
+            if (nextBuffer != null) {
+                nextBuffer.recycleBuffer();
+                nextBuffer = null;
+            }
+        }
+    }
+
+    /** Tracks a spill file, its reader state, and checkpoint reference count. */
     static class SpillFile {
         final File file;
+        final AtomicInteger refCount = new AtomicInteger(0);
         @Nullable SpillFileReader reader;
 
         SpillFile(File file) {
