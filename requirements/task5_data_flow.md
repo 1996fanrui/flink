@@ -212,8 +212,39 @@ Filtered Buffer 是过滤后可直接交给 Task 处理的数据，走原有的�
 
 ## 7. 不需要过滤的场景
 
-当不需要过滤时（如非 rescale 场景），不存在 Source Buffer 这一层。所有 Buffer 统一按 Filtered Buffer 处理：
+以下两种情况不会触发过滤逻辑，**完全走原始的 channel state 恢复路径**，不涉及本文描述的两阶段 Buffer 模型：
 
-- 从 S3 读取的数据直接视为"过滤后"数据
-- 走 P1/P2/P3 三条路径（Network Buffer Pool 或 Spill 到磁盘）
-- 不涉及 Heap 内存分配，不存在死锁风险
+| 场景 | 说明 |
+|------|------|
+| **未开启 unaligned checkpoint recovery** | 配置 `execution.checkpointing.unaligned.during-recovery.enabled = false`（默认值），不会启用过滤逻辑 |
+| **开启了但并行度未改变** | 即使配置为 `true`，如果算子并行度没有发生变化（无 rescale），不需要过滤，因为 channel state 与当前拓扑完全匹配 |
+
+**这两种场景的处理方式：**
+
+- Task 直接消费从 S3 读取的原始 Buffer，不经过 `filterAndRewrite()`
+- 不存在 Source Buffer 和 Filtered Buffer 的区分，只有一种 Buffer
+- **不申请任何 Heap Buffer**，不涉及内存隔离机制
+- 完全复用现有的 channel state 恢复逻辑，不做任何改动
+
+### 代码层面的判断逻辑
+
+判断是否需要过滤的控制点在 `StreamTaskNetworkInputFactory#create`（`flink-runtime/.../streaming/runtime/io/StreamTaskNetworkInputFactory.java`）：
+
+```java
+// 简化后的判断逻辑
+if (rescalingDescriptor.equals(InflightDataRescalingDescriptor.NO_RESCALE)
+        || unalignedDuringRecoveryEnabled) {
+    // 不需要过滤 → 走原始路径（StreamTaskNetworkInput）
+} else {
+    // 需要过滤 → 走 rescale 路径（RescalingStreamTaskNetworkInput）
+}
+```
+
+两个条件对应上述两种场景：
+
+| 条件 | 对应场景 | 含义 |
+|------|---------|------|
+| `unalignedDuringRecoveryEnabled = false` | 场景一：未开启配置 | 过滤功能本身未启用，Task 线程自行处理（走 `RescalingStreamTaskNetworkInput` 的老路径，或因 `NO_RESCALE` 走普通路径） |
+| `rescalingDescriptor == NO_RESCALE` | 场景二：并行度未变 | `InflightDataRescalingDescriptor` 由 Flink 在恢复时根据拓扑变化计算，并行度不变时为 `NO_RESCALE`，不需要过滤 |
+
+**只有当 `unalignedDuringRecoveryEnabled = true` 且 `rescalingDescriptor != NO_RESCALE` 时**，才会触发 channel-state-unspilling 线程中的过滤逻辑，进入本文描述的两阶段 Buffer 模型。
