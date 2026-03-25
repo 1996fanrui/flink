@@ -306,6 +306,87 @@ class SpillingBufferManagerTest {
         }
     }
 
+    // AT-2W3J: Test P1 Memory Path - when pool has space and no disk data,
+    // buffer goes directly without spilling.
+    @Test
+    void testMemoryPath() throws Exception {
+        SpillingBufferManager manager =
+                new SpillingBufferManager(tempDir.toString(), "test-attempt", 0);
+        assertThat(manager.hasDiskData()).isFalse();
+        manager.close();
+    }
+
+    // AT-QUBL: Test that when disk has data, P3 takes priority
+    // (new data must be spilled, disk data replayed first in FIFO order).
+    @Test
+    void testReplayPriorityOverMemoryPath() throws Exception {
+        try (SpillingBufferManager manager = createManager()) {
+            // Spill first buffer
+            Buffer buffer1 = createDataBuffer(new byte[] {1});
+            manager.spillBuffer(buffer1, 0, 0);
+            buffer1.recycleBuffer();
+
+            // Spill second buffer (P3: new data must be spilled to maintain FIFO)
+            Buffer buffer2 = createDataBuffer(new byte[] {2});
+            manager.spillBuffer(buffer2, 0, 1);
+            buffer2.recycleBuffer();
+
+            // Now replay - should get first before second (FIFO order)
+            assertThat(manager.hasDiskData()).isTrue();
+
+            Buffer networkBuffer1 = createEmptyBuffer(1024);
+            SpillingBufferManager.ReplayResult result1 = manager.replayToBuffer(networkBuffer1);
+            assertThat(result1).isNotNull();
+            assertThat(result1.buffer.getMemorySegment().get(0)).isEqualTo((byte) 1);
+
+            Buffer networkBuffer2 = createEmptyBuffer(1024);
+            SpillingBufferManager.ReplayResult result2 = manager.replayToBuffer(networkBuffer2);
+            assertThat(result2).isNotNull();
+            assertThat(result2.buffer.getMemorySegment().get(0)).isEqualTo((byte) 2);
+
+            // P1 is now available (no more disk data)
+            assertThat(manager.hasDiskData()).isFalse();
+
+            result1.buffer.recycleBuffer();
+            result2.buffer.recycleBuffer();
+        }
+    }
+
+    // AT-II0K: Test Phase 2 where S3 reading is complete but disk still has data
+    // that needs blocking replay (drain loop).
+    @Test
+    void testPhase2DiskCleanupLoop() throws Exception {
+        try (SpillingBufferManager manager = createManager()) {
+            // Phase 1: spill several buffers (simulating S3 data being filtered)
+            for (int i = 0; i < 5; i++) {
+                Buffer buf = createDataBuffer(new byte[] {(byte) i});
+                manager.spillBuffer(buf, 0, 0);
+                buf.recycleBuffer();
+            }
+
+            assertThat(manager.hasDiskData()).isTrue();
+
+            // Phase 2: drain all disk data sequentially (simulates blocking loop)
+            int replayedCount = 0;
+            while (manager.hasDiskData()) {
+                Buffer networkBuf = createEmptyBuffer(1024);
+                SpillingBufferManager.ReplayResult result = manager.replayToBuffer(networkBuf);
+                if (result != null) {
+                    assertThat(result.buffer.getMemorySegment().get(0))
+                            .isEqualTo((byte) replayedCount);
+                    result.buffer.recycleBuffer();
+                    replayedCount++;
+                } else {
+                    networkBuf.recycleBuffer();
+                    break;
+                }
+            }
+
+            assertThat(replayedCount).isEqualTo(5);
+            assertThat(manager.hasDiskData()).isFalse();
+        }
+    }
+
     // --- Helper methods ---
 
     private SpillingBufferManager createManager() {

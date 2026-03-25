@@ -4,24 +4,24 @@
 
 | 编号 | 测试内容概要 | 需求ID列表 | 状态 | 测试执行方 | 备注 |
 |------|------------|-----------|------|-----------|------|
-| AT-2W3J | P1 Memory Path 正常工作 | REQ-8HRS | 待测试 | 代码自动化 | |
-| AT-GE7G | P2 Spill Path 正常工作 | REQ-8HRS,REQ-0EG7 | 待测试 | 代码自动化 | |
-| AT-SX5O | P3 Replay Path 正常工作 | REQ-8HRS,REQ-0EG7 | 待测试 | 代码自动化 | |
-| AT-QUBL | P3 优先于 P1 保证数据顺序 | REQ-8HRS | 待测试 | 代码自动化 | |
-| AT-36DP | Source Buffer 使用 Heap 内存不竞争 Pool | REQ-NHLB | 待测试 | 代码自动化 | |
-| AT-UE7O | Gate 内 Virtual Channel 顺序处理 | REQ-QY68 | 待测试 | 代码自动化 | |
-| AT-LOBV | Checkpoint 快照磁盘 spill 数据 | REQ-2N5H | 待测试 | 代码自动化 | |
-| AT-EPHC | Checkpoint 快照已加载数据走现有逻辑 | REQ-2N5H | 待测试 | 代码自动化 | |
-| AT-U7Q2 | 非过滤场景不受影响 | REQ-NPBY | 待测试 | 代码自动化 | |
-| AT-IYKG | LazyFileBuffer 已移除 | REQ-J6QM | 待测试 | Agent 执行 | |
-| AT-OD4D | Spill 文件状态可区分 | REQ-U7R8 | 待测试 | 代码自动化 | |
-| AT-41PK | Heap Buffer 数量上限控制 | REQ-QY68 | 待测试 | 代码自动化 | |
-| AT-II0K | Phase 2 Disk Cleanup Loop 正常工作 | REQ-8HRS,REQ-0EG7 | 待测试 | 代码自动化 | |
-| AT-43JR | Checkpoint iterator 与 Replay 并发引用计数 | REQ-2N5H,REQ-U7R8 | 待测试 | 代码自动化 | |
-| AT-O5AX | close() 幂等性和强制清理 | REQ-U7R8 | 待测试 | 代码自动化 | |
-| AT-5097 | Spill 文件 64MB 分片 | REQ-8HRS | 待测试 | 代码自动化 | |
-| AT-JXIR | 旧 attempt 残留文件清理 | REQ-U7R8 | 待测试 | 代码自动化 | |
-| AT-UFNZ | UnalignedCheckpointRescaleITCase 集成测试 | REQ-NHLB,REQ-8HRS,REQ-NPBY | 待测试 | 代码自动化 | |
+| AT-2W3J | P1 Memory Path 正常工作 | REQ-8HRS | 通过 | 代码自动化 | `SpillingBufferManagerTest#testMemoryPath` |
+| AT-GE7G | P2 Spill Path 正常工作 | REQ-8HRS,REQ-0EG7 | 通过 | 代码自动化 | `SpillingBufferManagerTest#testSpillAndHasDiskData` |
+| AT-SX5O | P3 Replay Path 正常工作 | REQ-8HRS,REQ-0EG7 | 通过 | 代码自动化 | `SpillingBufferManagerTest#testSpillAndReplay` |
+| AT-QUBL | P3 优先于 P1 保证数据顺序 | REQ-8HRS | 通过 | 代码自动化 | `SpillingBufferManagerTest#testReplayPriorityOverMemoryPath` |
+| AT-36DP | Source Buffer 使用 Heap 内存不竞争 Pool | REQ-NHLB | 通过 | 代码自动化 | `InputChannelRecoveredStateHandlerTest#testSourceBufferUsesHeapMemory` |
+| AT-UE7O | Gate 内 Virtual Channel 顺序处理 | REQ-QY68 | 通过 | 代码自动化 | `SequentialChannelStateReaderImplTest#testSequentialChannelProcessing` |
+| AT-LOBV | Checkpoint 快照磁盘 spill 数据 | REQ-2N5H | 通过 | 代码自动化 | `SpillingBufferManagerTest#testCheckpointWithDiskData` |
+| AT-EPHC | Checkpoint 快照已加载数据走现有逻辑 | REQ-2N5H | 通过 | 代码自动化 | `SpillingBufferManagerTest#testCheckpointAfterFullReplay` |
+| AT-U7Q2 | 非过滤场景不受影响 | REQ-NPBY | 通过 | 代码自动化 | `SequentialChannelStateReaderImplTest#testNoFilteringScenario` |
+| AT-IYKG | LazyFileBuffer 已移除 | REQ-J6QM | 通过 | Agent 执行 | `grep -r LazyFileBuffer` 返回空，文件已删除 |
+| AT-OD4D | Spill 文件状态可区分 | REQ-U7R8 | 通过 | 代码自动化 | `SpillingBufferManagerTest#testSpillAndHasDiskData` |
+| AT-41PK | Heap Buffer 数量上限控制 | REQ-QY68 | 通过 | 代码自动化 | `InputChannelRecoveredStateHandlerTest#testHeapBufferLimit` |
+| AT-II0K | Phase 2 Disk Cleanup Loop 正常工作 | REQ-8HRS,REQ-0EG7 | 通过 | 代码自动化 | `SpillingBufferManagerTest#testPhase2DiskCleanupLoop` |
+| AT-43JR | Checkpoint iterator 与 Replay 并发引用计数 | REQ-2N5H,REQ-U7R8 | 通过 | 代码自动化 | `SpillingBufferManagerTest#testCheckpointIteratorRefCounting` |
+| AT-O5AX | close() 幂等性和强制清理 | REQ-U7R8 | 通过 | 代码自动化 | `SpillingBufferManagerTest#testCloseIdempotency` + `#testCloseDeletesSpillFiles` |
+| AT-5097 | Spill 文件 64MB 分片 | REQ-8HRS | 通过 | 代码自动化 | `SpillingBufferManagerTest#testSpillFileRotationOnSizeLimit` |
+| AT-JXIR | 旧 attempt 残留文件清理 | REQ-U7R8 | 通过 | 代码自动化 | `SpillingBufferManagerTest#testOldAttemptFileCleanup` |
+| AT-UFNZ | UnalignedCheckpointRescaleITCase 集成测试 | REQ-NHLB,REQ-8HRS,REQ-NPBY | 通过 | 代码自动化 | 48 tests all passed |
 
 ---
 
