@@ -165,7 +165,68 @@ Filtered Buffer 是过滤后可直接交给 Task 处理的数据，走原有的�
 | **P2 Spill Path** | Network Buffer Pool 无空闲 Buffer | 过滤结果 spill 到本地磁盘（复用 `FileBasedBuffer`） |
 | **P3 Replay Path** | Network Buffer Pool 有空闲 Buffer 且磁盘有数据 | 从磁盘读取已过滤数据 → Network Buffer → InputChannel |
 
-**P2 Spill 使用 `FileBasedBuffer`**：复用现有的 `FileBasedBuffer` 实现，将过滤后的 Buffer 数据写入本地磁盘文件。当 Network Buffer 可用时，从文件加载回内存。
+**P2 Spill 使用 `FileBasedBuffer`**：复用现有的 `FileBasedBuffer`（当前实现为 `LazyFileBuffer`）将过滤后的 Buffer 数据写入本地磁盘文件。
+
+> **注意**：当前 `LazyFileBuffer` 存在已知 bug，具体原因待排查。实现时需要评估是修复还是重新实现。
+
+### 4.4 Spill 文件的两种消费场景
+
+当 Filtered Buffer 被 spill 到磁盘后，有两种场景会消费这些磁盘数据，**必须区分处理**：
+
+```mermaid
+graph TD
+    SpillFile["Spill File<br/>（磁盘上的已过滤数据）"]
+
+    subgraph "场景一：Task 消费"
+        ReqBuf["等待 Network Buffer 可用"]
+        Load["从磁盘加载到 Network Buffer"]
+        Task["Task 线程消费"]
+        ReqBuf --> Load --> Task
+    end
+
+    subgraph "场景二：Checkpoint 快照"
+        Snap["直接备份磁盘文件<br/>到 Checkpoint Storage"]
+    end
+
+    SpillFile -->|"有空闲 Buffer 时"| ReqBuf
+    SpillFile -->|"Checkpoint 触发时"| Snap
+
+    style SpillFile fill:#fce4ec
+    style Load fill:#e8f5e9
+    style Task fill:#c8e6c9
+    style Snap fill:#e1f5fe
+```
+
+#### 场景一：Task 消费（需要加载到内存）
+
+- **前提**：Network Buffer Pool 有空闲 Buffer
+- **流程**：从磁盘读取数据 → 写入 Network Buffer → 放入 InputChannel → Task 消费
+- **关键约束**：**Task 永远不直接消费磁盘数据**。Task 只消费 Network Buffer，所以 spill 文件必须先加载到 Network Buffer 才能被 Task 处理
+- 加载完成后，对应的磁盘文件可以立即清理
+
+#### 场景二：Checkpoint 快照（不需要加载到内存）
+
+- **前提**：Checkpoint 触发时，磁盘上仍有未被加载的 spill 数据
+- **流程**：**直接将磁盘文件备份到 Checkpoint Storage**，不需要先加载到 Network Buffer
+- **关键约束**：Checkpoint 不应该触发磁盘到内存的加载操作。如果 Checkpoint 时内存不足（否则数据早就被 P3 加载了），强制加载反而会加剧内存压力
+- 具体的上传接口需要调研现有 Checkpoint 机制（可能需要区别于 Network Buffer 的快照方式）
+
+#### 边界情况：数据已加载到内存
+
+如果 spill 数据在 Checkpoint 触发之前已经通过 P3 加载到了 Network Buffer（进入了 InputChannel），则：
+
+- 磁盘文件已被清理
+- Checkpoint 直接走现有的 InputChannel Buffer 快照逻辑
+- **不需要特殊处理**，完全复用已有代码
+
+#### 设计要求
+
+Spill 文件必须能区分自身所处的状态，以便在不同消费场景下采取正确的行为：
+
+| 状态 | Task 消费 | Checkpoint 快照 |
+|------|----------|----------------|
+| **在磁盘上**（未加载） | 等 Buffer 可用后加载 | 直接备份磁盘文件 |
+| **已加载到 Network Buffer** | 正常消费 | 复用现有 Buffer 快照逻辑 |
 
 ---
 
