@@ -188,8 +188,8 @@ class TransformationsTest {
                         config.set(TABLE_EXEC_UID_FORMAT, "<id>_<type>_<version>_<transformation>"),
                 json -> {},
                 env -> planFromCurrentFlinkValues(env).asJsonString(),
-                "\\d+_stream-exec-sink_1_sink",
-                "\\d+_stream-exec-sink_1_constraint-validator",
+                "\\d+_stream-exec-sink_2_sink",
+                "\\d+_stream-exec-sink_2_constraint-validator",
                 "\\d+_stream-exec-values_1_values");
     }
 
@@ -200,7 +200,7 @@ class TransformationsTest {
                 json ->
                         JsonTestUtils.setExecNodeConfig(
                                 json,
-                                "stream-exec-sink_1",
+                                "stream-exec-sink_2",
                                 TABLE_EXEC_UID_FORMAT.key(),
                                 "my_custom_<transformation>_<id>"),
                 env -> planFromCurrentFlinkValues(env).asJsonString(),
@@ -413,7 +413,7 @@ class TransformationsTest {
     }
 
     private static CompiledPlan planFromFlink2_2MultiTransformSource(TableEnvironment env) {
-        createMultiTransformSource(env);
+        createMultiTransformSource(env, "stream-exec-table-source-scan_1");
         // plan content is compiled from
         // planFromCurrentFlinkMultiTransformSource() using Flink release-2.2
         return env.loadPlan(
@@ -421,13 +421,14 @@ class TransformationsTest {
     }
 
     private static CompiledPlan planFromCurrentFlinkMultiTransformSource(TableEnvironment env) {
-        createMultiTransformSource(env);
+        createMultiTransformSource(env, "stream-exec-table-source-scan_2");
         return env.from("T")
                 .insertInto(TableDescriptor.forConnector("blackhole").build())
                 .compilePlan();
     }
 
-    private static void createMultiTransformSource(TableEnvironment env) {
+    private static void createMultiTransformSource(
+            TableEnvironment env, String expectedSourceExecNode) {
         final DataStreamScanProvider scanProvider =
                 new DataStreamScanProvider() {
                     @Override
@@ -438,6 +439,10 @@ class TransformationsTest {
                     @Override
                     public DataStream<RowData> produceDataStream(
                             ProviderContext providerContext, StreamExecutionEnvironment execEnv) {
+
+                        assertThat(providerContext.getContainerNodeType())
+                                .isEqualTo(expectedSourceExecNode);
+
                         // UID 1
                         final SingleOutputStreamOperator<Integer> ints = execEnv.fromData(1, 2, 3);
                         providerContext.generateUid("my-source").ifPresent(ints::uid);

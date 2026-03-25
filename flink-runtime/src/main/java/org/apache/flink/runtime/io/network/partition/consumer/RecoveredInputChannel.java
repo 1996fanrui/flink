@@ -57,6 +57,13 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     private final CompletableFuture<?> stateConsumedFuture = new CompletableFuture<>();
     protected final BufferManager bufferManager;
 
+    /**
+     * Future that completes when recovered buffers have been filtered for this channel. This
+     * completes before stateConsumedFuture, enabling earlier RUNNING state transition when
+     * unaligned checkpoint during recovery is enabled.
+     */
+    private final CompletableFuture<Void> bufferFilteringCompleteFuture = new CompletableFuture<>();
+
     @GuardedBy("receivedBuffers")
     private boolean isReleased;
 
@@ -104,9 +111,26 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     }
 
     public final InputChannel toInputChannel() throws IOException {
-        Preconditions.checkState(
-                stateConsumedFuture.isDone(), "recovered state is not fully consumed");
-        final InputChannel inputChannel = toInputChannelInternal();
+        // Check the appropriate future based on configuration:
+        // - When unaligned during recovery is enabled: check bufferFilteringCompleteFuture
+        // - When disabled: check stateConsumedFuture (original behavior)
+        if (inputGate.isUnalignedDuringRecoveryEnabled()) {
+            Preconditions.checkState(
+                    bufferFilteringCompleteFuture.isDone(), "buffer filtering is not complete");
+        } else {
+            Preconditions.checkState(
+                    stateConsumedFuture.isDone(), "recovered state is not fully consumed");
+        }
+
+        // Extract remaining buffers before conversion.
+        // These buffers have been filtered but not yet consumed by the Task.
+        final ArrayDeque<Buffer> remainingBuffers;
+        synchronized (receivedBuffers) {
+            remainingBuffers = new ArrayDeque<>(receivedBuffers);
+            receivedBuffers.clear();
+        }
+
+        final InputChannel inputChannel = toInputChannelInternal(remainingBuffers);
         inputChannel.checkpointStopped(lastStoppedCheckpointId);
         return inputChannel;
     }
@@ -116,7 +140,23 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
         this.lastStoppedCheckpointId = checkpointId;
     }
 
-    protected abstract InputChannel toInputChannelInternal() throws IOException;
+    /**
+     * Creates the physical InputChannel from this recovered channel.
+     *
+     * @param remainingBuffers buffers that have been filtered but not yet consumed by the Task.
+     *     These buffers will be migrated to the new physical channel.
+     * @return the physical InputChannel (LocalInputChannel or RemoteInputChannel)
+     */
+    protected abstract InputChannel toInputChannelInternal(ArrayDeque<Buffer> remainingBuffers)
+            throws IOException;
+
+    /**
+     * Returns the future that completes when buffer filtering is complete. This future completes
+     * before stateConsumedFuture, at the point when finishReadRecoveredState() is called.
+     */
+    CompletableFuture<Void> getBufferFilteringCompleteFuture() {
+        return bufferFilteringCompleteFuture;
+    }
 
     CompletableFuture<?> getStateConsumedFuture() {
         return stateConsumedFuture;
@@ -158,6 +198,13 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
                 EventSerializer.toBuffer(EndOfInputChannelStateEvent.INSTANCE, false));
         bufferManager.releaseFloatingBuffers();
         LOG.debug("{}/{} finished recovering input.", inputGate.getOwningTaskName(), channelInfo);
+
+        // Complete bufferFilteringCompleteFuture only when unaligned during recovery is enabled.
+        // This signals that buffer filtering is complete, allowing earlier RUNNING state
+        // transition. When the config is disabled, this future should not be completed.
+        if (inputGate.isUnalignedDuringRecoveryEnabled()) {
+            bufferFilteringCompleteFuture.complete(null);
+        }
     }
 
     @Nullable
@@ -275,13 +322,19 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
         }
     }
 
-    public Buffer requestBufferBlocking() throws InterruptedException, IOException {
-        // not in setup to avoid assigning buffers unnecessarily if there is no state
+    public Buffer requestBuffer() throws InterruptedException, IOException {
+        // Not in setup to avoid assigning buffers unnecessarily if there is no state
         if (!exclusiveBuffersAssigned) {
             bufferManager.requestExclusiveBuffers(networkBuffersPerChannel);
             exclusiveBuffersAssigned = true;
         }
-        return bufferManager.requestBufferBlocking();
+        if (!inputGate.isUnalignedDuringRecoveryEnabled()) {
+            return bufferManager.requestBufferBlocking();
+        }
+        // In unaligned recovery mode, non-blocking request - returns null when pool is exhausted.
+        // The caller (RecoveredChannelStateHandler) handles the null case with heap buffer
+        // fallback.
+        return bufferManager.requestBuffer();
     }
 
     @Override

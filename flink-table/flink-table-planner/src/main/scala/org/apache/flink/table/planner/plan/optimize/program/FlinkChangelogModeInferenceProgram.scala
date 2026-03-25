@@ -19,6 +19,8 @@ package org.apache.flink.table.planner.plan.optimize.program
 
 import org.apache.flink.legacy.table.sinks.{AppendStreamTableSink, RetractStreamTableSink, StreamTableSink, UpsertStreamTableSink}
 import org.apache.flink.table.api.{TableException, ValidationException}
+import org.apache.flink.table.api.InsertConflictStrategy
+import org.apache.flink.table.api.InsertConflictStrategy.ConflictBehavior
 import org.apache.flink.table.api.config.ExecutionConfigOptions
 import org.apache.flink.table.api.config.ExecutionConfigOptions.UpsertMaterialize
 import org.apache.flink.table.connector.ChangelogMode
@@ -31,6 +33,7 @@ import org.apache.flink.table.planner.plan.`trait`.UpdateKindTrait.{beforeAfterO
 import org.apache.flink.table.planner.plan.metadata.FlinkRelMetadataQuery
 import org.apache.flink.table.planner.plan.nodes.physical.stream._
 import org.apache.flink.table.planner.plan.optimize.ChangelogNormalizeRequirementResolver
+import org.apache.flink.table.planner.plan.schema.TableSourceTable
 import org.apache.flink.table.planner.plan.utils._
 import org.apache.flink.table.planner.plan.utils.RankProcessStrategy.{AppendFastStrategy, RetractStrategy, UpdateFastStrategy}
 import org.apache.flink.table.planner.sinks.DataStreamTableSink
@@ -1042,6 +1045,8 @@ class FlinkChangelogModeInferenceProgram extends FlinkOptimizeProgram[StreamOpti
      *   1. when `TABLE_EXEC_SINK_UPSERT_MATERIALIZE` set to FORCE and sink's primary key nonempty.
      *      2. when `TABLE_EXEC_SINK_UPSERT_MATERIALIZE` set to AUTO and sink's primary key doesn't
      *      contain upsertKeys of the input update stream.
+     *
+     * Also validates that ON CONFLICT clause is specified when upsert key differs from primary key.
      */
     private def analyzeUpsertMaterializeStrategy(sink: StreamPhysicalSink): Boolean = {
       val tableConfig = unwrapTableConfig(sink)
@@ -1053,23 +1058,102 @@ class FlinkChangelogModeInferenceProgram extends FlinkOptimizeProgram[StreamOpti
       val sinkIsAppend = sinkChangelogMode.containsOnly(RowKind.INSERT)
       val sinkIsRetract = sinkChangelogMode.contains(RowKind.UPDATE_BEFORE)
 
+      // Validate ON CONFLICT is only allowed for upsert sinks
+      if (sink.conflictStrategy != null) {
+        val isUpsertSink = !sinkIsAppend && !sinkIsRetract
+        if (!isUpsertSink) {
+          val reason = if (sinkIsAppend) {
+            "it only accepts INSERT (append-only) changes"
+          } else {
+            "it requires UPDATE_BEFORE (retract mode)"
+          }
+          throw new ValidationException(
+            s"ON CONFLICT clause is only allowed for upsert sinks. " +
+              s"The sink '${sink.contextResolvedTable.getIdentifier.asSummaryString}' " +
+              s"is not an upsert sink because $reason.")
+        }
+      }
+
+      // Validate that sources have watermarks when using ERROR or NOTHING strategy
+      if (
+        sink.conflictStrategy != null &&
+        (sink.conflictStrategy.getBehavior == ConflictBehavior.ERROR ||
+          sink.conflictStrategy.getBehavior == ConflictBehavior.NOTHING)
+      ) {
+        validateSourcesHaveWatermarks(sink)
+      }
+
       tableConfig.get(ExecutionConfigOptions.TABLE_EXEC_SINK_UPSERT_MATERIALIZE) match {
         case UpsertMaterialize.FORCE => primaryKeys.nonEmpty && !sinkIsRetract
         case UpsertMaterialize.NONE => false
         case UpsertMaterialize.AUTO =>
-          if (inputIsAppend || sinkIsAppend || sinkIsRetract) {
+          // if the sink is not an UPSERT sink (has no PK, or is an APPEND or RETRACT sink)
+          // we don't need to materialize results
+          if (primaryKeys.isEmpty || sinkIsAppend || sinkIsRetract) {
             return false
           }
-          if (primaryKeys.isEmpty) {
+
+          // For a DEDUPLICATE strategy and INSERT only input, we simply let the inserts be handled
+          // as UPSERT_AFTER and overwrite previous value
+          if (inputIsAppend && sink.isDeduplicateConflictStrategy) {
             return false
           }
-          val pks = ImmutableBitSet.of(primaryKeys: _*)
-          val fmq = FlinkRelMetadataQuery.reuseOrCreate(sink.getCluster.getMetadataQuery)
-          val changeLogUpsertKeys = fmq.getUpsertKeys(sink.getInput)
-          // if input has updates and primary key != upsert key (upsert key can be null) we should
-          // enable upsertMaterialize. An optimize is: do not enable upsertMaterialize when sink
-          // pk(s) contains input changeLogUpsertKeys
-          changeLogUpsertKeys == null || !changeLogUpsertKeys.exists(pks.contains)
+
+          // if input has updates and primary key != upsert key  we should enable upsertMaterialize.
+          //
+          // An optimize is: do not enable upsertMaterialize when sink pk(s) contains input
+          // changeLogUpsertKeys
+          val upsertKeyDiffersFromPk = !sink.primaryKeysContainsUpsertKey
+
+          // Validate that ON CONFLICT is specified when upsert key differs from primary key
+          val requireOnConflict =
+            tableConfig.get(ExecutionConfigOptions.TABLE_EXEC_SINK_REQUIRE_ON_CONFLICT)
+          if (requireOnConflict && upsertKeyDiffersFromPk && sink.conflictStrategy == null) {
+            val pkNames = sink.getPrimaryKeyNames
+            val upsertKeyNames = sink.getUpsertKeyNames
+            throw new ValidationException(
+              "The query has an upsert key that differs from the primary key of the sink table " +
+                s"'${sink.contextResolvedTable.getIdentifier.asSummaryString}'. " +
+                s"Primary key: $pkNames, upsert key: $upsertKeyNames. " +
+                "This can lead to non-deterministic results when multiple records with different " +
+                "upsert keys map to the same primary key. " +
+                "Please specify an ON CONFLICT clause to define how conflicts should be handled: " +
+                "ON CONFLICT DO DEDUPLICATE (update to the latest record, state intensive, since we" +
+                " need to keep the entire history), or " +
+                "ON CONFLICT DO ERROR (fail on conflict), or " +
+                "ON CONFLICT DO NOTHING (keep first record).")
+          }
+
+          upsertKeyDiffersFromPk
+      }
+    }
+
+    private def validateSourcesHaveWatermarks(sink: StreamPhysicalSink): Unit = {
+      val sourcesWithoutWatermarks = new java.util.ArrayList[String]()
+      collectSourcesWithoutWatermarks(sink.getInput, sourcesWithoutWatermarks)
+      if (!sourcesWithoutWatermarks.isEmpty) {
+        throw new ValidationException(
+          s"ON CONFLICT DO ${sink.conflictStrategy.getBehavior} requires all source " +
+            s"tables to define watermarks, but the following source(s) do not: " +
+            s"${sourcesWithoutWatermarks.mkString(", ")}. " +
+            s"Please add a WATERMARK declaration to these tables.")
+      }
+    }
+
+    private def collectSourcesWithoutWatermarks(
+        rel: RelNode,
+        result: java.util.List[String]): Unit = {
+      rel match {
+        case ts: StreamPhysicalTableSourceScan =>
+          val table = ts.getTable.unwrap(classOf[TableSourceTable])
+          if (
+            table != null &&
+            table.contextResolvedTable.getResolvedSchema.getWatermarkSpecs.isEmpty
+          ) {
+            result.add(table.contextResolvedTable.getIdentifier.asSummaryString())
+          }
+        case _ =>
+          rel.getInputs.forEach(input => collectSourcesWithoutWatermarks(input, result))
       }
     }
   }

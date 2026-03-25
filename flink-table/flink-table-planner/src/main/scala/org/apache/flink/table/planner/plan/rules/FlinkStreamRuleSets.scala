@@ -18,10 +18,9 @@
 package org.apache.flink.table.planner.plan.rules
 
 import org.apache.flink.table.planner.plan.nodes.logical._
-import org.apache.flink.table.planner.plan.nodes.physical.stream.{StreamPhysicalMLPredictTableFunctionRule, StreamPhysicalProcessTableFunctionRule}
 import org.apache.flink.table.planner.plan.rules.logical.{JoinToMultiJoinRule, _}
 import org.apache.flink.table.planner.plan.rules.physical.FlinkExpandConversionRule
-import org.apache.flink.table.planner.plan.rules.physical.common.PhysicalVectorSearchTableFunctionRule
+import org.apache.flink.table.planner.plan.rules.physical.common.{PhysicalMLPredictTableFunctionRule, PhysicalVectorSearchTableFunctionRule}
 import org.apache.flink.table.planner.plan.rules.physical.stream._
 
 import org.apache.calcite.rel.core.RelFactories
@@ -134,7 +133,9 @@ object FlinkStreamRuleSets {
           // rewrite constant table function scan to correlate
           JoinTableFunctionScanToCorrelateRule.INSTANCE,
           // Wrap arguments for JSON aggregate functions
-          WrapJsonAggFunctionArgumentsRule.INSTANCE
+          WrapJsonAggFunctionArgumentsRule.INSTANCE,
+          // prune COUNT(*) input to project a constant before aggregation
+          PruneCountStarInputRule.INSTANCE
         )
     ).asJava)
 
@@ -456,6 +457,7 @@ object FlinkStreamRuleSets {
     // calc
     StreamPhysicalCalcRule.INSTANCE,
     StreamPhysicalPythonCalcRule.INSTANCE,
+    StreamPhysicalPythonAsyncCalcRule.INSTANCE,
     StreamPhysicalAsyncCalcRule.INSTANCE,
     // union
     StreamPhysicalUnionRule.INSTANCE,
@@ -490,7 +492,7 @@ object FlinkStreamRuleSets {
     // process table function
     StreamPhysicalProcessTableFunctionRule.INSTANCE,
     // model TVFs
-    StreamPhysicalMLPredictTableFunctionRule.INSTANCE,
+    PhysicalMLPredictTableFunctionRule.STREAM_INSTANCE,
     PhysicalVectorSearchTableFunctionRule.STREAM_INSTANCE,
     // join
     StreamPhysicalJoinRule.INSTANCE,

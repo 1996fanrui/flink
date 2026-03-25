@@ -18,8 +18,8 @@
 
 package org.apache.flink.table.planner.operations.converters;
 
-import org.apache.flink.sql.parser.ddl.SqlCreateModel;
 import org.apache.flink.sql.parser.ddl.SqlTableColumn.SqlRegularColumn;
+import org.apache.flink.sql.parser.ddl.model.SqlCreateModel;
 import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.catalog.CatalogModel;
@@ -28,7 +28,6 @@ import org.apache.flink.table.catalog.ObjectIdentifier;
 import org.apache.flink.table.catalog.UnresolvedIdentifier;
 import org.apache.flink.table.operations.Operation;
 import org.apache.flink.table.operations.ddl.CreateModelOperation;
-import org.apache.flink.table.planner.operations.converters.table.SchemaBuilderUtil;
 
 import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.SqlNodeList;
@@ -37,7 +36,7 @@ import org.apache.calcite.sql.validate.SqlValidator;
 import java.util.Map;
 import java.util.function.Function;
 
-/** A converter for {@link org.apache.flink.sql.parser.ddl.SqlCreateModel}. */
+/** A converter for {@link org.apache.flink.sql.parser.ddl.model.SqlCreateModel}. */
 public class SqlCreateModelConverter implements SqlNodeConverter<SqlCreateModel> {
 
     @Override

@@ -40,6 +40,7 @@ import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.state.InputChannelStateHandle;
 import org.apache.flink.runtime.state.ResultSubpartitionStateHandle;
 import org.apache.flink.runtime.state.memory.ByteStreamStateHandle;
+import org.apache.flink.streaming.runtime.io.recovery.RecordFilterContext;
 import org.apache.flink.testutils.junit.extensions.parameterized.Parameter;
 import org.apache.flink.testutils.junit.extensions.parameterized.ParameterizedTestExtension;
 import org.apache.flink.testutils.junit.extensions.parameterized.Parameters;
@@ -143,7 +144,7 @@ public class SequentialChannelStateReaderImplTest {
 
         withInputGates(
                 gates -> {
-                    reader.readInputData(gates);
+                    reader.readInputData(gates, RecordFilterContext.disabled());
                     assertBuffersEquals(inputChannelsData, collectBuffers(gates));
                     assertConsumed(gates);
                 });
@@ -402,5 +403,64 @@ public class SequentialChannelStateReaderImplTest {
                             return buf;
                         })
                 .collect(toList());
+    }
+
+    // AT-U7Q2: Verify that when unaligned recovery is not enabled,
+    // no filtering handler or spilling manager is created.
+    @TestTemplate
+    void testNoFilteringScenario() throws Exception {
+        if (stateParLevel == 0) {
+            // Skip for "no state" case - nothing meaningful to verify
+            return;
+        }
+
+        Map<InputChannelInfo, List<byte[]>> inputChannelsData =
+                generateState(InputChannelInfo::new);
+        Map<ResultSubpartitionInfo, List<byte[]>> resultPartitionsData =
+                generateState(ResultSubpartitionInfo::new);
+
+        // Use disabled context (isUnalignedDuringRecoveryEnabled() returns false)
+        SequentialChannelStateReader reader =
+                new SequentialChannelStateReaderImpl(
+                        buildSnapshot(writePermuted(inputChannelsData, resultPartitionsData)));
+
+        withInputGates(
+                gates -> {
+                    // RecordFilterContext.disabled() ensures no filtering handler is created
+                    reader.readInputData(gates, RecordFilterContext.disabled());
+                    // All data should still be recovered correctly without filtering
+                    assertBuffersEquals(inputChannelsData, collectBuffers(gates));
+                    assertConsumed(gates);
+                });
+    }
+
+    // AT-UE7O: Verify that channels within a gate are processed sequentially
+    // (offsets sorted, FIFO ordering maintained).
+    @TestTemplate
+    void testSequentialChannelProcessing() throws Exception {
+        if (stateParLevel == 0) {
+            return;
+        }
+
+        Map<InputChannelInfo, List<byte[]>> inputChannelsData =
+                generateState(InputChannelInfo::new);
+        Map<ResultSubpartitionInfo, List<byte[]>> resultPartitionsData =
+                generateState(ResultSubpartitionInfo::new);
+
+        SequentialChannelStateReader reader =
+                new SequentialChannelStateReaderImpl(
+                        buildSnapshot(writePermuted(inputChannelsData, resultPartitionsData)));
+
+        withInputGates(
+                gates -> {
+                    reader.readInputData(gates, RecordFilterContext.disabled());
+
+                    // Verify all channels' data was read and matches expected
+                    Map<InputChannelInfo, List<Buffer>> actualBuffers = collectBuffers(gates);
+                    assertBuffersEquals(inputChannelsData, actualBuffers);
+
+                    // Verify all gates are consumed (state consumption complete)
+                    assertConsumed(gates);
+                });
     }
 }

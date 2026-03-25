@@ -32,7 +32,10 @@ import org.junit.jupiter.api.Test;
 
 import java.util.HashSet;
 
+import static org.apache.flink.runtime.checkpoint.InflightDataRescalingDescriptorUtil.mappings;
+import static org.apache.flink.runtime.checkpoint.InflightDataRescalingDescriptorUtil.to;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Test of different implementation of {@link InputChannelRecoveredStateHandler}. */
 class InputChannelRecoveredStateHandlerTest extends RecoveredChannelStateHandlerTest {
@@ -74,7 +77,47 @@ class InputChannelRecoveredStateHandlerTest extends RecoveredChannelStateHandler
                                     InflightDataRescalingDescriptor
                                             .InflightDataGateOrPartitionRescalingDescriptor
                                             .MappingType.IDENTITY)
-                        }));
+                        }),
+                null);
+    }
+
+    private InputChannelRecoveredStateHandler buildMultiChannelHandler() {
+        // Setup multi-channel scenario to trigger distribution constraint validation
+        SingleInputGate multiChannelGate =
+                new SingleInputGateBuilder()
+                        .setNumberOfChannels(2)
+                        .setChannelFactory(InputChannelBuilder::buildLocalRecoveredChannel)
+                        .setSegmentProvider(networkBufferPool)
+                        .build();
+
+        return new InputChannelRecoveredStateHandler(
+                new InputGate[] {multiChannelGate},
+                new InflightDataRescalingDescriptor(
+                        new InflightDataRescalingDescriptor
+                                        .InflightDataGateOrPartitionRescalingDescriptor[] {
+                            new InflightDataRescalingDescriptor
+                                    .InflightDataGateOrPartitionRescalingDescriptor(
+                                    new int[] {2},
+                                    // Force 1:many mapping after inversion
+                                    mappings(to(0), to(0)),
+                                    new HashSet<>(),
+                                    InflightDataRescalingDescriptor
+                                            .InflightDataGateOrPartitionRescalingDescriptor
+                                            .MappingType.RESCALING)
+                        }),
+                null);
+    }
+
+    @Test
+    void testBufferDistributedToMultipleInputChannelsThrowsException() throws Exception {
+        // Test constraint that prevents buffer distribution to multiple channels
+        try (InputChannelRecoveredStateHandler handler = buildMultiChannelHandler()) {
+            assertThatThrownBy(() -> handler.getBuffer(channelInfo))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining(
+                            "One buffer is only distributed to one target InputChannel since "
+                                    + "one buffer is expected to be processed once by the same task.");
+        }
     }
 
     @Test
@@ -109,5 +152,86 @@ class InputChannelRecoveredStateHandlerTest extends RecoveredChannelStateHandler
         // then: All pre-allocated segments should be successfully recycled.
         assertThat(networkBufferPool.getNumberOfAvailableMemorySegments())
                 .isEqualTo(preAllocatedSegments);
+    }
+
+    // AT-36DP: Verify that getBuffer() in filtering mode allocates Heap memory,
+    // not from Network Buffer Pool.
+    @Test
+    void testSourceBufferUsesHeapMemory() throws Exception {
+        // Create handler with non-null filtering handler to enter heap allocation branch
+        InputChannelRecoveredStateHandler filteringIcsHandler =
+                new InputChannelRecoveredStateHandler(
+                        new InputGate[] {inputGate},
+                        new InflightDataRescalingDescriptor(
+                                new InflightDataRescalingDescriptor
+                                                .InflightDataGateOrPartitionRescalingDescriptor[] {
+                                    new InflightDataRescalingDescriptor
+                                            .InflightDataGateOrPartitionRescalingDescriptor(
+                                            new int[] {1},
+                                            RescaleMappings.identity(1, 1),
+                                            new HashSet<>(),
+                                            InflightDataRescalingDescriptor
+                                                    .InflightDataGateOrPartitionRescalingDescriptor
+                                                    .MappingType.IDENTITY)
+                                }),
+                        new ChannelStateFilteringHandler(
+                                new ChannelStateFilteringHandler.GateFilterHandler<?>[0]));
+
+        int availableBefore = networkBufferPool.getNumberOfAvailableMemorySegments();
+
+        RecoveredChannelStateHandler.BufferWithContext<Buffer> bufferWithContext =
+                filteringIcsHandler.getBuffer(channelInfo);
+
+        // Verify the buffer was allocated from heap, not from the network buffer pool
+        assertThat(networkBufferPool.getNumberOfAvailableMemorySegments())
+                .isEqualTo(availableBefore);
+
+        // The buffer should be writable (heap-allocated unpooled segment)
+        assertThat(bufferWithContext.buffer.isWritable()).isTrue();
+
+        bufferWithContext.close();
+        inputGate.close();
+    }
+
+    // AT-41PK: Verify that the heap buffer count limit (MAX_HEAP_BUFFERS_PER_GATE = 5)
+    // is enforced.
+    @Test
+    void testHeapBufferLimit() throws Exception {
+        InputChannelRecoveredStateHandler filteringIcsHandler =
+                new InputChannelRecoveredStateHandler(
+                        new InputGate[] {inputGate},
+                        new InflightDataRescalingDescriptor(
+                                new InflightDataRescalingDescriptor
+                                                .InflightDataGateOrPartitionRescalingDescriptor[] {
+                                    new InflightDataRescalingDescriptor
+                                            .InflightDataGateOrPartitionRescalingDescriptor(
+                                            new int[] {1},
+                                            RescaleMappings.identity(1, 1),
+                                            new HashSet<>(),
+                                            InflightDataRescalingDescriptor
+                                                    .InflightDataGateOrPartitionRescalingDescriptor
+                                                    .MappingType.IDENTITY)
+                                }),
+                        new ChannelStateFilteringHandler(
+                                new ChannelStateFilteringHandler.GateFilterHandler<?>[0]));
+
+        // Allocate up to the limit
+        RecoveredChannelStateHandler.BufferWithContext<Buffer>[] buffers =
+                new RecoveredChannelStateHandler.BufferWithContext
+                        [InputChannelRecoveredStateHandler.MAX_HEAP_BUFFERS_PER_GATE];
+        for (int i = 0; i < InputChannelRecoveredStateHandler.MAX_HEAP_BUFFERS_PER_GATE; i++) {
+            buffers[i] = filteringIcsHandler.getBuffer(channelInfo);
+        }
+
+        // The next allocation should fail with IllegalStateException
+        assertThatThrownBy(() -> filteringIcsHandler.getBuffer(channelInfo))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Heap buffer limit");
+
+        // Cleanup
+        for (RecoveredChannelStateHandler.BufferWithContext<Buffer> buf : buffers) {
+            buf.close();
+        }
+        inputGate.close();
     }
 }

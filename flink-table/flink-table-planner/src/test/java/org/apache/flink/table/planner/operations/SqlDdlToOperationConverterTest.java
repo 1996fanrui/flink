@@ -19,7 +19,7 @@
 package org.apache.flink.table.planner.operations;
 
 import org.apache.flink.core.testutils.FlinkAssertions;
-import org.apache.flink.sql.parser.ddl.SqlCreateTable;
+import org.apache.flink.sql.parser.ddl.table.SqlCreateTable;
 import org.apache.flink.sql.parser.error.SqlValidateException;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.Schema;
@@ -1117,19 +1117,24 @@ class SqlDdlToOperationConverterTest extends SqlNodeToOperationConversionTestBas
         // test alter table options
         checkAlterNonExistTable("alter table %s nonexistent set ('k1' = 'v1', 'K2' = 'V2')");
         Operation operation =
-                parse("alter table if exists cat1.db1.tb1 set ('k1' = 'v1', 'K2' = 'V2')");
+                parse(
+                        "alter table if exists cat1.db1.tb1 set ('k1' = 'v1', 'k2' = 'v2', 'K2' = 'V1', 'K2' = 'V2')");
         Map<String, String> expectedOptions = new HashMap<>();
         expectedOptions.put("connector", "dummy");
         expectedOptions.put("k", "v");
         expectedOptions.put("k1", "v1");
+        expectedOptions.put("k2", "v2");
         expectedOptions.put("K2", "V2");
 
         assertAlterTableOptions(
                 operation,
                 expectedIdentifier,
                 expectedOptions,
-                Arrays.asList(TableChange.set("k1", "v1"), TableChange.set("K2", "V2")),
-                "ALTER TABLE IF EXISTS cat1.db1.tb1\n  SET 'k1' = 'v1',\n  SET 'K2' = 'V2'");
+                List.of(
+                        TableChange.set("k1", "v1"),
+                        TableChange.set("k2", "v2"),
+                        TableChange.set("K2", "V2")),
+                "ALTER TABLE IF EXISTS cat1.db1.tb1\n  SET 'k1' = 'v1',\n  SET 'k2' = 'v2',\n  SET 'K2' = 'V2'");
 
         // test alter table reset
         checkAlterNonExistTable("alter table %s nonexistent reset ('k')");
@@ -1137,8 +1142,8 @@ class SqlDdlToOperationConverterTest extends SqlNodeToOperationConversionTestBas
         assertAlterTableOptions(
                 operation,
                 expectedIdentifier,
-                Collections.singletonMap("connector", "dummy"),
-                Collections.singletonList(TableChange.reset("k")),
+                Map.of("connector", "dummy"),
+                List.of(TableChange.reset("k")),
                 "ALTER TABLE IF EXISTS cat1.db1.tb1\n  RESET 'k'");
         assertThatThrownBy(() -> parse("alter table cat1.db1.tb1 reset ('connector')"))
                 .isInstanceOf(ValidationException.class)
@@ -1223,7 +1228,8 @@ class SqlDdlToOperationConverterTest extends SqlNodeToOperationConversionTestBas
         // rename nested column
         assertThatThrownBy(() -> parse("alter table tb1 rename e.f1 to e.f11"))
                 .isInstanceOf(UnsupportedOperationException.class)
-                .hasMessageContaining("Alter nested row type e.f1 is not supported yet.");
+                .hasMessageContaining(
+                        "Altering the nested row type `e`.`f1` is not supported yet.");
 
         // rename column with duplicate name
         assertThatThrownBy(() -> parse("alter table tb1 rename c to a"))
@@ -1293,7 +1299,8 @@ class SqlDdlToOperationConverterTest extends SqlNodeToOperationConversionTestBas
         // drop a nested column
         assertThatThrownBy(() -> parse("alter table tb1 drop e.f2"))
                 .isInstanceOf(UnsupportedOperationException.class)
-                .hasMessageContaining("Alter nested row type e.f2 is not supported yet.");
+                .hasMessageContaining(
+                        "Altering the nested row type `e`.`f2` is not supported yet.");
 
         // drop a column which generates a computed column
         assertThatThrownBy(() -> parse("alter table tb1 drop a"))
@@ -1354,15 +1361,20 @@ class SqlDdlToOperationConverterTest extends SqlNodeToOperationConversionTestBas
         prepareTable("tb1", 0);
         assertThatThrownBy(() -> parse("alter table tb1 drop primary key"))
                 .isInstanceOf(ValidationException.class)
-                .hasMessageContaining("The base table does not define any primary key.");
+                .hasMessage(
+                        "Failed to execute ALTER TABLE statement.\n"
+                                + "The current table does not define any primary key.");
         assertThatThrownBy(() -> parse("alter table tb1 drop constraint ct"))
                 .isInstanceOf(ValidationException.class)
-                .hasMessageContaining("The base table does not define any primary key.");
+                .hasMessage(
+                        "Failed to execute ALTER TABLE statement.\n"
+                                + "The current table does not define any primary key.");
         prepareTable("tb2", 1);
         assertThatThrownBy(() -> parse("alter table tb2 drop constraint ct2"))
                 .isInstanceOf(ValidationException.class)
-                .hasMessageContaining(
-                        "The base table does not define a primary key constraint named 'ct2'. Available constraint name: ['ct1'].");
+                .hasMessage(
+                        "Failed to execute ALTER TABLE statement.\n"
+                                + "The current table does not define a primary key constraint named 'ct2'. Available constraint name: ['ct1'].");
         checkAlterNonExistTable("alter table %s nonexistent drop primary key");
         checkAlterNonExistTable("alter table %s nonexistent drop constraint ct");
     }
@@ -1578,7 +1590,9 @@ class SqlDdlToOperationConverterTest extends SqlNodeToOperationConversionTestBas
         prepareTable("tb1", false);
         assertThatThrownBy(() -> parse("alter table tb1 drop watermark"))
                 .isInstanceOf(ValidationException.class)
-                .hasMessageContaining("The base table does not define any watermark strategy.");
+                .hasMessage(
+                        "Failed to execute ALTER TABLE statement.\n"
+                                + "The current table does not define any watermark strategy.");
         checkAlterNonExistTable("alter table %s nonexistent drop watermark");
     }
 
@@ -1640,16 +1654,19 @@ class SqlDdlToOperationConverterTest extends SqlNodeToOperationConversionTestBas
         // add an inner field to a nested row
         assertThatThrownBy(() -> parse("alter table tb1 add (e.f3 string)"))
                 .isInstanceOf(UnsupportedOperationException.class)
-                .hasMessageContaining("Alter nested row type e.f3 is not supported yet.");
+                .hasMessageContaining(
+                        "Altering the nested row type `e`.`f3` is not supported yet.");
 
         // refer to a nested inner field
         assertThatThrownBy(() -> parse("alter table tb1 add (x string after e.f2)"))
                 .isInstanceOf(UnsupportedOperationException.class)
-                .hasMessageContaining("Alter nested row type is not supported yet.");
+                .hasMessageContaining(
+                        "Altering the nested row type `e`.`f2` is not supported yet.");
 
         assertThatThrownBy(() -> parse("alter table tb1 add (e.f3 string after e.f1)"))
                 .isInstanceOf(UnsupportedOperationException.class)
-                .hasMessageContaining("Alter nested row type e.f3 is not supported yet.");
+                .hasMessageContaining(
+                        "Altering the nested row type `e`.`f3` is not supported yet.");
         checkAlterNonExistTable("alter table %s nonexistent add a bigint not null");
     }
 
@@ -1774,8 +1791,9 @@ class SqlDdlToOperationConverterTest extends SqlNodeToOperationConversionTestBas
 
         assertThatThrownBy(() -> parse("alter table tb1 add primary key(c) not enforced"))
                 .isInstanceOf(ValidationException.class)
-                .hasMessageContaining(
-                        "The current table has already defined the primary key constraint [`a`]. "
+                .hasMessage(
+                        "Failed to execute ALTER TABLE statement.\n"
+                                + "The current table has already defined the primary key constraint [`a`]. "
                                 + "You might want to drop it before adding a new one.");
 
         assertThatThrownBy(
@@ -1783,27 +1801,30 @@ class SqlDdlToOperationConverterTest extends SqlNodeToOperationConversionTestBas
                                 parse(
                                         "alter table tb1 add x string not null primary key not enforced"))
                 .isInstanceOf(ValidationException.class)
-                .hasMessageContaining(
-                        "The current table has already defined the primary key constraint [`a`]. "
-                                + "You might want to drop it before adding a new one");
+                .hasMessage(
+                        "Failed to execute ALTER TABLE statement.\n"
+                                + "The current table has already defined the primary key constraint [`a`]. "
+                                + "You might want to drop it before adding a new one.");
 
         // the original table has composite pk
         prepareTable("tb2", 2);
 
         assertThatThrownBy(() -> parse("alter table tb2 add primary key(c) not enforced"))
                 .isInstanceOf(ValidationException.class)
-                .hasMessageContaining(
-                        "The current table has already defined the primary key constraint [`a`, `b`]. "
-                                + "You might want to drop it before adding a new one");
+                .hasMessage(
+                        "Failed to execute ALTER TABLE statement.\n"
+                                + "The current table has already defined the primary key constraint [`a`, `b`]. "
+                                + "You might want to drop it before adding a new one.");
 
         assertThatThrownBy(
                         () ->
                                 parse(
                                         "alter table tb2 add x string not null primary key not enforced"))
                 .isInstanceOf(ValidationException.class)
-                .hasMessageContaining(
-                        "The current table has already defined the primary key constraint [`a`, `b`]. "
-                                + "You might want to drop it before adding a new one");
+                .hasMessage(
+                        "Failed to execute ALTER TABLE statement.\n"
+                                + "The current table has already defined the primary key constraint [`a`, `b`]. "
+                                + "You might want to drop it before adding a new one.");
 
         // the original table does not define pk
         prepareTable("tb3", 0);
@@ -1945,8 +1966,9 @@ class SqlDdlToOperationConverterTest extends SqlNodeToOperationConversionTestBas
 
         assertThatThrownBy(() -> parse("alter table tb2 add watermark for ts as ts"))
                 .isInstanceOf(ValidationException.class)
-                .hasMessageContaining(
-                        "The current table has already defined the watermark strategy "
+                .hasMessage(
+                        "Failed to execute ALTER TABLE statement.\n"
+                                + "The current table has already defined the watermark strategy "
                                 + "`ts` AS ts - interval '5' seconds. "
                                 + "You might want to drop it before adding a new one.");
         checkAlterNonExistTable("alter table %s nonexistent add watermark for ts as ts");
@@ -2096,16 +2118,19 @@ class SqlDdlToOperationConverterTest extends SqlNodeToOperationConversionTestBas
         // modify an inner field to a nested row
         assertThatThrownBy(() -> parse("alter table tb2 modify (e.f0 string)"))
                 .isInstanceOf(UnsupportedOperationException.class)
-                .hasMessageContaining("Alter nested row type e.f0 is not supported yet.");
+                .hasMessageContaining(
+                        "Altering the nested row type `e`.`f0` is not supported yet.");
 
         // refer to a nested inner field
         assertThatThrownBy(() -> parse("alter table tb2 modify (g string after e.f2)"))
                 .isInstanceOf(UnsupportedOperationException.class)
-                .hasMessageContaining("Alter nested row type is not supported yet.");
+                .hasMessageContaining(
+                        "Altering the nested row type `e`.`f2` is not supported yet.");
 
         assertThatThrownBy(() -> parse("alter table tb2 modify (e.f0 string after e.f1)"))
                 .isInstanceOf(UnsupportedOperationException.class)
-                .hasMessageContaining("Alter nested row type e.f0 is not supported yet.");
+                .hasMessageContaining(
+                        "Altering the nested row type `e`.`f0` is not supported yet.");
         checkAlterNonExistTable("alter table %s nonexistent modify a int first");
     }
 
@@ -2270,8 +2295,9 @@ class SqlDdlToOperationConverterTest extends SqlNodeToOperationConversionTestBas
                                 parse(
                                         "alter table tb1 modify constraint ct primary key (b) not enforced"))
                 .isInstanceOf(ValidationException.class)
-                .hasMessageContaining(
-                        "The current table does not define any primary key constraint. You might want to add a new one.");
+                .hasMessage(
+                        "Failed to execute ALTER TABLE statement.\n"
+                                + "The current table does not define any primary key constraint. You might want to add a new one.");
 
         prepareTable("tb2", 1);
 
@@ -2430,8 +2456,9 @@ class SqlDdlToOperationConverterTest extends SqlNodeToOperationConversionTestBas
                                 parse(
                                         "alter table tb1 modify watermark for a as to_timestamp(a) - interval '1' minute"))
                 .isInstanceOf(ValidationException.class)
-                .hasMessageContaining(
-                        "The current table does not define any watermark. You might want to add a new one.");
+                .hasMessage(
+                        "Failed to execute ALTER TABLE statement.\n"
+                                + "The current table does not define any watermark. You might want to add a new one.");
 
         prepareTable("tb2", true);
 
@@ -2885,7 +2912,8 @@ class SqlDdlToOperationConverterTest extends SqlNodeToOperationConversionTestBas
         assertThat(alterTableOptionsOperation.getTableIdentifier()).isEqualTo(expectedIdentifier);
         assertThat(alterTableOptionsOperation.getNewTable().getOptions())
                 .isEqualTo(expectedOptions);
-        assertThat(expectedChanges).isEqualTo(alterTableOptionsOperation.getTableChanges());
+        assertThat(expectedChanges)
+                .containsExactlyInAnyOrderElementsOf(alterTableOptionsOperation.getTableChanges());
         assertThat(alterTableOptionsOperation.asSummaryString()).isEqualTo(expectedSummary);
     }
 

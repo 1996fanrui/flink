@@ -18,7 +18,7 @@
 
 package org.apache.flink.table.planner.operations.converters.table;
 
-import org.apache.flink.sql.parser.ddl.SqlCreateTableAs;
+import org.apache.flink.sql.parser.ddl.table.SqlCreateTableAs;
 import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.catalog.CatalogManager;
@@ -32,6 +32,7 @@ import org.apache.flink.table.operations.ddl.CreateTableOperation;
 import org.apache.flink.table.planner.calcite.FlinkPlannerImpl;
 import org.apache.flink.table.planner.operations.PlannerQueryOperation;
 import org.apache.flink.table.planner.operations.SqlNodeToOperationConversion;
+import org.apache.flink.table.planner.operations.converters.MergeTableAsUtil;
 
 import org.apache.calcite.sql.SqlNode;
 

@@ -912,6 +912,19 @@ public final class BuiltInFunctionDefinitions {
                             TypeStrategies.aggArg0(LogicalTypeMerging::findAvgAggType, true))
                     .build();
 
+    public static final BuiltInFunctionDefinition INTERNAL_WELFORD_M2 =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("$WELFORD_M2$1")
+                    .kind(AGGREGATE)
+                    .inputTypeStrategy(
+                            sequence(
+                                    Collections.singletonList("value"),
+                                    Collections.singletonList(logical(LogicalTypeFamily.NUMERIC))))
+                    .outputTypeStrategy(explicit(DataTypes.DOUBLE()))
+                    .runtimeProvided()
+                    .internal()
+                    .build();
+
     public static final BuiltInFunctionDefinition COLLECT =
             BuiltInFunctionDefinition.newBuilder()
                     .name("collect")
@@ -2442,7 +2455,8 @@ public final class BuiltInFunctionDefinitions {
                             sequence(
                                     or(
                                             logical(LogicalTypeRoot.ARRAY),
-                                            logical(LogicalTypeRoot.MAP)),
+                                            logical(LogicalTypeRoot.MAP),
+                                            logical(LogicalTypeRoot.VARIANT)),
                                     InputTypeStrategies.ITEM_AT_INDEX))
                     .outputTypeStrategy(SpecificTypeStrategies.ITEM_AT)
                     .build();

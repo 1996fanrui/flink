@@ -19,11 +19,15 @@ package org.apache.flink.client.program;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.api.common.ApplicationID;
 import org.apache.flink.api.common.JobExecutionResult;
+import org.apache.flink.api.common.JobID;
+import org.apache.flink.api.common.JobInfo;
 import org.apache.flink.client.ClientUtils;
 import org.apache.flink.client.cli.ClientOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.DeploymentOptions;
+import org.apache.flink.configuration.PipelineOptionsInternal;
 import org.apache.flink.core.execution.DetachedJobExecutionResult;
 import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.core.execution.JobListener;
@@ -42,10 +46,13 @@ import org.apache.flink.shaded.guava33.com.google.common.collect.Maps;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
+
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -72,6 +79,10 @@ public class StreamContextEnvironment extends StreamExecutionEnvironment {
     private final boolean programConfigEnabled;
     private final Collection<String> programConfigWildcards;
 
+    @Nullable private final ApplicationID applicationId;
+
+    private final JobIdManager jobIdManager;
+
     public StreamContextEnvironment(
             final PipelineExecutorServiceLoader executorServiceLoader,
             final Configuration configuration,
@@ -89,7 +100,6 @@ public class StreamContextEnvironment extends StreamExecutionEnvironment {
                 Collections.emptyList());
     }
 
-    @Internal
     public StreamContextEnvironment(
             final PipelineExecutorServiceLoader executorServiceLoader,
             final Configuration clusterConfiguration,
@@ -99,6 +109,31 @@ public class StreamContextEnvironment extends StreamExecutionEnvironment {
             final boolean suppressSysout,
             final boolean programConfigEnabled,
             final Collection<String> programConfigWildcards) {
+        this(
+                executorServiceLoader,
+                clusterConfiguration,
+                configuration,
+                userCodeClassLoader,
+                enforceSingleJobExecution,
+                suppressSysout,
+                programConfigEnabled,
+                programConfigWildcards,
+                null,
+                Collections.emptyList());
+    }
+
+    @Internal
+    public StreamContextEnvironment(
+            final PipelineExecutorServiceLoader executorServiceLoader,
+            final Configuration clusterConfiguration,
+            final Configuration configuration,
+            final ClassLoader userCodeClassLoader,
+            final boolean enforceSingleJobExecution,
+            final boolean suppressSysout,
+            final boolean programConfigEnabled,
+            final Collection<String> programConfigWildcards,
+            @Nullable final ApplicationID applicationId,
+            final Collection<JobInfo> allRecoveredJobInfos) {
         super(executorServiceLoader, configuration, userCodeClassLoader);
         this.suppressSysout = suppressSysout;
         this.enforceSingleJobExecution = enforceSingleJobExecution;
@@ -106,6 +141,24 @@ public class StreamContextEnvironment extends StreamExecutionEnvironment {
         this.jobCounter = 0;
         this.programConfigEnabled = programConfigEnabled;
         this.programConfigWildcards = programConfigWildcards;
+        this.applicationId = applicationId;
+        this.jobIdManager = createJobIdManager(configuration, allRecoveredJobInfos);
+    }
+
+    private JobIdManager createJobIdManager(
+            Configuration configuration, Collection<JobInfo> allRecoveredJobInfos) {
+        Optional<String> optionalBaseJobId =
+                configuration.getOptional(PipelineOptionsInternal.PIPELINE_FIXED_JOB_ID);
+        // If optionalBaseJobId is empty, it means the user does not explicitly specify a job ID
+        // and HA mode is not enabled. In this case, deterministic job IDs are unnecessary since
+        // the user is not expecting a predefined job ID and no job matching is required for HA
+        // recovery. So we can use the NO_OP JobIdManager and keep the randomly generated job IDs.
+        if (optionalBaseJobId.isEmpty()) {
+            return JobIdManager.NO_OP;
+        }
+
+        JobID baseJobId = JobID.fromHexString(optionalBaseJobId.get());
+        return new JobNameBasedJobIdManager(baseJobId, allRecoveredJobInfos);
     }
 
     @Override
@@ -185,6 +238,10 @@ public class StreamContextEnvironment extends StreamExecutionEnvironment {
     public JobClient executeAsync(StreamGraph streamGraph) throws Exception {
         checkNotAllowedConfigurations();
         validateAllowedExecution();
+        if (applicationId != null) {
+            streamGraph.setApplicationId(applicationId);
+        }
+        jobIdManager.updateJobId(streamGraph);
         final JobClient jobClient = super.executeAsync(streamGraph);
 
         if (!suppressSysout) {
@@ -209,7 +266,9 @@ public class StreamContextEnvironment extends StreamExecutionEnvironment {
             final Configuration clusterConfiguration,
             final ClassLoader userCodeClassLoader,
             final boolean enforceSingleJobExecution,
-            final boolean suppressSysout) {
+            final boolean suppressSysout,
+            @Nullable final ApplicationID applicationId,
+            Collection<JobInfo> allRecoveredJobInfos) {
         final StreamExecutionEnvironmentFactory factory =
                 envInitConfig -> {
                     final boolean programConfigEnabled =
@@ -227,7 +286,9 @@ public class StreamContextEnvironment extends StreamExecutionEnvironment {
                             enforceSingleJobExecution,
                             suppressSysout,
                             programConfigEnabled,
-                            programConfigWildcards);
+                            programConfigWildcards,
+                            applicationId,
+                            allRecoveredJobInfos);
                 };
         initializeContextEnvironment(factory);
     }

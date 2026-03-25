@@ -19,7 +19,17 @@ under the License.
 <!--
     Misc other content that should run in the header
 -->
-<link rel="stylesheet" type="text/css" href="{{.Site.BaseURL}}/font-awesome/css/font-awesome.min.css">
-<script src="{{.Site.BaseURL}}/js/anchor.min.js"></script>
-<script src="{{.Site.BaseURL}}/js/flink.js"></script>
+<!-- Canonical URL pointing to stable docs to avoid duplicate content issues across versions -->
+{{- $basePath := (urls.Parse .Site.BaseURL).Path -}}
+{{- $pagePath := strings.TrimPrefix $basePath .RelPermalink -}}
+{{- if eq $pagePath "" -}}
+  {{- $pagePath = "/" -}}
+{{- else if not (hasPrefix $pagePath "/") -}}
+  {{- $pagePath = printf "/%s" $pagePath -}}
+{{- end -}}
+<link rel="canonical" href="https://nightlies.apache.org/flink/flink-docs-stable{{ $pagePath }}" />
+
+<link rel="stylesheet" type="text/css" href="{{ $basePath }}/font-awesome/css/font-awesome.min.css">
+<script src="{{ $basePath }}/js/anchor.min.js"></script>
+<script src="{{ $basePath }}/js/flink.js"></script>
 

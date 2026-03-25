@@ -1,0 +1,311 @@
+# Task 5: Data Flow Paths — 两阶段 Buffer 模型
+
+## 1. 概述
+
+Channel state 恢复过程涉及两种不同的 Buffer：
+
+| Buffer 类型 | 含义 | 来源 | 消费者 |
+|------------|------|------|--------|
+| **Source Buffer（过滤前 Buffer）** | 从 S3 读取的原始 channel state 数据 | Heap 内存 | 仅过滤线程 |
+| **Filtered Buffer（过滤后 Buffer）** | 经过 `filterAndRewrite()` 后可直接交给 Task 的数据 | Network Buffer Pool 或磁盘 | Task 线程 + Checkpoint |
+
+**不需要过滤的场景**：没有 Source Buffer 这一层，所有 Buffer 统一按 Filtered Buffer 处理（直接从 S3 读入 Network Buffer 或 spill 到磁盘）。
+
+**本文重点讨论需要过滤的场景**，因为过滤引入了两层 Buffer 的资源竞争问题。
+
+---
+
+## 2. 需要过滤场景的完整数据流
+
+```mermaid
+graph LR
+    S3[(S3<br/>Channel State)]
+
+    subgraph "Gate（按 virtual channel 顺序处理）"
+        SB["Source Buffer<br/>（过滤前）<br/>来自 Heap 内存<br/>每 Gate 最多 5 个"]
+        Filter["filterAndRewrite()<br/>反序列化 + 过滤"]
+        FB["Filtered Buffer<br/>（过滤后）"]
+    end
+
+    Pool["Network Buffer Pool<br/>（固定大小）"]
+    Disk[(Local Disk<br/>Spill Files)]
+    IC["InputChannel<br/>（Task 可消费）"]
+
+    S3 -->|"读取原始数据"| SB
+    SB -->|"反序列化 + 过滤"| Filter
+    Filter -->|"产出过滤后数据"| FB
+
+    Pool -->|"有空闲 Buffer"| FB
+    FB -->|"P1: 直接写入"| IC
+    FB -->|"P2: Pool 无空闲时 spill"| Disk
+    Disk -->|"P3: 有 Buffer 时 replay"| IC
+
+    style S3 fill:#e1f5fe
+    style SB fill:#fff9c4
+    style Filter fill:#fff9c4
+    style FB fill:#e8f5e9
+    style Pool fill:#e8f5e9
+    style Disk fill:#fce4ec
+    style IC fill:#c8e6c9
+```
+
+### 两层 Buffer 的处理流程
+
+1. **Source Buffer（过滤前）**：从 S3 读取原始 buffer 数据，使用 **Heap 内存**分配，供 `filterAndRewrite()` 消费后立即释放
+2. **Filtered Buffer（过滤后）**：`filterAndRewrite()` 产出的结果，走 P1/P2/P3 三条路径之一进入 InputChannel
+
+---
+
+## 3. 死锁问题分析
+
+### 3.1 问题场景
+
+如果 Source Buffer 和 Filtered Buffer 都从同一个 Network Buffer Pool 申请，会产生死锁：
+
+```mermaid
+graph TD
+    Pool["Network Buffer Pool<br/>（固定大小，例如 100 个 Buffer）"]
+
+    subgraph "Gate：多个 Channel 并发处理"
+        CH1_SB["Channel 1 Source Buffer<br/>（占用中）"]
+        CH2_SB["Channel 2 Source Buffer<br/>（占用中）"]
+        CHN_SB["Channel N Source Buffer<br/>（占用中）"]
+        CH1_FB["Channel 1 Filtered Buffer<br/>（等待分配…）"]
+    end
+
+    Pool -->|"已分配"| CH1_SB
+    Pool -->|"已分配"| CH2_SB
+    Pool -->|"已分配"| CHN_SB
+    Pool -.->|"Pool 已耗尽！"| CH1_FB
+
+    style Pool fill:#ffcdd2
+    style CH1_SB fill:#fff9c4
+    style CH2_SB fill:#fff9c4
+    style CHN_SB fill:#fff9c4
+    style CH1_FB fill:#ffcdd2
+```
+
+**死锁形成过程：**
+
+1. 一个 Gate 下有多个 Virtual Channel，每个 Channel 都需要先申请 Source Buffer 读取 S3 原始数据
+2. Source Buffer 在整个 `filterAndRewrite()` 期间被持有，过滤完成后才能释放
+3. `filterAndRewrite()` 内部需要申请 Filtered Buffer 来存放过滤结果
+4. 如果多个 Channel 的 Source Buffer 把 Pool 耗尽 → Filtered Buffer 申请阻塞
+5. Source Buffer 要等过滤完成才释放 → 过滤要等 Filtered Buffer 才能完成
+6. **循环等待 → 死锁**
+
+### 3.2 死锁的根本原因
+
+| 条件 | 说明 |
+|------|------|
+| **资源竞争** | Source Buffer 和 Filtered Buffer 竞争同一个有限资源池 |
+| **持有并等待** | Source Buffer 被持有的同时，还在等待 Filtered Buffer |
+| **不可抢占** | 已分配的 Source Buffer 不能被强制回收 |
+| **循环等待** | Source Buffer 等过滤完成 → 过滤等 Filtered Buffer → Filtered Buffer 等 Pool 释放 → Pool 被 Source Buffer 占满 |
+
+---
+
+## 4. 解决方案：内存隔离 + 并发控制
+
+### 4.1 核心设计
+
+通过两个机制彻底消除死锁：
+
+**机制一：内存来源隔离** — Source Buffer 使用 Heap 内存，Filtered Buffer 使用 Network Buffer Pool，两者不竞争同一资源。
+
+**机制二：并发控制** — Gate 内部按 Virtual Channel 顺序处理（Channel 1 处理完再处理 Channel 2），避免多个 Channel 同时持有 Source Buffer。
+
+```mermaid
+graph TD
+    Heap["Heap 内存<br/>每 Gate 上限 5 个 Buffer"]
+    Pool["Network Buffer Pool<br/>（固定大小）"]
+
+    subgraph "Gate（顺序处理 Virtual Channel）"
+        SB["Source Buffer<br/>（过滤前）"]
+        Filter["filterAndRewrite()"]
+        FB["Filtered Buffer<br/>（过滤后）"]
+        SB --> Filter --> FB
+    end
+
+    Heap -->|"分配"| SB
+    Pool -->|"分配（或 spill 到磁盘）"| FB
+
+    style Heap fill:#e1f5fe
+    style Pool fill:#e8f5e9
+    style SB fill:#fff9c4
+    style FB fill:#e8f5e9
+```
+
+### 4.2 Source Buffer：Heap 内存 + 数量限制
+
+| 设计要素 | 说明 |
+|---------|------|
+| **内存来源** | Heap 内存（`MemorySegmentFactory.allocateUnpooledSegment`） |
+| **数量上限** | 每个 Gate 最多 5 个 Heap Buffer |
+| **生命周期** | 仅在 `filterAndRewrite()` 期间存活，处理完立即释放 |
+| **处理顺序** | Gate 内按 Virtual Channel 顺序处理，一个 Channel 处理完再处理下一个 |
+
+**为什么限制每 Gate 5 个：**
+- 防止 Heap 内存无限增长导致 OOM
+- 每个 Buffer 约 32KB，5 个 = 160KB/Gate，内存开销可控
+- 顺序处理 Channel 意味着同一时刻最多只有 1 个 Channel 在使用这些 Buffer，5 个足够单 Channel 的处理流水线
+
+**为什么按 Virtual Channel 顺序处理：**
+- 如果多个 Channel 并发处理，每个 Channel 都会持有 Source Buffer，总量 = Channel 数 × Buffer 数，可能耗尽 Heap 限额
+- 顺序处理确保同一时刻只有一个 Channel 占用 Source Buffer，用完即释放，下一个 Channel 复用
+- 这也简化了实现，避免了多 Channel 并发带来的复杂同步问题
+
+### 4.3 Filtered Buffer：原有逻辑 + Spill 兜底
+
+Filtered Buffer 是过滤后可直接交给 Task 处理的数据，走原有的三条路径：
+
+| 路径 | 条件 | 行为 |
+|------|------|------|
+| **P1 Memory Path** | Network Buffer Pool 有空闲 Buffer 且磁盘无数据 | 过滤结果直接写入 Network Buffer → InputChannel |
+| **P2 Spill Path** | Network Buffer Pool 无空闲 Buffer | 过滤结果 spill 到本地磁盘（复用 `FileBasedBuffer`） |
+| **P3 Replay Path** | Network Buffer Pool 有空闲 Buffer 且磁盘有数据 | 从磁盘读取已过滤数据 → Network Buffer → InputChannel |
+
+**P2 Spill 使用 `FileBasedBuffer`**：复用现有的 `FileBasedBuffer`（当前实现为 `LazyFileBuffer`）将过滤后的 Buffer 数据写入本地磁盘文件。
+
+> **注意**：当前 `LazyFileBuffer` 存在已知 bug，具体原因待排查。实现时需要评估是修复还是重新实现。
+
+### 4.4 Spill 文件的两种消费场景
+
+当 Filtered Buffer 被 spill 到磁盘后，有两种场景会消费这些磁盘数据，**必须区分处理**：
+
+```mermaid
+graph TD
+    SpillFile["Spill File<br/>（磁盘上的已过滤数据）"]
+
+    subgraph "场景一：Task 消费"
+        ReqBuf["等待 Network Buffer 可用"]
+        Load["从磁盘加载到 Network Buffer"]
+        Task["Task 线程消费"]
+        ReqBuf --> Load --> Task
+    end
+
+    subgraph "场景二：Checkpoint 快照"
+        Snap["直接备份磁盘文件<br/>到 Checkpoint Storage"]
+    end
+
+    SpillFile -->|"有空闲 Buffer 时"| ReqBuf
+    SpillFile -->|"Checkpoint 触发时"| Snap
+
+    style SpillFile fill:#fce4ec
+    style Load fill:#e8f5e9
+    style Task fill:#c8e6c9
+    style Snap fill:#e1f5fe
+```
+
+#### 场景一：Task 消费（需要加载到内存）
+
+- **前提**：Network Buffer Pool 有空闲 Buffer
+- **流程**：从磁盘读取数据 → 写入 Network Buffer → 放入 InputChannel → Task 消费
+- **关键约束**：**Task 永远不直接消费磁盘数据**。Task 只消费 Network Buffer，所以 spill 文件必须先加载到 Network Buffer 才能被 Task 处理
+- 加载完成后，对应的磁盘文件可以立即清理
+
+#### 场景二：Checkpoint 快照（不需要加载到内存）
+
+- **前提**：Checkpoint 触发时，磁盘上仍有未被加载的 spill 数据
+- **流程**：**直接将磁盘文件备份到 Checkpoint Storage**，不需要先加载到 Network Buffer
+- **关键约束**：Checkpoint 不应该触发磁盘到内存的加载操作。如果 Checkpoint 时内存不足（否则数据早就被 P3 加载了），强制加载反而会加剧内存压力
+- 具体的上传接口需要调研现有 Checkpoint 机制（可能需要区别于 Network Buffer 的快照方式）
+
+#### 边界情况：数据已加载到内存
+
+如果 spill 数据在 Checkpoint 触发之前已经通过 P3 加载到了 Network Buffer（进入了 InputChannel），则：
+
+- 磁盘文件已被清理
+- Checkpoint 直接走现有的 InputChannel Buffer 快照逻辑
+- **不需要特殊处理**，完全复用已有代码
+
+#### 设计要求
+
+Spill 文件必须能区分自身所处的状态，以便在不同消费场景下采取正确的行为：
+
+| 状态 | Task 消费 | Checkpoint 快照 |
+|------|----------|----------------|
+| **在磁盘上**（未加载） | 等 Buffer 可用后加载 | 直接备份磁盘文件 |
+| **已加载到 Network Buffer** | 正常消费 | 复用现有 Buffer 快照逻辑 |
+
+---
+
+## 5. 为什么这个方案能解决死锁
+
+| 死锁条件 | 是否满足 | 原因 |
+|---------|---------|------|
+| **资源竞争** | **不满足** | Source Buffer 用 Heap，Filtered Buffer 用 Pool，两者隔离 |
+| **持有并等待** | **不满足** | Source Buffer 不占用 Pool 资源，不会阻止 Filtered Buffer 分配 |
+| **循环等待** | **不满足** | 单向依赖：Heap → Filter → Pool/Disk，不存在环 |
+
+同时通过两层保护控制 Heap 内存风险：
+
+1. **数量限制**（每 Gate 最多 5 个 Heap Buffer）→ 内存使用量可预测（≤ 5 × 32KB = 160KB/Gate）
+2. **顺序处理**（按 Virtual Channel 逐个处理）→ 同一时刻只有一个 Channel 的 Source Buffer 存活
+
+---
+
+## 6. 三条路径的详细说明
+
+### P1: S3-To-Memory（Memory Path）
+
+- **完整流程**: S3 → Heap Buffer(Source) → filterAndRewrite() → Network Buffer(Filtered) → InputChannel
+- **触发条件**: Network Buffer Pool 有空闲 Buffer **且** 磁盘无待 replay 数据
+- **说明**: 最高效路径。Source Buffer 从 Heap 分配，过滤结果直接写入 Network Buffer 交给 Task
+
+### P2: S3-To-Disk-Spill（Spill Path）
+
+- **完整流程**: S3 → Heap Buffer(Source) → filterAndRewrite() → Spill to Disk(Filtered)
+- **触发条件**: Network Buffer Pool 无空闲 Buffer
+- **说明**: 反压处理。过滤不阻塞（Source Buffer 来自 Heap，不受 Pool 限制），过滤结果 spill 到磁盘。复用 `FileBasedBuffer` 实现磁盘读写
+
+### P3: Disk-To-Memory（Replay Path）
+
+- **完整流程**: Disk → Network Buffer(Filtered) → InputChannel
+- **触发条件**: Network Buffer Pool 有空闲 Buffer **且** 磁盘有已过滤数据
+- **说明**: 将之前 spill 的数据加载回 Network Buffer。磁盘有数据时 P3 优先于 P1，保证数据顺序
+
+### Key Constraint
+
+**P2 和 P3 始终配对。** P2 spill 的数据必须经过 P3 才能进入 InputChannel。磁盘有数据时 P3 优先于 P1，保证数据顺序。
+
+---
+
+## 7. 不需要过滤的场景
+
+以下两种情况不会触发过滤逻辑，**完全走原始的 channel state 恢复路径**，不涉及本文描述的两阶段 Buffer 模型：
+
+| 场景 | 说明 |
+|------|------|
+| **未开启 unaligned checkpoint recovery** | 配置 `execution.checkpointing.unaligned.during-recovery.enabled = false`（默认值），不会启用过滤逻辑 |
+| **开启了但并行度未改变** | 即使配置为 `true`，如果算子并行度没有发生变化（无 rescale），不需要过滤，因为 channel state 与当前拓扑完全匹配 |
+
+**这两种场景的处理方式：**
+
+- Task 直接消费从 S3 读取的原始 Buffer，不经过 `filterAndRewrite()`
+- 不存在 Source Buffer 和 Filtered Buffer 的区分，只有一种 Buffer
+- **不申请任何 Heap Buffer**，不涉及内存隔离机制
+- 完全复用现有的 channel state 恢复逻辑，不做任何改动
+
+### 代码层面的判断逻辑
+
+判断是否需要过滤的控制点在 `StreamTaskNetworkInputFactory#create`（`flink-runtime/.../streaming/runtime/io/StreamTaskNetworkInputFactory.java`）：
+
+```java
+// 简化后的判断逻辑
+if (rescalingDescriptor.equals(InflightDataRescalingDescriptor.NO_RESCALE)
+        || unalignedDuringRecoveryEnabled) {
+    // 不需要过滤 → 走原始路径（StreamTaskNetworkInput）
+} else {
+    // 需要过滤 → 走 rescale 路径（RescalingStreamTaskNetworkInput）
+}
+```
+
+两个条件对应上述两种场景：
+
+| 条件 | 对应场景 | 含义 |
+|------|---------|------|
+| `unalignedDuringRecoveryEnabled = false` | 场景一：未开启配置 | 过滤功能本身未启用，Task 线程自行处理（走 `RescalingStreamTaskNetworkInput` 的老路径，或因 `NO_RESCALE` 走普通路径） |
+| `rescalingDescriptor == NO_RESCALE` | 场景二：并行度未变 | `InflightDataRescalingDescriptor` 由 Flink 在恢复时根据拓扑变化计算，并行度不变时为 `NO_RESCALE`，不需要过滤 |
+
+**只有当 `unalignedDuringRecoveryEnabled = true` 且 `rescalingDescriptor != NO_RESCALE` 时**，才会触发 channel-state-unspilling 线程中的过滤逻辑，进入本文描述的两阶段 Buffer 模型。

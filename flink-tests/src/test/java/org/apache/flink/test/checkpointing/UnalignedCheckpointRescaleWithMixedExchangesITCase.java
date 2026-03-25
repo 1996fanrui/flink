@@ -21,6 +21,7 @@ package org.apache.flink.test.checkpointing;
 import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.typeinfo.Types;
+import org.apache.flink.api.connector.source.lib.NumberSequenceSource;
 import org.apache.flink.api.connector.source.util.ratelimit.RateLimiterStrategy;
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.configuration.CheckpointingOptions;
@@ -48,6 +49,8 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
@@ -57,6 +60,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Random;
+import java.util.concurrent.ThreadLocalRandom;
 
 import static org.apache.flink.configuration.RestartStrategyOptions.RestartStrategyType.NO_RESTART_STRATEGY;
 
@@ -67,10 +71,19 @@ import static org.apache.flink.configuration.RestartStrategyOptions.RestartStrat
 @RunWith(Parameterized.class)
 public class UnalignedCheckpointRescaleWithMixedExchangesITCase extends TestLogger {
 
+    private static final Logger LOG =
+            LoggerFactory.getLogger(UnalignedCheckpointRescaleWithMixedExchangesITCase.class);
+
     private static final int NUM_TASK_MANAGERS = 1;
     private static final int SLOTS_PER_TASK_MANAGER = 10;
     private static final int MAX_SLOTS = NUM_TASK_MANAGERS * SLOTS_PER_TASK_MANAGER;
     private static final Random RANDOM = new Random();
+
+    // Use 100-char String records instead of Long to increase per-record size. With Long (8 bytes),
+    // each buffer holds thousands of records, causing excessive backpressure during aligned
+    // checkpoint phases (forward/rescale exchanges). Larger String records reduce the record count
+    // per buffer, shortening the time needed to drain backpressured buffers.
+    private static final int RECORD_LENGTH = 100;
 
     private static MiniClusterWithClientResource cluster;
     @Rule public TemporaryFolder temporaryFolder = new TemporaryFolder();
@@ -89,10 +102,16 @@ public class UnalignedCheckpointRescaleWithMixedExchangesITCase extends TestLogg
 
     @Before
     public void setup() throws Exception {
+        // MAX_RETAINED_CHECKPOINTS must be set at cluster level because
+        // StandaloneCompletedCheckpointStore reads it from the cluster config,
+        // not the per-job config. This prevents the picked checkpoint from being
+        // subsumed and deleted before the next job restores from it.
+        Configuration clusterConfig = new Configuration();
+        clusterConfig.set(CheckpointingOptions.MAX_RETAINED_CHECKPOINTS, 50);
         cluster =
                 new MiniClusterWithClientResource(
                         new MiniClusterResourceConfiguration.Builder()
-                                .setConfiguration(new Configuration())
+                                .setConfiguration(clusterConfig)
                                 .setNumberTaskManagers(NUM_TASK_MANAGERS)
                                 .setNumberSlotsPerTaskManager(SLOTS_PER_TASK_MANAGER)
                                 .build());
@@ -120,19 +139,34 @@ public class UnalignedCheckpointRescaleWithMixedExchangesITCase extends TestLogg
 
         CommonTestUtils.waitForJobStatus(jobClient1, Collections.singletonList(JobStatus.RUNNING));
         CommonTestUtils.waitForAllTaskRunning(miniCluster, jobClient1.getJobID(), false);
-        String checkpointPath =
+        String checkpointPath1 =
                 CommonTestUtils.waitForCheckpointWithInflightBuffers(
                         jobClient1.getJobID(), miniCluster);
         jobClient1.cancel().get();
+        LOG.info("First checkpoint path: {}", checkpointPath1);
 
         // Step 2: Restore the job with a different parallelism
         JobClient jobClient2 =
-                executeJobViaEnv.executeJob(getUnalignedCheckpointEnv(checkpointPath));
+                executeJobViaEnv.executeJob(getUnalignedCheckpointEnv(checkpointPath1));
 
         CommonTestUtils.waitForJobStatus(jobClient2, Collections.singletonList(JobStatus.RUNNING));
         CommonTestUtils.waitForAllTaskRunning(miniCluster, jobClient2.getJobID(), false);
-        CommonTestUtils.waitForCheckpointWithInflightBuffers(jobClient2.getJobID(), miniCluster);
+        String checkpointPath2 =
+                CommonTestUtils.waitForCheckpointWithInflightBuffers(
+                        jobClient2.getJobID(), miniCluster);
         jobClient2.cancel().get();
+        LOG.info("Second checkpoint path: {}", checkpointPath2);
+
+        // Step 3: Restore from Step 2's checkpoint with random parallelism. This validates
+        // that a checkpoint produced after recovery can be used for another recovery.
+        JobClient jobClient3 =
+                executeJobViaEnv.executeJob(getUnalignedCheckpointEnv(checkpointPath2));
+
+        CommonTestUtils.waitForJobStatus(jobClient3, Collections.singletonList(JobStatus.RUNNING));
+        CommonTestUtils.waitForAllTaskRunning(miniCluster, jobClient3.getJobID(), false);
+        // Wait for at least one checkpoint to verify the recovery was successful
+        CommonTestUtils.waitForCheckpointWithInflightBuffers(jobClient3.getJobID(), miniCluster);
+        jobClient3.cancel().get();
     }
 
     private StreamExecutionEnvironment getUnalignedCheckpointEnv(@Nullable String recoveryPath)
@@ -160,8 +194,6 @@ public class UnalignedCheckpointRescaleWithMixedExchangesITCase extends TestLogg
         // The smaller the buffer size means the fewer records are needed to be consumed during
         // aligned checkpoint.
         conf.set(TaskManagerOptions.MEMORY_SEGMENT_SIZE, MemorySize.parse("1 kb"));
-        // To prevent the picked checkpoint is deleted
-        conf.set(CheckpointingOptions.MAX_RETAINED_CHECKPOINTS, 50);
         if (recoveryPath != null) {
             conf.set(StateRecoveryOptions.SAVEPOINT_PATH, recoveryPath);
         }
@@ -171,20 +203,14 @@ public class UnalignedCheckpointRescaleWithMixedExchangesITCase extends TestLogg
     }
 
     private static JobClient createMultiOutputDAG(StreamExecutionEnvironment env) throws Exception {
-        DataGeneratorSource<Long> source =
-                new DataGeneratorSource<>(
-                        index -> index,
-                        Long.MAX_VALUE,
-                        RateLimiterStrategy.perSecond(5000),
-                        Types.LONG);
 
         int sourceParallelism = getRandomParallelism();
-        DataStream<Long> sourceStream =
-                env.fromSource(source, WatermarkStrategy.noWatermarks(), "Data Generator")
+        DataStream<String> sourceStream =
+                env.fromSource(createSource(), WatermarkStrategy.noWatermarks(), "Data Generator")
                         .setParallelism(sourceParallelism);
 
         sourceStream
-                .keyBy((KeySelector<Long, Long>) value -> value)
+                .keyBy((KeySelector<String, String>) value -> value)
                 .map(
                         x -> {
                             Thread.sleep(5);
@@ -208,29 +234,17 @@ public class UnalignedCheckpointRescaleWithMixedExchangesITCase extends TestLogg
 
     private static JobClient createMultiInputDAG(StreamExecutionEnvironment env) throws Exception {
         int source1Parallelism = getRandomParallelism();
-        DataGeneratorSource<Long> source1 =
-                new DataGeneratorSource<>(
-                        index -> index,
-                        Long.MAX_VALUE,
-                        RateLimiterStrategy.perSecond(5000),
-                        Types.LONG);
-        DataStream<Long> sourceStream1 =
-                env.fromSource(source1, WatermarkStrategy.noWatermarks(), "Source 1")
+        DataStream<String> sourceStream1 =
+                env.fromSource(createSource(), WatermarkStrategy.noWatermarks(), "Source 1")
                         .setParallelism(source1Parallelism);
 
         int source2Parallelism = getRandomParallelism();
-        DataGeneratorSource<Long> source2 =
-                new DataGeneratorSource<>(
-                        index -> index,
-                        Long.MAX_VALUE,
-                        RateLimiterStrategy.perSecond(5000),
-                        Types.LONG);
-        DataStream<Long> sourceStream2 =
-                env.fromSource(source2, WatermarkStrategy.noWatermarks(), "Source 2")
+        DataStream<String> sourceStream2 =
+                env.fromSource(createSource(), WatermarkStrategy.noWatermarks(), "Source 2")
                         .setParallelism(source2Parallelism);
 
         // Keep the same parallelism to ensure the ForwardPartitioner will be used.
-        DataStream<Long> forwardedStream =
+        DataStream<String> forwardedStream =
                 sourceStream2.map(x -> x).setParallelism(source2Parallelism);
 
         sourceStream1
@@ -245,20 +259,14 @@ public class UnalignedCheckpointRescaleWithMixedExchangesITCase extends TestLogg
 
     private static JobClient createRescalePartitionerDAG(StreamExecutionEnvironment env)
             throws Exception {
-        DataGeneratorSource<Long> source =
-                new DataGeneratorSource<>(
-                        index -> index,
-                        Long.MAX_VALUE,
-                        RateLimiterStrategy.perSecond(5000),
-                        Types.LONG);
 
         int sourceParallelism = getRandomParallelism();
-        DataStream<Long> sourceStream =
-                env.fromSource(source, WatermarkStrategy.noWatermarks(), "Data Generator")
+        DataStream<String> sourceStream =
+                env.fromSource(createSource(), WatermarkStrategy.noWatermarks(), "Data Generator")
                         .setParallelism(sourceParallelism);
 
         sourceStream
-                .keyBy((KeySelector<Long, Long>) value -> value)
+                .keyBy((KeySelector<String, String>) value -> value)
                 .map(
                         x -> {
                             Thread.sleep(5);
@@ -284,32 +292,20 @@ public class UnalignedCheckpointRescaleWithMixedExchangesITCase extends TestLogg
             throws Exception {
         // Multi-input part
         int source1Parallelism = getRandomParallelism();
-        DataGeneratorSource<Long> source1 =
-                new DataGeneratorSource<>(
-                        index -> index,
-                        Long.MAX_VALUE,
-                        RateLimiterStrategy.perSecond(5000),
-                        Types.LONG);
-        DataStream<Long> sourceStream1 =
-                env.fromSource(source1, WatermarkStrategy.noWatermarks(), "Source 1")
+        DataStream<String> sourceStream1 =
+                env.fromSource(createSource(), WatermarkStrategy.noWatermarks(), "Source 1")
                         .setParallelism(source1Parallelism);
 
         int source2Parallelism = getRandomParallelism();
-        DataGeneratorSource<Long> source2 =
-                new DataGeneratorSource<>(
-                        index -> index,
-                        Long.MAX_VALUE,
-                        RateLimiterStrategy.perSecond(5000),
-                        Types.LONG);
-        DataStream<Long> sourceStream2 =
-                env.fromSource(source2, WatermarkStrategy.noWatermarks(), "Source 2")
+        DataStream<String> sourceStream2 =
+                env.fromSource(createSource(), WatermarkStrategy.noWatermarks(), "Source 2")
                         .setParallelism(source2Parallelism);
 
         // Keep the same parallelism to ensure the ForwardPartitioner will be used.
-        DataStream<Long> forwardedStream =
+        DataStream<String> forwardedStream =
                 sourceStream2.map(x -> x).setParallelism(source2Parallelism);
 
-        DataStream<Long> multiInputMap =
+        DataStream<String> multiInputMap =
                 sourceStream1
                         .rebalance()
                         .connect(forwardedStream.rebalance())
@@ -319,7 +315,7 @@ public class UnalignedCheckpointRescaleWithMixedExchangesITCase extends TestLogg
 
         // Multi-output part
         multiInputMap
-                .keyBy((KeySelector<Long, Long>) value -> value)
+                .keyBy((KeySelector<String, String>) value -> value)
                 .map(
                         x -> {
                             Thread.sleep(5);
@@ -349,34 +345,22 @@ public class UnalignedCheckpointRescaleWithMixedExchangesITCase extends TestLogg
     private static JobClient createPartEmptyHashExchangeDAG(StreamExecutionEnvironment env)
             throws Exception {
         int source1Parallelism = getRandomParallelism();
-        DataGeneratorSource<Long> source1 =
-                new DataGeneratorSource<>(
-                        index -> index,
-                        Long.MAX_VALUE,
-                        RateLimiterStrategy.perSecond(5000),
-                        Types.LONG);
-        DataStream<Long> sourceStream1 =
-                env.fromSource(source1, WatermarkStrategy.noWatermarks(), "Source 1")
+        DataStream<String> sourceStream1 =
+                env.fromSource(createSource(), WatermarkStrategy.noWatermarks(), "Source 1")
                         .setParallelism(source1Parallelism);
 
         int source2Parallelism = getRandomParallelism();
-        DataGeneratorSource<Long> source2 =
-                new DataGeneratorSource<>(
-                        index -> index,
-                        Long.MAX_VALUE,
-                        RateLimiterStrategy.perSecond(5000),
-                        Types.LONG);
 
         // Filter all records to simulate empty state exchange
-        DataStream<Long> sourceStream2 =
-                env.fromSource(source2, WatermarkStrategy.noWatermarks(), "Source 2")
+        DataStream<String> sourceStream2 =
+                env.fromSource(createSource(), WatermarkStrategy.noWatermarks(), "Source 2")
                         .setParallelism(source2Parallelism)
                         .filter(value -> false)
                         .setParallelism(source2Parallelism);
 
         sourceStream1
                 .union(sourceStream2)
-                .keyBy((KeySelector<Long, Long>) value -> value)
+                .keyBy((KeySelector<String, String>) value -> value)
                 .map(
                         x -> {
                             Thread.sleep(5);
@@ -392,16 +376,37 @@ public class UnalignedCheckpointRescaleWithMixedExchangesITCase extends TestLogg
         return RANDOM.nextInt(MAX_SLOTS) + 1;
     }
 
+    private static DataGeneratorSource<String> createSource() {
+        return new DataGeneratorSource<>(
+                index -> {
+                    ThreadLocalRandom rnd = ThreadLocalRandom.current();
+                    StringBuilder sb = new StringBuilder(RECORD_LENGTH);
+                    for (int i = 0; i < RECORD_LENGTH; i++) {
+                        sb.append((char) ('a' + rnd.nextInt(26)));
+                    }
+                    return sb.toString();
+                },
+                new NumberSequenceSource(0, Long.MAX_VALUE - 1) {
+                    @Override
+                    protected List<NumberSequenceSplit> splitNumberRange(
+                            long from, long to, int numSplitsIgnored) {
+                        return super.splitNumberRange(from, to, MAX_SLOTS);
+                    }
+                },
+                RateLimiterStrategy.perSecond(5000),
+                Types.STRING) {};
+    }
+
     /** A simple CoMapFunction that sleeps for 1ms for each element. */
-    private static class SleepingCoMap implements CoMapFunction<Long, Long, Long> {
+    private static class SleepingCoMap<T> implements CoMapFunction<T, T, T> {
         @Override
-        public Long map1(Long value) throws Exception {
+        public T map1(T value) throws Exception {
             Thread.sleep(1);
             return value;
         }
 
         @Override
-        public Long map2(Long value) throws Exception {
+        public T map2(T value) throws Exception {
             Thread.sleep(1);
             return value;
         }

@@ -94,6 +94,7 @@ import org.apache.flink.runtime.operators.coordination.OperatorEvent;
 import org.apache.flink.runtime.operators.coordination.TaskNotRunningException;
 import org.apache.flink.runtime.query.KvStateLocation;
 import org.apache.flink.runtime.query.UnknownKvStateLocation;
+import org.apache.flink.runtime.rest.messages.job.rescales.JobRescaleConfigInfo;
 import org.apache.flink.runtime.rpc.FatalErrorHandler;
 import org.apache.flink.runtime.scheduler.CoordinatorNotExistException;
 import org.apache.flink.runtime.scheduler.DefaultVertexParallelismInfo;
@@ -160,6 +161,7 @@ import java.util.function.Supplier;
 import static org.apache.flink.configuration.JobManagerOptions.SCHEDULER_RESCALE_TRIGGER_MAX_DELAY;
 import static org.apache.flink.configuration.TraceOptions.CHECKPOINT_SPAN_DETAIL_LEVEL;
 import static org.apache.flink.runtime.executiongraph.ExecutionGraphUtils.isAnyOutputBlocking;
+import static org.apache.flink.runtime.scheduler.adaptive.ForwardEdgesAdapter.copyJobGraphWithAdaptedForwardEdges;
 
 /**
  * A {@link SchedulerNG} implementation that uses the declarative resource management and
@@ -303,7 +305,9 @@ public class AdaptiveScheduler
                     configuration.get(
                             SCHEDULER_RESCALE_TRIGGER_MAX_DELAY,
                             maximumDelayForRescaleTriggerDefault),
-                    rescaleOnFailedCheckpointsCount);
+                    rescaleOnFailedCheckpointsCount,
+                    // TODO: The parameter passing link will be implemented after FLIP-495.
+                    -1);
         }
 
         private final SchedulerExecutionMode executionMode;
@@ -314,6 +318,7 @@ public class AdaptiveScheduler
         private final Duration executingResourceStabilizationTimeout;
         private final Duration maximumDelayForTriggeringRescale;
         private final int rescaleOnFailedCheckpointCount;
+        private final int rescaleHistoryMax;
 
         private Settings(
                 SchedulerExecutionMode executionMode,
@@ -323,7 +328,8 @@ public class AdaptiveScheduler
                 Duration executingCooldownTimeout,
                 Duration executingResourceStabilizationTimeout,
                 Duration maximumDelayForTriggeringRescale,
-                int rescaleOnFailedCheckpointCount) {
+                int rescaleOnFailedCheckpointCount,
+                int rescaleHistoryMax) {
             this.executionMode = executionMode;
             this.submissionResourceWaitTimeout = submissionResourceWaitTimeout;
             this.submissionResourceStabilizationTimeout = submissionResourceStabilizationTimeout;
@@ -332,6 +338,7 @@ public class AdaptiveScheduler
             this.executingResourceStabilizationTimeout = executingResourceStabilizationTimeout;
             this.maximumDelayForTriggeringRescale = maximumDelayForTriggeringRescale;
             this.rescaleOnFailedCheckpointCount = rescaleOnFailedCheckpointCount;
+            this.rescaleHistoryMax = rescaleHistoryMax;
         }
 
         public SchedulerExecutionMode getExecutionMode() {
@@ -364,6 +371,23 @@ public class AdaptiveScheduler
 
         public int getRescaleOnFailedCheckpointCount() {
             return rescaleOnFailedCheckpointCount;
+        }
+
+        public int getRescaleHistoryMax() {
+            return rescaleHistoryMax;
+        }
+
+        public JobRescaleConfigInfo toJobRescaleConfigInfo() {
+            return new JobRescaleConfigInfo(
+                    rescaleHistoryMax,
+                    executionMode,
+                    submissionResourceWaitTimeout.toMillis(),
+                    submissionResourceStabilizationTimeout.toMillis(),
+                    slotIdleTimeout.toMillis(),
+                    executingCooldownTimeout.toMillis(),
+                    executingResourceStabilizationTimeout.toMillis(),
+                    maximumDelayForTriggeringRescale.toMillis(),
+                    rescaleOnFailedCheckpointCount);
         }
     }
 
@@ -714,6 +738,11 @@ public class AdaptiveScheduler
     }
 
     @Override
+    public JobManagerOptions.SchedulerType getSchedulerType() {
+        return JobManagerOptions.SchedulerType.Adaptive;
+    }
+
+    @Override
     public void startScheduling() {
         checkIdleSlotTimeout();
         state.as(Created.class)
@@ -843,7 +872,11 @@ public class AdaptiveScheduler
 
     @Override
     public ExecutionGraphInfo requestJob() {
-        return new ExecutionGraphInfo(state.getJob(), exceptionHistory.toArrayList());
+        return new ExecutionGraphInfo(
+                state.getJob(),
+                exceptionHistory.toArrayList(),
+                getSchedulerType(),
+                settings.toJobRescaleConfigInfo());
     }
 
     @Override
@@ -1137,10 +1170,8 @@ public class AdaptiveScheduler
     private JobAllocationsInformation getJobAllocationsInformationFromGraphAndState(
             @Nullable final ExecutionGraph previousExecutionGraph) {
 
-        CompletedCheckpoint latestCompletedCheckpoint = null;
-        if (jobGraph.isCheckpointingEnabled()) {
-            latestCompletedCheckpoint = completedCheckpointStore.getLatestCheckpoint();
-        }
+        CompletedCheckpoint latestCompletedCheckpoint =
+                completedCheckpointStore.getLatestCheckpoint();
 
         if (previousExecutionGraph == null || latestCompletedCheckpoint == null) {
             return JobAllocationsInformation.empty();
@@ -1473,8 +1504,11 @@ public class AdaptiveScheduler
                                     new ExecutionStateUpdateListener[0]));
         }
 
+        final JobGraph adjustedJobGraph =
+                copyJobGraphWithAdaptedForwardEdges(jobInformation, adjustedParallelismStore);
+
         return executionGraphFactory.createAndRestoreExecutionGraph(
-                jobInformation.copyJobGraph(),
+                adjustedJobGraph,
                 completedCheckpointStore,
                 checkpointsCleaner,
                 checkpointIdCounter,

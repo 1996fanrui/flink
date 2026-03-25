@@ -18,6 +18,7 @@
 
 package org.apache.flink.runtime.rest.messages.json;
 
+import org.apache.flink.runtime.clusterframework.ApplicationStatus;
 import org.apache.flink.runtime.jobmaster.JobResult;
 import org.apache.flink.util.OptionalFailure;
 import org.apache.flink.util.SerializedThrowable;
@@ -43,6 +44,8 @@ public class JobResultSerializer extends StdSerializer<JobResult> {
     private static final long serialVersionUID = 1L;
 
     static final String FIELD_NAME_JOB_ID = "id";
+
+    static final String FIELD_NAME_JOB_NAME = "name";
 
     static final String FIELD_NAME_APPLICATION_STATUS = "application-status";
 
@@ -78,8 +81,12 @@ public class JobResultSerializer extends StdSerializer<JobResult> {
         gen.writeFieldName(FIELD_NAME_JOB_ID);
         jobIdSerializer.serialize(result.getJobId(), gen, provider);
 
+        gen.writeFieldName(FIELD_NAME_JOB_NAME);
+        gen.writeString(result.getJobName());
+
+        // use application status to maintain backward compatibility
         gen.writeFieldName(FIELD_NAME_APPLICATION_STATUS);
-        gen.writeString(result.getApplicationStatus().name());
+        gen.writeString(ApplicationStatus.fromJobStatus(result.getJobStatus().orElse(null)).name());
 
         gen.writeFieldName(FIELD_NAME_ACCUMULATOR_RESULTS);
         gen.writeStartObject();

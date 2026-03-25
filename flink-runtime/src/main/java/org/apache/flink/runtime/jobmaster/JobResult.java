@@ -25,7 +25,6 @@ import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.api.common.accumulators.AccumulatorHelper;
 import org.apache.flink.runtime.client.JobCancellationException;
 import org.apache.flink.runtime.client.JobExecutionException;
-import org.apache.flink.runtime.clusterframework.ApplicationStatus;
 import org.apache.flink.runtime.dispatcher.Dispatcher;
 import org.apache.flink.runtime.executiongraph.AccessExecutionGraph;
 import org.apache.flink.runtime.executiongraph.ErrorInfo;
@@ -57,7 +56,10 @@ public class JobResult implements Serializable {
 
     private final JobID jobId;
 
-    private final ApplicationStatus applicationStatus;
+    private final String jobName;
+
+    /** Stores the job status, null if unknown. */
+    @Nullable private final JobStatus jobStatus;
 
     private final Map<String, SerializedValue<OptionalFailure<Object>>> accumulatorResults;
 
@@ -68,15 +70,20 @@ public class JobResult implements Serializable {
 
     private JobResult(
             final JobID jobId,
-            final ApplicationStatus applicationStatus,
+            final String jobName,
+            @Nullable final JobStatus jobStatus,
             final Map<String, SerializedValue<OptionalFailure<Object>>> accumulatorResults,
             final long netRuntime,
             @Nullable final SerializedThrowable serializedThrowable) {
 
         checkArgument(netRuntime >= 0, "netRuntime must be greater than or equals 0");
+        checkArgument(
+                jobStatus == null || jobStatus.isGloballyTerminalState(),
+                "jobStatus must be globally terminal or unknow(null)");
 
         this.jobId = requireNonNull(jobId);
-        this.applicationStatus = requireNonNull(applicationStatus);
+        this.jobName = requireNonNull(jobName);
+        this.jobStatus = jobStatus;
         this.accumulatorResults = requireNonNull(accumulatorResults);
         this.netRuntime = netRuntime;
         this.serializedThrowable = serializedThrowable;
@@ -84,16 +91,20 @@ public class JobResult implements Serializable {
 
     /** Returns {@code true} if the job finished successfully. */
     public boolean isSuccess() {
-        return applicationStatus == ApplicationStatus.SUCCEEDED
-                || (applicationStatus == ApplicationStatus.UNKNOWN && serializedThrowable == null);
+        return jobStatus == JobStatus.FINISHED
+                || (jobStatus == null && serializedThrowable == null);
     }
 
     public JobID getJobId() {
         return jobId;
     }
 
-    public ApplicationStatus getApplicationStatus() {
-        return applicationStatus;
+    public String getJobName() {
+        return jobName;
+    }
+
+    public Optional<JobStatus> getJobStatus() {
+        return Optional.ofNullable(jobStatus);
     }
 
     public Map<String, SerializedValue<OptionalFailure<Object>>> getAccumulatorResults() {
@@ -124,7 +135,7 @@ public class JobResult implements Serializable {
      */
     public JobExecutionResult toJobExecutionResult(ClassLoader classLoader)
             throws JobExecutionException, IOException, ClassNotFoundException {
-        if (applicationStatus == ApplicationStatus.SUCCEEDED) {
+        if (jobStatus == JobStatus.FINISHED) {
             return new JobExecutionResult(
                     jobId,
                     netRuntime,
@@ -140,17 +151,15 @@ public class JobResult implements Serializable {
 
             final JobExecutionException exception;
 
-            if (applicationStatus == ApplicationStatus.FAILED) {
+            if (jobStatus == JobStatus.FAILED) {
                 exception = new JobExecutionException(jobId, "Job execution failed.", cause);
-            } else if (applicationStatus == ApplicationStatus.CANCELED) {
+            } else if (jobStatus == JobStatus.CANCELED) {
                 exception = new JobCancellationException(jobId, "Job was cancelled.", cause);
             } else {
                 exception =
                         new JobExecutionException(
                                 jobId,
-                                "Job completed with illegal application status: "
-                                        + applicationStatus
-                                        + '.',
+                                "Job completed with illegal status: " + jobStatus + '.',
                                 cause);
             }
 
@@ -164,7 +173,9 @@ public class JobResult implements Serializable {
 
         private JobID jobId;
 
-        private ApplicationStatus applicationStatus = ApplicationStatus.UNKNOWN;
+        private String jobName = "unknown";
+
+        private JobStatus jobStatus;
 
         private Map<String, SerializedValue<OptionalFailure<Object>>> accumulatorResults;
 
@@ -177,8 +188,13 @@ public class JobResult implements Serializable {
             return this;
         }
 
-        public Builder applicationStatus(final ApplicationStatus applicationStatus) {
-            this.applicationStatus = applicationStatus;
+        public Builder jobName(final String jobName) {
+            this.jobName = jobName;
+            return this;
+        }
+
+        public Builder jobStatus(final JobStatus jobStatus) {
+            this.jobStatus = jobStatus;
             return this;
         }
 
@@ -201,7 +217,8 @@ public class JobResult implements Serializable {
         public JobResult build() {
             return new JobResult(
                     jobId,
-                    applicationStatus,
+                    jobName,
+                    jobStatus,
                     accumulatorResults == null ? Collections.emptyMap() : accumulatorResults,
                     netRuntime,
                     serializedThrowable);
@@ -232,8 +249,9 @@ public class JobResult implements Serializable {
 
         final JobResult.Builder builder = new JobResult.Builder();
         builder.jobId(jobId);
+        builder.jobName(accessExecutionGraph.getJobName());
 
-        builder.applicationStatus(ApplicationStatus.fromJobStatus(accessExecutionGraph.getState()));
+        builder.jobStatus(jobStatus.isGloballyTerminalState() ? jobStatus : null);
 
         final long netRuntime =
                 accessExecutionGraph.getStatusTimestamp(jobStatus)
