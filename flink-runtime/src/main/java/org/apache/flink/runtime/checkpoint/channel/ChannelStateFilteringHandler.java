@@ -39,7 +39,6 @@ import org.apache.flink.streaming.runtime.streamrecord.StreamElementSerializer;
 
 import javax.annotation.Nullable;
 
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -89,7 +88,7 @@ public class ChannelStateFilteringHandler {
                 int oldChannelIndex,
                 Buffer sourceBuffer,
                 BufferSupplier bufferSupplier)
-                throws IOException {
+                throws IOException, InterruptedException {
 
             SubtaskConnectionDescriptor key =
                     new SubtaskConnectionDescriptor(oldSubtaskIndex, oldChannelIndex);
@@ -124,15 +123,15 @@ public class ChannelStateFilteringHandler {
          * big-endian length + record bytes) expected by Flink's record deserializers.
          */
         private List<Buffer> serializeToBuffers(
-                List<StreamElement> elements, BufferSupplier bufferSupplier) throws IOException {
+                List<StreamElement> elements, BufferSupplier bufferSupplier)
+                throws IOException, InterruptedException {
 
             List<Buffer> resultBuffers = new ArrayList<>();
             if (elements.isEmpty()) {
                 return resultBuffers;
             }
 
-            RecoveredChannelStateHandler.BufferWithContext<Buffer> currentBufferCtx =
-                    bufferSupplier.requestBuffer();
+            Buffer currentBuffer = bufferSupplier.requestBufferBlocking();
 
             for (StreamElement element : elements) {
                 outputSerializer.clear();
@@ -140,35 +139,25 @@ public class ChannelStateFilteringHandler {
                 int recordLength = outputSerializer.length();
 
                 writeLengthToBuffer(recordLength);
-                currentBufferCtx =
+                currentBuffer =
                         writeDataToBuffer(
-                                lengthBuffer,
-                                0,
-                                4,
-                                currentBufferCtx,
-                                resultBuffers,
-                                bufferSupplier);
+                                lengthBuffer, 0, 4, currentBuffer, resultBuffers, bufferSupplier);
 
                 byte[] serializedData = outputSerializer.getSharedBuffer();
-                currentBufferCtx =
+                currentBuffer =
                         writeDataToBuffer(
                                 serializedData,
                                 0,
                                 recordLength,
-                                currentBufferCtx,
+                                currentBuffer,
                                 resultBuffers,
                                 bufferSupplier);
             }
 
-            // Finish writing and add to result.
-            // Order is important: retain first, then close/recycle.
-            // For regular NetworkBuffer, close() calls recycleBuffer() which decrements refCnt.
-            // For LazyFileBuffer, close() calls finishWriting() to complete file writing.
-            if (currentBufferCtx.context.readableBytes() > 0) {
-                resultBuffers.add(currentBufferCtx.context.retainBuffer());
+            if (currentBuffer.readableBytes() > 0) {
+                resultBuffers.add(currentBuffer.retainBuffer());
             }
-            currentBufferCtx.close();
-            currentBufferCtx.context.recycleBuffer();
+            currentBuffer.recycleBuffer();
 
             return resultBuffers;
         }
@@ -186,40 +175,43 @@ public class ChannelStateFilteringHandler {
          *
          * @return the buffer to continue writing into (may differ from the input buffer).
          */
-        private RecoveredChannelStateHandler.BufferWithContext<Buffer> writeDataToBuffer(
+        private Buffer writeDataToBuffer(
                 byte[] data,
                 int dataOffset,
                 int dataLength,
-                RecoveredChannelStateHandler.BufferWithContext<Buffer> currentBufferCtx,
+                Buffer currentBuffer,
                 List<Buffer> resultBuffers,
                 BufferSupplier bufferSupplier)
-                throws IOException {
-
+                throws IOException, InterruptedException {
             int offset = dataOffset;
             int remaining = dataLength;
 
             while (remaining > 0) {
-                if (!currentBufferCtx.buffer.isWritable()) {
-                    // Current buffer is full, add to results and get new one.
-                    // Order is important: retain first, then close/recycle.
-                    // For regular NetworkBuffer, close() calls recycleBuffer() which decrements
-                    // refCnt.
-                    // For LazyFileBuffer, close() calls finishWriting() to complete file writing.
-                    if (currentBufferCtx.context.readableBytes() > 0) {
-                        resultBuffers.add(currentBufferCtx.context.retainBuffer());
+                int writableBytes = currentBuffer.getMaxCapacity() - currentBuffer.getSize();
+
+                if (writableBytes == 0) {
+                    if (currentBuffer.readableBytes() > 0) {
+                        resultBuffers.add(currentBuffer.retainBuffer());
                     }
-                    currentBufferCtx.close();
-                    currentBufferCtx.context.recycleBuffer();
-                    currentBufferCtx = bufferSupplier.requestBuffer();
+                    currentBuffer.recycleBuffer();
+                    currentBuffer = bufferSupplier.requestBufferBlocking();
+                    writableBytes = currentBuffer.getMaxCapacity();
                 }
 
-                // Write via ChannelStateByteBuffer (writes to file for LazyFileBuffer)
-                ByteArrayInputStream bais = new ByteArrayInputStream(data, offset, remaining);
-                int written = currentBufferCtx.buffer.writeBytes(bais, remaining);
-                offset += written;
-                remaining -= written;
+                int bytesToWrite = Math.min(remaining, writableBytes);
+                currentBuffer
+                        .getMemorySegment()
+                        .put(
+                                currentBuffer.getMemorySegmentOffset() + currentBuffer.getSize(),
+                                data,
+                                offset,
+                                bytesToWrite);
+                currentBuffer.setSize(currentBuffer.getSize() + bytesToWrite);
+
+                offset += bytesToWrite;
+                remaining -= bytesToWrite;
             }
-            return currentBufferCtx;
+            return currentBuffer;
         }
 
         boolean hasPartialData() {
@@ -378,7 +370,7 @@ public class ChannelStateFilteringHandler {
             int oldChannelIndex,
             Buffer sourceBuffer,
             BufferSupplier bufferSupplier)
-            throws IOException {
+            throws IOException, InterruptedException {
 
         if (gateIndex < 0 || gateIndex >= gateHandlers.length) {
             throw new IllegalStateException(
