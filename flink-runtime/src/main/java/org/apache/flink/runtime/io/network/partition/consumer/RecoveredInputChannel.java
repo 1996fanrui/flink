@@ -27,12 +27,10 @@ import org.apache.flink.runtime.event.TaskEvent;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
 import org.apache.flink.runtime.io.network.api.serialization.EventSerializer;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
-import org.apache.flink.runtime.io.network.buffer.LazyFileBuffer;
 import org.apache.flink.runtime.io.network.logger.NetworkActionsLogger;
 import org.apache.flink.runtime.io.network.partition.ChannelStateHolder;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 import org.apache.flink.runtime.io.network.partition.ResultSubpartitionIndexSet;
-import org.apache.flink.runtime.memory.MemoryManager;
 import org.apache.flink.util.Preconditions;
 
 import org.slf4j.Logger;
@@ -41,7 +39,6 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 
-import java.io.File;
 import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.Optional;
@@ -334,17 +331,10 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
         if (!inputGate.isUnalignedDuringRecoveryEnabled()) {
             return bufferManager.requestBufferBlocking();
         }
-        // TODO FLINK-38544: Simplified spilling logic - use a heap buffer as fallback to avoid
-        // hanging if the buffer pool is insufficient during recovery.
-        Buffer buffer = bufferManager.requestBuffer();
-        if (buffer != null) {
-            return buffer;
-        }
-
-        // Fallback to LazyFileBuffer when pool is exhausted
-        File tempFile = File.createTempFile("lazy-buffer-", ".tmp");
-        tempFile.deleteOnExit();
-        return new LazyFileBuffer(tempFile, MemoryManager.DEFAULT_PAGE_SIZE);
+        // In unaligned recovery mode, non-blocking request - returns null when pool is exhausted.
+        // The caller (RecoveredChannelStateHandler) handles the null case with heap buffer
+        // fallback.
+        return bufferManager.requestBuffer();
     }
 
     @Override

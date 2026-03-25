@@ -20,7 +20,6 @@ package org.apache.flink.runtime.checkpoint.channel;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.BufferBuilder;
-import org.apache.flink.runtime.io.network.buffer.LazyFileBuffer;
 import org.apache.flink.util.Preconditions;
 
 import org.apache.flink.shaded.netty4.io.netty.buffer.ByteBuf;
@@ -171,29 +170,6 @@ interface ChannelStateByteBuffer extends AutoCloseable {
                 final int bytesRead = input.read(bytes, written, bytes.length - written);
                 written += bytesRead;
                 return bytesRead;
-            }
-        };
-    }
-
-    static ChannelStateByteBuffer wrap(LazyFileBuffer buffer) {
-        return new ChannelStateByteBuffer() {
-            @Override
-            public boolean isWritable() {
-                return buffer.getSize() < buffer.getMaxCapacity();
-            }
-
-            @Override
-            public void close() {
-                try {
-                    buffer.finishWriting();
-                } catch (IOException e) {
-                    // Ignore close errors
-                }
-            }
-
-            @Override
-            public int writeBytes(InputStream input, int bytesToRead) throws IOException {
-                return buffer.writeBytes(input, bytesToRead);
             }
         };
     }

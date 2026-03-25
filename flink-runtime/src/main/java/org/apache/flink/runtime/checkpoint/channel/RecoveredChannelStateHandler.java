@@ -17,6 +17,8 @@
 
 package org.apache.flink.runtime.checkpoint.channel;
 
+import org.apache.flink.core.memory.MemorySegment;
+import org.apache.flink.core.memory.MemorySegmentFactory;
 import org.apache.flink.runtime.checkpoint.InflightDataRescalingDescriptor;
 import org.apache.flink.runtime.checkpoint.RescaleMappings;
 import org.apache.flink.runtime.io.network.api.SubtaskConnectionDescriptor;
@@ -25,11 +27,13 @@ import org.apache.flink.runtime.io.network.api.writer.ResultPartitionWriter;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.BufferBuilder;
 import org.apache.flink.runtime.io.network.buffer.BufferConsumer;
-import org.apache.flink.runtime.io.network.buffer.LazyFileBuffer;
+import org.apache.flink.runtime.io.network.buffer.FreeingBufferRecycler;
+import org.apache.flink.runtime.io.network.buffer.NetworkBuffer;
 import org.apache.flink.runtime.io.network.partition.CheckpointedResultPartition;
 import org.apache.flink.runtime.io.network.partition.consumer.InputChannel;
 import org.apache.flink.runtime.io.network.partition.consumer.InputGate;
 import org.apache.flink.runtime.io.network.partition.consumer.RecoveredInputChannel;
+import org.apache.flink.runtime.memory.MemoryManager;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
@@ -98,13 +102,19 @@ class InputChannelRecoveredStateHandler
         // request the buffer from any mapped channel as they all will receive the same buffer
         RecoveredInputChannel channel = getMappedChannels(channelInfo);
         Buffer buffer = channel.requestBuffer();
-
-        if (buffer instanceof LazyFileBuffer) {
-            return new BufferWithContext<>(
-                    ChannelStateByteBuffer.wrap((LazyFileBuffer) buffer), buffer);
-        } else {
-            return new BufferWithContext<>(wrap(buffer), buffer);
+        if (buffer == null) {
+            // Heap buffer fallback when Network Buffer Pool is exhausted during
+            // unaligned recovery. Avoids deadlock by not competing with the pool.
+            MemorySegment segment =
+                    MemorySegmentFactory.allocateUnpooledSegment(MemoryManager.DEFAULT_PAGE_SIZE);
+            buffer =
+                    new NetworkBuffer(
+                            segment,
+                            FreeingBufferRecycler.INSTANCE,
+                            Buffer.DataType.DATA_BUFFER,
+                            0);
         }
+        return new BufferWithContext<>(wrap(buffer), buffer);
     }
 
     @Override
