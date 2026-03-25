@@ -25,7 +25,7 @@ FLIP-547 的核心目标是支持在 Recovery 阶段触发 Checkpoint，以解�
 | Task 2 | [FLINK-38930](https://issues.apache.org/jira/browse/FLINK-38930) | 核心过滤机制 | 🔍 社区 Review 中 | 必需 |
 | Task 3 | [FLINK-39018](https://issues.apache.org/jira/browse/FLINK-39018) | LocalInputChannel Snapshot 支持 | 🔍 社区 Review 中 | 必需 |
 | Task 4 | [FLINK-38543](https://issues.apache.org/jira/browse/FLINK-38543) | 控制面变更（生命周期、Checkpoint 触发） | 🔍 社区 Review 中 | 必需 |
-| Task 5 | [FLINK-38544](https://issues.apache.org/jira/browse/FLINK-38544) | 内存压力处理 | ✅ POC 完成（LazyFileBuffer），整体首版跳过 | 可选（优化） |
+| Task 5 | [FLINK-38544](https://issues.apache.org/jira/browse/FLINK-38544) | 内存压力处理（Spilling） | 🚧 开发中 | 必需 |
 
 **相关 Commits（按任务分组，commit ID 可能因 rebase 变化，以 message 为准）:**
 
@@ -206,9 +206,11 @@ Task 1 (✅ 已合并)
 ## Task 5: 内存压力处理 (FLINK-38544)
 
 **Jira**: [FLINK-38544](https://issues.apache.org/jira/browse/FLINK-38544)
-**状态**: ✅ POC 完成（LazyFileBuffer），整体首版跳过
+**状态**: 🚧 开发中
 
-**优先级**: 可选（优化项，首版可跳过）
+**详细设计文档**: [task5_spilling_design.md](./task5_spilling_design.md)
+
+**优先级**: 必需（解决 Network Buffer 不足时的死锁和 OOM 问题）
 
 ### 为什么 Task 5 是可选的
 
