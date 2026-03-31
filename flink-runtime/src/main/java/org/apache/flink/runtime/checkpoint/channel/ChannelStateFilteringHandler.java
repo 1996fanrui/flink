@@ -291,10 +291,16 @@ public class ChannelStateFilteringHandler implements Closeable {
          * Deserializes records from {@code sourceBuffer}, applies the virtual channel's record
          * filter, and immediately re-serializes each surviving record into output buffers.
          *
+         * <p>Takes ownership of {@code sourceBuffer}. On success, sourceBuffer is consumed by the
+         * deserializer. On failure, all buffers (sourceBuffer if not yet transferred,
+         * currentBuffer, and resultBuffers) are recycled before re-throwing.
+         *
          * <p>Uses streaming processing: each record is deserialized and re-serialized one at a
          * time, so only one deserialized Java object is held in memory at any point. This avoids
          * accumulating all deserialized records in a list, which could cause memory pressure when
          * deserialized objects are significantly larger than their serialized form.
+         *
+         * @return filtered buffers owned by the caller. Caller is responsible for recycling.
          */
         List<Buffer> filterAndRewrite(
                 int oldSubtaskIndex,
@@ -303,49 +309,72 @@ public class ChannelStateFilteringHandler implements Closeable {
                 BufferSupplier bufferSupplier)
                 throws IOException, InterruptedException {
 
-            SubtaskConnectionDescriptor key =
-                    new SubtaskConnectionDescriptor(oldSubtaskIndex, oldChannelIndex);
-            VirtualChannel<T> vc = virtualChannels.get(key);
-            if (vc == null) {
-                throw new IllegalStateException(
-                        "No VirtualChannel found for key: "
-                                + key
-                                + "; known channels are "
-                                + virtualChannels.keySet());
-            }
-
-            vc.setNextBuffer(sourceBuffer);
-
+            boolean sourceBufferOwnershipTransferred = false;
             List<Buffer> resultBuffers = new ArrayList<>();
             Buffer currentBuffer = null;
+            try {
+                SubtaskConnectionDescriptor key =
+                        new SubtaskConnectionDescriptor(oldSubtaskIndex, oldChannelIndex);
+                VirtualChannel<T> vc = virtualChannels.get(key);
+                if (vc == null) {
+                    throw new IllegalStateException(
+                            "No VirtualChannel found for key: "
+                                    + key
+                                    + "; known channels are "
+                                    + virtualChannels.keySet());
+                }
 
-            while (true) {
-                DeserializationResult result = vc.getNextRecord(deserializationDelegate);
-                if (result.isFullRecord()) {
-                    if (currentBuffer == null) {
-                        currentBuffer = bufferSupplier.requestBufferBlocking();
+                vc.setNextBuffer(sourceBuffer);
+                // After setNextBuffer, deserializer owns sourceBuffer and will recycle it
+                // when consumed. From this point, we must NOT touch sourceBuffer.
+                sourceBufferOwnershipTransferred = true;
+
+                while (true) {
+                    DeserializationResult result = vc.getNextRecord(deserializationDelegate);
+                    if (result.isFullRecord()) {
+                        if (currentBuffer == null) {
+                            currentBuffer = bufferSupplier.requestBufferBlocking();
+                        }
+                        currentBuffer =
+                                serializeElement(
+                                        deserializationDelegate.getInstance(),
+                                        currentBuffer,
+                                        resultBuffers,
+                                        bufferSupplier);
                     }
-                    currentBuffer =
-                            serializeElement(
-                                    deserializationDelegate.getInstance(),
-                                    currentBuffer,
-                                    resultBuffers,
-                                    bufferSupplier);
+                    if (result.isBufferConsumed()) {
+                        break;
+                    }
                 }
-                if (result.isBufferConsumed()) {
-                    break;
-                }
-            }
 
-            if (currentBuffer != null) {
-                if (currentBuffer.readableBytes() > 0) {
-                    resultBuffers.add(currentBuffer);
-                } else {
+                if (currentBuffer != null) {
+                    if (currentBuffer.readableBytes() > 0) {
+                        resultBuffers.add(currentBuffer);
+                    } else {
+                        currentBuffer.recycleBuffer();
+                    }
+                    currentBuffer = null;
+                }
+
+                return resultBuffers;
+            } catch (Throwable t) {
+                if (!sourceBufferOwnershipTransferred) {
+                    sourceBuffer.recycleBuffer();
+                }
+                // currentBuffer may already be in resultBuffers if writeDataToBuffer added it
+                // before the supplier threw an exception (Java pass-by-value means our local
+                // variable still points to the old buffer). Only recycle if not in resultBuffers.
+                if (currentBuffer != null
+                        && (resultBuffers.isEmpty()
+                                || resultBuffers.get(resultBuffers.size() - 1) != currentBuffer)) {
                     currentBuffer.recycleBuffer();
                 }
+                for (Buffer buf : resultBuffers) {
+                    buf.recycleBuffer();
+                }
+                resultBuffers.clear();
+                throw t;
             }
-
-            return resultBuffers;
         }
 
         /**
