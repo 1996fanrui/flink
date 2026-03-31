@@ -290,11 +290,6 @@ public class ChannelStateFilteringHandler implements Closeable {
         /**
          * Deserializes records from {@code sourceBuffer}, applies the virtual channel's record
          * filter, and immediately re-serializes each surviving record into output buffers.
-         *
-         * <p>Uses streaming processing: each record is deserialized and re-serialized one at a
-         * time, so only one deserialized Java object is held in memory at any point. This avoids
-         * accumulating all deserialized records in a list, which could cause memory pressure when
-         * deserialized objects are significantly larger than their serialized form.
          */
         List<Buffer> filterAndRewrite(
                 int oldSubtaskIndex,
@@ -303,49 +298,69 @@ public class ChannelStateFilteringHandler implements Closeable {
                 BufferSupplier bufferSupplier)
                 throws IOException, InterruptedException {
 
-            SubtaskConnectionDescriptor key =
-                    new SubtaskConnectionDescriptor(oldSubtaskIndex, oldChannelIndex);
-            VirtualChannel<T> vc = virtualChannels.get(key);
-            if (vc == null) {
-                throw new IllegalStateException(
-                        "No VirtualChannel found for key: "
-                                + key
-                                + "; known channels are "
-                                + virtualChannels.keySet());
-            }
-
-            vc.setNextBuffer(sourceBuffer);
-
+            boolean sourceBufferOwnershipTransferred = false;
             List<Buffer> resultBuffers = new ArrayList<>();
             Buffer currentBuffer = null;
+            try {
+                SubtaskConnectionDescriptor key =
+                        new SubtaskConnectionDescriptor(oldSubtaskIndex, oldChannelIndex);
+                VirtualChannel<T> vc = virtualChannels.get(key);
+                if (vc == null) {
+                    throw new IllegalStateException(
+                            "No VirtualChannel found for key: "
+                                    + key
+                                    + "; known channels are "
+                                    + virtualChannels.keySet());
+                }
 
-            while (true) {
-                DeserializationResult result = vc.getNextRecord(deserializationDelegate);
-                if (result.isFullRecord()) {
-                    if (currentBuffer == null) {
-                        currentBuffer = bufferSupplier.requestBufferBlocking();
+                vc.setNextBuffer(sourceBuffer);
+                sourceBufferOwnershipTransferred = true;
+
+                while (true) {
+                    DeserializationResult result = vc.getNextRecord(deserializationDelegate);
+                    if (result.isFullRecord()) {
+                        if (currentBuffer == null) {
+                            currentBuffer = bufferSupplier.requestBufferBlocking();
+                        }
+                        currentBuffer =
+                                serializeElement(
+                                        deserializationDelegate.getInstance(),
+                                        currentBuffer,
+                                        resultBuffers,
+                                        bufferSupplier);
                     }
-                    currentBuffer =
-                            serializeElement(
-                                    deserializationDelegate.getInstance(),
-                                    currentBuffer,
-                                    resultBuffers,
-                                    bufferSupplier);
+                    if (result.isBufferConsumed()) {
+                        break;
+                    }
                 }
-                if (result.isBufferConsumed()) {
-                    break;
-                }
-            }
 
-            if (currentBuffer != null) {
-                if (currentBuffer.readableBytes() > 0) {
-                    resultBuffers.add(currentBuffer);
-                } else {
+                if (currentBuffer != null) {
+                    if (currentBuffer.readableBytes() > 0) {
+                        resultBuffers.add(currentBuffer);
+                    } else {
+                        currentBuffer.recycleBuffer();
+                    }
+                    currentBuffer = null;
+                }
+
+                return resultBuffers;
+            } catch (Throwable t) {
+                if (!sourceBufferOwnershipTransferred) {
+                    sourceBuffer.recycleBuffer();
+                }
+                // Avoid double-recycle: currentBuffer may already be the last element in
+                // resultBuffers if serializeElement added it before the exception.
+                if (currentBuffer != null
+                        && (resultBuffers.isEmpty()
+                                || resultBuffers.get(resultBuffers.size() - 1) != currentBuffer)) {
                     currentBuffer.recycleBuffer();
                 }
+                for (Buffer buf : resultBuffers) {
+                    buf.recycleBuffer();
+                }
+                resultBuffers.clear();
+                throw t;
             }
-
-            return resultBuffers;
         }
 
         /**

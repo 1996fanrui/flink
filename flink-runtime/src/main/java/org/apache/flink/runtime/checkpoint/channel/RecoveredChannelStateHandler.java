@@ -100,30 +100,6 @@ class InputChannelRecoveredStateHandler
         return new BufferWithContext<>(wrap(buffer), buffer);
     }
 
-    /**
-     * Buffer lifecycle in recover().
-     *
-     * <pre>
-     * Empty buffer:
-     *   buffer(ref=1) → readableBytes=0, skip → finally recycles(ref=0)
-     *
-     * Non-filtering path:
-     *   buffer(ref=1) → retain(ref=2) → channel owns one ref
-     *                                  → finally recycles(ref=1), channel keeps its ref
-     *
-     * Filtering path (success):
-     *   buffer(ref=1) → filterAndRewrite → deserializer recycles when consumed(ref=0)
-     *                                    → finally: isRecycled=true, skip
-     *
-     * Filtering path (error before deserializer takes buffer):
-     *   buffer(ref=1) → filterAndRewrite throws before setNextBuffer
-     *                  → finally: isRecycled=false, recycles(ref=0)
-     *
-     * Filtering path (error after deserializer takes buffer):
-     *   buffer(ref=1) → deserializer recycles(ref=0) → serializeToBuffers throws
-     *                  → finally: isRecycled=true, skip
-     * </pre>
-     */
     @Override
     public void recover(
             InputChannelInfo channelInfo,
@@ -136,7 +112,8 @@ class InputChannelRecoveredStateHandler
                 RecoveredInputChannel channel = getMappedChannels(channelInfo);
 
                 if (filteringHandler != null) {
-                    recoverWithFiltering(channel, channelInfo, oldSubtaskIndex, buffer);
+                    recoverWithFiltering(
+                            channel, channelInfo, oldSubtaskIndex, buffer.retainBuffer());
                 } else {
                     channel.onRecoveredStateBuffer(
                             EventSerializer.toBuffer(
@@ -147,9 +124,7 @@ class InputChannelRecoveredStateHandler
                 }
             }
         } finally {
-            if (!buffer.isRecycled()) {
-                buffer.recycleBuffer();
-            }
+            buffer.recycleBuffer();
         }
     }
 
@@ -157,7 +132,7 @@ class InputChannelRecoveredStateHandler
             RecoveredInputChannel channel,
             InputChannelInfo channelInfo,
             int oldSubtaskIndex,
-            Buffer buffer)
+            Buffer retainedBuffer)
             throws IOException, InterruptedException {
         checkState(filteringHandler != null, "filtering handler not set.");
         List<Buffer> filteredBuffers =
@@ -165,11 +140,19 @@ class InputChannelRecoveredStateHandler
                         channelInfo.getGateIdx(),
                         oldSubtaskIndex,
                         channelInfo.getInputChannelIdx(),
-                        buffer,
+                        retainedBuffer,
                         channel::requestBufferBlocking);
 
-        for (Buffer filteredBuffer : filteredBuffers) {
-            channel.onRecoveredStateBuffer(filteredBuffer);
+        int i = 0;
+        try {
+            for (; i < filteredBuffers.size(); i++) {
+                channel.onRecoveredStateBuffer(filteredBuffers.get(i));
+            }
+        } catch (Throwable t) {
+            for (int j = i; j < filteredBuffers.size(); j++) {
+                filteredBuffers.get(j).recycleBuffer();
+            }
+            throw t;
         }
     }
 
