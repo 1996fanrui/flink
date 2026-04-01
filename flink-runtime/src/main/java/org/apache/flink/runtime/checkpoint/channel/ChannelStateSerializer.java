@@ -94,6 +94,33 @@ interface ChannelStateByteBuffer extends AutoCloseable {
         };
     }
 
+    /**
+     * Wraps a Buffer for filtering scenarios where the caller manages buffer lifecycle. Unlike
+     * wrap(Buffer), the close() method does NOT call recycleBuffer(). This is useful when the
+     * caller needs to explicitly control when the buffer is recycled.
+     */
+    static ChannelStateByteBuffer wrapWithoutRecycle(Buffer buffer) {
+        return new ChannelStateByteBuffer() {
+
+            private final ByteBuf byteBuf = buffer.asByteBuf();
+
+            @Override
+            public boolean isWritable() {
+                return byteBuf.isWritable();
+            }
+
+            @Override
+            public void close() {
+                // Do nothing - caller is responsible for buffer lifecycle
+            }
+
+            @Override
+            public int writeBytes(InputStream input, int bytesToRead) throws IOException {
+                return byteBuf.writeBytes(input, Math.min(bytesToRead, byteBuf.writableBytes()));
+            }
+        };
+    }
+
     static ChannelStateByteBuffer wrap(BufferBuilder bufferBuilder) {
         final byte[] buf = new byte[1024];
         return new ChannelStateByteBuffer() {
