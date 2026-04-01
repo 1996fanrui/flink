@@ -69,12 +69,17 @@ public class SequentialChannelStateReaderImpl implements SequentialChannelStateR
                         ? ChannelStateFilteringHandler.createFromContext(filterContext, inputGates)
                         : null;
 
+        String[] spillDirs = filterContext.getTmpDirectories();
+        String attemptId = String.valueOf(System.nanoTime());
+
         try (ChannelStateFilteringHandler ignored = filteringHandler;
                 InputChannelRecoveredStateHandler stateHandler =
                         new InputChannelRecoveredStateHandler(
                                 inputGates,
                                 taskStateSnapshot.getInputRescalingDescriptor(),
-                                filteringHandler)) {
+                                filteringHandler,
+                                spillDirs,
+                                attemptId)) {
             read(
                     stateHandler,
                     groupByDelegate(
@@ -86,7 +91,12 @@ public class SequentialChannelStateReaderImpl implements SequentialChannelStateR
                             streamSubtaskStates(),
                             OperatorSubtaskState::getUpstreamOutputBufferState));
 
+            // Phase 2: Drain remaining disk data after all S3 data is fully read.
+            // Blocking buffer requests are safe here because all Source Buffers (heap
+            // buffers) have been released and no deadlock can occur.
             if (filteringHandler != null) {
+                stateHandler.drainDiskData();
+
                 checkState(
                         !filteringHandler.hasPartialData(),
                         "Not all data has been fully consumed during filtering");
