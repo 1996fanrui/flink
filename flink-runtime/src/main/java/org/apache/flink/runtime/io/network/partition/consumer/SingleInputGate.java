@@ -378,15 +378,6 @@ public class SingleInputGate extends IndexedInputGate {
     /**
      * Converts all {@link RecoveredInputChannel}s to their real channel types ({@link
      * LocalInputChannel} or {@link RemoteInputChannel}).
-     *
-     * <p><b>Lock ordering note:</b> This method acquires {@code inputChannelsWithData} and then may
-     * indirectly acquire {@code receivedBuffers} (via {@code toInputChannel()} and {@code
-     * releaseAllResources()}). This is the reverse order of {@link
-     * RecoveredInputChannel#onRecoveredStateBuffer}, which acquires {@code receivedBuffers} first
-     * and then {@code inputChannelsWithData} (via {@code notifyChannelNonEmpty()}). This is safe
-     * because {@code convertRecoveredInputChannels()} is only called from {@link
-     * #requestPartitions()}, which happens after all state recovery is complete (buffer filtering
-     * future is done), so {@code onRecoveredStateBuffer()} is no longer being called concurrently.
      */
     @VisibleForTesting
     public void convertRecoveredInputChannels() {
@@ -401,26 +392,29 @@ public class SingleInputGate extends IndexedInputGate {
                     continue;
                 }
                 try {
+                    // Phase 1: Convert channel and release resources outside the lock.
+                    // These calls may acquire the receivedBuffers lock internally, so they
+                    // run outside inputChannelsWithData lock to maintain a consistent lock
+                    // order with onRecoveredStateBuffer() which acquires receivedBuffers
+                    // first and then inputChannelsWithData.
+                    InputChannel realInputChannel =
+                            ((RecoveredInputChannel) inputChannel).toInputChannel();
+                    inputChannel.releaseAllResources();
+                    int buffersInUseCount = realInputChannel.getBuffersInUseCount();
+
+                    // Phase 2: Atomically update data structures under the lock.
                     synchronized (inputChannelsWithData) {
-                        // Remove old channel from queue if present
                         if (inputChannelsWithData.contains(inputChannel)) {
                             inputChannelsWithData.getAndRemove(ch -> ch == inputChannel);
                         }
                         enqueuedInputChannelsWithData.clear(inputChannel.getChannelIndex());
 
-                        // Convert the channel
-                        InputChannel realInputChannel =
-                                ((RecoveredInputChannel) inputChannel).toInputChannel();
-                        inputChannel.releaseAllResources();
-
-                        // Update data structures
                         inputChannelsForCurrentPartition.remove(inputChannelInfo);
                         inputChannelsForCurrentPartition.put(
                                 realInputChannel.getChannelInfo(), realInputChannel);
                         channels[inputChannel.getChannelIndex()] = realInputChannel;
 
-                        // If the new channel has buffered data, enqueue it
-                        if (realInputChannel.getBuffersInUseCount() > 0) {
+                        if (buffersInUseCount > 0) {
                             inputChannelsWithData.add(realInputChannel);
                             enqueuedInputChannelsWithData.set(realInputChannel.getChannelIndex());
                         }
