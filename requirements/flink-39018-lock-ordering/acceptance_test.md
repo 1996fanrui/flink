@@ -2,9 +2,9 @@
 
 | 编号 | 测试内容概要 | 需求ID列表 | 状态 | 测试执行方 | 备注 |
 |------|------------|-----------|------|-----------|------|
-| AT-HT7T | 锁外执行 channel 转换与资源释放 | REQ-GDU7 | 待测试 | Agent 执行 | |
-| AT-21IC | 现有单元测试回归验证 | REQ-GDU7 | 待测试 | 代码自动化 | |
-| AT-3BKF | 锁顺序注释已删除 | REQ-V9VD | 待测试 | Agent 执行 | |
+| AT-HT7T | 锁外执行 channel 转换与资源释放 | REQ-GDU7 | 通过 | Agent 执行 | grep 确认 toInputChannel/releaseAllResources/getBuffersInUseCount 均在 synchronized 块之前，synchronized 块仅含数据结构更新 |
+| AT-21IC | 现有单元测试回归验证 | REQ-GDU7 | 通过 | 代码自动化 | mvn test SingleInputGateTest(31)+RecoveredInputChannelTest(3)=34 tests, 0 failures |
+| AT-3BKF | 锁顺序注释已删除 | REQ-V9VD | 通过 | Agent 执行 | grep -c "Lock ordering note" 输出为 0 |
 
 ---
 
