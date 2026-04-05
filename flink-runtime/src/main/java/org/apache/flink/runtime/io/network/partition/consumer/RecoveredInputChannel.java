@@ -195,15 +195,22 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     }
 
     public void finishReadRecoveredState() throws IOException {
-        onRecoveredStateBuffer(
-                EventSerializer.toBuffer(EndOfInputChannelStateEvent.INSTANCE, false));
+        // Adding the event and completing the future must be atomic under receivedBuffers lock.
+        // Without this, either ordering has a race:
+        // - event first: task thread consumes it, triggers requestPartitions -> toInputChannel()
+        //   before bufferFilteringCompleteFuture is done ("buffer filtering is not complete")
+        // - future first: toInputChannel() extracts buffers before the event is added,
+        //   losing the EndOfInputChannelStateEvent
+        // Both toInputChannel() and getNextRecoveredStateBuffer() synchronize on
+        // receivedBuffers, so holding the same lock here guarantees consumers always see
+        // both the event buffer and the completed future together.
+        synchronized (receivedBuffers) {
+            onRecoveredStateBuffer(
+                    EventSerializer.toBuffer(EndOfInputChannelStateEvent.INSTANCE, false));
+            bufferFilteringCompleteFuture.complete(null);
+        }
         bufferManager.releaseFloatingBuffers();
         LOG.debug("{}/{} finished recovering input.", inputGate.getOwningTaskName(), channelInfo);
-
-        // Always complete bufferFilteringCompleteFuture since buffer filtering is indeed done
-        // at this point regardless of configuration. This avoids inconsistent state where
-        // stateConsumedFuture is done but bufferFilteringCompleteFuture is not.
-        bufferFilteringCompleteFuture.complete(null);
     }
 
     @Nullable
