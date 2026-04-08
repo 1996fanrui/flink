@@ -306,10 +306,12 @@ object GenerateUtils {
       // as they're not cheap to construct. For the other types, the return term is directly
       // the literal value
       case CHAR | VARCHAR =>
-        val escapedValue =
-          EncodingUtils.escapeJava(literalValue.asInstanceOf[BinaryStringData].toString)
-        val field = ctx.addReusableEscapedStringConstant(escapedValue)
-        generateNonNullLiteral(literalType, field, StringData.fromString(escapedValue))
+        val str = literalValue.asInstanceOf[BinaryStringData]
+        val field = ctx.addReusablePreEscapedStringConstant(EncodingUtils.escapeJava(str.toString))
+        // The original value should be passed as literalValue
+        // all required escaping should be done in corresponding code generation,
+        // so that the literalValue can be also used directly when needed
+        generateNonNullLiteral(literalType, field, str)
 
       case BINARY | VARBINARY =>
         val bytesVal = literalValue.asInstanceOf[Array[Byte]]
@@ -336,7 +338,7 @@ object GenerateUtils {
           INTERVAL_YEAR_MONTH | INTERVAL_DAY_TIME =>
         generateNonNullLiteral(literalType, primitiveLiteralForType(literalValue), literalValue)
 
-      case ARRAY | MULTISET | MAP | ROW | STRUCTURED_TYPE | NULL | UNRESOLVED =>
+      case ARRAY | MULTISET | MAP | ROW | STRUCTURED_TYPE | NULL | UNRESOLVED | BITMAP =>
         throw new CodeGenException(s"Type not supported: $literalType")
     }
   }
@@ -633,7 +635,7 @@ object GenerateUtils {
     case TINYINT | SMALLINT | INTEGER | BIGINT | FLOAT | DOUBLE | DATE | TIME_WITHOUT_TIME_ZONE |
         INTERVAL_YEAR_MONTH | INTERVAL_DAY_TIME =>
       s"($leftTerm > $rightTerm ? 1 : $leftTerm < $rightTerm ? -1 : 0)"
-    case TIMESTAMP_WITH_TIME_ZONE | MULTISET | MAP | VARIANT =>
+    case TIMESTAMP_WITH_TIME_ZONE | MULTISET | MAP | VARIANT | BITMAP =>
       throw new UnsupportedOperationException(
         s"Type($t) is not an orderable data type, " +
           s"it is not supported as a ORDER_BY/GROUP_BY/JOIN_EQUAL field.")

@@ -31,6 +31,7 @@ import org.apache.flink.table.runtime.typeutils.TypeCheckUtils.isCharacterString
 import org.apache.flink.table.types.logical._
 import org.apache.flink.table.types.logical.LogicalTypeRoot._
 import org.apache.flink.table.types.logical.utils.LogicalTypeChecks
+import org.apache.flink.table.utils.EncodingUtils
 
 import org.apache.calcite.rex.{RexCall, RexNode}
 
@@ -118,6 +119,9 @@ object JsonGenerateUtils {
 
       case DISTINCT_TYPE =>
         createNodeTerm(ctx, valueTerm, valueType.asInstanceOf[DistinctType].getSourceType)
+
+      case VARIANT =>
+        s"$nodeFactoryTerm.rawValueNode(new ${typeTerm(classOf[RawValue])}($valueTerm.toJson()))"
 
       case _ =>
         throw new CodeGenException(
@@ -261,7 +265,7 @@ object JsonGenerateUtils {
 
   /** Generates a method to convert rows into [[ObjectNode]]. */
   private def generateRowConverter(ctx: CodeGeneratorContext, rowType: LogicalType): String = {
-    val fieldNames = toScala(LogicalTypeChecks.getFieldNames(rowType))
+    val fieldNames = toScala(LogicalTypeChecks.getFieldNames(rowType)).map(EncodingUtils.escapeJava)
     val fieldTypes = toScala(LogicalTypeChecks.getFieldTypes(rowType))
 
     val populateObjectCode = fieldNames.zipWithIndex.map {

@@ -24,9 +24,13 @@ import org.apache.calcite.sql.SqlLiteral;
 import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.SqlNodeList;
 import org.apache.calcite.util.NlsString;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -36,6 +40,7 @@ import java.util.stream.Collectors;
 
 /** Utils methods for parsing DDLs. */
 public class SqlParseUtils {
+    private static final Logger LOG = LoggerFactory.getLogger(SqlParseUtils.class);
 
     private SqlParseUtils() {}
 
@@ -85,9 +90,15 @@ public class SqlParseUtils {
         if (propList == null) {
             return Map.of();
         }
-        return propList.getList().stream()
-                .map(p -> (SqlTableOption) p)
-                .collect(Collectors.toMap(k -> k.getKeyString(), SqlTableOption::getValueString));
+        final Map<String, String> result = new HashMap<>();
+        for (SqlNode node : propList) {
+            final SqlTableOption tableOption = (SqlTableOption) node;
+            final String key = tableOption.getKeyString();
+            if (result.put(key, tableOption.getValueString()) != null) {
+                LOG.warn("There are duplicated values for the same key {}", key);
+            }
+        }
+        return result;
     }
 
     public static List<String> extractList(
@@ -104,5 +115,36 @@ public class SqlParseUtils {
             return Set.of();
         }
         return sqlNodeList.getList().stream().map(mapper).collect(Collectors.toSet());
+    }
+
+    @Nullable
+    public static <T extends Enum<T>> T extractEnum(
+            @Nullable SqlLiteral literal, Class<T> enumClass) {
+        if (literal == null) {
+            return null;
+        }
+
+        final String value = literal.toValue();
+        if (value == null) {
+            return null;
+        }
+
+        try {
+            return Enum.valueOf(enumClass, value);
+        } catch (IllegalArgumentException e) {
+            throw new RuntimeException(
+                    String.format(
+                            "Invalid value '%s' for enum %s. Valid values are: %s",
+                            value,
+                            enumClass.getSimpleName(),
+                            String.join(", ", getEnumValues(enumClass))),
+                    e);
+        }
+    }
+
+    private static <T extends Enum<T>> List<String> getEnumValues(Class<T> enumClass) {
+        return Arrays.stream(enumClass.getEnumConstants())
+                .map(Enum::name)
+                .collect(Collectors.toList());
     }
 }

@@ -19,30 +19,48 @@
 package org.apache.flink.table.planner.utils;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.sql.parser.ddl.SqlAlterMaterializedTableSchema;
+import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.sql.parser.ddl.SqlRefreshMode;
 import org.apache.flink.sql.parser.ddl.SqlTableColumn.SqlMetadataColumn;
 import org.apache.flink.sql.parser.ddl.SqlTableColumn.SqlRegularColumn;
+import org.apache.flink.sql.parser.ddl.materializedtable.SqlAlterMaterializedTableSchema;
 import org.apache.flink.sql.parser.ddl.position.SqlTableColumnPosition;
 import org.apache.flink.table.api.ValidationException;
+import org.apache.flink.table.catalog.CatalogMaterializedTable;
 import org.apache.flink.table.catalog.CatalogMaterializedTable.LogicalRefreshMode;
 import org.apache.flink.table.catalog.CatalogMaterializedTable.RefreshMode;
 import org.apache.flink.table.catalog.Column;
+import org.apache.flink.table.catalog.Column.ComputedColumn;
+import org.apache.flink.table.catalog.Column.MetadataColumn;
+import org.apache.flink.table.catalog.Interval;
+import org.apache.flink.table.catalog.Interval.TimeUnit;
 import org.apache.flink.table.catalog.IntervalFreshness;
-import org.apache.flink.table.catalog.ResolvedCatalogMaterializedTable;
 import org.apache.flink.table.catalog.ResolvedSchema;
+import org.apache.flink.table.catalog.TableChange;
+import org.apache.flink.table.catalog.TableChange.ColumnPosition;
 import org.apache.flink.table.planner.operations.PlannerQueryOperation;
 import org.apache.flink.table.planner.operations.converters.SqlNodeConverter.ConvertContext;
+import org.apache.flink.table.types.DataType;
+import org.apache.flink.table.utils.DateTimeUtils;
 
 import org.apache.calcite.sql.SqlIntervalLiteral;
+import org.apache.calcite.sql.SqlIntervalLiteral.IntervalValue;
 import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.SqlNodeList;
-import org.apache.calcite.sql.type.SqlTypeFamily;
+import org.apache.calcite.sql.type.SqlTypeName;
+import org.apache.commons.lang3.StringUtils;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.stream.Collectors;
+
+import static java.time.temporal.ChronoField.MONTH_OF_YEAR;
 
 /** The utils for materialized table. */
 @Internal
@@ -56,30 +74,109 @@ public class MaterializedTableUtils {
 
     public static IntervalFreshness getMaterializedTableFreshness(
             SqlIntervalLiteral sqlIntervalLiteral) {
-        if (sqlIntervalLiteral.signum() < 0) {
-            throw new ValidationException(
-                    "Materialized table freshness doesn't support negative value.");
-        }
-        if (sqlIntervalLiteral.getTypeName().getFamily() != SqlTypeFamily.INTERVAL_DAY_TIME) {
-            throw new ValidationException(
-                    "Materialized table freshness only support SECOND, MINUTE, HOUR, DAY as the time unit.");
+        return IntervalFreshness.of(getFreshnessInterval(sqlIntervalLiteral));
+    }
+
+    private static Interval getFreshnessInterval(SqlIntervalLiteral sqlIntervalLiteral) {
+        final IntervalValue intervalValue = sqlIntervalLiteral.getValueAs(IntervalValue.class);
+        final SqlTypeName typeName = intervalValue.getIntervalQualifier().typeName();
+
+        if (isDateTimeInterval(typeName)) {
+            final Interval freshnessInterval =
+                    getDayTimeInterval(
+                            intervalValue,
+                            typeName,
+                            sqlIntervalLiteral.getValueAs(BigDecimal.class),
+                            "freshness");
+            final int interval = freshnessInterval.getInterval();
+            // Freshness interval might be only positive
+            validateIntervalValuePositive(interval, "freshness");
+            return freshnessInterval;
         }
 
-        SqlIntervalLiteral.IntervalValue intervalValue =
-                sqlIntervalLiteral.getValueAs(SqlIntervalLiteral.IntervalValue.class);
-        String interval = intervalValue.getIntervalLiteral();
-        switch (intervalValue.getIntervalQualifier().typeName()) {
-            case INTERVAL_DAY:
-                return IntervalFreshness.ofDay(interval);
-            case INTERVAL_HOUR:
-                return IntervalFreshness.ofHour(interval);
-            case INTERVAL_MINUTE:
-                return IntervalFreshness.ofMinute(interval);
-            case INTERVAL_SECOND:
-                return IntervalFreshness.ofSecond(interval);
+        throw new ValidationException(
+                "Materialized table freshness only supports SECOND, MINUTE, HOUR, DAY, WEEK as the time unit.");
+    }
+
+    private static Interval intervalFrom(
+            SqlIntervalLiteral sqlIntervalLiteral, String intervalDescription) {
+
+        final IntervalValue intervalValue = sqlIntervalLiteral.getValueAs(IntervalValue.class);
+        final SqlTypeName typeName = intervalValue.getIntervalQualifier().typeName();
+        if (intervalValue.getIntervalQualifier().isYearMonth()) {
+            return getYearMonthInterval(
+                    intervalValue,
+                    typeName,
+                    sqlIntervalLiteral.getValueAs(BigDecimal.class),
+                    intervalDescription);
+        }
+
+        if (isDateTimeInterval(typeName)) {
+            return getDayTimeInterval(
+                    intervalValue,
+                    typeName,
+                    sqlIntervalLiteral.getValueAs(BigDecimal.class),
+                    intervalDescription);
+        }
+
+        throw new ValidationException(
+                String.format(
+                        "Materialized table %s only supports SECOND, MINUTE, HOUR, DAY, WEEK, MONTH, QUARTER, YEAR as the time unit.",
+                        intervalDescription));
+    }
+
+    private static Interval getYearMonthInterval(
+            final IntervalValue intervalValue,
+            final SqlTypeName typeName,
+            final BigDecimal interval,
+            final String intervalDescription) {
+        final int intervalInt = interval.intValue();
+        switch (typeName) {
+            case INTERVAL_MONTH:
+                if (intervalValue.getIntervalQualifier().timeUnitRange.startUnit
+                        == org.apache.calcite.avatica.util.TimeUnit.QUARTER) {
+                    return Interval.of(
+                            intervalInt / DateTimeUtils.MONTHS_PER_QUARTER, TimeUnit.QUARTER);
+                }
+                return Interval.of(intervalInt, TimeUnit.MONTH);
+            case INTERVAL_YEAR:
+                return Interval.of(
+                        (int) (intervalInt / MONTH_OF_YEAR.range().getMaximum()), TimeUnit.YEAR);
             default:
                 throw new ValidationException(
-                        "Materialized table freshness only support SECOND, MINUTE, HOUR, DAY as the time unit.");
+                        String.format(
+                                "Materialized table %s only supports MONTH, QUARTER, YEAR as the time unit.",
+                                intervalDescription));
+        }
+    }
+
+    private static Interval getDayTimeInterval(
+            final IntervalValue intervalValue,
+            final SqlTypeName typeName,
+            final BigDecimal interval,
+            final String intervalDescription) {
+        final long millis = interval.longValue();
+        switch (typeName) {
+            case INTERVAL_DAY:
+                final int amountOfDays = (int) (millis / DateTimeUtils.MILLIS_PER_DAY);
+                if (intervalValue.getIntervalQualifier().timeUnitRange.startUnit
+                        == org.apache.calcite.avatica.util.TimeUnit.WEEK) {
+                    return Interval.of(amountOfDays / DateTimeUtils.DAYS_PER_WEEK, TimeUnit.WEEK);
+                }
+                return Interval.of(amountOfDays, TimeUnit.DAY);
+            case INTERVAL_HOUR:
+                return Interval.of((int) (millis / DateTimeUtils.MILLIS_PER_HOUR), TimeUnit.HOUR);
+            case INTERVAL_MINUTE:
+                return Interval.of(
+                        (int) (millis / DateTimeUtils.MILLIS_PER_MINUTE), TimeUnit.MINUTE);
+            case INTERVAL_SECOND:
+                return Interval.of(
+                        (int) (millis / DateTimeUtils.MILLIS_PER_SECOND), TimeUnit.SECOND);
+            default:
+                throw new ValidationException(
+                        String.format(
+                                "Materialized table %s only supports SECOND, MINUTE, HOUR, DAY, WEEK as the time unit.",
+                                intervalDescription));
         }
     }
 
@@ -114,11 +211,174 @@ public class MaterializedTableUtils {
         }
     }
 
-    public static List<Column> validateAndExtractNewColumns(
+    // Used to build changes introduced by changed query like
+    // ALTER MATERIALIZED TABLE ... AS ...
+    public static List<TableChange> buildSchemaTableChanges(
             ResolvedSchema oldSchema, ResolvedSchema newSchema) {
-        List<Column> newAddedColumns = new ArrayList<>();
-        int originalColumnSize = oldSchema.getColumns().size();
-        int newColumnSize = newSchema.getColumns().size();
+        if (!isSchemaChanged(oldSchema, newSchema)) {
+            return List.of();
+        }
+
+        final List<Column> oldColumns = oldSchema.getColumns();
+        final Map<String, Tuple2<Column, Integer>> oldColumnSet = new HashMap<>();
+        for (int i = 0; i < oldColumns.size(); i++) {
+            Column column = oldColumns.get(i);
+            oldColumnSet.put(column.getName(), Tuple2.of(oldColumns.get(i), i));
+        }
+        // Schema retrieved from query doesn't count existing non persisted columns
+        final List<Column> newColumns = newSchema.getColumns();
+
+        List<TableChange> changes = new ArrayList<>();
+        for (int i = 0; i < newColumns.size(); i++) {
+            Column newColumn = newColumns.get(i);
+            Tuple2<Column, Integer> oldColumnToPosition = oldColumnSet.get(newColumn.getName());
+
+            if (oldColumnToPosition == null) {
+                changes.add(TableChange.add(newColumn.copy(newColumn.getDataType().nullable())));
+                continue;
+            }
+
+            // Check if position changed
+            applyPositionChanges(newColumns, oldColumnToPosition, i, changes);
+
+            Column oldColumn = oldColumnToPosition.f0;
+            // Check if column changed
+            // Note: it could be unchanged while the position is changed
+            if (oldColumn.equals(newColumn)) {
+                // no changes
+                continue;
+            }
+
+            // Check if kind changed
+            if (oldColumn.getClass() != newColumn.getClass()) {
+                changes.add(TableChange.dropColumn(oldColumn.getName()));
+                changes.add(TableChange.add(newColumn.copy(newColumn.getDataType().nullable())));
+                continue;
+            }
+
+            // Check if comment is changed
+            if (!Objects.equals(
+                    oldColumn.getComment().orElse(null), newColumn.getComment().orElse(null))) {
+                changes.add(
+                        TableChange.modifyColumnComment(
+                                oldColumn, newColumn.getComment().orElse(null)));
+            }
+
+            // Check if physical column type changed
+            if (oldColumn.isPhysical()
+                    && newColumn.isPhysical()
+                    && !oldColumn.getDataType().equals(newColumn.getDataType())) {
+                changes.add(
+                        TableChange.modifyPhysicalColumnType(oldColumn, newColumn.getDataType()));
+            }
+
+            // Check if metadata fields changed
+            if (oldColumn instanceof MetadataColumn) {
+                applyMetadataColumnChanges(
+                        (MetadataColumn) oldColumn, (MetadataColumn) newColumn, changes);
+            }
+
+            // Check if computed expression changed
+            if (oldColumn instanceof ComputedColumn) {
+                applyComputedColumnChanges(
+                        (ComputedColumn) oldColumn, (ComputedColumn) newColumn, changes);
+            }
+        }
+
+        for (Column newColumn : newColumns) {
+            oldColumnSet.remove(newColumn.getName());
+        }
+
+        for (Map.Entry<String, Tuple2<Column, Integer>> entry : oldColumnSet.entrySet()) {
+            changes.add(TableChange.dropColumn(entry.getKey()));
+        }
+
+        return changes;
+    }
+
+    private static boolean isDateTimeInterval(SqlTypeName typeName) {
+        return typeName == SqlTypeName.INTERVAL_DAY
+                || typeName == SqlTypeName.INTERVAL_HOUR
+                || typeName == SqlTypeName.INTERVAL_MINUTE
+                || typeName == SqlTypeName.INTERVAL_SECOND;
+    }
+
+    // Since it is only for query change, then check only persisted columns which could be
+    // changed/added/dropped with such change
+    private static boolean isSchemaChanged(ResolvedSchema oldSchema, ResolvedSchema newSchema) {
+        List<Column> oldPersistedColumns =
+                oldSchema.getColumns().stream()
+                        .filter(Column::isPersisted)
+                        .collect(Collectors.toList());
+        if (oldPersistedColumns.size() != newSchema.getColumnCount()) {
+            return true;
+        }
+        for (int i = 0; i < oldPersistedColumns.size(); i++) {
+            Column oldColumn = oldPersistedColumns.get(i);
+            Column newColumn = newSchema.getColumn(i).get();
+            if (!oldColumn.getName().equals(newColumn.getName())) {
+                return true;
+            }
+            if (!newColumn
+                    .getDataType()
+                    .getLogicalType()
+                    .equals(oldColumn.getDataType().getLogicalType())) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static void applyPositionChanges(
+            List<Column> newColumns,
+            Tuple2<Column, Integer> oldColumnToPosition,
+            int currentPosition,
+            List<TableChange> changes) {
+        Column oldColumn = oldColumnToPosition.f0;
+        int oldPosition = oldColumnToPosition.f1;
+        if (oldPosition != currentPosition) {
+            ColumnPosition position =
+                    currentPosition == 0
+                            ? ColumnPosition.first()
+                            : ColumnPosition.after(newColumns.get(currentPosition - 1).getName());
+            changes.add(TableChange.modifyColumnPosition(oldColumn, position));
+        }
+    }
+
+    private static void applyComputedColumnChanges(
+            ComputedColumn oldColumn, ComputedColumn newColumn, List<TableChange> changes) {
+        if (!oldColumn
+                        .getExpression()
+                        .asSerializableString()
+                        .equals(newColumn.getExpression().asSerializableString())
+                && !Objects.equals(
+                        oldColumn.explainExtras().orElse(null),
+                        newColumn.explainExtras().orElse(null))) {
+            // for now there is no dedicated table change
+            changes.add(TableChange.dropColumn(oldColumn.getName()));
+            changes.add(TableChange.add(newColumn.copy(newColumn.getDataType().nullable())));
+        }
+    }
+
+    private static void applyMetadataColumnChanges(
+            MetadataColumn oldColumn, MetadataColumn newColumn, List<TableChange> changes) {
+        if (oldColumn.isVirtual() != newColumn.isVirtual()
+                || !Objects.equals(
+                        oldColumn.getMetadataKey().orElse(null),
+                        newColumn.getMetadataKey().orElse(null))) {
+            // for now there is no dedicated table change
+            changes.add(TableChange.dropColumn(oldColumn.getName()));
+            changes.add(TableChange.add(newColumn.copy(newColumn.getDataType().nullable())));
+        }
+    }
+
+    public static List<TableChange> validateAndExtractColumnChanges(
+            ResolvedSchema oldSchema, ResolvedSchema newSchema, boolean schemaDefinedInQuery) {
+        final List<Column> newColumns = getPersistedColumns(newSchema);
+        final List<Column> oldColumns = getPersistedColumns(oldSchema);
+        final int originalColumnSize = oldColumns.size();
+        final int newColumnSize = newColumns.size();
 
         if (originalColumnSize > newColumnSize) {
             throw new ValidationException(
@@ -129,36 +389,58 @@ public class MaterializedTableUtils {
                             originalColumnSize, newColumnSize));
         }
 
-        for (int i = 0; i < oldSchema.getColumns().size(); i++) {
-            Column oldColumn = oldSchema.getColumns().get(i);
-            Column newColumn = newSchema.getColumns().get(i);
+        final List<TableChange> columnChanges = new ArrayList<>();
+        for (int i = 0; i < oldColumns.size(); i++) {
+            final Column oldColumn = oldColumns.get(i);
+            final Column newColumn = newColumns.get(i);
+            final DataType newColumnDataType =
+                    getNewColumnDatatype(oldColumn, newColumns.get(i), schemaDefinedInQuery);
             if (!oldColumn.equals(newColumn)) {
-                throw new ValidationException(
-                        String.format(
-                                "When modifying the query of a materialized table, "
-                                        + "currently only support appending columns at the end of original schema, dropping, renaming, and reordering columns are not supported.\n"
-                                        + "Column mismatch at position %d: Original column is [%s], but new column is [%s].",
-                                i, oldColumn, newColumn));
+                if (!oldColumn.getName().equals(newColumn.getName())
+                        || !oldColumn.getDataType().equals(newColumnDataType)) {
+                    throw new ValidationException(
+                            String.format(
+                                    "When modifying the query of a materialized table, "
+                                            + "currently only support appending columns at the end of original schema, dropping, renaming, and reordering columns are not supported.\n"
+                                            + "Column mismatch at position %d: Original column is [%s], but new column is [%s].",
+                                    i + 1, oldColumn, newColumn));
+                }
+                final String oldComment = oldColumn.getComment().orElse(null);
+                final String newComment = newColumn.getComment().orElse(null);
+
+                if (StringUtils.isEmpty(oldComment) != StringUtils.isEmpty(newComment)
+                        || StringUtils.isNotEmpty(oldComment)
+                                && !Objects.equals(oldComment, newComment)) {
+                    columnChanges.add(TableChange.modifyColumnComment(oldColumn, newComment));
+                }
             }
         }
 
-        for (int i = oldSchema.getColumns().size(); i < newSchema.getColumns().size(); i++) {
-            Column newColumn = newSchema.getColumns().get(i);
-            newAddedColumns.add(newColumn.copy(newColumn.getDataType().nullable()));
+        for (int i = oldColumns.size(); i < newColumns.size(); i++) {
+            Column newColumn = newColumns.get(i);
+            columnChanges.add(
+                    TableChange.add(
+                            schemaDefinedInQuery
+                                    ? newColumn
+                                    : newColumn.copy(newColumn.getDataType().nullable())));
         }
 
-        return newAddedColumns;
+        return columnChanges;
     }
 
-    public static void validatePersistedColumnsUsedByQuery(
-            ResolvedCatalogMaterializedTable oldTable,
-            SqlAlterMaterializedTableSchema alterTableSchema,
-            ConvertContext context) {
-        final SqlNodeList sqlNodeList = alterTableSchema.getColumnPositions();
-        if (sqlNodeList.isEmpty()) {
-            return;
+    private static DataType getNewColumnDatatype(
+            Column oldColumn, Column newColumn, boolean schemaDefinedInQuery) {
+        if (schemaDefinedInQuery) {
+            return newColumn.getDataType();
         }
+        if (oldColumn.getDataType().nullable().equals(newColumn.getDataType().nullable())) {
+            return oldColumn.getDataType();
+        }
+        return newColumn.getDataType();
+    }
 
+    public static ResolvedSchema getQueryOperationResolvedSchema(
+            CatalogMaterializedTable oldTable, ConvertContext context) {
         final SqlNode originalQuery =
                 context.getFlinkPlanner().parser().parse(oldTable.getOriginalQuery());
         final SqlNode validateQuery = context.getSqlValidator().validate(originalQuery);
@@ -166,8 +448,20 @@ public class MaterializedTableUtils {
                 new PlannerQueryOperation(
                         context.toRelRoot(validateQuery).project(),
                         () -> context.toQuotedSqlString(validateQuery));
+        return queryOperation.getResolvedSchema();
+    }
 
-        validatePersistedColumnsUsedByQuery(sqlNodeList, queryOperation.getResolvedSchema());
+    public static void validatePersistedColumnsUsedByQuery(
+            CatalogMaterializedTable oldTable,
+            SqlAlterMaterializedTableSchema alterTableSchema,
+            ConvertContext context) {
+        final SqlNodeList sqlNodeList = alterTableSchema.getColumnPositions();
+        if (sqlNodeList.isEmpty()) {
+            return;
+        }
+
+        final ResolvedSchema querySchema = getQueryOperationResolvedSchema(oldTable, context);
+        validatePersistedColumnsUsedByQuery(sqlNodeList, querySchema);
     }
 
     public static void validatePersistedColumnsUsedByQuery(
@@ -181,8 +475,7 @@ public class MaterializedTableUtils {
     private static void throwIfPersistedColumnNotUsedByQuery(
             SqlNode column, Set<String> querySchemaColumnNames) {
         if (column instanceof SqlRegularColumn) {
-            SqlRegularColumn physicalColumn = (SqlRegularColumn) column;
-            String columnName = physicalColumn.getName().getSimple();
+            String columnName = ((SqlRegularColumn) column).getName().getSimple();
             if (!querySchemaColumnNames.contains(columnName)) {
                 throwPersistedColumnNotUsedException("physical", columnName);
             }
@@ -198,8 +491,24 @@ public class MaterializedTableUtils {
         }
     }
 
+    private static List<Column> getPersistedColumns(ResolvedSchema schema) {
+        return schema.getColumns().stream()
+                .filter(Column::isPersisted)
+                .collect(Collectors.toList());
+    }
+
     private static void throwPersistedColumnNotUsedException(String type, String columnName) {
         throw new ValidationException(
                 String.format(PERSISTED_COLUMN_NOT_USED_IN_QUERY, type, columnName));
+    }
+
+    private static void validateIntervalValuePositive(
+            final int interval, final String description) {
+        if (interval <= 0) {
+            throw new ValidationException(
+                    String.format(
+                            "The %s interval currently only supports positive integer type values. But was: %d",
+                            description, interval));
+        }
     }
 }

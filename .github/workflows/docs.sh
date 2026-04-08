@@ -51,6 +51,16 @@ if [ $? -ne 0 ]; then
 	exit 1
 fi
 
+# Generate .htaccess with dynamic 404 path based on branch
+BRANCH=$(git branch --show-current)
+cat > docs/target/.htaccess << EOF
+# Ensure index.html is served for directory requests
+DirectoryIndex index.html
+
+# Custom 404 error page
+ErrorDocument 404 /flink/flink-docs-${BRANCH}/404.html
+EOF
+
 # build Flink; required for Javadoc step
 mvn clean install -B -DskipTests -Dfast -Dskip.npm -Pskip-webui-build
 
@@ -62,7 +72,16 @@ mvn javadoc:aggregate -B \
     -Dcheckstyle.skip=true \
     -Dspotless.check.skip=true \
     -Denforcer.skip=true \
-    -Dheader="<a href=\"http://flink.apache.org/\" target=\"_top\"><h1>Back to Flink Website</h1></a> <script>var _paq=window._paq=window._paq||[];_paq.push([\"disableCookies\"]),_paq.push([\"setDomains\",[\"*.flink.apache.org\",\"*.nightlies.apache.org/flink\"]]),_paq.push([\"trackPageView\"]),_paq.push([\"enableLinkTracking\"]),function(){var u=\"//matomo.privacy.apache.org/\";_paq.push([\"setTrackerUrl\",u+\"matomo.php\"]),_paq.push([\"setSiteId\",\"1\"]);var d=document, g=d.createElement('script'), s=d.getElementsByTagName('script')[0];g.async=true; g.src=u+'matomo.js'; s.parentNode.insertBefore(g,s)}();</script>"
+    -Dheader="<a href=\"http://flink.apache.org/\" target=\"_top\"><h1>Back to Flink Website</h1></a> <script>var _paq=window._paq=window._paq||[];_paq.push([\"disableCookies\"]),_paq.push([\"setDomains\",[\"*.flink.apache.org\",\"*.nightlies.apache.org/flink\"]]),_paq.push([\"trackPageView\"]),_paq.push([\"enableLinkTracking\"]),function(){var u=\"//analytics.apache.org/\";_paq.push([\"setTrackerUrl\",u+\"matomo.php\"]),_paq.push([\"setSiteId\",\"1\"]);var d=document, g=d.createElement('script'), s=d.getElementsByTagName('script')[0];g.async=true; g.src=u+'matomo.js'; s.parentNode.insertBefore(g,s)}();</script>"
+
+# Inject canonical tags into Javadoc HTML files to point to stable docs version
+CANONICAL_BASE="https://nightlies.apache.org/flink/flink-docs-stable/api/java"
+find target/site/apidocs -name "*.html" -type f | while read -r file; do
+    REL_PATH="${file#target/site/apidocs/}"
+    CANONICAL_URL="${CANONICAL_BASE}/${REL_PATH}"
+    sed -i "s|<head>|<head>\n<link rel=\"canonical\" href=\"${CANONICAL_URL}\">|" "$file"
+done
+
 mv target/site/apidocs docs/target/api/java
 
 # build python docs
@@ -70,10 +89,20 @@ if [ -f  ./flink-python/dev/lint-python.sh ]; then
     # Just completely ignore sudo in conda.
     unset SUDO_UID SUDO_GID SUDO_USER
 
-    # build python docs
+    # Set base URL for cross-references to main Flink docs (used by sphinx extlinks)
+    export FLINK_DOCS_BASE_URL="https://nightlies.apache.org/flink/flink-docs-${BRANCH}"
+
+    # build English python docs
     # disable the gateway, because otherwise it tries to find FLINK_HOME to access Java classes
     PYFLINK_GATEWAY_DISABLED=1 ./flink-python/dev/lint-python.sh -i "sphinx"
 
-    # move python docs
+    # build Chinese python docs into _build/html/zh/ subdirectory
+    # Ensure uv (installed by lint-python.sh into .uv/bin/) is on PATH so the Makefile auto-detects it
+    export PATH="$(pwd)/flink-python/dev/.uv/bin:$PATH"
+    pushd flink-python/docs
+    make zh
+    popd
+
+    # move python docs (English at root, Chinese at zh/)
     mv flink-python/docs/_build/html docs/target/api/python
 fi

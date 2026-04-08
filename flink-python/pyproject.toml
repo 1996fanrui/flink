@@ -45,7 +45,7 @@ dev = [
   "fastavro>=1.1.0,!=1.8.0",
   "grpcio>=1.29.0,<=1.71.0",
   "grpcio-tools>=1.29.0,<=1.71.0",
-  "pemja>=0.5.5,<0.5.6; platform_system != 'Windows'",
+  "pemja>=0.5.6,<0.5.7; platform_system != 'Windows'",
   "httplib2>=0.19.0",
   "protobuf~=4.25",
   "pytest~=8.0",
@@ -68,7 +68,8 @@ sphinx = [
     "sphinxcontrib.devhelp<1.0.6",
     "sphinxcontrib.htmlhelp<2.0.5",
     "sphinxcontrib-serializinghtml<1.1.10",
-    "sphinxcontrib-qthelp<1.0.7"
+    "sphinxcontrib-qthelp<1.0.7",
+    "sphinx-intl"
 ]
 mypy = [
     "mypy==1.5.1",

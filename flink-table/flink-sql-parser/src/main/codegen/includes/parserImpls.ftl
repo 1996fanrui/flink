@@ -450,7 +450,7 @@ SqlCreate SqlCreateFunction(Span s, boolean replace, boolean isTemporary) :
             if ("SQL".equals(functionLanguage) || "PYTHON".equals(functionLanguage)) {
                 throw SqlUtil.newContextException(
                     functionLanguagePos,
-                    ParserResource.RESOURCE.createFunctionUsingJar(functionLanguage));
+                    ParserResource.RESOURCE.createFunction(functionLanguage));
             }
             List<SqlNode> resourceList = new ArrayList<SqlNode>();
             SqlResource sqlResource = null;
@@ -492,13 +492,21 @@ SqlResource SqlResourceInfo() :
     String resourcePath;
 }
 {
-    <JAR> <QUOTED_STRING> {
+    (<JAR> <QUOTED_STRING> {
         resourcePath = SqlParserUtil.parseString(token.image);
         return new SqlResource(
                     getPos(),
                     SqlResourceType.JAR.symbol(getPos()),
                     SqlLiteral.createCharString(resourcePath, getPos()));
     }
+    |
+    <ARTIFACT> <QUOTED_STRING> {
+        resourcePath = SqlParserUtil.parseString(token.image);
+        return new SqlResource(
+                    getPos(),
+                    SqlResourceType.ARTIFACT.symbol(getPos()),
+                    SqlLiteral.createCharString(resourcePath, getPos()));
+    })
 }
 
 SqlDrop SqlDropFunction(Span s, boolean replace, boolean isTemporary) :
@@ -784,11 +792,13 @@ SqlShowCreate SqlShowCreate() :
             return new SqlShowCreateConnection(pos, sqlIdentifier);
         }
     |
+        {boolean createOrAlter = false;}
+        [ <OR> <ALTER> {createOrAlter = true;} ]
         <MATERIALIZED> <TABLE>
         { pos = getPos(); }
         sqlIdentifier = CompoundIdentifier()
         {
-            return new SqlShowCreateMaterializedTable(pos, sqlIdentifier);
+            return new SqlShowCreateMaterializedTable(pos, sqlIdentifier, createOrAlter);
         }
     )
 }
@@ -1018,7 +1028,7 @@ SqlAlterTable SqlAlterTable() :
                             startPos.plus(getPos()),
                             tableIdentifier,
                             new SqlNodeList(
-                                Collections.singletonList(columnName),
+                                List.of(columnName),
                                 getPos()),
                             ifExists);
             }
@@ -1904,6 +1914,7 @@ SqlCreate SqlCreateOrAlterMaterializedTable(Span s, boolean replace, boolean isT
     SqlParserPos pos = startPos;
     boolean isColumnsIdentifiersOnly = false;
     boolean isOrAlter = false;
+    SqlStartMode startMode = null;
 }
 {
     [
@@ -1956,15 +1967,73 @@ SqlCreate SqlCreateOrAlterMaterializedTable(Span s, boolean replace, boolean isT
         propertyList = Properties()
     ]
     [
-        <FRESHNESS> <EQ>
-        freshness = Expression(ExprContext.ACCEPT_NON_QUERY)
+        <START_MODE> <EQ>
         {
-            if (!(freshness instanceof SqlIntervalLiteral))
+            SqlLiteral startModeKindLiteral = null;
+            SqlLiteral startModeLiteral = null;
+        }
+        (
+            <FROM_BEGINNING>
             {
-                throw SqlUtil.newContextException(
-                getPos(),
-                ParserResource.RESOURCE.unsupportedFreshnessType());
+                startModeKindLiteral = SqlStartModeKind.FROM_BEGINNING.symbol(getPos());
             }
+            |
+            <FROM_NOW>
+            {
+                startModeKindLiteral = SqlStartModeKind.FROM_NOW.symbol(getPos());
+            }
+            [
+                <LPAREN>
+                {
+                    startModeLiteral = IntervalLiteralOrError(Expression(ExprContext.ACCEPT_NON_QUERY),
+                        ParserResource.RESOURCE.unsupportedStartModeType());
+                }
+                <RPAREN>
+            ]
+            |
+            <FROM_TIMESTAMP>
+            {
+                startModeKindLiteral = SqlStartModeKind.FROM_TIMESTAMP.symbol(getPos());
+            }
+            <LPAREN>
+                startModeLiteral = TimestampLiteral()
+            <RPAREN>
+            |
+            <RESUME_OR_FROM_BEGINNING>
+            {
+                startModeKindLiteral = SqlStartModeKind.RESUME_OR_FROM_BEGINNING.symbol(getPos());
+            }
+            |
+            <RESUME_OR_FROM_NOW>
+            {
+                startModeKindLiteral = SqlStartModeKind.RESUME_OR_FROM_NOW.symbol(getPos());
+            }
+            [
+                <LPAREN>
+                {
+                    startModeLiteral = IntervalLiteralOrError(Expression(ExprContext.ACCEPT_NON_QUERY),
+                        ParserResource.RESOURCE.unsupportedStartModeType());
+                }
+                <RPAREN>
+            ]
+            |
+            <RESUME_OR_FROM_TIMESTAMP>
+            {
+                startModeKindLiteral = SqlStartModeKind.RESUME_OR_FROM_TIMESTAMP.symbol(getPos());
+            }
+            <LPAREN>
+                startModeLiteral = TimestampLiteral()
+            <RPAREN>
+        )
+        {
+            startMode = new SqlStartMode(startModeKindLiteral, startModeLiteral, getPos());
+        }
+    ]
+    [
+        <FRESHNESS> <EQ>
+        {
+            freshness = IntervalLiteralOrError(Expression(ExprContext.ACCEPT_NON_QUERY),
+            ParserResource.RESOURCE.unsupportedFreshnessType());
         }
     ]
     [
@@ -1996,6 +2065,7 @@ SqlCreate SqlCreateOrAlterMaterializedTable(Span s, boolean replace, boolean isT
             propertyList,
             (SqlIntervalLiteral) freshness,
             refreshMode,
+            startMode,
             asQuery,
             isOrAlter);
     }
@@ -2041,6 +2111,7 @@ SqlAlterMaterializedTable SqlAlterMaterializedTable() :
     SqlNodeList partSpec = SqlNodeList.EMPTY;
     SqlNode freshness = null;
     SqlNode asQuery = null;
+    SqlIdentifier constraintName;
     AlterTableSchemaContext ctx = new AlterTableSchemaContext();
 }
 {
@@ -2076,12 +2147,9 @@ SqlAlterMaterializedTable SqlAlterMaterializedTable() :
         |
         <SET>
         (
-            <FRESHNESS> <EQ> freshness = Expression(ExprContext.ACCEPT_NON_QUERY) {
-                if (!(freshness instanceof SqlIntervalLiteral)) {
-                    throw SqlUtil.newContextException(
-                        getPos(),
-                        ParserResource.RESOURCE.unsupportedFreshnessType());
-                }
+            <FRESHNESS> <EQ>  {
+                freshness = IntervalLiteralOrError(Expression(ExprContext.ACCEPT_NON_QUERY),
+                    ParserResource.RESOURCE.unsupportedFreshnessType());
                 return new SqlAlterMaterializedTableFreshness(
                     startPos.plus(getPos()),
                     tableIdentifier,
@@ -2133,7 +2201,7 @@ SqlAlterMaterializedTable SqlAlterMaterializedTable() :
             }
         |
         <ADD>
-            (
+        (
             <DISTRIBUTION> {
                 return new SqlAlterMaterializedTableAddDistribution(
                 startPos.plus(getPos()),
@@ -2158,18 +2226,77 @@ SqlAlterMaterializedTable SqlAlterMaterializedTable() :
               ctx.watermark);
         }
         |
-        <MODIFY> <DISTRIBUTION> {
-            return new SqlAlterMaterializedTableModifyDistribution(
-              startPos.plus(getPos()),
-              tableIdentifier,
-              SqlDistribution(getPos()));
+        <MODIFY>
+        (
+          <DISTRIBUTION> {
+          return new SqlAlterMaterializedTableModifyDistribution(
+            startPos.plus(getPos()),
+            tableIdentifier, SqlDistribution(getPos()));
         }
         |
-        <DROP> <DISTRIBUTION> {
+            AlterTableAddOrModify(ctx)
+        |
+            <LPAREN>
+            AlterTableAddOrModify(ctx)
+            (
+                <COMMA> AlterTableAddOrModify(ctx)
+            )*
+            <RPAREN>
+        )
+        {
+          return new SqlAlterMaterializedTableModifySchema(
+            startPos.plus(getPos()),
+            tableIdentifier,
+            new SqlNodeList(ctx.columnPositions, startPos.plus(getPos())),
+            ctx.constraints,
+            ctx.watermark);
+        }
+        |
+        <DROP>
+            (
+                { SqlIdentifier columnName = null; }
+                columnName = CompoundIdentifier() {
+                  return new SqlAlterMaterializedTableDropColumn(
+                    startPos.plus(getPos()),
+                    tableIdentifier,
+                    new SqlNodeList(
+                      List.of(columnName),
+                      getPos()));
+                }
+            |
+                { Pair<SqlNodeList, SqlNodeList> columnWithTypePair = null; }
+                columnWithTypePair = ParenthesizedCompoundIdentifierList() {
+                  return new SqlAlterMaterializedTableDropColumn(
+                    startPos.plus(getPos()),
+                    tableIdentifier,
+                    columnWithTypePair.getKey());
+                }
+            |
+            <DISTRIBUTION> {
                 return new SqlAlterMaterializedTableDropDistribution(
-                startPos.plus(getPos()),
-                tableIdentifier);
+                  startPos.plus(getPos()),
+                  tableIdentifier);
             }
+            |
+            <PRIMARY> <KEY> {
+                return new SqlAlterMaterializedTableDropPrimaryKey(
+                  startPos.plus(getPos()),
+                  tableIdentifier);
+            }
+            |
+            <CONSTRAINT> constraintName = SimpleIdentifier() {
+                return new SqlAlterMaterializedTableDropConstraint(
+                  startPos.plus(getPos()),
+                  tableIdentifier,
+                  constraintName);
+                }
+            |
+            <WATERMARK> {
+                return new SqlAlterMaterializedTableDropWatermark(
+                  startPos.plus(getPos()),
+                  tableIdentifier);
+            }
+        )
     )
 }
 
@@ -2190,6 +2317,7 @@ SqlNode RichSqlInsert() :
     SqlNodeList columnList = null;
     final Span s;
     final Pair<SqlNodeList, SqlNodeList> p;
+    SqlLiteral conflictAction = null;
 }
 {
     (
@@ -2233,9 +2361,20 @@ SqlNode RichSqlInsert() :
         }
         |   { columnList = null; }
     )
-    source = OrderedQueryOrExpr(ExprContext.ACCEPT_QUERY) {
+    source = OrderedQueryOrExpr(ExprContext.ACCEPT_QUERY)
+    [
+        <ON> <CONFLICT> <DO>
+        (
+            <ERROR> { conflictAction = SqlInsertConflictBehavior.ERROR.symbol(getPos()); }
+        |
+            <NOTHING> { conflictAction = SqlInsertConflictBehavior.NOTHING.symbol(getPos()); }
+        |
+            <DEDUPLICATE> { conflictAction = SqlInsertConflictBehavior.DEDUPLICATE.symbol(getPos()); }
+        )
+    ]
+    {
         return new RichSqlInsert(s.end(source), keywordList, extendedKeywordList, tableRef, source,
-            columnList, partitionList);
+            columnList, partitionList, conflictAction);
     }
 }
 
@@ -2477,6 +2616,17 @@ SqlTypeNameSpec SqlRawTypeName() :
     <RPAREN>
     {
         return new SqlRawTypeNameSpec(className, serializerString, getPos());
+    }
+}
+
+/** Parses BITMAP type. */
+SqlTypeNameSpec SqlBitmapTypeName() :
+{
+}
+{
+    <BITMAP>
+    {
+        return new SqlBitmapTypeNameSpec(getPos());
     }
 }
 
@@ -3755,4 +3905,32 @@ SqlCharStringLiteral Comment() :
         String p = SqlParserUtil.parseString(token.image);
         return SqlLiteral.createCharString(p, getPos());
     }
+}
+
+SqlIntervalLiteral IntervalLiteralOrError(SqlNode expression, Resources.ExInst error) :
+{
+}
+{
+    {
+        if (expression instanceof SqlIntervalLiteral) {
+           return (SqlIntervalLiteral) expression;
+        }
+        throw SqlUtil.newContextException(getPos(), error);
+    }
+}
+
+SqlLiteral TimestampLiteral() :
+{
+        final String p;
+        final Span s;
+}
+{
+        LOOKAHEAD(2)
+        <TIMESTAMP> { s = span(); } p = SimpleStringLiteral() {
+            return SqlLiteral.createUnknown("TIMESTAMP", p, s.end(this));
+        }
+        |
+        <TIMESTAMP> { s = span(); } <WITH> <LOCAL> <TIME> <ZONE> p = SimpleStringLiteral() {
+            return SqlLiteral.createUnknown("TIMESTAMP WITH LOCAL TIME ZONE", p, s.end(this));
+        }
 }

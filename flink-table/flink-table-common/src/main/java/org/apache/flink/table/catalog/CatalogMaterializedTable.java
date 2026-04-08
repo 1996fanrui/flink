@@ -173,12 +173,29 @@ public interface CatalogMaterializedTable extends CatalogBaseTable {
     /** Return summary description of refresh handler. */
     Optional<String> getRefreshHandlerDescription();
 
+    /** Get the start mode of materialized table. */
+    default Optional<StartMode> getStartMode() {
+        return Optional.empty();
+    }
+
     /**
      * Return the serialized refresh handler of materialized table. This will not be used for
      * describe table.
      */
     @Nullable
     byte[] getSerializedRefreshHandler();
+
+    /** Convert this object to a {@link CatalogTable} object for planner optimize query. */
+    default CatalogTable toCatalogTable() {
+        return CatalogTable.newBuilder()
+                .schema(getUnresolvedSchema())
+                .comment(getComment())
+                .distribution(getDistribution().orElse(null))
+                .partitionKeys(getPartitionKeys())
+                .options(getOptions())
+                .snapshot(getSnapshot().orElse(null))
+                .build();
+    }
 
     /** The logical refresh mode of materialized table. */
     @PublicEvolving

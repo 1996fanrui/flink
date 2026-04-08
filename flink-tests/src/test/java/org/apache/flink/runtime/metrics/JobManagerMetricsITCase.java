@@ -31,6 +31,7 @@ import org.apache.flink.metrics.MetricConfig;
 import org.apache.flink.metrics.reporter.AbstractReporter;
 import org.apache.flink.metrics.reporter.MetricReporter;
 import org.apache.flink.metrics.reporter.MetricReporterFactory;
+import org.apache.flink.runtime.resourcemanager.slotmanager.FineGrainedSlotManager;
 import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.PrintSink;
@@ -53,8 +54,8 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.fail;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /** Integration tests for proper initialization of the job manager metrics. */
 class JobManagerMetricsITCase {
@@ -67,14 +68,14 @@ class JobManagerMetricsITCase {
 
     @RegisterExtension
     @Order(1)
-    static final ContextClassLoaderExtension CONTEXT_CLASS_LOADER_EXTENSION =
+    private static final ContextClassLoaderExtension CONTEXT_CLASS_LOADER_EXTENSION =
             ContextClassLoaderExtension.builder()
                     .withServiceEntry(MetricReporterFactory.class, TestReporter.class.getName())
                     .build();
 
     @RegisterExtension
     @Order(2)
-    static final MiniClusterExtension MINI_CLUSTER_RESOURCE =
+    private static final MiniClusterExtension MINI_CLUSTER_RESOURCE =
             new MiniClusterExtension(
                     new MiniClusterResourceConfiguration.Builder()
                             .setConfiguration(getConfiguration())
@@ -107,7 +108,7 @@ class JobManagerMetricsITCase {
 
     @Test
     void testJobManagerMetrics() throws Exception {
-        assertEquals(1, TestReporter.OPENED_REPORTERS.size());
+        assertThat(TestReporter.OPENED_REPORTERS).hasSize(1);
         TestReporter reporter = TestReporter.OPENED_REPORTERS.iterator().next();
 
         List<String> expectedPatterns = getExpectedPatterns();
@@ -128,16 +129,17 @@ class JobManagerMetricsITCase {
                                 expectedPattern, gaugeNames));
             }
         }
-
+        // wait for metrics update
+        Thread.sleep(FineGrainedSlotManager.METRICS_UPDATE_INTERVAL.toMillis());
         for (Map.Entry<Gauge<?>, String> entry : reporter.getGauges().entrySet()) {
             if (entry.getValue().contains(MetricNames.TASK_SLOTS_AVAILABLE)) {
-                assertEquals(0L, entry.getKey().getValue());
+                assertThat(entry.getKey().getValue()).isEqualTo(0L);
             } else if (entry.getValue().contains(MetricNames.TASK_SLOTS_TOTAL)) {
-                assertEquals(1L, entry.getKey().getValue());
+                assertThat(entry.getKey().getValue()).isEqualTo(1L);
             } else if (entry.getValue().contains(MetricNames.NUM_REGISTERED_TASK_MANAGERS)) {
-                assertEquals(1L, entry.getKey().getValue());
+                assertThat(entry.getKey().getValue()).isEqualTo(1L);
             } else if (entry.getValue().contains(MetricNames.NUM_RUNNING_JOBS)) {
-                assertEquals(1L, entry.getKey().getValue());
+                assertThat(entry.getKey().getValue()).isEqualTo(1L);
             }
         }
 

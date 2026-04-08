@@ -18,7 +18,7 @@
 
 package org.apache.flink.table.planner.operations.converters;
 
-import org.apache.flink.sql.parser.ddl.SqlAlterView;
+import org.apache.flink.sql.parser.ddl.view.SqlAlterView;
 import org.apache.flink.sql.parser.error.SqlValidateException;
 import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.api.ValidationException;
@@ -77,15 +77,17 @@ class SqlNodeConvertUtils {
         // This bug is fixed in CALCITE-3877 of Calcite 1.23.0.
         String originalQuery = context.toQuotedSqlString(query);
         SqlNode validateQuery = context.getSqlValidator().validate(query);
+        // FLINK-38950: SqlValidator.validate() mutates its input parameter. Always use the
+        // returned validateQuery instead of the mutated query for all subsequent operations.
 
         // Check name is unique.
         // Don't rely on the calcite because if the field names are duplicate, calcite will add
         // index to identify the duplicate names.
         SqlValidatorNamespace validatedNamespace =
                 context.getSqlValidator().getNamespace(validateQuery);
-        validateDuplicatedColumnNames(query, viewFields, validatedNamespace);
+        validateDuplicatedColumnNames(validateQuery, viewFields, validatedNamespace);
 
-        String expandedQuery = context.toQuotedSqlString(query);
+        String expandedQuery = context.toQuotedSqlString(validateQuery);
 
         PlannerQueryOperation operation = toQueryOperation(validateQuery, context);
         ResolvedSchema schema = operation.getResolvedSchema();

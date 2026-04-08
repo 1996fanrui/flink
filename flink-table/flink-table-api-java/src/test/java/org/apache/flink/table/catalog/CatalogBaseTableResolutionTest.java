@@ -89,6 +89,7 @@ class CatalogBaseTableResolutionTest {
                     .watermark("ts", WATERMARK_SQL)
                     .primaryKeyNamed("primary_constraint", "id")
                     .indexNamed("idx", Collections.singletonList("id"))
+                    .immutableColumnsNamed("imt", Collections.singletonList("region"))
                     .build();
 
     private static final Schema MATERIALIZED_TABLE_SCHEMA =
@@ -101,6 +102,7 @@ class CatalogBaseTableResolutionTest {
                     .withComment("") // empty column comment
                     .primaryKeyNamed("primary_constraint", "id")
                     .indexNamed("idx", Collections.singletonList("id"))
+                    .immutableColumnsNamed("imt", Collections.singletonList("region"))
                     .build();
 
     private static final TableSchema LEGACY_TABLE_SCHEMA =
@@ -138,7 +140,9 @@ class CatalogBaseTableResolutionTest {
                     UniqueConstraint.primaryKey(
                             "primary_constraint", Collections.singletonList("id")),
                     Collections.singletonList(
-                            DefaultIndex.newIndex("idx", Collections.singletonList("id"))));
+                            DefaultIndex.newIndex("idx", Collections.singletonList("id"))),
+                    ImmutableColumnsConstraint.immutableColumns(
+                            "imt", Collections.singletonList("region")));
 
     private static final ResolvedSchema RESOLVED_MATERIALIZED_TABLE_SCHEMA =
             new ResolvedSchema(
@@ -152,7 +156,9 @@ class CatalogBaseTableResolutionTest {
                     UniqueConstraint.primaryKey(
                             "primary_constraint", Collections.singletonList("id")),
                     Collections.singletonList(
-                            DefaultIndex.newIndex("idx", Collections.singletonList("id"))));
+                            DefaultIndex.newIndex("idx", Collections.singletonList("id"))),
+                    ImmutableColumnsConstraint.immutableColumns(
+                            "imt", Collections.singletonList("region")));
 
     private static final ContinuousRefreshHandler CONTINUOUS_REFRESH_HANDLER =
             new ContinuousRefreshHandler(
@@ -171,7 +177,8 @@ class CatalogBaseTableResolutionTest {
                             Column.physical("county", DataTypes.VARCHAR(200))),
                     Collections.emptyList(),
                     null,
-                    Collections.emptyList());
+                    Collections.emptyList(),
+                    null);
 
     @Test
     void testCatalogTableResolution() {
@@ -250,7 +257,7 @@ class CatalogBaseTableResolutionTest {
         assertThat(resolvedCatalogMaterializedTable.getResolvedSchema())
                 .isEqualTo(RESOLVED_MATERIALIZED_TABLE_SCHEMA);
         assertThat(resolvedCatalogMaterializedTable.getDefinitionFreshness())
-                .isEqualTo(IntervalFreshness.ofSecond("30"));
+                .isEqualTo(IntervalFreshness.ofSecond(30));
         assertThat(resolvedCatalogMaterializedTable.getOriginalQuery())
                 .isEqualTo(DEFAULT_ORIGINAL_QUERY);
         assertThat(resolvedCatalogMaterializedTable.getExpandedQuery())
@@ -347,6 +354,45 @@ class CatalogBaseTableResolutionTest {
                                 + "distributed table must be at least 1.");
     }
 
+    @Test
+    void testCatalogMaterializedTableToCatalogTable() {
+        final CatalogMaterializedTable materializedTable = catalogMaterializedTable();
+
+        final CatalogTable catalogTable = materializedTable.toCatalogTable();
+
+        // Verify the conversion preserves properties
+        assertThat(catalogTable.getUnresolvedSchema())
+                .isEqualTo(materializedTable.getUnresolvedSchema());
+        assertThat(catalogTable.getComment()).isEqualTo(materializedTable.getComment());
+        assertThat(catalogTable.getPartitionKeys()).isEqualTo(materializedTable.getPartitionKeys());
+        assertThat(catalogTable.getOptions()).isEqualTo(materializedTable.getOptions());
+        assertThat(catalogTable.getDistribution()).isEqualTo(materializedTable.getDistribution());
+        assertThat(catalogTable.getSnapshot()).isEqualTo(materializedTable.getSnapshot());
+    }
+
+    @Test
+    void testResolvedCatalogMaterializedTableToResolvedCatalogTable() {
+        final CatalogMaterializedTable materializedTable = catalogMaterializedTable();
+
+        final ResolvedCatalogMaterializedTable resolvedMaterializedTable =
+                resolveCatalogBaseTable(ResolvedCatalogMaterializedTable.class, materializedTable);
+
+        final ResolvedCatalogTable resolvedCatalogTable =
+                resolvedMaterializedTable.toResolvedCatalogTable();
+
+        // Verify schema is preserved
+        assertThat(resolvedCatalogTable.getResolvedSchema())
+                .isEqualTo(resolvedMaterializedTable.getResolvedSchema());
+
+        // Verify origin properties are preserved
+        assertThat(resolvedCatalogTable.getComment())
+                .isEqualTo(resolvedMaterializedTable.getComment());
+        assertThat(resolvedCatalogTable.getPartitionKeys())
+                .isEqualTo(resolvedMaterializedTable.getPartitionKeys());
+        assertThat(resolvedCatalogTable.getOptions())
+                .isEqualTo(resolvedMaterializedTable.getOptions());
+    }
+
     // --------------------------------------------------------------------------------------------
     // Utilities
     // --------------------------------------------------------------------------------------------
@@ -397,6 +443,8 @@ class CatalogBaseTableResolutionTest {
         properties.put("schema.primary-key.columns", "id");
         properties.put("schema.index.0.name", "idx");
         properties.put("schema.index.0.columns", "id");
+        properties.put("schema.immutable.name", "imt");
+        properties.put("schema.immutable.columns", "region");
         properties.put("partition.keys.0.name", "region");
         properties.put("partition.keys.1.name", "county");
         properties.put("version", "12");
@@ -424,6 +472,8 @@ class CatalogBaseTableResolutionTest {
         properties.put("schema.primary-key.columns", "id");
         properties.put("schema.index.0.name", "idx");
         properties.put("schema.index.0.columns", "id");
+        properties.put("schema.immutable.name", "imt");
+        properties.put("schema.immutable.columns", "region");
         properties.put("freshness-interval", "30");
         properties.put("freshness-unit", "SECOND");
         properties.put("logical-refresh-mode", "CONTINUOUS");
@@ -452,7 +502,7 @@ class CatalogBaseTableResolutionTest {
                 .options(Collections.emptyMap())
                 .originalQuery(DEFAULT_ORIGINAL_QUERY)
                 .expandedQuery(DEFAULT_EXPANDED_QUERY)
-                .freshness(IntervalFreshness.ofSecond("30"))
+                .freshness(IntervalFreshness.ofSecond(30))
                 .logicalRefreshMode(LogicalRefreshMode.AUTOMATIC)
                 .refreshMode(RefreshMode.CONTINUOUS)
                 .refreshStatus(RefreshStatus.INITIALIZING)

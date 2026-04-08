@@ -89,7 +89,8 @@ public final class SpecificInputTypeStrategies {
                     logical(LogicalTypeFamily.NUMERIC),
                     logical(LogicalTypeRoot.STRUCTURED_TYPE),
                     logical(LogicalTypeRoot.DISTINCT_TYPE),
-                    logical(LogicalTypeRoot.BOOLEAN));
+                    logical(LogicalTypeRoot.BOOLEAN),
+                    logical(LogicalTypeRoot.VARIANT));
 
     /** See {@link JsonQueryOnErrorEmptyArgumentTypeStrategy}. */
     public static final ArgumentTypeStrategy JSON_QUERY_ON_EMPTY_ERROR_BEHAVIOUR =
@@ -120,6 +121,10 @@ public final class SpecificInputTypeStrategies {
     /** Input strategy for {@link BuiltInFunctionDefinitions#ML_PREDICT}. */
     public static final InputTypeStrategy ML_PREDICT_INPUT_TYPE_STRATEGY =
             MLPredictTypeStrategy.ML_PREDICT_INPUT_TYPE_STRATEGY;
+
+    /** Input strategy for {@link BuiltInFunctionDefinitions#TO_CHANGELOG}. */
+    public static final InputTypeStrategy TO_CHANGELOG_INPUT_TYPE_STRATEGY =
+            ToChangelogTypeStrategy.INPUT_TYPE_STRATEGY;
 
     /** See {@link ExtractInputTypeStrategy}. */
     public static final InputTypeStrategy EXTRACT = new ExtractInputTypeStrategy();

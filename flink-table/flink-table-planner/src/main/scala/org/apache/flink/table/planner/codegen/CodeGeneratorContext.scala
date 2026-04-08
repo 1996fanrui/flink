@@ -32,7 +32,7 @@ import org.apache.flink.table.runtime.util.collections._
 import org.apache.flink.table.types.DataType
 import org.apache.flink.table.types.logical._
 import org.apache.flink.table.types.logical.LogicalTypeRoot._
-import org.apache.flink.table.utils.DateTimeUtils
+import org.apache.flink.table.utils.{DateTimeUtils, EncodingUtils}
 import org.apache.flink.util.InstantiationUtil
 
 import java.time.ZoneId
@@ -128,6 +128,9 @@ class CodeGeneratorContext(
   // map of string constants that will be added only once
   // string_constant -> reused_term
   private val reusableStringConstants: mutable.Map[String, String] = mutable.Map[String, String]()
+
+  // set of function instance term that will be added only once
+  private val reusableFunctionTerms: mutable.HashSet[String] = mutable.HashSet[String]()
 
   // map of type serializer that will be added only once
   // LogicalType -> reused_term
@@ -645,9 +648,10 @@ class CodeGeneratorContext(
             " This is a bug, please file an issue.")
       })
 
+    val escapedQueryStartCurrentDatabase = EncodingUtils.escapeJava(queryStartCurrentDatabase);
     reusableMemberStatements.add(s"""
                                     |private static final $BINARY_STRING $fieldTerm =
-                                    |$BINARY_STRING.fromString("$queryStartCurrentDatabase");
+                                    |$BINARY_STRING.fromString("$escapedQueryStartCurrentDatabase");
                                     |""".stripMargin)
 
     fieldTerm
@@ -835,10 +839,13 @@ class CodeGeneratorContext(
       function: UserDefinedFunction,
       functionContextClass: Class[_ <: FunctionContext] = classOf[FunctionContext],
       contextArgs: Seq[String] = null): String = {
-    val classQualifier = function.getClass.getName
     val fieldTerm = CodeGenUtils.udfFieldName(function)
-
-    addReusableObjectInternal(function, fieldTerm, classQualifier)
+    // check if function has been added before to avoid duplicate function instances
+    if (!reusableFunctionTerms.contains(fieldTerm)) {
+      reusableFunctionTerms += fieldTerm
+      val classQualifier = function.getClass.getName
+      addReusableObjectInternal(function, fieldTerm, classQualifier)
+    }
 
     val openFunction = if (contextArgs != null) {
       s"""
@@ -982,22 +989,21 @@ class CodeGeneratorContext(
   }
 
   /**
-   * Adds a reusable string constant to the member area of the generated class.
+   * Adds an already pre-escaped string constant to the reusable member area of the generated class.
    *
-   * The string must be already escaped with
-   * [[org.apache.flink.table.utils.EncodingUtils.escapeJava()]].
+   * The string must be already escaped with [[EncodingUtils.escapeJava()]].
    */
-  def addReusableEscapedStringConstant(value: String): String = {
-    reusableStringConstants.get(value) match {
+  def addReusablePreEscapedStringConstant(alreadyEscapedValue: String): String = {
+    reusableStringConstants.get(alreadyEscapedValue) match {
       case Some(field) => field
       case None =>
         val field = newName(this, "str")
         val stmt =
           s"""
-             |private final $BINARY_STRING $field = $BINARY_STRING.fromString("$value");
+             |private final $BINARY_STRING $field = $BINARY_STRING.fromString("$alreadyEscapedValue");
            """.stripMargin
         reusableMemberStatements.add(stmt)
-        reusableStringConstants(value) = field
+        reusableStringConstants(alreadyEscapedValue) = field
         field
     }
   }

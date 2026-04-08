@@ -127,18 +127,18 @@ under the License.
 		<flink.forkCountUnitTest>4</flink.forkCountUnitTest>
 		<flink.reuseForks>true</flink.reuseForks>
 		<flink.surefire.baseArgLine>-XX:+UseG1GC -Xms256m -XX:+IgnoreUnrecognizedVMOptions ${surefire.module.config}</flink.surefire.baseArgLine>
-		<flink.shaded.version>20.0</flink.shaded.version>
-		<flink.shaded.jackson.version>2.18.2</flink.shaded.jackson.version>
-		<flink.shaded.jsonpath.version>2.9.0</flink.shaded.jsonpath.version>
+		<flink.shaded.version>21.0</flink.shaded.version>
+		<flink.shaded.jackson.version>2.20.1</flink.shaded.jackson.version>
+		<flink.shaded.jsonpath.version>2.10.0</flink.shaded.jsonpath.version>
 		<flink.markBundledAsOptional>true</flink.markBundledAsOptional>
 		<source.java.version>11</source.java.version>
 		<target.java.version>17</target.java.version>
 		<slf4j.version>1.7.36</slf4j.version>
-		<log4j.version>2.24.3</log4j.version>
+		<log4j.version>2.25.3</log4j.version>
 		<!-- Overwrite default values from parent pom.
 			 IntelliJ IDEA is (sometimes?) using those values to choose target language level
 			 and thus is changing back to java 1.6 on each maven re-import -->
-		<maven.compiler.source>${target.java.version}</maven.compiler.source>
+		<maven.compiler.source>${source.java.version}</maven.compiler.source>
 		<maven.compiler.target>${target.java.version}</maven.compiler.target>
 		<scala.macros.version>2.1.1</scala.macros.version>
 		<scala.version>2.12.20</scala.version>
@@ -151,7 +151,7 @@ under the License.
 		<avro.version>1.11.4</avro.version>
 		<!-- Version for transitive Jackson dependencies that are not used within Flink itself.-->
 		<jackson.mapper.asl.version>1.9.14.jdk17-redhat-00001</jackson.mapper.asl.version>
-		<jackson-bom.version>2.18.2</jackson-bom.version>
+		<jackson-bom.version>2.20.1</jackson-bom.version>
 		<javax.activation.api.version>1.2.0</javax.activation.api.version>
 		<jaxb.api.version>2.3.1</jaxb.api.version>
 		<junit4.version>4.13.2</junit4.version>
@@ -164,8 +164,8 @@ under the License.
 		<beam.version>2.54.0</beam.version>
 		<protoc.version>4.32.1</protoc.version>
 		<okhttp.version>3.14.9</okhttp.version>
-		<testcontainers.version>1.20.2</testcontainers.version>
-		<lz4.version>1.8.0</lz4.version>
+		<testcontainers.version>1.21.4</testcontainers.version>
+		<lz4.version>1.10.3</lz4.version>
 		<commons.io.version>2.15.1</commons.io.version>
 		<japicmp.skip>false</japicmp.skip>
 		<flink.convergence.phase>validate</flink.convergence.phase>
@@ -355,13 +355,13 @@ under the License.
 			<dependency>
 				<groupId>org.apache.flink</groupId>
 				<artifactId>flink-shaded-asm-9</artifactId>
-				<version>9.6-${flink.shaded.version}</version>
+				<version>9.9.1-${flink.shaded.version}</version>
 			</dependency>
 
 			<dependency>
 				<groupId>org.apache.flink</groupId>
 				<artifactId>flink-shaded-guava</artifactId>
-				<version>33.4.0-jre-${flink.shaded.version}</version>
+				<version>33.5.0-jre-${flink.shaded.version}</version>
 			</dependency>
 
 			<dependency>
@@ -379,13 +379,13 @@ under the License.
 			<dependency>
 				<groupId>org.apache.flink</groupId>
 				<artifactId>flink-shaded-netty</artifactId>
-				<version>4.1.100.Final-${flink.shaded.version}</version>
+				<version>4.2.6.Final-${flink.shaded.version}</version>
 			</dependency>
 
 			<dependency>
 				<groupId>org.apache.flink</groupId>
 				<artifactId>flink-shaded-netty-tcnative-dynamic</artifactId>
-				<version>2.0.62.Final-${flink.shaded.version}</version>
+				<version>2.0.74.Final-${flink.shaded.version}</version>
 				<scope>test</scope>
 			</dependency>
 
@@ -581,7 +581,7 @@ under the License.
 			</dependency>
 
 			<dependency>
-				<groupId>org.lz4</groupId>
+				<groupId>at.yawk.lz4</groupId>
 				<artifactId>lz4-java</artifactId>
 				<version>${lz4.version}</version>
 			</dependency>
@@ -914,7 +914,7 @@ under the License.
 			<dependency>
 				<groupId>io.netty</groupId>
 				<artifactId>netty-bom</artifactId>
-				<version>4.1.100.Final</version>
+				<version>4.2.6.Final</version>
 				<type>pom</type>
 				<scope>import</scope>
 			</dependency>
@@ -1145,7 +1145,9 @@ under the License.
 						<groupId>org.apache.maven.plugins</groupId>
 						<artifactId>maven-compiler-plugin</artifactId>
 						<configuration>
-							<source>17</source>
+							<!-- Use source here which is 11 to fail fast in case of jdk12+ syntax use
+							since default is 17 and CI compile task uses this profile -->
+							<source>${source.java.version}</source>
 							<target>17</target>
 							<compilerArgs combine.children="append">
 								<arg>--add-exports=java.management/sun.management=ALL-UNNAMED</arg>
@@ -1185,6 +1187,11 @@ under the License.
 
 		<profile>
 			<id>java21-target</id>
+
+			<modules>
+				<module>flink-tests-java17</module>
+			</modules>
+
 			<build>
 				<plugins>
 					<plugin>
@@ -1772,6 +1779,7 @@ under the License.
 						<exclude>flink-python/dev/download/**</exclude>
 						<exclude>flink-python/docs/_build/**</exclude>
 						<exclude>flink-python/docs/_static/switcher.json</exclude>
+						<exclude>flink-python/docs/uv.lock</exclude>
 
 						<!-- AWS SDK config that does not support license headers -->
 						<exclude>**/awssdk/global/handlers/execution.interceptors</exclude>
@@ -2232,6 +2240,10 @@ under the License.
 					<artifactId>spotless-maven-plugin</artifactId>
 					<version>${spotless.version}</version>
 					<configuration>
+						<upToDateChecking>
+							<enabled>true</enabled>
+							<indexFile>${project.basedir}/.spotless-index-file</indexFile>
+						</upToDateChecking>
 						<java>
 							<googleJavaFormat>
 								<version>1.24.0</version>
@@ -2265,7 +2277,7 @@ under the License.
 					<configuration>
 						<quiet>true</quiet>
 						<detectOfflineLinks>false</detectOfflineLinks>
-						<release>11</release>
+						<release>${target.java.version}</release>
 						<additionalJOptions>
 							<additionalJOption>-Xdoclint:none</additionalJOption>
 							<additionalJOption>--allow-script-in-comments</additionalJOption>

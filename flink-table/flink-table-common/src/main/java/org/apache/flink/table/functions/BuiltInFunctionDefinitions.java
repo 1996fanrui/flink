@@ -109,12 +109,14 @@ import static org.apache.flink.table.types.inference.strategies.SpecificInputTyp
 import static org.apache.flink.table.types.inference.strategies.SpecificInputTypeStrategies.INDEX;
 import static org.apache.flink.table.types.inference.strategies.SpecificInputTypeStrategies.JSON_ARGUMENT;
 import static org.apache.flink.table.types.inference.strategies.SpecificInputTypeStrategies.ML_PREDICT_INPUT_TYPE_STRATEGY;
+import static org.apache.flink.table.types.inference.strategies.SpecificInputTypeStrategies.TO_CHANGELOG_INPUT_TYPE_STRATEGY;
 import static org.apache.flink.table.types.inference.strategies.SpecificInputTypeStrategies.TWO_EQUALS_COMPARABLE;
 import static org.apache.flink.table.types.inference.strategies.SpecificInputTypeStrategies.TWO_FULLY_COMPARABLE;
 import static org.apache.flink.table.types.inference.strategies.SpecificInputTypeStrategies.percentage;
 import static org.apache.flink.table.types.inference.strategies.SpecificInputTypeStrategies.percentageArray;
 import static org.apache.flink.table.types.inference.strategies.SpecificTypeStrategies.ARRAY_APPEND_PREPEND;
 import static org.apache.flink.table.types.inference.strategies.SpecificTypeStrategies.ML_PREDICT_OUTPUT_TYPE_STRATEGY;
+import static org.apache.flink.table.types.inference.strategies.SpecificTypeStrategies.TO_CHANGELOG_OUTPUT_TYPE_STRATEGY;
 
 /** Dictionary of function definitions for all built-in functions. */
 @PublicEvolving
@@ -463,6 +465,26 @@ public final class BuiltInFunctionDefinitions {
                             "org.apache.flink.table.runtime.functions.scalar.UrlEncodeFunction")
                     .build();
 
+    public static final BuiltInFunctionDefinition INET_ATON =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("INET_ATON")
+                    .kind(SCALAR)
+                    .inputTypeStrategy(sequence(logical(LogicalTypeFamily.CHARACTER_STRING)))
+                    .outputTypeStrategy(explicit(BIGINT().nullable()))
+                    .runtimeClass(
+                            "org.apache.flink.table.runtime.functions.scalar.InetAtonFunction")
+                    .build();
+
+    public static final BuiltInFunctionDefinition INET_NTOA =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("INET_NTOA")
+                    .kind(SCALAR)
+                    .inputTypeStrategy(sequence(logical(LogicalTypeFamily.INTEGER_NUMERIC)))
+                    .outputTypeStrategy(explicit(DataTypes.STRING().nullable()))
+                    .runtimeClass(
+                            "org.apache.flink.table.runtime.functions.scalar.InetNtoaFunction")
+                    .build();
+
     public static final BuiltInFunctionDefinition INTERNAL_REPLICATE_ROWS =
             BuiltInFunctionDefinition.newBuilder()
                     .name("$REPLICATE_ROWS$1")
@@ -755,6 +777,31 @@ public final class BuiltInFunctionDefinitions {
                     .runtimeProvided()
                     .build();
 
+    public static final BuiltInFunctionDefinition TO_CHANGELOG =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("TO_CHANGELOG")
+                    .kind(PROCESS_TABLE)
+                    .staticArguments(
+                            StaticArgument.table(
+                                    "input",
+                                    Row.class,
+                                    false,
+                                    EnumSet.of(
+                                            StaticArgumentTrait.TABLE,
+                                            StaticArgumentTrait.SET_SEMANTIC_TABLE,
+                                            StaticArgumentTrait.SUPPORT_UPDATES,
+                                            StaticArgumentTrait.REQUIRE_UPDATE_BEFORE)),
+                            StaticArgument.scalar("op", DataTypes.DESCRIPTOR(), true),
+                            StaticArgument.scalar(
+                                    "op_mapping",
+                                    DataTypes.MAP(DataTypes.STRING(), DataTypes.STRING()),
+                                    true))
+                    .inputTypeStrategy(TO_CHANGELOG_INPUT_TYPE_STRATEGY)
+                    .outputTypeStrategy(TO_CHANGELOG_OUTPUT_TYPE_STRATEGY)
+                    .runtimeClass(
+                            "org.apache.flink.table.runtime.functions.ptf.ToChangelogFunction")
+                    .build();
+
     public static final BuiltInFunctionDefinition GREATEST =
             BuiltInFunctionDefinition.newBuilder()
                     .name("GREATEST")
@@ -910,6 +957,19 @@ public final class BuiltInFunctionDefinitions {
                     .inputTypeStrategy(sequence(logical(LogicalTypeFamily.NUMERIC)))
                     .outputTypeStrategy(
                             TypeStrategies.aggArg0(LogicalTypeMerging::findAvgAggType, true))
+                    .build();
+
+    public static final BuiltInFunctionDefinition INTERNAL_WELFORD_M2 =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("$WELFORD_M2$1")
+                    .kind(AGGREGATE)
+                    .inputTypeStrategy(
+                            sequence(
+                                    Collections.singletonList("value"),
+                                    Collections.singletonList(logical(LogicalTypeFamily.NUMERIC))))
+                    .outputTypeStrategy(explicit(DataTypes.DOUBLE()))
+                    .runtimeProvided()
+                    .internal()
                     .build();
 
     public static final BuiltInFunctionDefinition COLLECT =
@@ -2442,7 +2502,8 @@ public final class BuiltInFunctionDefinitions {
                             sequence(
                                     or(
                                             logical(LogicalTypeRoot.ARRAY),
-                                            logical(LogicalTypeRoot.MAP)),
+                                            logical(LogicalTypeRoot.MAP),
+                                            logical(LogicalTypeRoot.VARIANT)),
                                     InputTypeStrategies.ITEM_AT_INDEX))
                     .outputTypeStrategy(SpecificTypeStrategies.ITEM_AT)
                     .build();
@@ -2918,6 +2979,254 @@ public final class BuiltInFunctionDefinitions {
                     .outputTypeStrategy(forceNullable(explicit(DataTypes.VARIANT())))
                     .runtimeClass(
                             "org.apache.flink.table.runtime.functions.scalar.TryParseJsonFunction")
+                    .build();
+
+    // --------------------------------------------------------------------------------------------
+    // Bitmap functions
+    // --------------------------------------------------------------------------------------------
+
+    public static final BuiltInFunctionDefinition BITMAP_AND =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("BITMAP_AND")
+                    .kind(SCALAR)
+                    .inputTypeStrategy(
+                            sequence(
+                                    Arrays.asList("bitmap1", "bitmap2"),
+                                    Arrays.asList(
+                                            logical(LogicalTypeRoot.BITMAP),
+                                            logical(LogicalTypeRoot.BITMAP))))
+                    .outputTypeStrategy(nullableIfArgs(explicit(DataTypes.BITMAP())))
+                    .runtimeClass(
+                            "org.apache.flink.table.runtime.functions.scalar.BitmapAndFunction")
+                    .build();
+
+    public static final BuiltInFunctionDefinition BITMAP_ANDNOT =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("BITMAP_ANDNOT")
+                    .kind(SCALAR)
+                    .inputTypeStrategy(
+                            sequence(
+                                    Arrays.asList("bitmap1", "bitmap2"),
+                                    Arrays.asList(
+                                            logical(LogicalTypeRoot.BITMAP),
+                                            logical(LogicalTypeRoot.BITMAP))))
+                    .outputTypeStrategy(nullableIfArgs(explicit(DataTypes.BITMAP())))
+                    .runtimeClass(
+                            "org.apache.flink.table.runtime.functions.scalar.BitmapAndnotFunction")
+                    .build();
+
+    public static final BuiltInFunctionDefinition BITMAP_AND_AGG =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("BITMAP_AND_AGG")
+                    .kind(AGGREGATE)
+                    .inputTypeStrategy(
+                            sequence(
+                                    Collections.singletonList("bitmap"),
+                                    Collections.singletonList(logical(LogicalTypeRoot.BITMAP))))
+                    .outputTypeStrategy(explicit(DataTypes.BITMAP()))
+                    .runtimeProvided()
+                    .build();
+
+    public static final BuiltInFunctionDefinition BITMAP_AND_CARDINALITY_AGG =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("BITMAP_AND_CARDINALITY_AGG")
+                    .kind(AGGREGATE)
+                    .inputTypeStrategy(
+                            sequence(
+                                    Collections.singletonList("bitmap"),
+                                    Collections.singletonList(logical(LogicalTypeRoot.BITMAP))))
+                    .outputTypeStrategy(explicit(DataTypes.BIGINT()))
+                    .runtimeProvided()
+                    .build();
+
+    public static final BuiltInFunctionDefinition BITMAP_BUILD =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("BITMAP_BUILD")
+                    .kind(SCALAR)
+                    .inputTypeStrategy(
+                            or(
+                                    sequence(
+                                            Collections.singletonList("array"),
+                                            Collections.singletonList(
+                                                    InputTypeStrategies.explicit(
+                                                            DataTypes.ARRAY(DataTypes.INT())
+                                                                    .notNull()))),
+                                    sequence(
+                                            Collections.singletonList("array"),
+                                            Collections.singletonList(
+                                                    InputTypeStrategies.explicit(
+                                                            DataTypes.ARRAY(DataTypes.INT()))))))
+                    .outputTypeStrategy(nullableIfArgs(explicit(DataTypes.BITMAP())))
+                    .runtimeClass(
+                            "org.apache.flink.table.runtime.functions.scalar.BitmapBuildFunction")
+                    .build();
+
+    public static final BuiltInFunctionDefinition BITMAP_BUILD_AGG =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("BITMAP_BUILD_AGG")
+                    .kind(AGGREGATE)
+                    .inputTypeStrategy(
+                            sequence(
+                                    Collections.singletonList("value"),
+                                    Collections.singletonList(logical(LogicalTypeRoot.INTEGER))))
+                    .outputTypeStrategy(explicit(DataTypes.BITMAP()))
+                    .runtimeProvided()
+                    .build();
+
+    public static final BuiltInFunctionDefinition BITMAP_BUILD_CARDINALITY_AGG =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("BITMAP_BUILD_CARDINALITY_AGG")
+                    .kind(AGGREGATE)
+                    .inputTypeStrategy(
+                            sequence(
+                                    Collections.singletonList("value"),
+                                    Collections.singletonList(logical(LogicalTypeRoot.INTEGER))))
+                    .outputTypeStrategy(explicit(DataTypes.BIGINT()))
+                    .runtimeProvided()
+                    .build();
+
+    public static final BuiltInFunctionDefinition BITMAP_CARDINALITY =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("BITMAP_CARDINALITY")
+                    .kind(SCALAR)
+                    .inputTypeStrategy(
+                            sequence(
+                                    Collections.singletonList("bitmap"),
+                                    Collections.singletonList(logical(LogicalTypeRoot.BITMAP))))
+                    .outputTypeStrategy(nullableIfArgs(explicit(DataTypes.BIGINT())))
+                    .runtimeClass(
+                            "org.apache.flink.table.runtime.functions.scalar.BitmapCardinalityFunction")
+                    .build();
+
+    public static final BuiltInFunctionDefinition BITMAP_FROM_BYTES =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("BITMAP_FROM_BYTES")
+                    .kind(SCALAR)
+                    .inputTypeStrategy(
+                            sequence(
+                                    Collections.singletonList("bytes"),
+                                    Collections.singletonList(
+                                            logical(LogicalTypeFamily.BINARY_STRING))))
+                    .outputTypeStrategy(nullableIfArgs(explicit(DataTypes.BITMAP())))
+                    .runtimeClass(
+                            "org.apache.flink.table.runtime.functions.scalar.BitmapFromBytesFunction")
+                    .build();
+
+    public static final BuiltInFunctionDefinition BITMAP_OR =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("BITMAP_OR")
+                    .kind(SCALAR)
+                    .inputTypeStrategy(
+                            sequence(
+                                    Arrays.asList("bitmap1", "bitmap2"),
+                                    Arrays.asList(
+                                            logical(LogicalTypeRoot.BITMAP),
+                                            logical(LogicalTypeRoot.BITMAP))))
+                    .outputTypeStrategy(nullableIfArgs(explicit(DataTypes.BITMAP())))
+                    .runtimeClass(
+                            "org.apache.flink.table.runtime.functions.scalar.BitmapOrFunction")
+                    .build();
+
+    public static final BuiltInFunctionDefinition BITMAP_OR_AGG =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("BITMAP_OR_AGG")
+                    .kind(AGGREGATE)
+                    .inputTypeStrategy(
+                            sequence(
+                                    Collections.singletonList("bitmap"),
+                                    Collections.singletonList(logical(LogicalTypeRoot.BITMAP))))
+                    .outputTypeStrategy(explicit(DataTypes.BITMAP()))
+                    .runtimeProvided()
+                    .build();
+
+    public static final BuiltInFunctionDefinition BITMAP_OR_CARDINALITY_AGG =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("BITMAP_OR_CARDINALITY_AGG")
+                    .kind(AGGREGATE)
+                    .inputTypeStrategy(
+                            sequence(
+                                    Collections.singletonList("bitmap"),
+                                    Collections.singletonList(logical(LogicalTypeRoot.BITMAP))))
+                    .outputTypeStrategy(explicit(DataTypes.BIGINT()))
+                    .runtimeProvided()
+                    .build();
+
+    public static final BuiltInFunctionDefinition BITMAP_TO_ARRAY =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("BITMAP_TO_ARRAY")
+                    .kind(SCALAR)
+                    .inputTypeStrategy(
+                            sequence(
+                                    Collections.singletonList("bitmap"),
+                                    Collections.singletonList(logical(LogicalTypeRoot.BITMAP))))
+                    .outputTypeStrategy(nullableIfArgs(explicit(DataTypes.ARRAY(DataTypes.INT()))))
+                    .runtimeClass(
+                            "org.apache.flink.table.runtime.functions.scalar.BitmapToArrayFunction")
+                    .build();
+
+    public static final BuiltInFunctionDefinition BITMAP_TO_BYTES =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("BITMAP_TO_BYTES")
+                    .kind(SCALAR)
+                    .inputTypeStrategy(
+                            sequence(
+                                    Collections.singletonList("bitmap"),
+                                    Collections.singletonList(logical(LogicalTypeRoot.BITMAP))))
+                    .outputTypeStrategy(nullableIfArgs(explicit(DataTypes.BYTES())))
+                    .runtimeClass(
+                            "org.apache.flink.table.runtime.functions.scalar.BitmapToBytesFunction")
+                    .build();
+
+    public static final BuiltInFunctionDefinition BITMAP_TO_STRING =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("BITMAP_TO_STRING")
+                    .kind(SCALAR)
+                    .inputTypeStrategy(
+                            sequence(
+                                    Collections.singletonList("bitmap"),
+                                    Collections.singletonList(logical(LogicalTypeRoot.BITMAP))))
+                    .outputTypeStrategy(nullableIfArgs(explicit(DataTypes.STRING())))
+                    .runtimeClass(
+                            "org.apache.flink.table.runtime.functions.scalar.BitmapToStringFunction")
+                    .build();
+
+    public static final BuiltInFunctionDefinition BITMAP_XOR =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("BITMAP_XOR")
+                    .kind(SCALAR)
+                    .inputTypeStrategy(
+                            sequence(
+                                    Arrays.asList("bitmap1", "bitmap2"),
+                                    Arrays.asList(
+                                            logical(LogicalTypeRoot.BITMAP),
+                                            logical(LogicalTypeRoot.BITMAP))))
+                    .outputTypeStrategy(nullableIfArgs(explicit(DataTypes.BITMAP())))
+                    .runtimeClass(
+                            "org.apache.flink.table.runtime.functions.scalar.BitmapXorFunction")
+                    .build();
+
+    public static final BuiltInFunctionDefinition BITMAP_XOR_AGG =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("BITMAP_XOR_AGG")
+                    .kind(AGGREGATE)
+                    .inputTypeStrategy(
+                            sequence(
+                                    Collections.singletonList("bitmap"),
+                                    Collections.singletonList(logical(LogicalTypeRoot.BITMAP))))
+                    .outputTypeStrategy(explicit(DataTypes.BITMAP()))
+                    .runtimeProvided()
+                    .build();
+
+    public static final BuiltInFunctionDefinition BITMAP_XOR_CARDINALITY_AGG =
+            BuiltInFunctionDefinition.newBuilder()
+                    .name("BITMAP_XOR_CARDINALITY_AGG")
+                    .kind(AGGREGATE)
+                    .inputTypeStrategy(
+                            sequence(
+                                    Collections.singletonList("bitmap"),
+                                    Collections.singletonList(logical(LogicalTypeRoot.BITMAP))))
+                    .outputTypeStrategy(explicit(DataTypes.BIGINT()))
+                    .runtimeProvided()
                     .build();
 
     // --------------------------------------------------------------------------------------------

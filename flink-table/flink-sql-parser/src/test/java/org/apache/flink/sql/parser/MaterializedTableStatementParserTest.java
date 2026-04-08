@@ -374,7 +374,7 @@ class MaterializedTableStatementParserTest {
     }
 
     @Test
-    void testAlterMaterializedTableAddNestedColumn() {
+    void testAddNestedColumn() {
         // add a row column
         sql("alter materialized table mt1 add new_column array<row(f0 int, f1 bigint)> comment 'new_column docs'")
                 .ok(
@@ -405,7 +405,7 @@ class MaterializedTableStatementParserTest {
     }
 
     @Test
-    void testAlterMaterializedTableAddSingleColumn() {
+    void testAddSingleColumn() {
         sql("alter materialized table mt1 add new_column int not null")
                 .ok(
                         "ALTER MATERIALIZED TABLE `MT1` ADD (\n"
@@ -441,7 +441,7 @@ class MaterializedTableStatementParserTest {
     }
 
     @Test
-    void testAlterMaterializedTableAddWatermark() {
+    void testAddWatermark() {
         sql("alter materialized table mt1 add watermark for ts as ts")
                 .ok(
                         "ALTER MATERIALIZED TABLE `MT1` ADD (\n"
@@ -467,11 +467,134 @@ class MaterializedTableStatementParserTest {
                         + "watermark for ts as ts - interval '1' second,\n"
                         + "^watermark^ for f1 as now()\n"
                         + ")")
-                .fails("Multiple WATERMARK statements is not supported yet.");
+                .fails("Multiple WATERMARK declarations are not supported yet.");
     }
 
     @Test
-    void testAlterMaterializedTableAddDistribution() {
+    void testModifySingleColumn() {
+        sql("alter materialized table mt1 modify new_column string comment 'new_column docs'")
+                .ok(
+                        "ALTER MATERIALIZED TABLE `MT1` MODIFY (\n"
+                                + "  `NEW_COLUMN` STRING COMMENT 'new_column docs'\n"
+                                + ")");
+        sql("alter materialized table mt1 modify new_column string comment 'new_column docs'")
+                .ok(
+                        "ALTER MATERIALIZED TABLE `MT1` MODIFY (\n"
+                                + "  `NEW_COLUMN` STRING COMMENT 'new_column docs'\n"
+                                + ")");
+        sql("alter materialized table mt1 modify new_column string comment 'new_column docs' first")
+                .ok(
+                        "ALTER MATERIALIZED TABLE `MT1` MODIFY (\n"
+                                + "  `NEW_COLUMN` STRING COMMENT 'new_column docs' FIRST\n"
+                                + ")");
+        sql("alter materialized table mt1 modify new_column string comment 'new_column docs' after id")
+                .ok(
+                        "ALTER MATERIALIZED TABLE `MT1` MODIFY (\n"
+                                + "  `NEW_COLUMN` STRING COMMENT 'new_column docs' AFTER `ID`\n"
+                                + ")");
+        // modify column type
+        sql("alter materialized table mt1 modify new_column array<string not null> not null")
+                .ok(
+                        "ALTER MATERIALIZED TABLE `MT1` MODIFY (\n"
+                                + "  `NEW_COLUMN` ARRAY< STRING NOT NULL > NOT NULL\n"
+                                + ")");
+
+        // modify compute column
+        sql("alter materialized table mt1 modify col_int as col_a - col_b after col_b")
+                .ok(
+                        "ALTER MATERIALIZED TABLE `MT1` MODIFY (\n"
+                                + "  `COL_INT` AS (`COL_A` - `COL_B`) AFTER `COL_B`\n"
+                                + ")");
+        // modify metadata column
+        sql("alter materialized table mt1 modify col_int int metadata from 'mk1' virtual comment 'comment_metadata' after col_b")
+                .ok(
+                        "ALTER MATERIALIZED TABLE `MT1` MODIFY (\n"
+                                + "  `COL_INT` INTEGER METADATA FROM 'mk1' VIRTUAL COMMENT 'comment_metadata' AFTER `COL_B`\n"
+                                + ")");
+
+        // modify nested column
+        sql("alter materialized table mt1 modify row_column.f0 int not null comment 'change nullability'")
+                .ok(
+                        "ALTER MATERIALIZED TABLE `MT1` MODIFY (\n"
+                                + "  `ROW_COLUMN`.`F0` INTEGER NOT NULL COMMENT 'change nullability'\n"
+                                + ")");
+
+        // modify nested column, shift position
+        sql("alter materialized table mt1 modify row_column.f0 int after row_column.f2")
+                .ok(
+                        "ALTER MATERIALIZED TABLE `MT1` MODIFY (\n"
+                                + "  `ROW_COLUMN`.`F0` INTEGER AFTER `ROW_COLUMN`.`F2`\n"
+                                + ")");
+    }
+
+    @Test
+    void testModifyWatermark() {
+        sql("alter materialized table mt1 modify watermark for ts as ts")
+                .ok(
+                        "ALTER MATERIALIZED TABLE `MT1` MODIFY (\n"
+                                + "  WATERMARK FOR `TS` AS `TS`\n"
+                                + ")");
+        sql("alter materialized table mt1 modify watermark for ts as ts - interval '1' second")
+                .ok(
+                        "ALTER MATERIALIZED TABLE `MT1` MODIFY (\n"
+                                + "  WATERMARK FOR `TS` AS (`TS` - INTERVAL '1' SECOND)\n"
+                                + ")");
+        sql("alter  materialized table default_database.mt1 modify watermark for ts as ts - interval '1' second")
+                .ok(
+                        "ALTER MATERIALIZED TABLE `DEFAULT_DATABASE`.`MT1` MODIFY (\n"
+                                + "  WATERMARK FOR `TS` AS (`TS` - INTERVAL '1' SECOND)\n"
+                                + ")");
+        sql("alter materialized table default_catalog.default_database.mt1 modify watermark for ts as ts - interval '1' second")
+                .ok(
+                        "ALTER MATERIALIZED TABLE `DEFAULT_CATALOG`.`DEFAULT_DATABASE`.`MT1` MODIFY (\n"
+                                + "  WATERMARK FOR `TS` AS (`TS` - INTERVAL '1' SECOND)\n"
+                                + ")");
+
+        sql("alter materialized table default_catalog.default_database.mt1 modify (\n"
+                        + "watermark for ts as ts - interval '1' second,\n"
+                        + "^watermark^ for f1 as now()\n"
+                        + ")")
+                .fails("Multiple WATERMARK declarations are not supported yet.");
+    }
+
+    @Test
+    void testModifyConstraint() {
+        sql("alter materialized table mt1 modify constraint ct1 primary key(a, b) not enforced")
+                .ok(
+                        "ALTER MATERIALIZED TABLE `MT1` MODIFY (\n"
+                                + "  CONSTRAINT `CT1` PRIMARY KEY (`A`, `B`) NOT ENFORCED\n"
+                                + ")");
+        sql("alter materialized table mt1 modify unique(a, b)")
+                .ok("ALTER MATERIALIZED TABLE `MT1` MODIFY (\n" + "  UNIQUE (`A`, `B`)\n" + ")");
+    }
+
+    @Test
+    void testModifyMultipleColumns() {
+        final String sql =
+                "alter materialized table mt1 modify (\n"
+                        + "col_int int,\n"
+                        + "log_ts string comment 'log timestamp string' first,\n"
+                        + "ts AS to_timestamp(log_ts) after log_ts,\n"
+                        + "col_meta int metadata from 'mk1' virtual comment 'comment_str' after col_b,\n"
+                        + "primary key (id) not enforced,\n"
+                        + "unique(a, b),\n"
+                        + "watermark for ts as ts - interval '3' second\n"
+                        + ")";
+        final String expected =
+                "ALTER MATERIALIZED TABLE `MT1` MODIFY (\n"
+                        + "  `COL_INT` INTEGER,\n"
+                        + "  `LOG_TS` STRING COMMENT 'log timestamp string' FIRST,\n"
+                        + "  `TS` AS `TO_TIMESTAMP`(`LOG_TS`) AFTER `LOG_TS`,\n"
+                        + "  `COL_META` INTEGER METADATA FROM 'mk1' VIRTUAL COMMENT 'comment_str' AFTER `COL_B`,\n"
+                        + "  PRIMARY KEY (`ID`) NOT ENFORCED,\n"
+                        + "  UNIQUE (`A`, `B`),\n"
+                        + "  WATERMARK FOR `TS` AS (`TS` - INTERVAL '3' SECOND)\n"
+                        + ")";
+        sql(sql).ok(expected);
+    }
+
+    @Test
+    void testAddDistribution() {
         sql("alter materialized table mt1 add distribution by hash(a) into 6 buckets")
                 .ok("ALTER MATERIALIZED TABLE `MT1` ADD DISTRIBUTION BY HASH(`A`) INTO 6 BUCKETS");
 
@@ -497,6 +620,27 @@ class MaterializedTableStatementParserTest {
     }
 
     @Test
+    void testAlterMaterializedTableDrop() {
+        sql("alter materialized table mt1 drop distribution")
+                .ok("ALTER MATERIALIZED TABLE `MT1` DROP DISTRIBUTION");
+
+        sql("alter materialized table mt1 drop primary key")
+                .ok("ALTER MATERIALIZED TABLE `MT1` DROP PRIMARY KEY");
+
+        sql("alter materialized table mt1 drop constraint pk_mt")
+                .ok("ALTER MATERIALIZED TABLE `MT1` DROP CONSTRAINT `PK_MT`");
+
+        sql("alter materialized table mt1 drop watermark")
+                .ok("ALTER MATERIALIZED TABLE `MT1` DROP WATERMARK");
+
+        sql("alter materialized table mt1 drop c1")
+                .ok("ALTER MATERIALIZED TABLE `MT1` DROP (\n  `C1`\n)");
+
+        sql("alter materialized table mt1 drop (c1, c2, c3)")
+                .ok("ALTER MATERIALIZED TABLE `MT1` DROP (\n  `C1`,\n  `C2`,\n  `C3`\n)");
+    }
+
+    @Test
     void testDropMaterializedTable() {
         final String sql = "DROP MATERIALIZED TABLE tbl1";
         final String expected = "DROP MATERIALIZED TABLE `TBL1`";
@@ -519,6 +663,98 @@ class MaterializedTableStatementParserTest {
     void testDropTemporaryMaterializedTable() {
         final String sql = "DROP TEMPORARY ^MATERIALIZED^ TABLE tbl1";
         sql(sql).fails("DROP TEMPORARY MATERIALIZED TABLE is not supported.");
+    }
+
+    @Test
+    void testStartMode() {
+        final String sql1 =
+                "create materialized table tbl1 start_mode = from_beginning as select * from t";
+        sql(sql1)
+                .ok(
+                        "CREATE MATERIALIZED TABLE `TBL1`\nSTART_MODE = FROM_BEGINNING\nAS\nSELECT *\nFROM `T`");
+
+        final String sql2 =
+                "create materialized table tbl1 start_mode = from_now as select * from t";
+        sql(sql2)
+                .ok(
+                        "CREATE MATERIALIZED TABLE `TBL1`\nSTART_MODE = FROM_NOW\nAS\nSELECT *\nFROM `T`");
+
+        final String sql3 =
+                "create materialized table tbl1 start_mode = from_now(INTERVAL '1' HOUR) as select * from t";
+        sql(sql3)
+                .ok(
+                        "CREATE MATERIALIZED TABLE `TBL1`\nSTART_MODE = FROM_NOW(INTERVAL '1' HOUR)\nAS\nSELECT *\nFROM `T`");
+
+        final String sql4 =
+                "create materialized table tbl1 start_mode = from_timestamp(TIMESTAMP '2023-04-22 21:37:58') as select * from t";
+        sql(sql4)
+                .ok(
+                        "CREATE MATERIALIZED TABLE `TBL1`\nSTART_MODE = FROM_TIMESTAMP(TIMESTAMP '2023-04-22 21:37:58')\nAS\nSELECT *\nFROM `T`");
+
+        final String sql5 =
+                // allowed on parser level, in operation there is a validation for CREATE OR ALTER
+                // support only
+                "create materialized table tbl1 start_mode = resume_or_from_beginning as select * from t";
+        sql(sql5)
+                .ok(
+                        "CREATE MATERIALIZED TABLE `TBL1`\nSTART_MODE = RESUME_OR_FROM_BEGINNING\nAS\nSELECT *\nFROM `T`");
+
+        final String sql6 =
+                // allowed on parser level, in operation there is a validation for CREATE OR ALTER
+                // support only
+                "create materialized table tbl1 start_mode = resume_or_from_now as select * from t";
+        sql(sql6)
+                .ok(
+                        "CREATE MATERIALIZED TABLE `TBL1`\nSTART_MODE = RESUME_OR_FROM_NOW\nAS\nSELECT *\nFROM `T`");
+
+        final String sql7 =
+                // allowed on parser level, in operation there is a validation for CREATE OR ALTER
+                // support only
+                "create materialized table tbl1 start_mode = resume_or_from_now(interval '2' minutes) as select * from t";
+        sql(sql7)
+                .ok(
+                        "CREATE MATERIALIZED TABLE `TBL1`\nSTART_MODE = RESUME_OR_FROM_NOW(INTERVAL '2' MINUTE)\nAS\nSELECT *\nFROM `T`");
+
+        final String sql8 =
+                // allowed on parser level, in operation there is a validation for CREATE OR ALTER
+                // support only
+                "create materialized table tbl1 with ('format' = 'json') start_mode = resume_or_from_timestamp(TIMESTAMP WITH LOCAL TIME ZONE '2023-04-22 21:37:58') as select * from t";
+        sql(sql8)
+                .ok(
+                        "CREATE MATERIALIZED TABLE `TBL1`\nWITH (\n"
+                                + "  'format' = 'json'\n"
+                                + ")\nSTART_MODE = RESUME_OR_FROM_TIMESTAMP(TIMESTAMP WITH LOCAL TIME ZONE '2023-04-22 21:37:58')\nAS\nSELECT *\nFROM `T`");
+
+        final String sql9 =
+                "create materialized table tbl1 start_mode = from_now(timestamp ^'2023-04-22 21:37:58'^) as select * from t";
+        sql(sql9)
+                .fails(
+                        "START_MODE literal must be an interval for FROM_NOW and RESUME_OR_FROM_NOW modes.");
+
+        final String sql10 =
+                "create materialized table tbl1 start_mode = resume_or_from_timestamp(^interval^ '2' minutes) as select * from t";
+        sql(sql10)
+                .fails(
+                        "Encountered \"interval\" at line 1, column 70.\n"
+                                + "Was expecting:\n"
+                                + "    \"TIMESTAMP\" ...\n"
+                                + "    ");
+    }
+
+    @Test
+    void testShowCreateOrAlterMaterializedTable() {
+        sql("show create materialized table mt1").ok("SHOW CREATE MATERIALIZED TABLE `MT1`");
+        sql("show create materialized table db1.mt1")
+                .ok("SHOW CREATE MATERIALIZED TABLE `DB1`.`MT1`");
+        sql("show create materialized table catalog1.db1.mt1")
+                .ok("SHOW CREATE MATERIALIZED TABLE `CATALOG1`.`DB1`.`MT1`");
+
+        sql("show create or alter materialized table mt1")
+                .ok("SHOW CREATE OR ALTER MATERIALIZED TABLE `MT1`");
+        sql("show create or alter materialized table db1.mt1")
+                .ok("SHOW CREATE OR ALTER MATERIALIZED TABLE `DB1`.`MT1`");
+        sql("show create or alter materialized table catalog1.db1.mt1")
+                .ok("SHOW CREATE OR ALTER MATERIALIZED TABLE `CATALOG1`.`DB1`.`MT1`");
     }
 
     public SqlParserFixture fixture() {

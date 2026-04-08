@@ -92,7 +92,7 @@ public abstract class ExecNodeBase<T> implements ExecNode<T> {
      * Retrieves the default context from the {@link ExecNodeMetadata} annotation to be serialized
      * into the JSON plan.
      */
-    @JsonProperty(value = FIELD_NAME_TYPE, access = JsonProperty.Access.READ_ONLY, index = 1)
+    @JsonProperty(value = FIELD_NAME_TYPE, index = 1)
     protected final ExecNodeContext getContextFromAnnotation() {
         return isCompiled ? context : ExecNodeContext.newContext(this.getClass()).withId(getId());
     }
@@ -129,6 +129,11 @@ public abstract class ExecNodeBase<T> implements ExecNode<T> {
     @Override
     public final int getId() {
         return context.getId();
+    }
+
+    @Override
+    public final String getTypeAsString() {
+        return context.getTypeAsString();
     }
 
     @Override
@@ -343,6 +348,11 @@ public abstract class ExecNodeBase<T> implements ExecNode<T> {
                     return Optional.of(createTransformationUid(name, config));
                 }
                 return Optional.empty();
+            }
+
+            @Override
+            public String getContainerNodeType() {
+                return getTypeAsString();
             }
 
             @Override
