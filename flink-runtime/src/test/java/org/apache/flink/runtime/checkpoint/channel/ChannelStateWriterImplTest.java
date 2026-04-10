@@ -290,14 +290,9 @@ class ChannelStateWriterImplTest {
                     byte[] data = new byte[] {1, 2, 3, 4, 5};
                     InputStream inputStream = new ByteArrayInputStream(data);
                     writer.addInputData(
-                            CHECKPOINT_ID,
-                            new InputChannelInfo(1, 1),
-                            1,
-                            inputStream,
-                            data.length);
+                            CHECKPOINT_ID, new InputChannelInfo(1, 1), 1, inputStream, data.length);
                     worker.processAllRequests();
-                    ChannelStateWriteResult result =
-                            writer.getAndRemoveWriteResult(CHECKPOINT_ID);
+                    ChannelStateWriteResult result = writer.getAndRemoveWriteResult(CHECKPOINT_ID);
                     assertThat(result.isDone()).isFalse();
                 });
     }

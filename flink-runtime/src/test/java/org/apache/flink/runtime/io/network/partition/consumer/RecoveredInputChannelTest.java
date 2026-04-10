@@ -173,10 +173,11 @@ class RecoveredInputChannelTest {
                             .setupBufferPoolFactory(environment)
                             .setCheckpointingDuringRecoveryEnabled(true)
                             .build();
+            // Create the local buffer pool so requestBufferBlocking() can block on it
+            filteringGate.setup();
 
             // Get the recovered channel from the gate
-            RecoveredInputChannel channel =
-                    (RecoveredInputChannel) filteringGate.getChannel(0);
+            RecoveredInputChannel channel = (RecoveredInputChannel) filteringGate.getChannel(0);
 
             // 1. Test requestBuffer() is non-blocking and returns null when exhausted.
             // requestBuffer() triggers exclusive buffer assignment on first call.

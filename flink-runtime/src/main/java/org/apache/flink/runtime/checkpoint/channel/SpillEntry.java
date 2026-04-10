@@ -32,10 +32,7 @@ public final class SpillEntry {
     private final int length;
 
     public SpillEntry(
-            InputChannelInfo channelInfo,
-            SpillFileReader fileReader,
-            long offset,
-            int length) {
+            InputChannelInfo channelInfo, SpillFileReader fileReader, long offset, int length) {
         this.channelInfo = channelInfo;
         this.fileReader = fileReader;
         this.offset = offset;

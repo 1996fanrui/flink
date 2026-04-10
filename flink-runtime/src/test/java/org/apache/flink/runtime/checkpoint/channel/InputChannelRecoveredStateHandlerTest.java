@@ -198,9 +198,10 @@ class InputChannelRecoveredStateHandlerTest extends RecoveredChannelStateHandler
             assertThat(filteringPool.getNumberOfAvailableMemorySegments())
                     .isEqualTo(availableBefore);
 
-            // Clean up
+            // Clean up: only recycle the context buffer. bufferWithContext.buffer (the
+            // ChannelStateByteBuffer) wraps the same underlying NetworkBuffer, so calling
+            // close() on it would double-release.
             buffer.recycleBuffer();
-            bufferWithContext.buffer.close();
             filteringGate.close();
         } finally {
             filteringPool.destroy();
@@ -225,7 +226,8 @@ class InputChannelRecoveredStateHandlerTest extends RecoveredChannelStateHandler
             InputChannelInfo info = new InputChannelInfo(0, 0);
 
             // Allocate 5 buffers (the limit)
-            List<RecoveredChannelStateHandler.BufferWithContext<Buffer>> buffers = new ArrayList<>();
+            List<RecoveredChannelStateHandler.BufferWithContext<Buffer>> buffers =
+                    new ArrayList<>();
             for (int i = 0; i < InputChannelRecoveredStateHandler.MAX_HEAP_BUFFERS_PER_GATE; i++) {
                 buffers.add(filteringHandler.getBuffer(info));
             }
@@ -234,8 +236,8 @@ class InputChannelRecoveredStateHandlerTest extends RecoveredChannelStateHandler
             // Use a separate thread to test blocking behavior.
             ExecutorService executor = Executors.newSingleThreadExecutor();
             CountDownLatch requestStarted = new CountDownLatch(1);
-            CompletableFuture<RecoveredChannelStateHandler.BufferWithContext<Buffer>> blockedFuture =
-                    new CompletableFuture<>();
+            CompletableFuture<RecoveredChannelStateHandler.BufferWithContext<Buffer>>
+                    blockedFuture = new CompletableFuture<>();
 
             Future<?> task =
                     executor.submit(
@@ -297,9 +299,10 @@ class InputChannelRecoveredStateHandlerTest extends RecoveredChannelStateHandler
         // Buffer should be from pool (off-heap memory segment)
         assertThat(buffer.getMemorySegment().isOffHeap()).isTrue();
 
-        // Clean up
+        // Clean up: only recycle the context buffer. bufferWithContext.buffer (the
+        // ChannelStateByteBuffer) wraps the same underlying NetworkBuffer, so calling
+        // close() on it would double-release.
         buffer.recycleBuffer();
-        bufferWithContext.buffer.close();
     }
 
     // AT-UE7O: Only one channel's data processed at a time within a gate.
@@ -327,13 +330,15 @@ class InputChannelRecoveredStateHandlerTest extends RecoveredChannelStateHandler
             InputChannelInfo info = new InputChannelInfo(0, 0);
 
             // Allocate up to the limit
-            List<RecoveredChannelStateHandler.BufferWithContext<Buffer>> buffers = new ArrayList<>();
+            List<RecoveredChannelStateHandler.BufferWithContext<Buffer>> buffers =
+                    new ArrayList<>();
             for (int i = 0; i < InputChannelRecoveredStateHandler.MAX_HEAP_BUFFERS_PER_GATE; i++) {
                 buffers.add(filteringHandler.getBuffer(info));
             }
 
             // All 5 buffers should be allocated successfully
-            assertThat(buffers).hasSize(InputChannelRecoveredStateHandler.MAX_HEAP_BUFFERS_PER_GATE);
+            assertThat(buffers)
+                    .hasSize(InputChannelRecoveredStateHandler.MAX_HEAP_BUFFERS_PER_GATE);
 
             // Clean up
             for (RecoveredChannelStateHandler.BufferWithContext<Buffer> buf : buffers) {
@@ -354,7 +359,8 @@ class InputChannelRecoveredStateHandlerTest extends RecoveredChannelStateHandler
         // Use a no-op filtering handler to enable filtering code path.
         // The actual filtering behavior is tested in ChannelStateFilteringHandlerTest.
         ChannelStateFilteringHandler stubFilteringHandler =
-                new ChannelStateFilteringHandler(new ChannelStateFilteringHandler.GateFilterHandler[0]);
+                new ChannelStateFilteringHandler(
+                        new ChannelStateFilteringHandler.GateFilterHandler[0]);
         return new InputChannelRecoveredStateHandler(
                 new InputGate[] {inputGate},
                 new InflightDataRescalingDescriptor(

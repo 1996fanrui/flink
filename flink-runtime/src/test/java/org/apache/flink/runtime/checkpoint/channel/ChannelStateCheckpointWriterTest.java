@@ -475,8 +475,7 @@ class ChannelStateCheckpointWriterTest {
         streamingWriter.completeOutput(JOB_VERTEX_ID, SUBTASK_INDEX);
 
         // Compare state handles: offsets and state sizes must match
-        for (InputChannelStateHandle bufferHandle :
-                bufferResult.inputChannelStateHandles.get()) {
+        for (InputChannelStateHandle bufferHandle : bufferResult.inputChannelStateHandles.get()) {
             for (InputChannelStateHandle streamingHandle :
                     streamingResult.inputChannelStateHandles.get()) {
                 assertThat(streamingHandle.getOffsets()).isEqualTo(bufferHandle.getOffsets());
@@ -506,7 +505,11 @@ class ChannelStateCheckpointWriterTest {
         for (InputChannelStateHandle handle : result.inputChannelStateHandles.get()) {
             int headerSize = Integer.BYTES;
             assertThat(handle.getOffsets()).isEqualTo(singletonList((long) headerSize));
-            assertThat(handle.getStateSize()).isEqualTo(Integer.BYTES + numBytesPerWrite);
+            // For in-memory state handles, extractAndMerge re-packages the data with a
+            // new header + length prefix, so stateSize = header + lengthPrefix + data.
+            int lengthSize = Integer.BYTES;
+            assertThat(handle.getStateSize())
+                    .isEqualTo(headerSize + lengthSize + numBytesPerWrite);
         }
     }
 
