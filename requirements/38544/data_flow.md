@@ -4,7 +4,7 @@
 
 OutputWriter and RecoveredBufferStore are the core components. They decouple filtering from InputChannel:
 
-- **filterAndRewrite** writes bytes to `OutputWriter.write(bytes, gateIdx, channelInfo)`. It does not care about buffer allocation, disk spilling, or delivery to InputChannel.
+- **filterAndRewrite** writes bytes to `OutputWriter.write(data, length, channelInfo)`. It does not care about buffer allocation, disk spilling, or delivery to InputChannel.
 - **OutputWriter** manages buffer allocation and disk spilling internally. It delivers ready buffers to the target channel's RecoveredBufferStore.
 - **RecoveredBufferStore** provides ready buffers to InputChannel via `tryTake()` and supports checkpoint via `checkpoint()`. It does not know about OutputWriter or disk files.
 
@@ -87,12 +87,12 @@ When a branch is `if (condition) execute action` with no else (both paths conver
 
 1. **Disk stores raw bytes only** — no metadata (record boundaries, channel context, etc.) in spill files. All metadata lives in in-memory objects. Spill files are pure byte streams, replayed as memory-segment-sized chunks.
 2. **OutputWriter can switch between buffer and file at any byte position** — a record's first half can be in a Network Buffer, second half in a File. Task Thread's SpanningWrapper handles cross-buffer record reassembly transparently.
-3. **Disk replay reads memory-segment-sized chunks** (`taskmanager.memory.segment-size`, default 32KB) — no need to know record boundaries. Each chunk fills exactly one Network Buffer, delivered to the target channel's RecoveredBufferStore. SpanningWrapper on the consumer side reassembles spanning records.
+3. **Disk replay loads at memory-segment-sized granularity** (`taskmanager.memory.segment-size`, default 32KB) — no need to know record boundaries. One SpillEntry may require multiple Network Buffers. Each loaded buffer is delivered to the target channel's RecoveredBufferStore. SpanningWrapper on the consumer side reassembles spanning records.
 4. **P3 replay drains eagerly** — on each write, replay as many disk entries as possible (loop until no buffer available or disk empty), not just one. This maximizes throughput when buffers become available after a period of memory pressure.
 5. **Backend can change dynamically** — early writes may go to file (memory pressure), later writes may go to Network Buffer (pressure relieved). OutputWriter adapts per flush cycle, not per filterAndRewrite call.
 6. **"Disk has data" means unreplayed data** — tracked by a cursor, not by physical file existence. If all disk data has been replayed, "disk has data" is false even if spill files still exist on disk. Once the cursor reaches the end, subsequent writes can go to Network Buffer (pure memory path).
 7. **Spill directory from IOManager** — spill files are written to directories from `IOManager.getSpillingDirectoriesPaths()` (same as SpanningWrapper). No fallback to `java.io.tmpdir`. Invalid directories throw IOException directly.
-8. **OutputWriter is per-task** — one OutputWriter per task, all gates and channels within the task write to the same OutputWriter. The filtering thread is per-task, so one thread maps to one OutputWriter. Channel identity is passed via `write(bytes, gateIndex, channelInfo)`.
+8. **OutputWriter is per-task** — one OutputWriter per task, all gates and channels within the task write to the same OutputWriter. The filtering thread is per-task, so one thread maps to one OutputWriter. Channel identity is passed via `write(data, length, channelInfo)`.
 
 #### Spill File Management
 
@@ -107,14 +107,14 @@ File: [gate0_chA 32KB][gate0_chA 32KB][gate1_chC 30KB][gate0_chB 32KB]...
 **In-memory queue:**
 ```
 Queue<SpillEntry>:
-  {gateIndex, channelInfo, offset, length}
-  {gateIndex, channelInfo, offset, length}
+  {channelInfo, offset, length}
+  {channelInfo, offset, length}
   ...
 ```
 
-Each SpillEntry corresponds to one memory-segment-sized chunk.
+Each SpillEntry records a variable-length chunk (one write() call's data, can be much larger than 32KB). Replay loads a SpillEntry into Network Buffers at memory-segment-sized granularity — one SpillEntry may require multiple Network Buffers.
 
-- **Write**: append bytes to file tail, enqueue entry (gateIndex + channelInfo + offset + length)
+- **Write**: append bytes to file tail, enqueue entry (channelInfo + offset + length)
 - **Replay**: dequeue head entry, read from file at offset/length, deliver to the entry's channel's RecoveredBufferStore
 - **"Disk has data"**: queue is non-empty
 - **File rotation**: when file exceeds 64MB, create a new file. Old file is deleted after all its entries are replayed.
@@ -122,7 +122,7 @@ Each SpillEntry corresponds to one memory-segment-sized chunk.
 
 #### RecoveredBufferStore (per-channel)
 
-Each channel has its own RecoveredBufferStore. OutputWriter holds references to all stores and dispatches buffers to the correct store based on (gateIndex, channelInfo).
+Each channel has its own RecoveredBufferStore. OutputWriter holds references to all stores and dispatches buffers to the correct store based on channelInfo.
 
 The store provides:
 - **tryTake()** — non-blocking consume of a ready buffer
@@ -131,7 +131,7 @@ The store provides:
 
 The store is created in RecoveredInputChannel, then transferred to LocalInputChannel/RemoteInputChannel on channel conversion. InputChannel consumes via `store.tryTake()` in `getNextBuffer()`.
 
-#### write(bytes, gateIndex, channelInfo)
+#### write(data, length, channelInfo)
 
 Channel change is detected automatically: if `channelInfo` differs from the previous call, flush current backend before writing.
 

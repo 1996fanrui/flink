@@ -2,21 +2,19 @@
 
 ## 需求偏离
 
-| 需求编号 | 原因 | 替代方案 |
-|---------|------|---------|
-| REQ-NHLB | 原始需求未涉及 Heap Buffer 概念，Heap Buffer 是为解决 Source Buffer 和 Filtered Buffer 竞争 Network Buffer Pool 导致死锁的新设计 | Source Buffer 使用 Heap 分配（max 5 per gate），Filtered Buffer 通过 OutputWriter 管理 Network Buffer 或 spill to disk |
+无
 
 ## Fundamental Principle
 
 **This branch's ONLY goal**: replace heap buffer with disk when Network Buffer Pool is insufficient. Master branch uses unlimited heap buffer fallback in `requestBufferBlocking()`, risking OOM. This branch replaces that heap fallback with disk spilling to bound memory usage. **All other features — checkpoint, priority events, channel conversion, task consumption, barrier handling — must remain exactly the same.**
 
-A spill file is logically equivalent to a heap buffer: same data, different storage medium. Anywhere a heap buffer works today, disk data must work identically.
+Disk data is logically equivalent to heap buffer data at the byte level: same bytes, different storage medium. Anywhere heap buffers work today, disk data must work identically after being loaded back into Network Buffers.
 
 ## Core Architecture
 
 OutputWriter and RecoveredBufferStore are the core components. They decouple filtering from InputChannel:
 
-- **filterAndRewrite** writes bytes to `OutputWriter.write(bytes, gateIdx, channelInfo)`. It does not care about buffer allocation, disk spilling, or delivery to InputChannel. It only produces filtered bytes.
+- **filterAndRewrite** writes bytes to `OutputWriter.write(data, length, channelInfo)`. It does not care about buffer allocation, disk spilling, or delivery to InputChannel. It only produces filtered bytes.
 - **OutputWriter** manages buffer allocation and disk spilling internally. When a buffer is full or disk data is replayed, it delivers ready buffers to the target channel's RecoveredBufferStore. It does not know about InputChannel consumption or checkpoint.
 - **RecoveredBufferStore** provides ready buffers to InputChannel via `tryTake()` and `checkpoint()`. It does not know about OutputWriter, disk files, or filtering. It only holds ready-to-consume buffers.
 
@@ -43,7 +41,7 @@ P3 drains eagerly: loop until no buffer available or disk empty.
 
 ### REQ-0EG7 OutputWriter Abstraction
 
-filterAndRewrite writes to a unified OutputWriter interface. Filter logic does not know whether the backend is a Network Buffer or a File. Upper layer decides backend per request.
+filterAndRewrite writes to a unified OutputWriter interface via `write(data, length, channelInfo)`. channelInfo is `org.apache.flink.runtime.checkpoint.channel.InputChannelInfo`，already contains `gateIdx` and `inputChannelIdx`, so no separate gateIndex parameter needed. Filter logic does not know whether the backend is a Network Buffer or a File. Upper layer decides backend per request.
 
 ### REQ-WRTR Backend Downgrade Only
 
@@ -51,7 +49,7 @@ Within one writeToBackend call, backend can only downgrade (buffer → file), ne
 
 ### REQ-BFSD Disk Pure Byte Stream
 
-Spill files store raw bytes only. No metadata (record boundaries, channel context, DataType, etc.) on disk. All metadata lives in in-memory `Queue<SpillEntry>` with gateIndex, channelInfo, offset, and length per entry. Each SpillEntry corresponds to one memory-segment-sized chunk (`taskmanager.memory.segment-size`, default 32KB).
+Spill files store raw bytes only. No metadata (record boundaries, channel context, DataType, etc.) on disk. All metadata lives in in-memory `Queue<SpillEntry>` with channelInfo (`InputChannelInfo`, contains gateIdx + inputChannelIdx), offset, and length per entry. Each SpillEntry records a variable-length chunk (one write() call's data, can be much larger than 32KB). Replay loads a SpillEntry into Network Buffers at memory-segment-sized granularity (`taskmanager.memory.segment-size`, default 32KB) — one SpillEntry may require multiple Network Buffers.
 
 ### REQ-SFMG Single File Per Task
 
@@ -71,19 +69,30 @@ OutputWriter can switch between buffer and file at any byte position. A record m
 
 ### REQ-RPLY Disk Replay Mechanism
 
-Replay reads memory-segment-sized chunks (`taskmanager.memory.segment-size`, default 32KB) from spill file into Network Buffer, delivered to target channel's RecoveredBufferStore. No record boundary awareness needed. SpanningWrapper on consumer side reassembles spanning records.
+Replay loads a SpillEntry from disk into Network Buffers at memory-segment-sized granularity (`taskmanager.memory.segment-size`, default 32KB) — one SpillEntry may require multiple Network Buffers. Each loaded buffer is delivered to target channel's RecoveredBufferStore. No record boundary awareness needed. SpanningWrapper on consumer side reassembles spanning records.
 
 ### REQ-DRIN Drain Mechanism
 
 Two drain phases:
 1. **P3 eager drain** (during filtering): on each write(), OutputWriter eagerly replays disk data when buffer available, delivering to target channel's RecoveredBufferStore.
-2. **Blocking drain** (after filtering): recovery thread runs blocking drain loop — `requestBufferBlocking()` → load from disk → deliver to target channel's RecoveredBufferStore — until disk empty. This loop runs concurrently with Task thread consumption. Channel conversion does NOT wait for drain to complete.
+2. **Blocking drain** (after filtering): `OutputWriter.close()` runs blocking drain loop — `requestBufferBlocking()` → load from disk → deliver to target channel's RecoveredBufferStore — until disk empty. This loop runs concurrently with Task thread consumption. Channel conversion does NOT wait for drain to complete.
 
-OutputWriter.close() only flushes current backend and stops accepting writes. It does NOT block on drain completion.
+`OutputWriter.flush()` flushes the active buffer's partial data to the target Store. After flush(), no more write() calls are allowed. flush() is called before `finishReadRecoveredState()` to ensure all filtered data is available for consumption and checkpoint before channel conversion. `OutputWriter.close()` performs the blocking drain and cleans up spill files.
 
 ### REQ-SPDR Spill Directory from IOManager
 
 Spill files use directories from `IOManager.getSpillingDirectoriesPaths()`, same as SpanningWrapper. No fallback to `java.io.tmpdir`. Invalid directories throw IOException.
+
+### REQ-GGPR Buffer Request Interface
+
+RecoveredInputChannel must provide both blocking and non-blocking buffer request methods:
+
+- `requestBuffer()` — non-blocking, returns null when pool exhausted. Wraps `bufferManager.requestBuffer()`. Used by OutputWriter for P1 path (write to buffer) and P3 path (replay disk data).
+- `requestBufferBlocking()` — blocking, waits until buffer available. Used by:
+  - **Non-filtering mode**: original recovery path, unchanged. Blocks until a Network Buffer is available from the pool.
+  - **Filtering mode**: used by OutputWriter.close() drain loop. At drain time, Task thread is consuming and recycling buffers concurrently, so blocking eventually returns. The current heap buffer fallback (`allocateUnpooledSegment`) in filtering mode is **removed** — OutputWriter spills to disk instead.
+
+OutputWriter receives these as functional interfaces via constructor, decoupled from RecoveredInputChannel.
 
 ### REQ-NPBY Non-Filtering Unaffected
 
@@ -121,7 +130,7 @@ Extract recovered buffer management into a standalone `RecoveredBufferStore` cla
 ```
 OutputWriter (per-task)
   ├── Spill file (per-task, all gates/channels share)
-  ├── SpillEntry queue [{gateIdx, channelInfo, offset, len}, ...]
+  ├── SpillEntry queue [{channelInfo, offset, len}, ...]
   └── Drain loop: dequeue entry → requestBufferBlocking() → load from disk
         → dispatch to target channel's RecoveredBufferStore
 
@@ -136,7 +145,7 @@ RecoveredBufferStore (per-channel)
 2. OutputWriter populates stores: P1 → buffer directly into target store's ready queue; P2 → disk (shared spill file)
 3. RecoveredInputChannel consumes via `store.tryTake()` during recovery phase
 4. Filtering completes → `finishReadRecoveredState()` → channel conversion. Store reference transfers from RecoveredInputChannel to LocalInputChannel/RemoteInputChannel
-5. Blocking drain loop (recovery thread) continues after filtering: loads disk data into buffers, dispatches to correct channel's store based on SpillEntry's (gateIndex, channelInfo)
+5. Blocking drain loop (recovery thread) continues after filtering: loads disk data into buffers, dispatches to correct channel's store based on SpillEntry's channelInfo
 6. Store reports completion when all data consumed and drain loop finished
 7. InputChannel decides when to stop using the store (separate from store's own state)
 
