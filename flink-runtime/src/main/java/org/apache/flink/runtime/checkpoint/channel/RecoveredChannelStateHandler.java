@@ -17,6 +17,9 @@
 
 package org.apache.flink.runtime.checkpoint.channel;
 
+import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.core.memory.MemorySegment;
+import org.apache.flink.core.memory.MemorySegmentFactory;
 import org.apache.flink.runtime.checkpoint.InflightDataRescalingDescriptor;
 import org.apache.flink.runtime.checkpoint.RescaleMappings;
 import org.apache.flink.runtime.io.network.api.SubtaskConnectionDescriptor;
@@ -25,10 +28,13 @@ import org.apache.flink.runtime.io.network.api.writer.ResultPartitionWriter;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.BufferBuilder;
 import org.apache.flink.runtime.io.network.buffer.BufferConsumer;
+import org.apache.flink.runtime.io.network.buffer.BufferRecycler;
+import org.apache.flink.runtime.io.network.buffer.NetworkBuffer;
 import org.apache.flink.runtime.io.network.partition.CheckpointedResultPartition;
 import org.apache.flink.runtime.io.network.partition.consumer.InputChannel;
 import org.apache.flink.runtime.io.network.partition.consumer.InputGate;
 import org.apache.flink.runtime.io.network.partition.consumer.RecoveredInputChannel;
+import org.apache.flink.runtime.memory.MemoryManager;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
@@ -37,6 +43,7 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Semaphore;
 
 import static org.apache.flink.runtime.checkpoint.channel.ChannelStateByteBuffer.wrap;
 import static org.apache.flink.util.Preconditions.checkState;
@@ -69,6 +76,16 @@ interface RecoveredChannelStateHandler<Info, Context> extends AutoCloseable {
 
 class InputChannelRecoveredStateHandler
         implements RecoveredChannelStateHandler<InputChannelInfo, Buffer> {
+
+    /**
+     * Maximum number of heap buffers allowed per gate for source buffer allocation in filtering
+     * mode. Each buffer is ~32KB (DEFAULT_PAGE_SIZE), so 5 buffers cap heap usage at ~160KB per
+     * gate. This prevents unbounded heap allocation while providing enough buffers for the
+     * single-threaded channel-state-unspilling thread to make progress.
+     */
+    @VisibleForTesting
+    static final int MAX_HEAP_BUFFERS_PER_GATE = 5;
+
     private final InputGate[] inputGates;
 
     private final InflightDataRescalingDescriptor channelMapping;
@@ -82,6 +99,13 @@ class InputChannelRecoveredStateHandler
      */
     @Nullable private final ChannelStateFilteringHandler filteringHandler;
 
+    /**
+     * Per-gate semaphores to limit the number of concurrent heap buffer allocations in filtering
+     * mode. Each semaphore has {@link #MAX_HEAP_BUFFERS_PER_GATE} permits. Only initialized when
+     * filteringHandler is non-null (filtering mode).
+     */
+    @Nullable private final Semaphore[] heapBufferSemaphores;
+
     InputChannelRecoveredStateHandler(
             InputGate[] inputGates,
             InflightDataRescalingDescriptor channelMapping,
@@ -89,14 +113,57 @@ class InputChannelRecoveredStateHandler
         this.inputGates = inputGates;
         this.channelMapping = channelMapping;
         this.filteringHandler = filteringHandler;
+
+        if (filteringHandler != null) {
+            this.heapBufferSemaphores = new Semaphore[inputGates.length];
+            for (int i = 0; i < inputGates.length; i++) {
+                this.heapBufferSemaphores[i] = new Semaphore(MAX_HEAP_BUFFERS_PER_GATE);
+            }
+        } else {
+            this.heapBufferSemaphores = null;
+        }
     }
 
     @Override
     public BufferWithContext<Buffer> getBuffer(InputChannelInfo channelInfo)
             throws IOException, InterruptedException {
-        // request the buffer from any mapped channel as they all will receive the same buffer
+        if (filteringHandler != null) {
+            return getHeapBuffer(channelInfo);
+        }
+        // Non-filtering mode: use existing network buffer pool allocation
         RecoveredInputChannel channel = getMappedChannels(channelInfo);
         Buffer buffer = channel.requestBufferBlocking();
+        return new BufferWithContext<>(wrap(buffer), buffer);
+    }
+
+    /**
+     * Allocates a heap buffer for the source (pre-filter) data in filtering mode. Heap buffers are
+     * isolated from the Network Buffer Pool so that source buffers and filtered output buffers do
+     * not compete for the same pool, avoiding deadlock in the single-threaded unspilling thread.
+     *
+     * <p>Blocks when the per-gate limit ({@link #MAX_HEAP_BUFFERS_PER_GATE}) is reached, until a
+     * previously allocated heap buffer is recycled.
+     */
+    private BufferWithContext<Buffer> getHeapBuffer(InputChannelInfo channelInfo)
+            throws InterruptedException {
+        int gateIdx = channelInfo.getGateIdx();
+        Semaphore semaphore = heapBufferSemaphores[gateIdx];
+
+        // Block until a permit is available (i.e., heap buffer count < limit)
+        semaphore.acquire();
+
+        MemorySegment heapSegment =
+                MemorySegmentFactory.allocateUnpooledSegment(MemoryManager.DEFAULT_PAGE_SIZE);
+
+        // Custom recycler that releases the semaphore permit when the buffer is recycled,
+        // allowing another heap buffer to be allocated for this gate.
+        BufferRecycler heapRecycler =
+                (memorySegment) -> {
+                    memorySegment.free();
+                    semaphore.release();
+                };
+
+        Buffer buffer = new NetworkBuffer(heapSegment, heapRecycler);
         return new BufferWithContext<>(wrap(buffer), buffer);
     }
 
