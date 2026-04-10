@@ -27,6 +27,9 @@ import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.FreeingBufferRecycler;
 import org.apache.flink.runtime.io.network.buffer.NetworkBuffer;
 
+import org.apache.flink.shaded.guava33.com.google.common.collect.LinkedListMultimap;
+import org.apache.flink.shaded.guava33.com.google.common.collect.ListMultimap;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -294,6 +297,51 @@ class RecoveredBufferStoreTest {
         }
     }
 
+    /**
+     * Verify that checkpoint() streams pending spill entries via the ChannelStateWriter streaming
+     * overload.
+     */
+    @Test
+    void testCheckpointWithPendingSpillEntries() throws Exception {
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        InputChannelInfo channelInfo = new InputChannelInfo(0, 0);
+        String[] spillDirs = {temporaryFolder.toString()};
+
+        try (SpillFileWriter spillWriter = new SpillFileWriter(spillDirs, MEMORY_SEGMENT_SIZE)) {
+            // Write two spill entries
+            byte[] data1 = new byte[] {10, 20, 30, 40};
+            long offset1 = spillWriter.write(data1, 0, data1.length);
+            SpillFileReader reader1 = spillWriter.getCurrentFileReader();
+            SpillEntry entry1 = new SpillEntry(channelInfo, reader1, offset1, data1.length);
+            store.addPendingSpillEntry(entry1);
+
+            byte[] data2 = new byte[] {50, 60, 70, 80, 90};
+            long offset2 = spillWriter.write(data2, 0, data2.length);
+            SpillFileReader reader2 = spillWriter.getCurrentFileReader();
+            SpillEntry entry2 = new SpillEntry(channelInfo, reader2, offset2, data2.length);
+            store.addPendingSpillEntry(entry2);
+
+            // Create a recording writer that captures streaming data
+            StreamRecordingChannelStateWriter writer = new StreamRecordingChannelStateWriter();
+            long checkpointId = 1L;
+            writer.start(checkpointId, null);
+
+            store.checkpoint(writer, checkpointId, channelInfo);
+
+            // Verify two streaming writes were recorded
+            assertThat(writer.getStreamedInputData().get(channelInfo)).hasSize(2);
+
+            // Verify data content matches
+            assertThat(writer.getStreamedInputData().get(channelInfo).get(0)).isEqualTo(data1);
+            assertThat(writer.getStreamedInputData().get(channelInfo).get(1)).isEqualTo(data2);
+
+            reader1.close();
+            // reader2 is the same file reader as reader1 (same file), so no separate close needed
+        }
+
+        store.releaseAll();
+    }
+
     private static NetworkBuffer createBuffer(byte[] data) {
         org.apache.flink.core.memory.MemorySegment segment =
                 MemorySegmentFactory.allocateUnpooledSegment(data.length);
@@ -301,5 +349,42 @@ class RecoveredBufferStoreTest {
         NetworkBuffer buffer = new NetworkBuffer(segment, FreeingBufferRecycler.INSTANCE);
         buffer.setSize(data.length);
         return buffer;
+    }
+
+    /**
+     * A ChannelStateWriter that extends RecordingChannelStateWriter and additionally captures
+     * streaming (InputStream) data passed via the streaming overload of addInputData.
+     */
+    private static class StreamRecordingChannelStateWriter extends RecordingChannelStateWriter {
+
+        private final ListMultimap<InputChannelInfo, byte[]> streamedInputData =
+                LinkedListMultimap.create();
+
+        @Override
+        public void addInputData(
+                long checkpointId,
+                InputChannelInfo info,
+                int startSeqNum,
+                java.io.InputStream data,
+                int dataLength) {
+            try {
+                byte[] bytes = new byte[dataLength];
+                int offset = 0;
+                while (offset < dataLength) {
+                    int read = data.read(bytes, offset, dataLength - offset);
+                    if (read < 0) {
+                        break;
+                    }
+                    offset += read;
+                }
+                streamedInputData.put(info, bytes);
+            } catch (java.io.IOException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        ListMultimap<InputChannelInfo, byte[]> getStreamedInputData() {
+            return streamedInputData;
+        }
     }
 }
