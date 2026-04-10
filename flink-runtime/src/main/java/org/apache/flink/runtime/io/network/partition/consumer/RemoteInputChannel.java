@@ -123,6 +123,12 @@ public class RemoteInputChannel extends InputChannel {
 
     private final ChannelStatePersister channelStatePersister;
 
+    /** Writer reference for store.checkpoint() delegation. */
+    private final ChannelStateWriter stateWriter;
+
+    /** Store for recovered buffers, non-null only during recovery. */
+    @Nullable private RecoveredBufferStore recoveredStore;
+
     private long totalQueueSizeInBytes;
 
     public RemoteInputChannel(
@@ -139,7 +145,7 @@ public class RemoteInputChannel extends InputChannel {
             Counter numBytesIn,
             Counter numBuffersIn,
             ChannelStateWriter stateWriter,
-            ArrayDeque<Buffer> initialRecoveredBuffers) {
+            @Nullable RecoveredBufferStore recoveredStore) {
 
         super(
                 inputGate,
@@ -157,29 +163,16 @@ public class RemoteInputChannel extends InputChannel {
         this.connectionId = checkNotNull(connectionId);
         this.connectionManager = checkNotNull(connectionManager);
         this.bufferManager = new BufferManager(inputGate.getMemorySegmentProvider(), this, 0);
+        this.stateWriter = stateWriter;
         this.channelStatePersister = new ChannelStatePersister(stateWriter, getChannelInfo());
 
-        // Migrate recovered buffers from RecoveredInputChannel if provided.
-        // These buffers have been filtered but not yet consumed by the Task.
-        if (!initialRecoveredBuffers.isEmpty()) {
-            final int expectedCount = initialRecoveredBuffers.size();
-            // Sequence number starts at Integer.MIN_VALUE, consistent with RecoveredInputChannel.
-            int seqNum = Integer.MIN_VALUE;
-            for (Buffer buffer : initialRecoveredBuffers) {
-                // subpartitionId is set to 0 for recovered buffers. This is correct because:
-                // 1) For single-subpartition channels, the only valid subpartition is 0.
-                // 2) For multi-subpartition channels (consumedSubpartitionIndexSet.size() > 1),
-                //    RecoveryMetadata events embedded in the recovered buffer sequence track
-                //    the actual subpartition context for proper routing.
-                SequenceBuffer sequenceBuffer = new SequenceBuffer(buffer, seqNum++, 0);
-                receivedBuffers.add(sequenceBuffer);
-                totalQueueSizeInBytes += buffer.getSize();
+        // Store reference to recovered buffer store if provided.
+        if (recoveredStore != null && !recoveredStore.isEmpty()) {
+            this.recoveredStore = recoveredStore;
+            if (recoveredStore instanceof RecoveredBufferStoreImpl) {
+                ((RecoveredBufferStoreImpl) recoveredStore)
+                        .setNotificationCallback(this::notifyChannelNonEmpty);
             }
-            checkState(
-                    receivedBuffers.size() == expectedCount,
-                    "Buffer migration failed: expected %s buffers but got %s",
-                    expectedCount,
-                    receivedBuffers.size());
         }
     }
 
@@ -278,6 +271,23 @@ public class RemoteInputChannel extends InputChannel {
 
     @Override
     public Optional<BufferAndAvailability> getNextBuffer() throws IOException {
+        // Check recovered store first (recovery path)
+        if (recoveredStore != null && !recoveredStore.isEmpty()) {
+            Buffer next = recoveredStore.tryTake();
+            if (next != null) {
+                DataType nextDataType = recoveredStore.peekNextDataType();
+                numBytesIn.inc(next.getSize());
+                numBuffersIn.inc();
+                return Optional.of(
+                        new BufferAndAvailability(next, nextDataType, 0, Integer.MIN_VALUE));
+            }
+        }
+
+        // If store is complete and empty, release it
+        if (recoveredStore != null && recoveredStore.isComplete()) {
+            recoveredStore = null;
+        }
+
         final SequenceBuffer next;
         final DataType nextDataType;
 
@@ -344,6 +354,12 @@ public class RemoteInputChannel extends InputChannel {
     void releaseAllResources() throws IOException {
         if (isReleased.compareAndSet(false, true)) {
 
+            // Release recovered store if present
+            if (recoveredStore != null) {
+                recoveredStore.releaseAll();
+                recoveredStore = null;
+            }
+
             final ArrayDeque<Buffer> releasedBuffers;
             synchronized (receivedBuffers) {
                 releasedBuffers =
@@ -366,7 +382,8 @@ public class RemoteInputChannel extends InputChannel {
 
     @Override
     int getBuffersInUseCount() {
-        return getNumberOfQueuedBuffers()
+        return (recoveredStore != null ? recoveredStore.size() : 0)
+                + getNumberOfQueuedBuffers()
                 + Math.max(0, bufferManager.getNumberOfRequiredBuffers() - initialCredit);
     }
 
@@ -528,7 +545,8 @@ public class RemoteInputChannel extends InputChannel {
 
     @Override
     public int unsynchronizedGetNumberOfQueuedBuffers() {
-        return Math.max(0, receivedBuffers.size());
+        return (recoveredStore != null ? recoveredStore.size() : 0)
+                + Math.max(0, receivedBuffers.size());
     }
 
     @Override
@@ -712,6 +730,18 @@ public class RemoteInputChannel extends InputChannel {
      * reordered), spill only the overtaken buffers.
      */
     public void checkpointStarted(CheckpointBarrier barrier) throws CheckpointException {
+        // Checkpoint recovered data via store if present
+        if (recoveredStore != null) {
+            try {
+                recoveredStore.checkpoint(stateWriter, barrier.getId(), getChannelInfo());
+            } catch (IOException e) {
+                throw new CheckpointException(
+                        "Failed to checkpoint recovered store",
+                        CheckpointFailureReason.IO_EXCEPTION,
+                        e);
+            }
+        }
+
         synchronized (receivedBuffers) {
             if (barrier.getId() < lastBarrierId) {
                 throw new CheckpointException(
@@ -904,9 +934,8 @@ public class RemoteInputChannel extends InputChannel {
     }
 
     /**
-     * When receivedBuffers contains migrated buffers from RecoveredInputChannel, they can be read
-     * before requestSubpartitions(). In that case only check for errors. Once migrated buffers are
-     * drained, require full client initialization check.
+     * Checks readability of receivedBuffers. With recovered buffers now in a separate store,
+     * receivedBuffers only contains network data. When empty, requires full client initialization.
      */
     private void checkReadability() throws IOException {
         assert Thread.holdsLock(receivedBuffers);
