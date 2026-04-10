@@ -113,6 +113,8 @@ All new logic (OutputWriter, SpillFile I/O, RecoveredBufferStore, drain loop) li
 
 When checkpoint triggers during recovery with unreplayed spill data, all unreplayed disk data must be included in the checkpoint snapshot. Disk data is logically equivalent to in-memory buffers and must be treated identically by checkpoint. This ensures no data loss on failover during recovery.
 
+Checkpoint snapshot of disk data must NOT consume Network Buffer Pool or heap buffer. Disk data streams directly from spill file to checkpoint storage via ChannelStateWriter's streaming overload (see REQ-7388 checkpoint interface).
+
 ### REQ-G4KW Disk Data Consumption by InputChannel
 
 After channel conversion (RecoveredInputChannel → LocalInputChannel/RemoteInputChannel), disk data must be consumable by the converted InputChannel via RecoveredBufferStore. RecoveredInputChannel cannot perform checkpoint (it lacks checkpoint protocol support — barrier handling, ChannelStatePersister, unaligned checkpoint). Therefore, channel conversion must happen even when disk data exists, and the converted InputChannel must be able to consume remaining disk data alongside its existing checkpoint and priority event handling.
@@ -161,7 +163,9 @@ State:
 - `size()` → int — number of ready buffers (for `getBuffersInUseCount`)
 
 Checkpoint:
-- `checkpoint(ChannelStateWriter, checkpointId, channelInfo)` — snapshot all remaining data: retain ready buffers + stream disk data directly to checkpoint storage without consuming Network Buffers
+- `checkpoint(ChannelStateWriter, checkpointId, channelInfo)` — snapshot all remaining data:
+  1. Ready buffers: retain each buffer, pass to `ChannelStateWriter.addInputData(CloseableIterator<Buffer>)` (existing API)
+  2. Disk data: for each pending SpillEntry, open InputStream from SpillFileReader → pass to `ChannelStateWriter.addInputData(checkpointId, info, seqNum, InputStream, dataLength)` (new streaming overload). Streams from spill file directly to checkpoint DataOutputStream, without consuming Network Buffer Pool buffers. ChannelStateWriter streaming overload is a new method added as part of this design (not modifying existing addInputData behavior)
 
 Resource cleanup:
 - `releaseAll()` — recycle all ready buffers, close spill files, stop drain loop

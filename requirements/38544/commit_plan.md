@@ -8,7 +8,8 @@
 | 2 | SpillFile I/O + RecoveredBufferStore | New | `SpillFileWriter`, `SpillFileReader`, `SpillEntry`, `RecoveredBufferStore`, `RecoveredBufferStoreImpl` |
 | 3 | OutputWriter (write + P3 drain + flush + close) | New | `OutputWriter`, `OutputWriterImpl` |
 | 4 | InputChannel consumes from RecoveredBufferStore | Modify | `RecoveredInputChannel`, `LocalInputChannel`, `RemoteInputChannel`, `*RecoveredInputChannel` |
-| 5 | Integration: filterAndRewrite writes to OutputWriter | Modify | `ChannelStateFilteringHandler`, `RecoveredChannelStateHandler`, `SequentialChannelStateReaderImpl` |
+| 5 | ChannelStateWriter streaming overload for checkpoint | Modify | `ChannelStateWriter`, `ChannelStateWriterImpl`, `ChannelStateWriteRequest`, `ChannelStateCheckpointWriter` |
+| 6 | Integration: filterAndRewrite writes to OutputWriter | Modify | `ChannelStateFilteringHandler`, `RecoveredChannelStateHandler`, `SequentialChannelStateReaderImpl` |
 
 Base package: `org.apache.flink.runtime.checkpoint.channel`
 
@@ -38,12 +39,12 @@ Two new components with no dependency on each other, grouped because both are pr
 
 SpillFile I/O (REQ-BFSD, REQ-SFMG, REQ-SPDR, REQ-T5AJ):
 - `SpillFileWriter.java` — append raw bytes via FileChannel + `FileUtils.writeCompletely()`. No fsync.
-- `SpillFileReader.java` — sequential read via FileInputStream + BufferedInputStream. `readNextTo(OutputStream, length)` for checkpoint streaming.
+- `SpillFileReader.java` — sequential read via FileChannel positional read. `read(offset, buffer, length)` for drain loading. `openInputStream(offset, length)` returns bounded InputStream for checkpoint streaming (via ChannelStateWriter streaming overload, no Network Buffer Pool or heap buffer allocation).
 - `SpillEntry.java` — `{InputChannelInfo channelInfo, long offset, int length}`. Each entry = one variable-length chunk (one write() call's data, can be larger than buffer size). Replay loads at memory-segment-sized granularity.
 
 RecoveredBufferStore (REQ-7388):
 - `RecoveredBufferStore.java` — public interface. See `interfaces.md`.
-- `RecoveredBufferStoreImpl.java` — implementation with internal methods (addBuffer, markComplete, setNotificationCallback, incrementDiskEntryCount, decrementDiskEntryCount).
+- `RecoveredBufferStoreImpl.java` — implementation with internal methods (addBuffer, markComplete, setNotificationCallback, addPendingSpillEntry, removePendingSpillEntry).
 
 ---
 
@@ -69,10 +70,10 @@ OutputWriterImpl(
 
 - `write(data, length, channelInfo)`:
   - Channel change detection → flush active buffer to target store
-  - P3 eager drain: while (spillEntryQueue non-empty AND non-blocking bufferSupplier succeeds) → load from disk → `store.addBuffer()` + `store.decrementDiskEntryCount()`
+  - P3 eager drain: while (spillEntryQueue non-empty AND non-blocking bufferSupplier succeeds) → load from disk → `store.addBuffer()` + `store.removePendingSpillEntry()`
   - writeToBackend: fill active buffer (P1), downgrade to file (P2) when no buffer. `downgradedToFile` flag resets per write() call
   - Full buffer → `store.addBuffer(buffer)`
-  - Spill → `spillFileWriter.write()` + enqueue SpillEntry + `store.incrementDiskEntryCount()`
+  - Spill → `spillFileWriter.write()` + enqueue SpillEntry + `store.addPendingSpillEntry()`
 
 - `flush()`: send active buffer's partial data to target store. Reject further write() calls.
 
@@ -120,11 +121,34 @@ All three InputChannel types adapted in one commit.
 
 ---
 
-## Commit 5: Integration
+## Commit 5: ChannelStateWriter Streaming Overload
+
+Add streaming path to checkpoint writing pipeline for disk data. No modification to existing addInputData behavior.
+
+**Depends on:** None (independent of C1-C4, can be developed in parallel)
+
+**Modify:**
+
+`ChannelStateWriter.java`:
+- New overload: `addInputData(long checkpointId, InputChannelInfo info, int startSeqNum, InputStream data, int dataLength)` — accepts InputStream instead of CloseableIterator\<Buffer\>
+
+`ChannelStateWriterImpl.java`:
+- Implement new overload: create streaming write request, submit to executor
+
+`ChannelStateWriteRequest.java`:
+- New factory: `buildStreamingWriteRequest()` — creates request that reads from InputStream directly to DataOutputStream
+
+`ChannelStateCheckpointWriter.java`:
+- New method: `writeInputStreaming(jobVertexID, subtaskIndex, info, InputStream, dataLength)` — writes length prefix + streams data via `InputStream.transferTo(DataOutputStream)`, no Network Buffer Pool or heap buffer allocation
+- Write format identical to existing: `[4 bytes length][data bytes]`. Recovery read path unchanged
+
+---
+
+## Commit 6: Integration
 
 Wire OutputWriter into the filtering flow.
 
-**Depends on:** C1, C3, C4
+**Depends on:** C1, C3, C4, C5
 
 **Modify:**
 
@@ -151,12 +175,14 @@ graph TD
     C2["C2: SpillFile I/O + Store"]
     C3["C3: OutputWriter"]
     C4["C4: InputChannels + store"]
-    C5["C5: Integration"]
+    C5["C5: ChannelStateWriter streaming"]
+    C6["C6: Integration"]
 
     C1 --> C3
     C2 --> C3
     C2 --> C4
-    C1 --> C5
-    C3 --> C5
-    C4 --> C5
+    C1 --> C6
+    C3 --> C6
+    C4 --> C6
+    C5 --> C6
 ```

@@ -106,20 +106,35 @@ RecoveredBufferStore 被两个线程并发访问，需要线程安全保证。Sp
 - `addBuffer(Buffer)` — 添加就绪 buffer。如果队列从空变非空，触发通知回调唤醒 InputChannel
 - `markComplete()` — 标记 store 完成。close() drain 结束后调用
 - `setNotificationCallback(Runnable)` — 设置通知回调。channel conversion 时需要更新回调指向新的 InputChannel
-- `incrementDiskEntryCount()` — OutputWriter spill 数据时调用
-- `decrementDiskEntryCount()` — OutputWriter 重放磁盘数据时调用
+- `addPendingSpillEntry(SpillEntry)` — OutputWriter spill 数据时调用（P2 路径），store 持有 entry 引用供 checkpoint 和 isEmpty 使用
+- `removePendingSpillEntry(SpillEntry)` — OutputWriter 重放磁盘数据时调用（P3/drain 路径）
 
 **队列隐式容量限制**：Store 的就绪 buffer 队列无需显式容量上限。drain loop 通过 requestBufferBlocking() 从 Network Buffer Pool 获取 buffer，pool 大小有限。当所有 pool buffer 都在各 Store 的队列中时，requestBufferBlocking() 自然阻塞，直到 Task 线程消费并回收 buffer。这构成天然背压机制，确保队列总大小不超过 pool 容量。
 
 **Checkpoint 实现（REQ-KM7C）**：
 
 checkpoint() 方法 snapshot 两部分数据：
-1. 就绪 buffer：retain 队列中每个 buffer，传给 ChannelStateWriter.addInputData()
-2. 磁盘数据：通过独立的 SpillFileReader 实例从磁盘直接流式写入 checkpoint 存储，不消耗 Network Buffer
+1. 就绪 buffer：retain 队列中每个 buffer，传给 `ChannelStateWriter.addInputData(CloseableIterator<Buffer>)`（现有 API）
+2. 磁盘数据：遍历 pending SpillEntry 列表，对每个 entry 通过 `SpillFileReader.openInputStream(offset, length)` 获取定长 InputStream，传给 `ChannelStateWriter.addInputData(checkpointId, info, seqNum, InputStream, dataLength)`（新增流式重载）。从 spill 文件直接流式写入 checkpoint DataOutputStream，不消耗 Network Buffer Pool 或 heap buffer
 
-Store 持有属于本 channel 的 pending SpillEntry 列表（由 OutputWriter 在 P2 路径时添加，drain 重放时移除）。checkpoint 遍历此列表，按 offset/length 从 spill 文件读取数据。checkpoint 读取不消费 entry（entry 仍留给 drain 重放）。
+Store 持有属于本 channel 的 pending SpillEntry 列表（由 OutputWriter 在 P2 路径时通过 `addPendingSpillEntry()` 添加，drain 重放时通过 `removePendingSpillEntry()` 移除）。checkpoint 遍历此列表读取数据，但不消费 entry（entry 仍留给 drain 重放）。
 
 checkpoint 运行在 Task 线程，drain 运行在 Recovery 线程，两者通过独立 SpillFileReader 实例并发读取同一文件（FileChannel 支持 positional read）。
+
+### Checkpoint 流式写入扩展
+
+扩展 checkpoint 写入管线，增加流式路径，使磁盘数据能不经过 Buffer 直接写入 checkpoint 存储。
+
+**涉及的现有类**（新增方法，不修改现有行为）：
+
+- `ChannelStateWriter`（接口）：新增 `addInputData(long checkpointId, InputChannelInfo info, int startSeqNum, InputStream data, int dataLength)` 重载
+- `ChannelStateWriterImpl`：实现新重载，创建流式写入请求并提交到执行器
+- `ChannelStateWriteRequest`：新增 `buildStreamingWriteRequest()` 工厂方法，接受 InputStream 而非 CloseableIterator\<Buffer\>
+- `ChannelStateCheckpointWriter`：新增 `writeInputStreaming()` 方法，从 InputStream 读数据写入 DataOutputStream
+
+**写入格式兼容**：流式路径写入的格式与现有 Buffer 路径完全一致：`[4字节长度前缀][数据字节]`。Recovery 读取路径无需任何修改。
+
+**I/O 传输**：writeInputStreaming() 通过 `InputStream.transferTo(DataOutputStream)` 流式拷贝，不分配任何 Buffer 对象（Network Buffer Pool 或 heap buffer）。
 
 ### SpillFile I/O
 
@@ -141,8 +156,8 @@ checkpoint 运行在 Task 线程，drain 运行在 Recovery 线程，两者通�
 **职责**：从 spill 文件顺序读取数据。
 
 - 使用 FileChannel positional read 支持并发访问
-- `read(long offset, byte[] buffer, int length)` — 从指定 offset 读取
-- `readNextTo(OutputStream, int length)` — 流式读取到 OutputStream（checkpoint 用）
+- `read(long offset, byte[] buffer, int length)` — 从指定 offset 读取（drain 加载用）
+- `openInputStream(long offset, int length)` — 返回定长 InputStream，从指定 offset 读取指定长度。供 checkpoint 流式写入使用（通过 ChannelStateWriter 流式重载直接写入 checkpoint DataOutputStream，不消耗 Network Buffer Pool 或 heap buffer）
 - Partial read 检测：读取字节数少于预期时抛 IOException（REQ-T5AJ）
 
 #### SpillEntry
@@ -261,6 +276,15 @@ checkpoint 运行在 Task 线程，drain 运行在 Recovery 线程，两者通�
      - OutputWriter.close() 由 try-with-resources 自动调用（阻塞 drain + 清理 spill 文件）
      - close 顺序由 try-with-resources 反向保证：先 StateHandler，再 OutputWriter
 
+### Checkpoint 写入管线扩展
+
+**涉及文件**（均在 `flink-runtime/.../checkpoint/channel/` 包下）：
+
+- `ChannelStateWriter.java`：新增 `addInputData(long checkpointId, InputChannelInfo info, int startSeqNum, InputStream data, int dataLength)` 重载
+- `ChannelStateWriterImpl.java`：实现新重载
+- `ChannelStateWriteRequest.java`：新增 `buildStreamingWriteRequest()` 工厂方法
+- `ChannelStateCheckpointWriter.java`：新增 `writeInputStreaming()` 方法
+
 ## 生命周期
 
 1. **创建**：readInputData() 创建 Store（per-channel）和 OutputWriter（per-task）
@@ -327,10 +351,11 @@ OutputWriter 通过构造器接收这两个方法的函数式接口引用，解�
 
 ## 提交策略
 
-参见 `commit_plan.md`。5 个 commit，按依赖关系排列：
+参见 `commit_plan.md`。6 个 commit，按依赖关系排列：
 
 1. Source Buffer Heap 分配 + buffer 请求接口
 2. SpillFile I/O + RecoveredBufferStore
 3. OutputWriter
 4. InputChannel 从 RecoveredBufferStore 消费
-5. 集成：filterAndRewrite 写入 OutputWriter
+5. ChannelStateWriter 流式重载（checkpoint 用，可与 C1-C4 并行开发）
+6. 集成：filterAndRewrite 写入 OutputWriter

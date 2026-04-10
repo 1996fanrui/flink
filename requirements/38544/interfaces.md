@@ -5,7 +5,7 @@
 Decouples filtering from buffer/disk management. filterAndRewrite only calls `write()` — it does not know about buffers, disk, or InputChannel.
 
 ```java
-public interface OutputWriter extends Closeable {
+public interface OutputWriter extends AutoCloseable {
 
     /**
      * Write filtered bytes to the target channel.
@@ -122,10 +122,12 @@ public interface RecoveredBufferStore {
      *
      * <p>Two parts:
      * 1. Ready buffers: retain each buffer in the queue, pass to
-     *    ChannelStateWriter.addInputData().
-     * 2. Disk data: read remaining SpillEntries from disk directly to
-     *    checkpoint storage via SpillFileReader.readNextTo(), without
-     *    allocating Network Buffers.
+     *    ChannelStateWriter.addInputData(CloseableIterator&lt;Buffer&gt;).
+     * 2. Disk data: for each pending SpillEntry, open InputStream from
+     *    SpillFileReader, pass to ChannelStateWriter.addInputData streaming
+     *    overload (InputStream + dataLength). Streams from spill file
+     *    directly to checkpoint DataOutputStream, without consuming
+     *    Network Buffer Pool or heap buffer.
      *
      * <p>Called by InputChannel.checkpointStarted() on the Task thread.
      * May run concurrently with the drain loop (which also reads the same
@@ -189,16 +191,21 @@ void addBuffer(Buffer buffer);
 void markComplete();
 
 /**
- * Increment the count of disk entries belonging to this channel.
+ * Add a pending SpillEntry belonging to this channel.
  * Called by OutputWriter when spilling data to disk (P2 path).
- * Used by isEmpty() and checkpoint() to track pending disk data.
+ * Used by isEmpty() to check pending disk data, and by checkpoint()
+ * to read each entry from disk via SpillFileReader.
+ *
+ * @param entry the spill entry containing file reference, offset, and length
  */
-void incrementDiskEntryCount();
+void addPendingSpillEntry(SpillEntry entry);
 
 /**
- * Decrement the count of disk entries belonging to this channel.
- * Called by OutputWriter when a disk entry is loaded into a buffer
+ * Remove a pending SpillEntry after it has been loaded into a buffer.
+ * Called by OutputWriter when a disk entry is replayed
  * (P3 drain or close() drain).
+ *
+ * @param entry the spill entry to remove
  */
-void decrementDiskEntryCount();
+void removePendingSpillEntry(SpillEntry entry);
 ```
