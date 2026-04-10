@@ -10,6 +10,8 @@
 
 Disk data is logically equivalent to heap buffer data at the byte level: same bytes, different storage medium. Anywhere heap buffers work today, disk data must work identically after being loaded back into Network Buffers.
 
+Note on Heap Buffer: this branch **removes** the unbounded heap fallback in post-filter path (requestBufferBlocking → allocateUnpooledSegment), replacing it with disk spilling. Separately, it **introduces** a bounded heap allocation for pre-filter source buffers (REQ-NHLB, max 5 per gate ≈ 160KB) to avoid deadlock between source and filtered buffers competing for the same Network Buffer Pool. These are different uses of heap at different pipeline stages — the former caused OOM and is removed, the latter is bounded and safe.
+
 ## Core Architecture
 
 OutputWriter and RecoveredBufferStore are the core components. They decouple filtering from InputChannel:

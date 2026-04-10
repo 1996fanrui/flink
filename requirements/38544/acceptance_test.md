@@ -22,6 +22,7 @@
 | AT-CLID | close() idempotent | REQ-JD2C | 待测试 | 代码自动化 | |
 | AT-CLFL | close() cleans up all spill files | REQ-JD2C | 待测试 | 代码自动化 | |
 | AT-CWRT | write after close throws IllegalStateException | REQ-JD2C | 待测试 | 代码自动化 | |
+| AT-FWRT | write after flush throws IllegalStateException | REQ-DRIN | 待测试 | 代码自动化 | |
 | AT-HY10 | SpillFileWriter.close() try-finally guarantees file handle release | REQ-JD2C | 待测试 | 代码自动化 | |
 | AT-HW4P | Truncated file throws IOException | REQ-T5AJ | 待测试 | 代码自动化 | |
 | AT-C3MK | Spill dirs from IOManager, no java.io.tmpdir fallback | REQ-SPDR | 待测试 | 代码自动化 | |
@@ -122,7 +123,7 @@ Write data for channel A, then channel B. Verify current backend is flushed betw
 
 Multiple channels across multiple gates write to OutputWriter. Verify only one spill file created (not one per channel or per gate). All entries in same file with correct offsets.
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=OutputWriterTest#testSingleFilePerGate -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=OutputWriterTest#testSingleFilePerTask -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-5097 File Rotation
@@ -165,6 +166,13 @@ After close(), all spill files deleted from disk.
 write() after close() throws IllegalStateException.
 
 **命令**: `./mvnw test -pl flink-runtime -Dtest=OutputWriterTest#testWriteAfterClose -P java11-target -P java11`
+**断言**: test pass, exit code 0
+
+### [L1-测试] AT-FWRT Write After Flush
+
+write() after flush() throws IllegalStateException. flush() signals no more data will be written.
+
+**命令**: `./mvnw test -pl flink-runtime -Dtest=OutputWriterTest#testWriteAfterFlush -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-HY10 SpillFileWriter Try-Finally
