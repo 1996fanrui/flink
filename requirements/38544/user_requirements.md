@@ -12,6 +12,16 @@
 
 A spill file is logically equivalent to a heap buffer: same data, different storage medium. Anywhere a heap buffer works today, disk data must work identically.
 
+## Core Architecture
+
+OutputWriter and RecoveredBufferStore are the core components. They decouple filtering from InputChannel:
+
+- **filterAndRewrite** writes bytes to `OutputWriter.write(bytes, gateIdx, channelInfo)`. It does not care about buffer allocation, disk spilling, or delivery to InputChannel. It only produces filtered bytes.
+- **OutputWriter** manages buffer allocation and disk spilling internally. When a buffer is full or disk data is replayed, it delivers ready buffers to the target channel's RecoveredBufferStore. It does not know about InputChannel consumption or checkpoint.
+- **RecoveredBufferStore** provides ready buffers to InputChannel via `tryTake()` and `checkpoint()`. It does not know about OutputWriter, disk files, or filtering. It only holds ready-to-consume buffers.
+
+See data_flow.md for the detailed data flow diagram.
+
 ## Requirements
 
 ### REQ-NHLB Memory Isolation
@@ -25,9 +35,9 @@ Gate processes Virtual Channels sequentially (one at a time). Max 5 Heap Buffers
 ### REQ-8HRS Three Data Paths
 
 Filtered data routed through OutputWriter with three paths:
-- **P1**: Network Buffer available, no disk data → write to buffer → InputChannel
+- **P1**: Network Buffer available, no disk data → write to buffer → target channel's RecoveredBufferStore
 - **P2**: No Network Buffer available → write to file on disk
-- **P3**: Network Buffer available, disk has unreplayed data → replay oldest disk data to InputChannel (FIFO ordering)
+- **P3**: Network Buffer available, disk has unreplayed data → replay oldest disk data to target channel's RecoveredBufferStore (FIFO ordering)
 
 P3 drains eagerly: loop until no buffer available or disk empty.
 
@@ -41,11 +51,11 @@ Within one writeToBackend call, backend can only downgrade (buffer → file), ne
 
 ### REQ-BFSD Disk Pure Byte Stream
 
-Spill files store raw bytes only. No metadata (record boundaries, channel context, DataType, etc.) on disk. All metadata lives in in-memory `Queue<SpillEntry>` with channelInfo, offset, and length per entry. Each SpillEntry corresponds to one buffer-sized chunk.
+Spill files store raw bytes only. No metadata (record boundaries, channel context, DataType, etc.) on disk. All metadata lives in in-memory `Queue<SpillEntry>` with gateIndex, channelInfo, offset, and length per entry. Each SpillEntry corresponds to one memory-segment-sized chunk (`taskmanager.memory.segment-size`, default 32KB).
 
-### REQ-SFMG Single File Per Gate
+### REQ-SFMG Single File Per Task
 
-All channels within a gate share a single spill file. Data appended sequentially (FIFO). File rotation at 64MB. Old file deleted after all its entries replayed. No per-channel files — avoid large number of small files.
+All channels across all gates within a task share a single spill file. Data appended sequentially (FIFO). File rotation at 64MB. Old file deleted after all its entries replayed. No per-channel or per-gate files. This aligns with the per-task filtering thread — one thread, one OutputWriter, one spill file.
 
 ### REQ-CRSR Cursor-Based Disk Tracking
 
@@ -61,11 +71,15 @@ OutputWriter can switch between buffer and file at any byte position. A record m
 
 ### REQ-RPLY Disk Replay Mechanism
 
-Replay reads buffer-sized chunks (from InputGate config, typically 32KB) from spill file into Network Buffer, delivered to InputChannel. No record boundary awareness needed. SpanningWrapper on consumer side reassembles spanning records.
+Replay reads memory-segment-sized chunks (`taskmanager.memory.segment-size`, default 32KB) from spill file into Network Buffer, delivered to target channel's RecoveredBufferStore. No record boundary awareness needed. SpanningWrapper on consumer side reassembles spanning records.
 
-### REQ-DRIN Close Drain
+### REQ-DRIN Drain Mechanism
 
-OutputWriter.close() flushes current backend, then blocking-drains all remaining disk data: loop requestBufferBlocking() → replay → InputChannel, until disk empty.
+Two drain phases:
+1. **P3 eager drain** (during filtering): on each write(), OutputWriter eagerly replays disk data when buffer available, delivering to target channel's RecoveredBufferStore.
+2. **Blocking drain** (after filtering): recovery thread runs blocking drain loop — `requestBufferBlocking()` → load from disk → deliver to target channel's RecoveredBufferStore — until disk empty. This loop runs concurrently with Task thread consumption. Channel conversion does NOT wait for drain to complete.
+
+OutputWriter.close() only flushes current backend and stops accepting writes. It does NOT block on drain completion.
 
 ### REQ-SPDR Spill Directory from IOManager
 
@@ -77,14 +91,14 @@ When unaligned checkpoint recovery is disabled or parallelism unchanged (NO_RESC
 
 ### REQ-MNIV Minimal Code Invasion
 
-All new logic (OutputWriter, SpillFile I/O, P3 replay, file offset management) lives in new classes. Existing files only call `writer.write()`. No internal details leak into existing code.
+All new logic (OutputWriter, SpillFile I/O, RecoveredBufferStore, drain loop) lives in new classes. Existing InputChannel classes (LocalInputChannel, RemoteInputChannel) only add a RecoveredBufferStore field and a `getNextBuffer()` branch to consume from the store before their existing data sources. No spill/disk details leak into InputChannel code.
 
 ### REQ-JD2C Resource Safety
 
 - write/close on a closed OutputWriter must throw IllegalStateException
 - SpillFileWriter.close() must use try-finally to guarantee file handle release
 - OutputWriter.close() is idempotent: repeated calls do not throw
-- Spill files cleaned up on close. Abnormal exit relies on TM's FileChannelManagerImpl shutdown hook
+- Spill files cleaned up when all entries replayed and store released. Abnormal exit relies on TM's FileChannelManagerImpl shutdown hook
 
 ### REQ-KM7C Checkpoint Snapshot Support
 
@@ -92,7 +106,7 @@ When checkpoint triggers during recovery with unreplayed spill data, all unrepla
 
 ### REQ-G4KW Disk Data Consumption by InputChannel
 
-After channel conversion (RecoveredInputChannel → LocalInputChannel/RemoteInputChannel), disk data must be consumable by the converted InputChannel. RecoveredInputChannel cannot perform checkpoint (it lacks checkpoint protocol support — barrier handling, ChannelStatePersister, unaligned checkpoint). Therefore, channel conversion must happen even when disk data exists, and the converted InputChannel must be able to consume remaining disk data alongside its existing checkpoint and priority event handling.
+After channel conversion (RecoveredInputChannel → LocalInputChannel/RemoteInputChannel), disk data must be consumable by the converted InputChannel via RecoveredBufferStore. RecoveredInputChannel cannot perform checkpoint (it lacks checkpoint protocol support — barrier handling, ChannelStatePersister, unaligned checkpoint). Therefore, channel conversion must happen even when disk data exists, and the converted InputChannel must be able to consume remaining disk data alongside its existing checkpoint and priority event handling.
 
 ### REQ-TXGD Existing Checkpoint Protocol Compatibility
 
@@ -100,25 +114,41 @@ Disk data consumption and checkpoint snapshotting must be compatible with the ex
 
 ### REQ-7388 RecoveredBufferStore Abstraction
 
-Extract recovered buffer management into a standalone `RecoveredBufferStore` class. This class encapsulates both in-memory buffers and disk-backed spill data behind a unified interface. Both RecoveredInputChannel (during recovery) and the final InputChannel (Local/Remote, after conversion) consume data through this store. The store hides all disk-to-buffer loading details from InputChannel.
+Extract recovered buffer management into a standalone `RecoveredBufferStore` class, one per channel. This class encapsulates both in-memory buffers and disk-backed spill data behind a unified interface. Both RecoveredInputChannel (during recovery) and the final InputChannel (Local/Remote, after conversion) consume data through this store. The store hides all disk-to-buffer loading details from InputChannel.
+
+**Architecture:**
+
+```
+OutputWriter (per-task)
+  ├── Spill file (per-task, all gates/channels share)
+  ├── SpillEntry queue [{gateIdx, channelInfo, offset, len}, ...]
+  └── Drain loop: dequeue entry → requestBufferBlocking() → load from disk
+        → dispatch to target channel's RecoveredBufferStore
+
+RecoveredBufferStore (per-channel)
+  └── ready queue [buffer, buffer, ...]
+  └── used by: RecoveredInputChannel (during recovery)
+             → then LocalInputChannel or RemoteInputChannel (after conversion)
+```
 
 **Lifecycle:**
-1. Created during recovery, populated by OutputWriter (P1 → in-memory buffer, P2 → disk)
-2. RecoveredInputChannel consumes via store during recovery phase
-3. On channel conversion, store reference transfers from RecoveredInputChannel to LocalInputChannel/RemoteInputChannel
-4. Blocking drain loop (recovery thread) continuously loads disk data into ready buffers: `requestBufferBlocking()` → load from disk → ready for consumption
-5. Store reports completion when all data (in-memory + disk) is consumed
-6. InputChannel decides when to stop using the store (separate from store's own state)
+1. Created per-channel during recovery. OutputWriter holds references to all stores.
+2. OutputWriter populates stores: P1 → buffer directly into target store's ready queue; P2 → disk (shared spill file)
+3. RecoveredInputChannel consumes via `store.tryTake()` during recovery phase
+4. Filtering completes → `finishReadRecoveredState()` → channel conversion. Store reference transfers from RecoveredInputChannel to LocalInputChannel/RemoteInputChannel
+5. Blocking drain loop (recovery thread) continues after filtering: loads disk data into buffers, dispatches to correct channel's store based on SpillEntry's (gateIndex, channelInfo)
+6. Store reports completion when all data consumed and drain loop finished
+7. InputChannel decides when to stop using the store (separate from store's own state)
 
 **Interface** (verified against LocalInputChannel.getNextRecoveredBuffer, checkpointStarted, releaseAllResources, getBuffersInUseCount):
 
 Consumption:
-- `tryTake()` → Buffer or null — non-blocking, returns next ready buffer from internal queue. Returns null if no ready buffer (disk data may still be loading). InputChannel calls this where it previously called `toBeConsumedBuffers.removeFirst()`
-- `peekNextDataType()` → Buffer.DataType — data type of the next available buffer without consuming. Used by InputChannel to construct `BufferAndAvailability.nextDataType`. Returns `NONE` if empty
+- `tryTake()` → Buffer or null — non-blocking, returns next ready buffer from internal queue. Returns null if no ready buffer (disk data may still be loading by drain loop)
+- `peekNextDataType()` → Buffer.DataType — data type of the next available buffer without consuming. Returns `NONE` if empty
 
 State:
-- `isEmpty()` → boolean — no ready buffers AND no pending disk data. InputChannel uses this to decide whether to fall through to subpartitionView/receivedBuffers
-- `isComplete()` → boolean — all data consumed AND blocking drain loop finished (no more data will ever be added). InputChannel uses this to decide when to drop the store reference
+- `isEmpty()` → boolean — no ready buffers AND no pending disk data. InputChannel uses this to decide whether to fall through to its next data source
+- `isComplete()` → boolean — all data consumed AND drain loop finished (no more data will ever be added). InputChannel uses this to decide when to drop the store reference
 - `size()` → int — number of ready buffers (for `getBuffersInUseCount`)
 
 Checkpoint:
@@ -130,11 +160,33 @@ Resource cleanup:
 Note: priority event handling (hasPendingPriorityEvent, fetching from subpartitionView) stays in InputChannel — the store is not involved. InputChannel handles priority events before calling `store.tryTake()`.
 
 **Impact on existing code:**
-- `toBeConsumedBuffers` in LocalInputChannel no longer receives recovered buffers (keeps FullyFilledBuffer splits only)
-- `receivedBuffers` in RemoteInputChannel no longer receives recovered buffers (keeps live network data only, `checkReadability()` hack removable)
-- `receivedBuffers` in RecoveredInputChannel replaced by store
 
-**TODO**: Verify interface completeness against RemoteInputChannel recovered buffer usage patterns (SequenceBuffer wrapping, subpartition routing, priority element handling). The interface above is validated against LocalInputChannel but RemoteInputChannel may require additional methods.
+The following commits introduced buffer migration and recovered buffer handling in physical channels. With RecoveredBufferStore, these changes are **replaced** — physical channels no longer receive recovered buffers in their existing queues. Instead, they hold a `RecoveredBufferStore` reference and consume via `store.tryTake()`.
+
+LocalInputChannel:
+- `toBeConsumedBuffers` no longer receives recovered buffers. It is retained **only** for `FullyFilledBuffer` splits (normal data path, unrelated to recovery).
+- Constructor: remove `ArrayDeque<Buffer> initialRecoveredBuffers` parameter and buffer migration logic. Add `RecoveredBufferStore store` field instead.
+- `getNextBuffer()`: check `store` first (recovered data), then `toBeConsumedBuffers` (FullyFilledBuffer splits), then `subpartitionView` (normal data).
+- `getNextRecoveredBuffer()`: data source changes from `toBeConsumedBuffers` to `store.tryTake()`. Priority event handling (`hasPendingPriorityEvent`) stays in InputChannel, unchanged.
+- `checkpointStarted()`: replace `toBeConsumedBuffers` iteration with `store.checkpoint(writer, checkpointId, channelInfo)`. Store handles both ready buffers and disk data snapshot internally.
+- `getBuffersInUseCount()` / `unsynchronizedGetNumberOfQueuedBuffers()`: add `store.size()` to the count.
+- `releaseAllResources()`: call `store.releaseAll()`. No longer need to recycle recovered buffers from `toBeConsumedBuffers`.
+
+RemoteInputChannel:
+- `receivedBuffers` no longer receives recovered buffers. It is retained **only** for live network data.
+- Constructor: remove `ArrayDeque<Buffer> initialRecoveredBuffers` parameter and buffer migration logic. Add `RecoveredBufferStore store` field instead.
+- `getNextBuffer()`: check `store` first (recovered data), then `receivedBuffers` (network data).
+- `checkReadability()` hack is removable — `receivedBuffers` only contains network data which requires `partitionRequestClient` initialization.
+- `checkpointStarted()`: call `store.checkpoint()` for recovered data, then `getInflightBuffersUnsafe()` for network data (existing logic unchanged). `RecoveryMetadata` append logic stays in RemoteInputChannel, not in store.
+- `getBuffersInUseCount()` / `unsynchronizedGetNumberOfQueuedBuffers()`: add `store.size()` to the count.
+- `releaseAllResources()`: call `store.releaseAll()`.
+
+RecoveredInputChannel:
+- `receivedBuffers` (ArrayDeque) replaced by store. `onRecoveredStateBuffer()` replaced by `OutputWriter.write()` → store.
+- `toInputChannel()`: no longer extracts `remainingBuffers`. Instead, passes `store` reference to the new physical channel.
+- `requestBufferBlocking()` heap fallback removed — OutputWriter handles buffer/disk allocation internally.
+
+**RemoteInputChannel compatibility verified**: SequenceBuffer wrapping is not needed — store returns Buffer, InputChannel wraps into BufferAndAvailability directly. Subpartition routing via RecoveryMetadata stays in RemoteInputChannel.checkpointStarted(), not in store. Priority element handling (convertToPriorityEvent, PrioritizedDeque) only operates on network data in receivedBuffers, never on store data. No additional store methods required.
 
 ### REQ-T5AJ Read Robustness
 
