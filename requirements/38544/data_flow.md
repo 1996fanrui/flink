@@ -75,7 +75,7 @@ flowchart TD
 Time sequence:
 1. **outputWriter.flush()** — flush active buffer's partial data to target Store. No more writes after this.
 2. **finishReadRecoveredState()** — complete `bufferFilteringCompleteFuture` per channel. Task thread detects this and triggers `convertRecoveredInputChannels()` (Store reference transfers from RecoveredInputChannel to LocalInputChannel/RemoteInputChannel).
-3. **outputWriter.close()** — blocking drain loop: `while (hasDiskData) → requestBufferBlocking() → load from disk → dispatch to target Store → cleanup spill files`. Runs concurrently with Task thread consumption and checkpoint on converted InputChannels.
+3. **outputWriter.close()** — blocking drain loop: `while (queue non-empty) → dequeue SpillEntry → requestBufferBlocking() → load entry to one buffer (1:1) → dispatch to target Store → cleanup spill files`. Runs concurrently with Task thread consumption and checkpoint on converted InputChannels.
 
 ### OutputWriter Internal Logic
 
@@ -87,7 +87,7 @@ When a branch is `if (condition) execute action` with no else (both paths conver
 
 1. **Disk stores raw bytes only** — no metadata (record boundaries, channel context, etc.) in spill files. All metadata lives in in-memory objects. Spill files are pure byte streams, replayed as memory-segment-sized chunks.
 2. **OutputWriter can switch between buffer and file at any byte position** — a record's first half can be in a Network Buffer, second half in a File. Task Thread's SpanningWrapper handles cross-buffer record reassembly transparently.
-3. **Disk replay loads at memory-segment-sized granularity** (`taskmanager.memory.segment-size`, default 32KB) — no need to know record boundaries. One SpillEntry may require multiple Network Buffers. Each loaded buffer is delivered to the target channel's RecoveredBufferStore. SpanningWrapper on the consumer side reassembles spanning records.
+3. **SpillEntry 与 Network Buffer 1:1 对应** — 每个 SpillEntry 最大 memorySegmentSize（`taskmanager.memory.segment-size`，默认 32KB），多次 write() 累积到同一个 SpillEntry 直到满或 channel 变更。重放时一个 SpillEntry = 一次磁盘读 = 一个 Network Buffer。无需知道 record 边界，SpanningWrapper 在消费端重组跨 buffer record。
 4. **P3 replay drains eagerly** — on each write, replay as many disk entries as possible (loop until no buffer available or disk empty), not just one. This maximizes throughput when buffers become available after a period of memory pressure.
 5. **Backend can change dynamically** — early writes may go to file (memory pressure), later writes may go to Network Buffer (pressure relieved). OutputWriter adapts per flush cycle, not per filterAndRewrite call.
 6. **"Disk has data" means unreplayed data** — tracked by a cursor, not by physical file existence. If all disk data has been replayed, "disk has data" is false even if spill files still exist on disk. Once the cursor reaches the end, subsequent writes can go to Network Buffer (pure memory path).
@@ -112,7 +112,7 @@ Queue<SpillEntry>:
   ...
 ```
 
-Each SpillEntry records a variable-length chunk (one write() call's data, can be much larger than 32KB). Replay loads a SpillEntry into Network Buffers at memory-segment-sized granularity — one SpillEntry may require multiple Network Buffers.
+每个 SpillEntry 最大 memorySegmentSize（默认 32KB），与 Network Buffer 1:1 对应。多次 write() 的数据累积到同一个 SpillEntry，直到累积满或 channel 变更时密封。重放时一个 SpillEntry 直接加载到一个 Network Buffer。
 
 - **Write**: append bytes to file tail, enqueue entry (channelInfo + offset + length)
 - **Replay**: dequeue head entry, read from file at offset/length, deliver to the entry's channel's RecoveredBufferStore
@@ -167,7 +167,7 @@ flowchart TD
     Active -- "No (if full buffer:<br/>flush → target Store)" --> DiskCheck
 
     DiskCheck{"Disk has data?"}
-    DiskCheck -- Yes --> WriteFile["Write to file"]
+    DiskCheck -- Yes --> WriteFile["Append to active SpillEntry<br/>(if full: seal → enqueue)"]
     DiskCheck -- No --> ReqBuf{"Non-blocking<br/>request Buffer"}
     ReqBuf -- Success --> WriteBuf
     ReqBuf -- Failure --> WriteFile
@@ -186,7 +186,7 @@ OutputWriter.close() runs the blocking drain loop to load all remaining disk dat
 flowchart TD
     C(("close()")) --> Check{"Disk has data?"}
     Check -- Yes --> Block["requestBufferBlocking()"]
-    Block --> Load["Load disk chunk →<br/>target channel's Store"]
+    Block --> Load["Dequeue SpillEntry →<br/>load to one buffer →<br/>target channel's Store"]
     Load --> Check
     Check -- No --> Cleanup["Cleanup spill files"]
     Cleanup --> End(("return"))

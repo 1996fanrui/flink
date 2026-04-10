@@ -49,7 +49,7 @@ Within one writeToBackend call, backend can only downgrade (buffer → file), ne
 
 ### REQ-BFSD Disk Pure Byte Stream
 
-Spill files store raw bytes only. No metadata (record boundaries, channel context, DataType, etc.) on disk. All metadata lives in in-memory `Queue<SpillEntry>` with channelInfo (`InputChannelInfo`, contains gateIdx + inputChannelIdx), offset, and length per entry. Each SpillEntry records a variable-length chunk (one write() call's data, can be much larger than 32KB). Replay loads a SpillEntry into Network Buffers at memory-segment-sized granularity (`taskmanager.memory.segment-size`, default 32KB) — one SpillEntry may require multiple Network Buffers.
+Spill files store raw bytes only. No metadata (record boundaries, channel context, DataType, etc.) on disk. All metadata lives in in-memory `Queue<SpillEntry>` with channelInfo (`InputChannelInfo`, contains gateIdx + inputChannelIdx), offset, and length per entry. 每个 SpillEntry 最大 memorySegmentSize（`taskmanager.memory.segment-size`，默认 32KB），与 Network Buffer 1:1 对应。多次 write() 累积到同一个活跃 SpillEntry，满或 channel 变更时密封。重放时一个 SpillEntry 直接加载到一个 Network Buffer。
 
 ### REQ-SFMG Single File Per Task
 
@@ -69,7 +69,7 @@ OutputWriter can switch between buffer and file at any byte position. A record m
 
 ### REQ-RPLY Disk Replay Mechanism
 
-Replay loads a SpillEntry from disk into Network Buffers at memory-segment-sized granularity (`taskmanager.memory.segment-size`, default 32KB) — one SpillEntry may require multiple Network Buffers. Each loaded buffer is delivered to target channel's RecoveredBufferStore. No record boundary awareness needed. SpanningWrapper on consumer side reassembles spanning records.
+每个 SpillEntry 与 Network Buffer 1:1 对应（最大 memorySegmentSize，默认 32KB）。重放时一个 SpillEntry = 一次磁盘读 = 一个 Network Buffer，直接投递到目标 channel 的 RecoveredBufferStore。无需 record 边界感知，SpanningWrapper 在消费端重组跨 buffer record。
 
 ### REQ-DRIN Drain Mechanism
 

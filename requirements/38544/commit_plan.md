@@ -40,7 +40,7 @@ Two new components with no dependency on each other, grouped because both are pr
 SpillFile I/O (REQ-BFSD, REQ-SFMG, REQ-SPDR, REQ-T5AJ):
 - `SpillFileWriter.java` — append raw bytes via FileChannel + `FileUtils.writeCompletely()`. No fsync.
 - `SpillFileReader.java` — sequential read via FileChannel positional read. `read(offset, buffer, length)` for drain loading. `openInputStream(offset, length)` returns bounded InputStream for checkpoint streaming (via ChannelStateWriter streaming overload, no Network Buffer Pool or heap buffer allocation).
-- `SpillEntry.java` — `{InputChannelInfo channelInfo, long offset, int length}`. Each entry = one variable-length chunk (one write() call's data, can be larger than buffer size). Replay loads at memory-segment-sized granularity.
+- `SpillEntry.java` — `{InputChannelInfo channelInfo, long offset, int length}`. 每个 entry 最大 memorySegmentSize，与 Network Buffer 1:1 对应。多次 write() 累积到同一个 entry，满或 channel 变更时密封。
 
 RecoveredBufferStore (REQ-7388):
 - `RecoveredBufferStore.java` — public interface. See `interfaces.md`.
@@ -73,7 +73,7 @@ OutputWriterImpl(
   - P3 eager drain: while (spillEntryQueue non-empty AND non-blocking bufferSupplier succeeds) → load from disk → `store.addBuffer()` + `store.removePendingSpillEntry()`
   - writeToBackend: fill active buffer (P1), downgrade to file (P2) when no buffer. `downgradedToFile` flag resets per write() call
   - Full buffer → `store.addBuffer(buffer)`
-  - Spill → `spillFileWriter.write()` + enqueue SpillEntry + `store.addPendingSpillEntry()`
+  - Spill → `spillFileWriter.write()` + 累积到活跃 SpillEntry，满时密封入队 + `store.addPendingSpillEntry()`
 
 - `flush()`: send active buffer's partial data to target store. Reject further write() calls.
 

@@ -20,17 +20,11 @@
 
 ---
 
-## Issue 2: SpillEntry Granularity
+## Issue 2: SpillEntry Granularity — ✅ 已解决
 
 **Problem**: SpillEntry length is ambiguous. One channel may produce 100KB+ of data. A single SpillEntry with length=100KB cannot be replayed into one 32KB Network Buffer.
 
-**Resolution**: SpillEntry should be **fixed at buffer size** (from Flink config, not hardcoded 32KB). Each SpillEntry = one buffer-sized chunk. This also aligns with checkpoint requirement (Issue 1) — each SpillEntry maps to one snapshot entry.
-
-**Action needed**:
-- data_flow.md: update Spill File Management to clarify entry granularity = buffer size
-- data_flow.md: Design Principle 3 change "32KB" to "buffer size (from config)"
-- commit_plan.md: OutputWriter constructor needs buffer size parameter
-- Get buffer size from `InputGate.getBufferSize()` or equivalent Flink config, not hardcoded
+**Resolution**: SpillEntry 与 Network Buffer 1:1 对应。最大 length = memorySegmentSize（来自 Flink 配置，非硬编码 32KB）。多次 write() 累积到同一个活跃 SpillEntry，满或 channel 变更时密封。已在 design.md、data_flow.md、commit_plan.md、user_requirements.md、acceptance_test.md 中同步更新。
 
 ---
 

@@ -62,7 +62,7 @@ RecoveredBufferStore 被两个线程并发访问，需要线程安全保证。Sp
 
 - `write(byte[] data, int length, InputChannelInfo channelInfo)` — 写入过滤后的字节到目标 channel。内部处理：channel 变更检测（flush 当前 buffer）、P3 贪心重放、writeToBackend（P1 或 P2）
 - `flush()` — 将活跃 buffer 的部分数据 flush 到目标 Store。flush 后不允许再调用 write()
-- `close()` — 阻塞 drain：循环 requestBufferBlocking() → 从磁盘加载 → 投递到目标 Store，直到磁盘为空。清理 spill 文件。标记所有 store 为 complete。幂等
+- `close()` — 阻塞 drain：逐个从 FIFO 队列取 SpillEntry，每个 entry requestBufferBlocking() 获取一个 buffer → 一次磁盘读（entry.length ≤ memorySegmentSize）→ 投递到目标 Store，直到队列为空。SpillEntry 与 buffer 1:1，无需内循环分块。清理 spill 文件。标记所有 store 为 complete。幂等
 
 **构造参数**：
 
@@ -75,15 +75,16 @@ RecoveredBufferStore 被两个线程并发访问，需要线程安全保证。Sp
 **内部状态**：
 
 - 活跃 buffer（当前正在写入的 Network Buffer）
+- 活跃 SpillEntry 累积状态（起始 offset、已累积长度、当前 channelInfo）。与活跃 buffer 对称：活跃 buffer 累积内存数据，活跃 SpillEntry 累积磁盘数据
 - 当前 channelInfo（检测 channel 变更）
 - SpillFileWriter（管理磁盘写入和文件轮转）
-- 全局 FIFO SpillEntry 队列（重放顺序）
+- 全局 FIFO SpillEntry 队列（已密封 entry 的重放顺序）
 - flushed 标志（flush 后拒绝 write）
 - closed 标志（幂等 close）
 
-**writeToBackend 行为（REQ-WRTR）**：在一次 writeToBackend 调用内，后端只能降级（buffer → file），不能升级。降级后创建磁盘数据，后续字节被强制走文件路径。升级机会在下一次 write() 调用时通过 P3 drain 获得。
+**writeToBackend 行为（REQ-WRTR）**：在一次 writeToBackend 调用内，后端只能降级（buffer → file），不能升级。降级后将剩余字节写入活跃 SpillEntry（追加到 spill 文件），活跃 SpillEntry 累积满 memorySegmentSize 时密封并加入 FIFO 队列，开始新的活跃 SpillEntry。升级机会在下一次 write() 调用时通过 P3 drain 获得。
 
-**channel 变更检测（REQ-CHDL）**：自动比较当前 channelInfo 与上次调用。如果不同，flush 当前活跃 buffer 到目标 Store 后再写入新数据。
+**channel 变更检测（REQ-CHDL）**：自动比较当前 channelInfo 与上次调用。如果不同：flush 当前活跃 buffer 到目标 Store，密封当前活跃 SpillEntry（如有）到 FIFO 队列，再写入新数据。
 
 ### RecoveredBufferStore（per-channel，REQ-7388）
 
@@ -115,9 +116,9 @@ RecoveredBufferStore 被两个线程并发访问，需要线程安全保证。Sp
 
 checkpoint() 方法 snapshot 两部分数据：
 1. 就绪 buffer：retain 队列中每个 buffer，传给 `ChannelStateWriter.addInputData(CloseableIterator<Buffer>)`（现有 API）
-2. 磁盘数据：遍历 pending SpillEntry 列表，对每个 entry 通过 `SpillFileReader.openInputStream(offset, length)` 获取定长 InputStream，传给 `ChannelStateWriter.addInputData(checkpointId, info, seqNum, InputStream, dataLength)`（新增流式重载）。从 spill 文件直接流式写入 checkpoint DataOutputStream，不消耗 Network Buffer Pool 或 heap buffer
+2. 磁盘数据：遍历 pending SpillEntry 列表，对每个 entry 通过 `SpillFileReader.openInputStream(offset, length)` 获取定长 InputStream（entry.length ≤ memorySegmentSize，天然对齐 buffer 大小），传给 `ChannelStateWriter.addInputData(checkpointId, info, seqNum, InputStream, dataLength)`（新增流式重载）。每个 SpillEntry 对应一个 checkpoint 条目，无需分块。从 spill 文件直接流式写入 checkpoint DataOutputStream，不消耗 Network Buffer Pool 或 heap buffer
 
-Store 持有属于本 channel 的 pending SpillEntry 列表（由 OutputWriter 在 P2 路径时通过 `addPendingSpillEntry()` 添加，drain 重放时通过 `removePendingSpillEntry()` 移除）。checkpoint 遍历此列表读取数据，但不消费 entry（entry 仍留给 drain 重放）。
+Store 持有属于本 channel 的 pending SpillEntry 列表（由 OutputWriter 在活跃 SpillEntry 密封时通过 `addPendingSpillEntry()` 添加，drain 重放时通过 `removePendingSpillEntry()` 移除）。checkpoint 遍历此列表读取数据，但不消费 entry（entry 仍留给 drain 重放）。
 
 checkpoint 运行在 Task 线程，drain 运行在 Recovery 线程，两者通过独立 SpillFileReader 实例并发读取同一文件（FileChannel 支持 positional read）。
 
@@ -166,10 +167,17 @@ checkpoint 运行在 Task 线程，drain 运行在 Recovery 线程，两者通�
 
 - channelInfo：目标 channel（post-rescaling），用于重放时投递到正确的 Store
 - offset：spill 文件内的字节偏移（long 类型，避免 2GB 限制，参见业界调研 spill_metadata_management.md）
-- length：数据长度。变长（一次 write() 调用的数据量，可大于 32KB）
-- 不可变对象（参见业界调研 spill_metadata_management.md）
+- length：数据长度。最大为 memorySegmentSize（默认 32KB），最后一个 entry 可能更小
+- 不可变对象：仅在密封时创建（参见业界调研 spill_metadata_management.md）
 
-**重放粒度**（REQ-RPLY）：一个 SpillEntry 按 memorySegmentSize（默认 32KB）分块加载到 Network Buffer。一个 SpillEntry 可能需要多个 Network Buffer。
+**与 Network Buffer 的 1:1 对应**（REQ-RPLY）：一个 SpillEntry 对应恰好一个 Network Buffer。SpillEntry 的最大 length = memorySegmentSize，因此一次磁盘读取直接加载到一个 Network Buffer，无需分块或拼接。
+
+**累积与密封**：多次 write() 调用的数据累积到同一个 SpillEntry，直到以下任一条件触发密封：
+1. 累积长度达到 memorySegmentSize → 密封当前 entry，开始新 entry
+2. channelInfo 变更 → 密封当前 entry（可能部分填充），为新 channel 开始新 entry
+3. flush() 或 close() → 密封当前 entry（可能部分填充）
+
+OutputWriter 内部追踪当前累积状态（起始 offset、已累积长度、当前 channelInfo），仅在密封时创建不可变的 SpillEntry 对象并加入 FIFO 队列。
 
 **与文件的关系**：Entry 通过 offset 定位数据在 spill 文件中的位置。文件轮转时，Entry 需要能定位到正确的文件。
 
@@ -333,7 +341,7 @@ OutputWriter 通过构造器接收这两个方法的函数式接口引用，解�
 |-------|--------|---------|
 | Spill 文件轮转阈值 | 64MB | 与 Flink file-merging (32MB)、RocksDB (64MB) 同一量级，参见 `industry_research/spill_file_rotation_cleanup.md` |
 | Source Buffer 并发上限 | 5 per gate（约 160KB） | 限制 pre-filter source buffer 内存，足够支持 gate 按 virtual channel 顺序处理 |
-| SpillEntry 重放粒度 | memorySegmentSize（默认 32KB） | 对齐 Network Buffer 大小，减少碎片 |
+| SpillEntry 最大大小 | memorySegmentSize（默认 32KB） | 与 Network Buffer 1:1 对应，一次磁盘读 = 一个 buffer |
 
 ## 设计决策与业界参考
 

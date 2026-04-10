@@ -31,7 +31,7 @@
 | AT-7OWS | Spill file stores raw bytes only, no metadata on disk | REQ-BFSD,REQ-RPLY | 待测试 | 代码自动化 | |
 | AT-CTTS | Checkpoint snapshot of unreplayed disk data | REQ-KM7C | 待测试 | 代码自动化 | |
 | AT-N3YQ | Concurrent checkpoint snapshot and replay | REQ-KM7C | 待测试 | 代码自动化 | |
-| AT-HQB4 | SpillEntry granularity equals buffer size | REQ-BFSD,REQ-RPLY | 待测试 | 代码自动化 | |
+| AT-HQB4 | SpillEntry 与 Network Buffer 1:1 对应，累积密封机制 | REQ-BFSD,REQ-RPLY | 待测试 | 代码自动化 | |
 | AT-1KTC | Minimal code invasion: new logic in new classes | REQ-MNIV | 待测试 | Agent 执行 | |
 | AT-IAMJ | RecoveredBufferStore: store created per-channel, tryTake/addBuffer/checkpoint | REQ-7388 | 待测试 | 代码自动化 | |
 | AT-OOJG | InputChannel consumes disk data after channel conversion | REQ-G4KW | 待测试 | 代码自动化 | |
@@ -211,7 +211,7 @@ filterAndRewrite writes to a unified OutputWriter interface. Filter logic does n
 
 ### [L1-测试] AT-7OWS Disk Pure Byte Stream
 
-Spill files store raw bytes only. No metadata (record boundaries, channel context, DataType, etc.) on disk. All metadata lives in in-memory Queue<SpillEntry>. Replay reads 32KB chunks from spill file into Network Buffer, no record boundary awareness.
+Spill files store raw bytes only. No metadata (record boundaries, channel context, DataType, etc.) on disk. All metadata lives in in-memory Queue<SpillEntry>. 每个 SpillEntry 与 Network Buffer 1:1 对应（最大 memorySegmentSize），重放时一个 entry 直接加载到一个 buffer。
 
 **命令**: `./mvnw test -pl flink-runtime -Dtest=SpillFileTest#testPureByteStream -P java11-target -P java11`
 **断言**: test pass, exit code 0
@@ -230,11 +230,11 @@ Checkpoint snapshot and drain loop replay run concurrently on the same spill fil
 **命令**: `./mvnw test -pl flink-runtime -Dtest=RecoveredBufferStoreTest#testConcurrentCheckpointAndReplay -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
-### [L1-测试] AT-HQB4 SpillEntry Variable-Length Replay
+### [L1-测试] AT-HQB4 SpillEntry Buffer-Aligned Replay
 
-SpillEntry records a variable-length chunk. Replay loads the entry at memory-segment-sized granularity. One SpillEntry that is larger than buffer size produces multiple Network Buffers.
+SpillEntry 与 Network Buffer 1:1 对应。多次 write() 累积到同一个 SpillEntry，满（memorySegmentSize）或 channel 变更时密封。重放时一个 SpillEntry 直接加载到一个 Network Buffer。验证：写入 3 个 record（总大小 > memorySegmentSize），产生多个 SpillEntry，每个 entry 重放为恰好一个 buffer。
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=OutputWriterTest#testVariableLengthEntryReplay -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=OutputWriterTest#testBufferAlignedEntryReplay -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-IAMJ RecoveredBufferStore Lifecycle
