@@ -508,8 +508,7 @@ class ChannelStateCheckpointWriterTest {
             // For in-memory state handles, extractAndMerge re-packages the data with a
             // new header + length prefix, so stateSize = header + lengthPrefix + data.
             int lengthSize = Integer.BYTES;
-            assertThat(handle.getStateSize())
-                    .isEqualTo(headerSize + lengthSize + numBytesPerWrite);
+            assertThat(handle.getStateSize()).isEqualTo(headerSize + lengthSize + numBytesPerWrite);
         }
     }
 

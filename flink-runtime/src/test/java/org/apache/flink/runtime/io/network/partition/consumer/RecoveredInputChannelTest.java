@@ -25,6 +25,7 @@ import org.apache.flink.runtime.io.network.NettyShuffleEnvironment;
 import org.apache.flink.runtime.io.network.NettyShuffleEnvironmentBuilder;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
+import org.apache.flink.runtime.io.network.buffer.BufferPool;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 import org.apache.flink.runtime.io.network.partition.ResultSubpartitionIndexSet;
 
@@ -191,6 +192,18 @@ class RecoveredInputChannelTest {
             }
             // requestBuffer() returned null (not blocked) -- verifies non-blocking behavior
             assertThat(channel.requestBuffer()).isNull();
+
+            // Also drain the gate's floating buffer pool. requestBuffer() only drains
+            // exclusive buffers from the channel's bufferQueue, but requestBufferBlocking()
+            // also tries the gate's buffer pool. We must exhaust both to test blocking.
+            BufferPool bufferPool = filteringGate.getBufferPool();
+            while (true) {
+                Buffer b = bufferPool.requestBuffer();
+                if (b == null) {
+                    break;
+                }
+                allBuffers.add(b);
+            }
 
             // 2. Test requestBufferBlocking() in filtering mode does NOT fall back to heap.
             // Since the pool is exhausted, it should block (not return a heap buffer).
