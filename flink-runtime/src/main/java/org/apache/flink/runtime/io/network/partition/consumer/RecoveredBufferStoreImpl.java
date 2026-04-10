@@ -34,11 +34,12 @@ import java.util.List;
 
 /**
  * Thread-safe implementation of {@link RecoveredBufferStore} that manages per-channel recovered
- * buffers. Buffers can be either ready (in-memory, available for consumption) or pending (on disk as
- * spill entries, awaiting materialization).
+ * buffers. Buffers can be either ready (in-memory, available for consumption) or pending (on disk
+ * as spill entries, awaiting materialization).
  *
  * <p>Thread safety: all methods that access {@code readyBuffers} or {@code pendingSpillEntries} are
- * synchronized on {@code this}. The {@code complete} flag is volatile since it is only written once.
+ * synchronized on {@code this}. The {@code complete} flag is volatile since it is only written
+ * once.
  *
  * <p>Public interface methods are called from the Task thread. Internal methods (addBuffer,
  * markComplete, etc.) are called from the Recovery thread (OutputWriter).

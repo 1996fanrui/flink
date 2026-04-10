@@ -87,8 +87,8 @@ class SpillFileTest {
     }
 
     /**
-     * AT-5097: Write more than 64MB to trigger file rotation, verify multiple files created and data
-     * correct across files.
+     * AT-5097: Write more than 64MB to trigger file rotation, verify multiple files created and
+     * data correct across files.
      */
     @Test
     void testFileRotation() throws Exception {
@@ -198,8 +198,7 @@ class SpillFileTest {
                 // Read a sub-range via InputStream
                 int readOffset = 64;
                 int readLength = 128;
-                try (InputStream is =
-                        reader.openInputStream(offset + readOffset, readLength)) {
+                try (InputStream is = reader.openInputStream(offset + readOffset, readLength)) {
                     byte[] readBack = new byte[readLength];
                     int totalRead = 0;
                     int bytesRead;

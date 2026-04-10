@@ -83,8 +83,7 @@ class InputChannelRecoveredStateHandler
      * gate. This prevents unbounded heap allocation while providing enough buffers for the
      * single-threaded channel-state-unspilling thread to make progress.
      */
-    @VisibleForTesting
-    static final int MAX_HEAP_BUFFERS_PER_GATE = 5;
+    @VisibleForTesting static final int MAX_HEAP_BUFFERS_PER_GATE = 5;
 
     private final InputGate[] inputGates;
 

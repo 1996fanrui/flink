@@ -150,8 +150,7 @@ class RecoveredBufferStoreTest {
                             try {
                                 barrier.await();
                                 for (int i = 0; i < numBuffers; i++) {
-                                    NetworkBuffer buf =
-                                            createBuffer(new byte[] {(byte) i});
+                                    NetworkBuffer buf = createBuffer(new byte[] {(byte) i});
                                     store.addBuffer(buf);
                                 }
                                 store.markComplete();
