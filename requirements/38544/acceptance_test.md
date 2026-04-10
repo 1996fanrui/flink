@@ -15,7 +15,7 @@
 | AT-DWGD | Backend downgrade only (buffer → file), no upgrade | REQ-WRTR | 待测试 | 代码自动化 | |
 | AT-BYPS | Record spans across buffer and file correctly | REQ-BYPS | 待测试 | 代码自动化 | |
 | AT-CHDL | Channel change auto-detected, flush on change | REQ-CHDL | 待测试 | 代码自动化 | |
-| AT-SFMG | Single spill file per gate, all channels share | REQ-SFMG | 待测试 | 代码自动化 | |
+| AT-SFMG | Single spill file per task, all channels share | REQ-SFMG | 待测试 | 代码自动化 | |
 | AT-5097 | File rotation at 64MB | REQ-SFMG | 待测试 | 代码自动化 | |
 | AT-CRSR | Disk has data = unreplayed entries, cursor-based | REQ-CRSR | 待测试 | 代码自动化 | |
 | AT-DRIN | close() blocking drain until disk empty | REQ-DRIN | 待测试 | 代码自动化 | |
@@ -33,6 +33,10 @@
 | AT-N3YQ | Concurrent checkpoint snapshot and replay | REQ-KM7C | 待测试 | 代码自动化 | |
 | AT-HQB4 | SpillEntry granularity equals buffer size | REQ-BFSD,REQ-RPLY | 待测试 | 代码自动化 | |
 | AT-1KTC | Minimal code invasion: new logic in new classes | REQ-MNIV | 待测试 | Agent 执行 | |
+| AT-IAMJ | RecoveredBufferStore: store created per-channel, tryTake/addBuffer/checkpoint | REQ-7388 | 待测试 | 代码自动化 | |
+| AT-OOJG | InputChannel consumes disk data after channel conversion | REQ-G4KW | 待测试 | 代码自动化 | |
+| AT-O9MD | requestBuffer non-blocking and requestBufferBlocking without heap fallback | REQ-GGPR | 待测试 | 代码自动化 | |
+| AT-TD4O | Checkpoint protocol compatibility after conversion | REQ-TXGD | 待测试 | 代码自动化 | |
 | AT-UFNZ | UnalignedCheckpointRescaleITCase integration test | REQ-NHLB,REQ-8HRS,REQ-NPBY | 待测试 | 代码自动化 | |
 
 ## Test Details
@@ -114,9 +118,9 @@ Write data for channel A, then channel B. Verify current backend is flushed betw
 **命令**: `./mvnw test -pl flink-runtime -Dtest=OutputWriterTest#testChannelChangeDetection -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
-### [L1-测试] AT-SFMG Single File Per Gate
+### [L1-测试] AT-SFMG Single File Per Task
 
-Multiple channels write to OutputWriter. Verify only one spill file created (not one per channel). All entries in same file with correct offsets.
+Multiple channels across multiple gates write to OutputWriter. Verify only one spill file created (not one per channel or per gate). All entries in same file with correct offsets.
 
 **命令**: `./mvnw test -pl flink-runtime -Dtest=OutputWriterTest#testSingleFilePerGate -P java11-target -P java11`
 **断言**: test pass, exit code 0
@@ -210,6 +214,55 @@ filterAndRewrite writes to a unified OutputWriter interface. Filter logic does n
 Spill files store raw bytes only. No metadata (record boundaries, channel context, DataType, etc.) on disk. All metadata lives in in-memory Queue<SpillEntry>. Replay reads 32KB chunks from spill file into Network Buffer, no record boundary awareness.
 
 **命令**: `./mvnw test -pl flink-runtime -Dtest=SpillFileTest#testPureByteStream -P java11-target -P java11`
+**断言**: test pass, exit code 0
+
+### [L1-测试] AT-CTTS Checkpoint Snapshot of Unreplayed Disk Data
+
+When checkpoint triggers during recovery with unreplayed spill data, all unreplayed disk data is included in the checkpoint snapshot via store.checkpoint(). Disk data is read directly to checkpoint storage without consuming Network Buffers.
+
+**命令**: `./mvnw test -pl flink-runtime -Dtest=RecoveredBufferStoreTest#testCheckpointWithDiskData -P java11-target -P java11`
+**断言**: test pass, exit code 0
+
+### [L1-测试] AT-N3YQ Concurrent Checkpoint Snapshot and Replay
+
+Checkpoint snapshot and drain loop replay run concurrently on the same spill file. Both use independent SpillFileReader instances. No data corruption or deadlock.
+
+**命令**: `./mvnw test -pl flink-runtime -Dtest=RecoveredBufferStoreTest#testConcurrentCheckpointAndReplay -P java11-target -P java11`
+**断言**: test pass, exit code 0
+
+### [L1-测试] AT-HQB4 SpillEntry Variable-Length Replay
+
+SpillEntry records a variable-length chunk. Replay loads the entry at memory-segment-sized granularity. One SpillEntry that is larger than buffer size produces multiple Network Buffers.
+
+**命令**: `./mvnw test -pl flink-runtime -Dtest=OutputWriterTest#testVariableLengthEntryReplay -P java11-target -P java11`
+**断言**: test pass, exit code 0
+
+### [L1-测试] AT-IAMJ RecoveredBufferStore Lifecycle
+
+RecoveredBufferStore created per-channel. OutputWriter delivers via addBuffer(). InputChannel consumes via tryTake(). checkpoint() snapshots ready buffers + disk data. markComplete() transitions store to complete state.
+
+**命令**: `./mvnw test -pl flink-runtime -Dtest=RecoveredBufferStoreTest#testStoreLifecycle -P java11-target -P java11`
+**断言**: test pass, exit code 0
+
+### [L1-测试] AT-OOJG Disk Data Consumption After Channel Conversion
+
+After channel conversion (RecoveredInputChannel → LocalInputChannel/RemoteInputChannel), remaining disk data continues to be loaded by drain loop and consumed by converted InputChannel via RecoveredBufferStore.
+
+**命令**: `./mvnw test -pl flink-runtime -Dtest=RecoveredBufferStoreTest#testConsumptionAfterConversion -P java11-target -P java11`
+**断言**: test pass, exit code 0
+
+### [L1-测试] AT-O9MD Buffer Request Interface
+
+requestBuffer() is non-blocking, returns null when pool exhausted. requestBufferBlocking() in filtering mode no longer falls back to heap buffer — blocks until Network Buffer available.
+
+**命令**: `./mvnw test -pl flink-runtime -Dtest=RecoveredInputChannelTest#testBufferRequestInterface -P java11-target -P java11`
+**断言**: test pass, exit code 0
+
+### [L1-测试] AT-TD4O Checkpoint Protocol Compatibility
+
+After conversion, LocalInputChannel/RemoteInputChannel's checkpoint protocol (barrier handling, ChannelStatePersister, inflight buffer collection) works correctly with RecoveredBufferStore data alongside normal data sources.
+
+**命令**: `./mvnw test -pl flink-runtime -Dtest=LocalInputChannelTest#testCheckpointWithRecoveredStore -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L2-Agent] AT-1KTC Minimal Code Invasion

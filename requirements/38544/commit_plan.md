@@ -39,7 +39,7 @@ Two new components with no dependency on each other, grouped because both are pr
 SpillFile I/O (REQ-BFSD, REQ-SFMG, REQ-SPDR, REQ-T5AJ):
 - `SpillFileWriter.java` — append raw bytes via FileChannel + `FileUtils.writeCompletely()`. No fsync.
 - `SpillFileReader.java` — sequential read via FileInputStream + BufferedInputStream. `readNextTo(OutputStream, length)` for checkpoint streaming.
-- `SpillEntry.java` — `{InputChannelInfo channelInfo, long offset, int length}`. Each entry = one memory-segment-sized chunk.
+- `SpillEntry.java` — `{InputChannelInfo channelInfo, long offset, int length}`. Each entry = one variable-length chunk (one write() call's data, can be larger than buffer size). Replay loads at memory-segment-sized granularity.
 
 RecoveredBufferStore (REQ-7388):
 - `RecoveredBufferStore.java` — public interface. See `interfaces.md`.
@@ -134,7 +134,7 @@ Wire OutputWriter into the filtering flow.
 - Remove `writeDataToBuffer`, `BufferSupplier`
 
 `RecoveredChannelStateHandler.java`:
-- `recoverWithFiltering()`: call `filterAndRewrite(..., outputWriter)`, remove List\<Buffer\> loop + `onRecoveredStateBuffer()`
+- `recoverWithFiltering()`: pass OutputWriter and target channelInfo (post-rescaling) to `filterAndRewrite()`. Remove `List<Buffer>` return value handling and `onRecoveredStateBuffer()` loop. filterAndRewrite 内部通过 outputWriter.write() 投递数据，不再返回 buffer 列表
 
 `SequentialChannelStateReaderImpl.java`:
 - `readInputData()`: create OutputWriter (per-task) + RecoveredBufferStores (per-channel)
