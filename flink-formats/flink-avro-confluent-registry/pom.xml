@@ -23,7 +23,7 @@ under the License.
 	<parent>
 		<artifactId>flink-formats</artifactId>
 		<groupId>org.apache.flink</groupId>
-		<version>os-troubleshooting-68350e2471d</version>
+		<version>os-troubleshooting-dab0f41554d</version>
 	</parent>
 	<modelVersion>4.0.0</modelVersion>
 

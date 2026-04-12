@@ -25,7 +25,7 @@ under the License.
 	<parent>
 		<groupId>org.apache.flink</groupId>
 		<artifactId>flink-examples</artifactId>
-		<version>os-troubleshooting-68350e2471d</version>
+		<version>os-troubleshooting-dab0f41554d</version>
 	</parent>
 
 	<artifactId>flink-examples-streaming</artifactId>

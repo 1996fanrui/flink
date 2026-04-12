@@ -26,7 +26,7 @@ under the License.
 	<parent>
 		<artifactId>flink-parent</artifactId>
 		<groupId>org.apache.flink</groupId>
-		<version>os-troubleshooting-68350e2471d</version>
+		<version>os-troubleshooting-dab0f41554d</version>
 	</parent>
 
 	<artifactId>flink-datastream-api</artifactId>
