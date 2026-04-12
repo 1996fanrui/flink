@@ -853,6 +853,8 @@ abstract class UnalignedCheckpointTestBase {
             conf.set(TaskManagerOptions.NETWORK_MEMORY_MIN, MemorySize.ofMebiBytes(32));
             conf.set(TaskManagerOptions.NETWORK_MEMORY_MAX, MemorySize.ofMebiBytes(32));
             conf.set(RpcOptions.ASK_TIMEOUT_DURATION, Duration.ofMinutes(1));
+            conf.set(CheckpointingOptions.UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM, true);
+            conf.set(CheckpointingOptions.UNALIGNED_DURING_RECOVERY_ENABLED, true);
             return conf;
         }
 

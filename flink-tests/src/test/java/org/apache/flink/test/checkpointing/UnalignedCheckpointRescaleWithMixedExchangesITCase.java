@@ -170,6 +170,8 @@ class UnalignedCheckpointRescaleWithMixedExchangesITCase {
                 ExternalizedCheckpointRetention.RETAIN_ON_CANCELLATION);
         conf.set(CheckpointingOptions.CHECKPOINTS_DIRECTORY, temporaryFolder.toURI().toString());
         conf.set(CheckpointingOptions.ENABLE_UNALIGNED, true);
+        conf.set(CheckpointingOptions.UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM, true);
+        conf.set(CheckpointingOptions.UNALIGNED_DURING_RECOVERY_ENABLED, true);
         // Decrease the memory segment size to avoid the test is so slow for some reasons:
         // 1. When a flink job recovers from unaligned checkpoint, it has to consume all inflight
         // buffers during recovery phase. The smaller the buffer size, the fewer records are

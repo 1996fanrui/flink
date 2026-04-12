@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git reset:*)",
+      "Bash(./mvnw test:*)",
+      "Bash(git checkout:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git push-external:*)",
+      "Bash(cat)",
+      "Bash(gh pr:*)",
+      "Bash(./mvnw clean:*)",
+      "Bash(../mvnw -Dtest=\"org.apache.flink.test.checkpointing.UnalignedCheckpointRescaleITCase#testRescaleTo4[mode = RESCALE, from = 2, to = 4, buffersPerChannel = 1]\" test -Dflink.XmxUnitTest=6096m -Dflink.forkCountUnitTest=1 -Dmaven.javadoc.skip=true -Drat.skip=true -Dcheckstyle.skip=true -Denforcer.skip=true -P java11,java11-target --no-snapshot-updates)",
+      "Bash(../mvnw -Dtest=\"org.apache.flink.test.checkpointing.UnalignedCheckpointRescaleITCase#testRescaleTo4\" test -Dflink.XmxUnitTest=6096m -Dflink.forkCountUnitTest=1 -Dmaven.javadoc.skip=true -Drat.skip=true -Dcheckstyle.skip=true -Denforcer.skip=true -P java11,java11-target --no-snapshot-updates)",
+      "Bash(../mvnw -Dtest=\"org.apache.flink.test.checkpointing.UnalignedCheckpointRescaleITCase#testRescaleTo4\" test -Dflink.XmxUnitTest=6096m -Dflink.forkCountUnitTest=1 -Dmaven.javadoc.skip=true -Drat.skip=true -Dcheckstyle.skip=true -Denforcer.skip=true -P java11,java11-target --no-snapshot-updates -am)",
+      "Bash(grep -E \"\\\\.java$\")",
+      "Bash(ls:*)",
+      "Bash(unzip -l /Users/ruifan/no_need_backup/Chrome_download/logs-ci-test_ci_tests-1775684338.zip)",
+      "Bash(unzip -p /Users/ruifan/no_need_backup/Chrome_download/logs-ci-test_ci_tests-1775684338.zip \"*/mvn-*.log\")",
+      "Bash(git cherry-pick:*)",
+      "Bash(git rebase:*)",
+      "Bash(git stash:*)"
+    ]
+  }
+}
