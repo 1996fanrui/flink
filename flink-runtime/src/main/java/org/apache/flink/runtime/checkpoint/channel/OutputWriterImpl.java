@@ -68,13 +68,14 @@ public class OutputWriterImpl implements OutputWriter {
     private long activeSpillEntryStartOffset;
     private int activeSpillEntryLength;
     private InputChannelInfo activeSpillChannelInfo;
-    private SpillFileReader activeSpillFileReader;
 
     // Spill infrastructure
     private SpillFileWriter spillFileWriter;
     private final Queue<SpillEntry> spillEntryQueue;
+    private final Queue<SpillFileReader> spillEntryReaderQueue;
     private final List<SpillFileReader> allSpillFileReaders;
     private int lastKnownFileCount;
+    private byte[] drainBuffer;
 
     // Lifecycle flags
     private boolean flushed;
@@ -106,9 +107,11 @@ public class OutputWriterImpl implements OutputWriter {
         this.bufferSupplier = bufferSupplier;
         this.blockingBufferSupplier = blockingBufferSupplier;
         this.spillEntryQueue = new ArrayDeque<>();
+        this.spillEntryReaderQueue = new ArrayDeque<>();
         this.allSpillFileReaders = new ArrayList<>();
         this.lastKnownFileCount = 0;
         this.activeSpillEntryLength = 0;
+        this.drainBuffer = null;
     }
 
     @Override
@@ -164,10 +167,11 @@ public class OutputWriterImpl implements OutputWriter {
         while (!spillEntryQueue.isEmpty()) {
             Buffer buffer = blockingBufferSupplier.get();
             SpillEntry entry = spillEntryQueue.poll();
-            loadEntryIntoBuffer(entry, buffer);
+            SpillFileReader reader = spillEntryReaderQueue.poll();
+            loadEntryIntoBuffer(entry, reader, buffer);
             RecoveredBufferStoreImpl store = storesByChannel.get(entry.getChannelInfo());
             store.addBuffer(buffer);
-            store.removePendingSpillEntry(entry);
+            store.decrementPending();
         }
 
         // Cleanup spill infrastructure
@@ -240,7 +244,6 @@ public class OutputWriterImpl implements OutputWriter {
                 if (activeSpillEntryLength == 0) {
                     activeSpillEntryStartOffset = fileOffset;
                     activeSpillChannelInfo = channelInfo;
-                    activeSpillFileReader = getCurrentSpillFileReader();
                 }
                 activeSpillEntryLength += toWrite;
                 pos += toWrite;
@@ -262,18 +265,22 @@ public class OutputWriterImpl implements OutputWriter {
                 break;
             }
             SpillEntry entry = spillEntryQueue.poll();
-            loadEntryIntoBuffer(entry, buffer);
+            SpillFileReader reader = spillEntryReaderQueue.poll();
+            loadEntryIntoBuffer(entry, reader, buffer);
             RecoveredBufferStoreImpl store = storesByChannel.get(entry.getChannelInfo());
             store.addBuffer(buffer);
-            store.removePendingSpillEntry(entry);
+            store.decrementPending();
         }
     }
 
     /** Loads a spill entry's data from disk into a buffer. */
-    private void loadEntryIntoBuffer(SpillEntry entry, Buffer buffer) throws IOException {
-        byte[] tmp = new byte[entry.getLength()];
-        entry.getFileReader().read(entry.getOffset(), tmp, entry.getLength());
-        buffer.getMemorySegment().put(0, tmp, 0, entry.getLength());
+    private void loadEntryIntoBuffer(SpillEntry entry, SpillFileReader reader, Buffer buffer)
+            throws IOException {
+        if (drainBuffer == null || drainBuffer.length < entry.getLength()) {
+            drainBuffer = new byte[memorySegmentSize];
+        }
+        reader.read(entry.getOffset(), drainBuffer, entry.getLength());
+        buffer.getMemorySegment().put(0, drainBuffer, 0, entry.getLength());
         buffer.setSize(entry.getLength());
     }
 
@@ -291,26 +298,25 @@ public class OutputWriterImpl implements OutputWriter {
     }
 
     /** Seals the currently accumulating spill entry (if any) and adds it to the queue and store. */
-    private void sealActiveSpillEntry() {
+    private void sealActiveSpillEntry() throws IOException {
         if (activeSpillEntryLength > 0 && activeSpillChannelInfo != null) {
             SpillEntry entry =
                     new SpillEntry(
                             activeSpillChannelInfo,
-                            activeSpillFileReader,
                             activeSpillEntryStartOffset,
                             activeSpillEntryLength);
             spillEntryQueue.add(entry);
-            storesByChannel.get(activeSpillChannelInfo).addPendingSpillEntry(entry);
+            spillEntryReaderQueue.add(getCurrentSpillFileReader());
+            storesByChannel.get(activeSpillChannelInfo).incrementPending();
             activeSpillEntryLength = 0;
             activeSpillChannelInfo = null;
-            activeSpillFileReader = null;
         }
     }
 
     /** Writes data to the spill file, creating the SpillFileWriter lazily if needed. */
     private long writeToSpillFile(byte[] data, int offset, int length) throws IOException {
         if (spillFileWriter == null) {
-            spillFileWriter = new SpillFileWriter(spillDirs, memorySegmentSize);
+            spillFileWriter = new SpillFileWriter(spillDirs);
             lastKnownFileCount = 0;
         }
         return spillFileWriter.write(data, offset, length);
