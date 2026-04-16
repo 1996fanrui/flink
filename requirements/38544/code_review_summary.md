@@ -4,13 +4,13 @@
 
 | 阶段 | 内容 | Commits | 一致性评分 |
 |------|------|---------|-----------|
-| C1 | Source Buffer Heap 分配 + buffer 请求接口 | `59420f9` + `8dfaf97` + `d75d335` | 9/10 |
-| C2 | SpillFile I/O + RecoveredBufferStore | `51967a0` | 7.5/10 |
-| C3 | OutputWriter 三条数据路径 + drain 循环 | `5c05f14` | 9/10 |
-| C4 | InputChannel 从 RecoveredBufferStore 消费 | `b8ffc17` | 8/10 |
-| C5 | ChannelStateWriter streaming overload | `124e409` | 9/10 |
-| C6 | 集成：filterAndRewrite 写入 OutputWriter | `fa56b01` + `e0f6a1e` | 9/10 |
-| **总计** | | **10 commits** | **8.6/10** |
+| C1 | Source Buffer Heap 分配 + buffer 请求接口 | `e55a7f1` | 9/10 |
+| C2 | SpillFile I/O + RecoveredBufferStore | `44c700b` | 7.5/10 |
+| C3 | OutputWriter 三条数据路径 + drain 循环 | `d911490` | 9/10 |
+| C4 | InputChannel 从 RecoveredBufferStore 消费 | `90c4e49` | 8/10 |
+| C5 | ChannelStateWriter streaming overload | `c379f4b` | 9/10 |
+| C6 | 集成：filterAndRewrite 写入 OutputWriter | `e8ee9b2` | 9/10 |
+| **总计** | | **6 commits** | **8.6/10** |
 
 ---
 
