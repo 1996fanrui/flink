@@ -37,7 +37,6 @@ import org.apache.flink.runtime.shuffle.NettyShuffleDescriptor;
 import org.apache.flink.runtime.taskmanager.NettyShuffleEnvironmentConfiguration;
 
 import java.io.IOException;
-import java.util.ArrayDeque;
 
 /**
  * A benchmark-specific input gate factory which overrides the respective methods of creating {@link
@@ -130,7 +129,7 @@ public class SingleInputGateBenchmarkFactory extends SingleInputGateFactory {
                     metrics.getNumBytesInLocalCounter(),
                     metrics.getNumBuffersInLocalCounter(),
                     ChannelStateWriter.NO_OP,
-                    new ArrayDeque<>());
+                    null);
         }
 
         @Override
@@ -186,7 +185,7 @@ public class SingleInputGateBenchmarkFactory extends SingleInputGateFactory {
                     metrics.getNumBytesInRemoteCounter(),
                     metrics.getNumBuffersInRemoteCounter(),
                     ChannelStateWriter.NO_OP,
-                    new ArrayDeque<>());
+                    null);
         }
 
         @Override
