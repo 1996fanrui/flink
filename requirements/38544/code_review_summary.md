@@ -229,29 +229,32 @@
 
 ### 需关注（中风险）
 
-| # | 阶段 | 问题 | 说明 |
-|---|------|------|------|
-| 1 | C2 | SpillFileReader 实例创建过多 | `getCurrentFileReader()` 每次创建新 FileChannel，大量 write 会导致文件句柄耗尽。应共享同一文件的 reader |
-| 2 | C1/C6 | memorySegmentSize 硬编码 DEFAULT_PAGE_SIZE | 两处独立使用 `MemoryManager.DEFAULT_PAGE_SIZE`，若用户配置非默认 segment-size 会导致不匹配 |
-| 3 | C4 | isReleased 失去线程安全保护 | 移除 `@GuardedBy` 后无同步机制，建议改为 volatile |
-| 4 | C2 | notificationCallback 缺少线程安全 | `setNotificationCallback()` 未同步，channel conversion 时可能竞态 |
+| # | 阶段 | 问题 | 说明 | 状态 |
+|---|------|------|------|------|
+| 1 | C2 | SpillFileReader 实例创建过多 | `getCurrentFileReader()` 每次创建新 FileChannel。OutputWriter 已有共享机制（`allSpillFileReaders` + `lastKnownFileCount`），实际不会每 entry 创建新 reader | **已澄清**：review 误判，OutputWriter 已正确共享 reader |
+| 2 | C1/C6 | memorySegmentSize 硬编码 DEFAULT_PAGE_SIZE | C1 已修复（amend commit 改用 `filterContext.getMemorySegmentSize()`）。C6 待 cherry-pick 后确认 | **C1 已修复** |
+| 3 | C4 | isReleased 失去线程安全保护 | 移除 `@GuardedBy` 后无同步机制，建议改为 volatile | 待修复 |
+| 4 | C2 | notificationCallback 缺少线程安全 | `setNotificationCallback()` 未同步，channel conversion 时可能竞态 | **已修复**：C2 fix commit 中 setNotificationCallback 加 synchronized |
 
 ### 可改进（低风险）
 
-| # | 阶段 | 问题 |
-|---|------|------|
-| 5 | C4 | checkReadability() hack 未按设计删除（dead code 残留） |
-| 6 | C3 | loadEntryIntoBuffer 每次 new byte[] 临时数组，可复用 |
-| 7 | C3 | close() drain 循环缺少 released store 短路 |
-| 8 | C1 | 测试中 Thread.sleep 验证阻塞（可能 flaky） |
+| # | 阶段 | 问题 | 状态 |
+|---|------|------|------|
+| 5 | C4 | checkReadability() hack 未按设计删除（dead code 残留） | 待修复 |
+| 6 | C3 | loadEntryIntoBuffer 每次 new byte[] 临时数组，可复用 | 待修复 |
+| 7 | C3 | close() drain 循环缺少 released store 短路 | 待修复 |
+| 8 | C1 | 测试中 Thread.sleep 验证阻塞（可能 flaky） | 待修复 |
 
 ### 需同步更新设计文档
 
-| # | 内容 |
-|---|------|
-| 1 | C1: AtomicInteger → Semaphore |
-| 2 | C2: SpillEntry 3 字段 → 4 字段（含 fileReader） |
-| 3 | C5: InputStream.transferTo() → 8KB 手动循环 |
+| # | 内容 | 状态 |
+|---|------|------|
+| 1 | C1: AtomicInteger → Semaphore | **已更新** |
+| 2 | C2: SpillEntry fileReader 字段 → 纯元数据 3 字段 | **已更新**（design.md, interfaces.md, commit_plan.md） |
+| 3 | C5: InputStream.transferTo() → 8KB 手动循环 | **已更新** |
+| 4 | C2: Store pendingSpillEntries → pendingCount | **已更新**（design.md, interfaces.md, commit_plan.md） |
+| 5 | C2: Checkpoint 磁盘数据职责从 Store 移至 OutputWriter | **已更新**（design.md, interfaces.md, data_flow.md） |
+| 6 | C2: SpillFileWriter 删除 memorySegmentSize 参数, 使用 FileUtils.writeCompletely() | **已更新** |
 
 ---
 

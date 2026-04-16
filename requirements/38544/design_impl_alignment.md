@@ -38,20 +38,20 @@
 
 ## C1: Source Buffer Heap 分配 + buffer 请求接口
 
-| # | 设计文档描述 | 实际代码实现 | 出处 |
-|---|-------------|-------------|------|
-| 1 | per-gate 并发控制使用 **AtomicInteger** 计数器，allocate 时 increment，recycle 时 decrement | 使用 **Semaphore(5)** 控制并发数，acquire on allocate，release on recycle | design.md "Source Buffer 隔离" 节；`RecoveredChannelStateHandler.java` |
-| 2 | Heap Buffer 大小为 **memorySegmentSize**（与 Network Buffer 对齐） | 硬编码为 **MemoryManager.DEFAULT_PAGE_SIZE**（32KB 常量），未从运行时配置获取 | design.md REQ-NHLB；`RecoveredChannelStateHandler.getHeapBuffer()` |
+| # | 设计文档描述 | 实际代码实现 | 出处 | 状态 |
+|---|-------------|-------------|------|------|
+| 1 | per-gate 并发控制使用 **AtomicInteger** 计数器 | 使用 **Semaphore(5)**（合理改进，内置阻塞语义） | design.md "Source Buffer 隔离" 节；`RecoveredChannelStateHandler.java` | **已更新设计文档** |
+| 2 | Heap Buffer 大小为 **memorySegmentSize**（与 Network Buffer 对齐） | 使用 `filterContext.getMemorySegmentSize()` 从运行时获取 | design.md REQ-NHLB；`RecoveredChannelStateHandler.getHeapBuffer()` | **已修复**（C1 commit 中已 amend） |
 
 ---
 
 ## C2: SpillFile I/O + RecoveredBufferStore
 
-| # | 设计文档描述 | 实际代码实现 | 出处 |
-|---|-------------|-------------|------|
-| 1 | SpillEntry 结构为 3 字段：`{InputChannelInfo channelInfo, long offset, int length}` | 4 字段：增加了 `SpillFileReader fileReader` | design.md "SpillEntry 结构" 节；`SpillEntry.java` |
-| 2 | closed 状态下 write 抛 **IllegalStateException** | 抛 **IOException** | design.md REQ-JD2C；`SpillFileWriter.write()` |
-| 3 | 写入使用 **FileUtils.writeCompletely()** | 自行实现 `while(bb.hasRemaining()) { channel.write(bb); }` 循环 | spill_io_patterns.md 决策表；`SpillFileWriter.write()` |
+| # | 设计文档描述 | 实际代码实现 | 出处 | 状态 |
+|---|-------------|-------------|------|------|
+| 1 | SpillEntry 结构为 3 字段：`{InputChannelInfo channelInfo, long offset, int length}` | ~~4 字段~~ → 3 字段 | design.md "SpillEntry 结构" 节；`SpillEntry.java` | **已修复** |
+| 2 | closed 状态下 write 抛 **IllegalStateException** | ~~IOException~~ → IllegalStateException | design.md REQ-JD2C；`SpillFileWriter.write()` | **已修复** |
+| 3 | 写入使用 **FileUtils.writeCompletely()** | ~~自行循环~~ → FileUtils.writeCompletely() | spill_io_patterns.md 决策表；`SpillFileWriter.write()` | **已修复** |
 
 ---
 
@@ -90,24 +90,24 @@
 
 ### 接口/结构不一致（设计文档定义的 API 或数据结构与实现不同）
 
-| # | 项目 |
-|---|------|
-| C2-1 | SpillEntry 3 字段 vs 4 字段 |
-| C2-2 | closed write 抛 IllegalStateException vs IOException |
-| C4-1 | onRecoveredStateBuffer() 设计要求删除，实际保留 |
-| C4-2 | checkReadability() hack 设计要求删除，实际保留 |
+| # | 项目 | 状态 |
+|---|------|------|
+| C2-1 | SpillEntry 3 字段 vs 4 字段 | **已修复** |
+| C2-2 | closed write 抛 IllegalStateException vs IOException | **已修复** |
+| C4-1 | onRecoveredStateBuffer() 设计要求删除，实际保留 | 待修复 |
+| C4-2 | checkReadability() hack 设计要求删除，实际保留 | 待修复 |
 
 ### 实现机制不一致（功能等价但技术手段不同）
 
-| # | 项目 |
-|---|------|
-| C1-1 | AtomicInteger vs Semaphore |
-| C2-3 | FileUtils.writeCompletely() vs 自行循环 |
-| C5-1 | InputStream.transferTo() vs 8KB 手动循环 |
+| # | 项目 | 状态 |
+|---|------|------|
+| C1-1 | AtomicInteger vs Semaphore | **已更新设计文档**（采纳 Semaphore） |
+| C2-3 | FileUtils.writeCompletely() vs 自行循环 | **已修复** |
+| C5-1 | InputStream.transferTo() vs 8KB 手动循环 | **已更新设计文档**（采纳 8KB 循环） |
 
 ### 配置来源不一致（应动态获取但硬编码了默认值）
 
-| # | 项目 |
-|---|------|
-| C1-2 | Heap Buffer 大小硬编码 DEFAULT_PAGE_SIZE |
-| C6-1 | memorySegmentSize 硬编码 DEFAULT_PAGE_SIZE |
+| # | 项目 | 状态 |
+|---|------|------|
+| C1-2 | Heap Buffer 大小硬编码 DEFAULT_PAGE_SIZE | 待修复 |
+| C6-1 | memorySegmentSize 硬编码 DEFAULT_PAGE_SIZE | 待修复 |

@@ -38,13 +38,13 @@ Two new components with no dependency on each other, grouped because both are pr
 **New files:**
 
 SpillFile I/O (REQ-BFSD, REQ-SFMG, REQ-SPDR, REQ-T5AJ):
-- `SpillFileWriter.java` — append raw bytes via FileChannel + `FileUtils.writeCompletely()`. No fsync.
+- `SpillFileWriter.java` — append raw bytes via FileChannel + `FileUtils.writeCompletely()`. Constructor takes `String[] spillDirs` only (no memorySegmentSize). Throws IllegalStateException on write after close. No fsync.
 - `SpillFileReader.java` — sequential read via FileChannel positional read. `read(offset, buffer, length)` for drain loading. `openInputStream(offset, length)` returns bounded InputStream for checkpoint streaming (via ChannelStateWriter streaming overload, no Network Buffer Pool or heap buffer allocation).
-- `SpillEntry.java` — `{InputChannelInfo channelInfo, long offset, int length}`. 每个 entry 最大 memorySegmentSize，与 Network Buffer 1:1 对应。多次 write() 累积到同一个 entry，满或 channel 变更时密封。
+- `SpillEntry.java` — `{InputChannelInfo channelInfo, long offset, int length}`. Pure metadata, no file reference (file association managed by OutputWriter). 每个 entry 最大 memorySegmentSize，与 Network Buffer 1:1 对应。多次 write() 累积到同一个 entry，满或 channel 变更时密封。
 
 RecoveredBufferStore (REQ-7388):
 - `RecoveredBufferStore.java` — public interface. See `interfaces.md`.
-- `RecoveredBufferStoreImpl.java` — implementation with internal methods (addBuffer, markComplete, setNotificationCallback, addPendingSpillEntry, removePendingSpillEntry).
+- `RecoveredBufferStoreImpl.java` — implementation with internal methods (addBuffer, markComplete, setNotificationCallback (synchronized), incrementPending, decrementPending). Store tracks pending disk entries by count only — SpillEntry objects are owned by OutputWriter. Checkpoint of disk data delegated to OutputWriter (batch all channels, one sequential pass).
 
 ---
 
@@ -70,14 +70,16 @@ OutputWriterImpl(
 
 - `write(data, length, channelInfo)`:
   - Channel change detection → flush active buffer to target store
-  - P3 eager drain: while (spillEntryQueue non-empty AND non-blocking bufferSupplier succeeds) → load from disk → `store.addBuffer()` + `store.removePendingSpillEntry()`
+  - P3 eager drain: while (spillEntryQueue non-empty AND non-blocking bufferSupplier succeeds) → load from disk → `store.addBuffer()` + `store.decrementPending()`
   - writeToBackend: fill active buffer (P1), downgrade to file (P2) when no buffer. `downgradedToFile` flag resets per write() call
   - Full buffer → `store.addBuffer(buffer)`
-  - Spill → `spillFileWriter.write()` + 累积到活跃 SpillEntry，满时密封入队 + `store.addPendingSpillEntry()`
+  - Spill → `spillFileWriter.write()` + 累积到活跃 SpillEntry，满时密封入队 + `store.incrementPending()`
 
 - `flush()`: send active buffer's partial data to target store. Reject further write() calls.
 
 - `close()`: blocking drain loop → `blockingBufferSupplier.get()` → load from disk → dispatch to store. Cleanup spill files. `store.markComplete()` for all stores. Idempotent.
+
+- `checkpointPendingEntries(writer, checkpointId)`: 等所有 channel 触发 checkpoint 后，一次性顺序遍历 spillEntryQueue，对每个 entry 流式写入 checkpoint（顺序 I/O，一次读取覆盖全部 entries）。
 
 ---
 
