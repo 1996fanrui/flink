@@ -37,6 +37,7 @@ import javax.annotation.concurrent.NotThreadSafe;
 
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -178,6 +179,53 @@ class ChannelStateCheckpointWriter {
         } finally {
             buffer.recycleBuffer();
         }
+    }
+
+    /**
+     * Write input channel state from an InputStream directly to the checkpoint DataOutputStream.
+     * Format is compatible with existing read path: [4-byte length prefix][data bytes].
+     *
+     * <p>Uses a small temporary byte array for streaming, no Network Buffer Pool or heap buffer
+     * allocation.
+     */
+    void writeInputStreaming(
+            JobVertexID jobVertexID,
+            int subtaskIndex,
+            InputChannelInfo info,
+            InputStream data,
+            int dataLength) {
+        if (isDone()) {
+            return;
+        }
+        ChannelStatePendingResult pendingResult =
+                getChannelStatePendingResult(jobVertexID, subtaskIndex);
+        runWithChecks(
+                () -> {
+                    checkState(!pendingResult.isAllInputsReceived());
+                    long offset = checkpointStream.getPos();
+                    // Write 4-byte length prefix, identical to serializer.writeData() format
+                    dataStream.writeInt(dataLength);
+                    // Stream data using a small temporary buffer
+                    byte[] buf = new byte[8192];
+                    int remaining = dataLength;
+                    while (remaining > 0) {
+                        int toRead = Math.min(buf.length, remaining);
+                        int read = data.read(buf, 0, toRead);
+                        if (read == -1) {
+                            throw new IOException(
+                                    "Unexpected end of InputStream: expected "
+                                            + remaining
+                                            + " more bytes");
+                        }
+                        dataStream.write(buf, 0, read);
+                        remaining -= read;
+                    }
+                    long size = checkpointStream.getPos() - offset;
+                    pendingResult
+                            .getInputChannelOffsets()
+                            .computeIfAbsent(info, unused -> new StateContentMetaInfo())
+                            .withDataAdded(offset, size);
+                });
     }
 
     private <K> void write(
