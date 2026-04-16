@@ -103,9 +103,9 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     }
 
     /**
-     * Returns the store for recovered buffers. Used for store transfer during channel conversion
-     * and by {@link org.apache.flink.runtime.checkpoint.channel.RecoveredChannelStateHandler} to
-     * add recovered buffers directly.
+     * Returns the store for recovered buffers. Used for store transfer during channel conversion,
+     * by {@link org.apache.flink.runtime.checkpoint.channel.RecoveredChannelStateHandler} to add
+     * recovered buffers directly, and for OutputWriter integration during filtering.
      */
     public RecoveredBufferStoreImpl getStore() {
         return store;

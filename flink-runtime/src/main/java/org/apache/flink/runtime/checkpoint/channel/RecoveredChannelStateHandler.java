@@ -97,6 +97,13 @@ class InputChannelRecoveredStateHandler
     @Nullable private final ChannelStateFilteringHandler filteringHandler;
 
     /**
+     * Optional OutputWriter for delivering filtered data. When non-null (filtering mode), filtered
+     * records are written to OutputWriter instead of directly to InputChannel buffers. OutputWriter
+     * manages buffer allocation, disk spilling, and delivery to per-channel stores.
+     */
+    @Nullable private final OutputWriter outputWriter;
+
+    /**
      * Per-gate semaphores to limit the number of concurrent heap buffer allocations in filtering
      * mode. Each semaphore has {@link #MAX_HEAP_BUFFERS_PER_GATE} permits. Only initialized when
      * filteringHandler is non-null (filtering mode).
@@ -109,11 +116,13 @@ class InputChannelRecoveredStateHandler
             InputGate[] inputGates,
             InflightDataRescalingDescriptor channelMapping,
             @Nullable ChannelStateFilteringHandler filteringHandler,
-            int memorySegmentSize) {
+            int memorySegmentSize,
+            @Nullable OutputWriter outputWriter) {
         this.inputGates = inputGates;
         this.channelMapping = channelMapping;
         this.filteringHandler = filteringHandler;
         this.memorySegmentSize = memorySegmentSize;
+        this.outputWriter = outputWriter;
 
         if (filteringHandler != null) {
             this.heapBufferSemaphores = new Semaphore[inputGates.length];
@@ -204,25 +213,15 @@ class InputChannelRecoveredStateHandler
             Buffer retainedBuffer)
             throws IOException, InterruptedException {
         checkState(filteringHandler != null, "filtering handler not set.");
-        List<Buffer> filteredBuffers =
-                filteringHandler.filterAndRewrite(
-                        channelInfo.getGateIdx(),
-                        oldSubtaskIndex,
-                        channelInfo.getInputChannelIdx(),
-                        retainedBuffer,
-                        channel::requestBufferBlocking);
-
-        int i = 0;
-        try {
-            for (; i < filteredBuffers.size(); i++) {
-                channel.getStore().addBuffer(filteredBuffers.get(i));
-            }
-        } catch (Throwable t) {
-            for (int j = i; j < filteredBuffers.size(); j++) {
-                filteredBuffers.get(j).recycleBuffer();
-            }
-            throw t;
-        }
+        checkState(outputWriter != null, "outputWriter not set.");
+        InputChannelInfo targetChannelInfo = channel.getChannelInfo();
+        filteringHandler.filterAndRewrite(
+                channelInfo.getGateIdx(),
+                oldSubtaskIndex,
+                channelInfo.getInputChannelIdx(),
+                retainedBuffer,
+                outputWriter,
+                targetChannelInfo);
     }
 
     @Override
