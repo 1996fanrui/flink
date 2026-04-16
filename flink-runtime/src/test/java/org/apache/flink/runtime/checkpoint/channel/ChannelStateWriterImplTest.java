@@ -31,7 +31,9 @@ import org.apache.flink.util.function.BiConsumerWithException;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.concurrent.ConcurrentHashMap;
@@ -277,6 +279,39 @@ class ChannelStateWriterImplTest {
         callStart(writer);
         writer.close();
         assertThatThrownBy(() -> callAddInputData(writer))
+                .hasCauseInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void testAddInputDataStreaming() throws Exception {
+        executeCallbackWithSyncWorker(
+                (writer, worker) -> {
+                    callStart(writer);
+                    byte[] data = new byte[] {1, 2, 3, 4, 5};
+                    InputStream inputStream = new ByteArrayInputStream(data);
+                    writer.addInputData(
+                            CHECKPOINT_ID, new InputChannelInfo(1, 1), 1, inputStream, data.length);
+                    worker.processAllRequests();
+                    ChannelStateWriteResult result = writer.getAndRemoveWriteResult(CHECKPOINT_ID);
+                    assertThat(result.isDone()).isFalse();
+                });
+    }
+
+    @Test
+    void testAddInputDataStreamingAfterClose() throws IOException {
+        ChannelStateWriterImpl writer = openWriter();
+        callStart(writer);
+        writer.close();
+        byte[] data = new byte[] {1, 2, 3};
+        InputStream inputStream = new ByteArrayInputStream(data);
+        assertThatThrownBy(
+                        () ->
+                                writer.addInputData(
+                                        CHECKPOINT_ID,
+                                        new InputChannelInfo(1, 1),
+                                        1,
+                                        inputStream,
+                                        data.length))
                 .hasCauseInstanceOf(IllegalStateException.class);
     }
 
