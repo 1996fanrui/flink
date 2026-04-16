@@ -21,6 +21,7 @@ import org.apache.flink.runtime.checkpoint.CheckpointOptions;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.util.CloseableIterator;
 
+import java.io.InputStream;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
@@ -72,6 +73,16 @@ public class MockChannelStateWriter implements ChannelStateWriter {
         } catch (Exception e) {
             rethrow(e);
         }
+    }
+
+    @Override
+    public void addInputData(
+            long checkpointId,
+            InputChannelInfo info,
+            int startSeqNum,
+            InputStream data,
+            int dataLength) {
+        checkCheckpointId(checkpointId);
     }
 
     @Override
