@@ -63,7 +63,7 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
      */
     private final CompletableFuture<Void> bufferFilteringCompleteFuture = new CompletableFuture<>();
 
-    private boolean isReleased;
+    private volatile boolean isReleased;
 
     protected ChannelStateWriter channelStateWriter;
 
