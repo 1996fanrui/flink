@@ -32,7 +32,6 @@ import org.apache.flink.runtime.io.network.partition.ResultSubpartitionIndexSet;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
-import java.util.ArrayDeque;
 
 import static org.apache.flink.runtime.checkpoint.CheckpointOptions.unaligned;
 import static org.apache.flink.runtime.state.CheckpointStorageLocationReference.getDefault;
@@ -268,7 +267,8 @@ class RecoveredInputChannelTest {
                     new SimpleCounter(),
                     10) {
                 @Override
-                protected InputChannel toInputChannelInternal(ArrayDeque<Buffer> remainingBuffers) {
+                protected InputChannel toInputChannelInternal(
+                        RecoveredBufferStoreImpl recoveredStore) {
                     throw new AssertionError("channel conversion succeeded");
                 }
             };
@@ -309,7 +309,7 @@ class RecoveredInputChannelTest {
         }
 
         @Override
-        protected InputChannel toInputChannelInternal(ArrayDeque<Buffer> remainingBuffers) {
+        protected InputChannel toInputChannelInternal(RecoveredBufferStoreImpl recoveredStore) {
             return new TestInputChannel(inputGate, 0);
         }
     }
