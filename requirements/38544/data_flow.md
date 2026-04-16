@@ -126,8 +126,8 @@ Each channel has its own RecoveredBufferStore. OutputWriter holds references to 
 
 The store provides:
 - **tryTake()** — non-blocking consume of a ready buffer
-- **checkpoint()** — snapshot ready buffers + remaining disk data for this channel
-- **isEmpty()** / **isComplete()** — state queries
+- **checkpoint()** — snapshot ready buffers for this channel. Disk data checkpoint is handled by OutputWriter (batch all channels, one sequential pass)
+- **isEmpty()** / **isComplete()** — state queries. isEmpty uses a pending count (not SpillEntry list) to track disk data existence
 
 The store is created in RecoveredInputChannel, then transferred to LocalInputChannel/RemoteInputChannel on channel conversion. InputChannel consumes via `store.tryTake()` in `getNextBuffer()`.
 
