@@ -2075,13 +2075,13 @@ class RemoteInputChannelTest {
     }
 
     @Test
-    void testGetNextBufferWithMigratedRecoveredBuffers() throws Exception {
-        // given: RemoteInputChannel with recovered buffers migrated from RecoveredInputChannel
+    void testGetNextBufferWithRecoveredStore() throws Exception {
+        // given: RemoteInputChannel with recovered buffers in a store
         SingleInputGate inputGate = createSingleInputGate(1);
 
-        ArrayDeque<Buffer> recoveredBuffers = new ArrayDeque<>();
-        recoveredBuffers.add(TestBufferFactory.createBuffer(10));
-        recoveredBuffers.add(TestBufferFactory.createBuffer(20));
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        store.addBuffer(TestBufferFactory.createBuffer(10));
+        store.addBuffer(TestBufferFactory.createBuffer(20));
 
         ConnectionID connectionId =
                 new ConnectionID(
@@ -2104,7 +2104,7 @@ class RemoteInputChannelTest {
                         new SimpleCounter(),
                         new SimpleCounter(),
                         ChannelStateWriter.NO_OP,
-                        recoveredBuffers);
+                        store);
 
         inputGate.setInputChannels(channel);
 
