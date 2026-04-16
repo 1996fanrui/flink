@@ -118,20 +118,17 @@ public interface RecoveredBufferStore {
     // ---- Checkpoint ----
 
     /**
-     * Snapshot all remaining data for checkpoint.
+     * Snapshot ready buffers for checkpoint.
      *
-     * <p>Two parts:
-     * 1. Ready buffers: retain each buffer in the queue, pass to
-     *    ChannelStateWriter.addInputData(CloseableIterator&lt;Buffer&gt;).
-     * 2. Disk data: for each pending SpillEntry, open InputStream from
-     *    SpillFileReader, pass to ChannelStateWriter.addInputData streaming
-     *    overload (InputStream + dataLength). Streams from spill file
-     *    directly to checkpoint DataOutputStream, without consuming
-     *    Network Buffer Pool or heap buffer.
+     * <p>Retains each buffer in the queue and passes them to
+     * ChannelStateWriter.addInputData(CloseableIterator&lt;Buffer&gt;).
+     *
+     * <p>Disk data (pending spill entries) is NOT checkpointed here.
+     * OutputWriter handles disk data checkpoint separately — it waits
+     * for all channels to trigger, then does one sequential pass through
+     * the spillEntryQueue (see design.md "Checkpoint 实现").
      *
      * <p>Called by InputChannel.checkpointStarted() on the Task thread.
-     * May run concurrently with the drain loop (which also reads the same
-     * spill file via an independent SpillFileReader instance).
      *
      * @param writer       checkpoint state writer
      * @param checkpointId current checkpoint ID
@@ -158,7 +155,7 @@ These methods are on the RecoveredBufferStore implementation class, not on the p
 
 ```java
 /**
- * Set the notification callback. Called once during initialization.
+ * Set the notification callback (synchronized).
  * The callback is invoked when addBuffer() adds a buffer to a previously
  * empty queue, waking up the InputChannel to consume.
  *
@@ -168,6 +165,9 @@ These methods are on the RecoveredBufferStore implementation class, not on the p
  * <p>The callback must be updated on channel conversion: RecoveredInputChannel
  * sets its own callback initially; on conversion to LocalInputChannel/
  * RemoteInputChannel, the new channel replaces the callback.
+ *
+ * <p>synchronized to ensure visibility when addBuffer() reads the callback
+ * concurrently with channel conversion updating it.
  *
  * @param callback invoked when a buffer is added to an empty queue
  */
@@ -191,21 +191,20 @@ void addBuffer(Buffer buffer);
 void markComplete();
 
 /**
- * Add a pending SpillEntry belonging to this channel.
+ * Increment the pending spill entry count.
  * Called by OutputWriter when spilling data to disk (P2 path).
- * Used by isEmpty() to check pending disk data, and by checkpoint()
- * to read each entry from disk via SpillFileReader.
+ * Used by isEmpty() to determine if disk data exists for this channel.
  *
- * @param entry the spill entry containing file reference, offset, and length
+ * <p>The actual SpillEntry objects are owned by OutputWriter's
+ * spillEntryQueue, not by the store. The store only tracks
+ * the count for isEmpty() checks.
  */
-void addPendingSpillEntry(SpillEntry entry);
+void incrementPending();
 
 /**
- * Remove a pending SpillEntry after it has been loaded into a buffer.
+ * Decrement the pending spill entry count.
  * Called by OutputWriter when a disk entry is replayed
- * (P3 drain or close() drain).
- *
- * @param entry the spill entry to remove
+ * (P3 drain or close() drain) into a buffer.
  */
-void removePendingSpillEntry(SpillEntry entry);
+void decrementPending();
 ```

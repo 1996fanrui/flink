@@ -88,7 +88,7 @@ RecoveredBufferStore 被两个线程并发访问，需要线程安全保证。Sp
 
 ### RecoveredBufferStore（per-channel，REQ-7388）
 
-**职责**：每个 channel 一个实例。持有就绪 buffer 队列，隐藏所有磁盘细节。被 RecoveredInputChannel（recovery 阶段）和 Local/RemoteInputChannel（conversion 后）共同使用。
+**职责**：每个 channel 一个实例。持有就绪 buffer 队列和 pending 磁盘数据计数。被 RecoveredInputChannel（recovery 阶段）和 Local/RemoteInputChannel（conversion 后）共同使用。Store 不持有 SpillEntry 对象，不直接访问磁盘——磁盘数据的全部生命周期（写入、读取、checkpoint）由 OutputWriter 统一管理。
 
 **包**：`org.apache.flink.runtime.io.network.partition.consumer`
 
@@ -96,31 +96,41 @@ RecoveredBufferStore 被两个线程并发访问，需要线程安全保证。Sp
 
 - `tryTake()` — 非阻塞获取下一个就绪 buffer，无就绪 buffer 时返回 null
 - `peekNextDataType()` — 查看下一个 buffer 的 DataType，不消费
-- `isEmpty()` — 无就绪 buffer 且无 pending 磁盘数据
+- `isEmpty()` — 无就绪 buffer 且 pending 计数为 0
 - `isComplete()` — 所有数据已消费且 drain 已完成（OutputWriter 调用了 markComplete）
 - `size()` — 就绪 buffer 数量
-- `checkpoint(ChannelStateWriter, checkpointId, channelInfo)` — snapshot 就绪 buffer + 磁盘数据（REQ-KM7C）
+- `checkpoint(ChannelStateWriter, checkpointId, channelInfo)` — snapshot 就绪 buffer（REQ-KM7C）。磁盘数据的 checkpoint 由 OutputWriter 统一处理（见下方 Checkpoint 实现）
 - `releaseAll()` — 回收所有就绪 buffer，清理资源
 
 **内部方法**（供 OutputWriter 调用，Recovery 线程）：
 
 - `addBuffer(Buffer)` — 添加就绪 buffer。如果队列从空变非空，触发通知回调唤醒 InputChannel
 - `markComplete()` — 标记 store 完成。close() drain 结束后调用
-- `setNotificationCallback(Runnable)` — 设置通知回调。channel conversion 时需要更新回调指向新的 InputChannel
-- `addPendingSpillEntry(SpillEntry)` — OutputWriter spill 数据时调用（P2 路径），store 持有 entry 引用供 checkpoint 和 isEmpty 使用
-- `removePendingSpillEntry(SpillEntry)` — OutputWriter 重放磁盘数据时调用（P3/drain 路径）
+- `setNotificationCallback(Runnable)` — 设置通知回调（synchronized，保证 channel conversion 时与 addBuffer 的可见性）。channel conversion 时需要更新回调指向新的 InputChannel
+- `incrementPending()` — OutputWriter spill 数据时调用（P2 路径），递增 pending 计数
+- `decrementPending()` — OutputWriter 重放磁盘数据时调用（P3/drain 路径），递减 pending 计数
+
+**为什么 Store 不持有 SpillEntry**：OutputWriter 的 spillEntryQueue 是全局 FIFO（per-task），其中不同 channel 的 entries 是交错的（因为 `extractOffsetsSorted` 按文件 offset 排序，不按 channel 分组）。如果 Store 持有 SpillEntry 对象，会产生两个问题：(1) 双重记账——同一个 SpillEntry 同时在 OutputWriter 队列和 Store 列表中维护，add/remove 需要同步；(2) Store 持有 SpillEntry 意味着 Store 需要 file reader 才能读取数据，但 reader 由 OutputWriter 管理。用 pending 计数替代 SpillEntry 列表，Store 只需知道"是否还有磁盘数据"，不需要知道"磁盘数据在哪里"。
 
 **队列隐式容量限制**：Store 的就绪 buffer 队列无需显式容量上限。drain loop 通过 requestBufferBlocking() 从 Network Buffer Pool 获取 buffer，pool 大小有限。当所有 pool buffer 都在各 Store 的队列中时，requestBufferBlocking() 自然阻塞，直到 Task 线程消费并回收 buffer。这构成天然背压机制，确保队列总大小不超过 pool 容量。
 
 **Checkpoint 实现（REQ-KM7C）**：
 
-checkpoint() 方法 snapshot 两部分数据：
-1. 就绪 buffer：retain 队列中每个 buffer，传给 `ChannelStateWriter.addInputData(CloseableIterator<Buffer>)`（现有 API）
-2. 磁盘数据：遍历 pending SpillEntry 列表，对每个 entry 通过 `SpillFileReader.openInputStream(offset, length)` 获取定长 InputStream（entry.length ≤ memorySegmentSize，天然对齐 buffer 大小），传给 `ChannelStateWriter.addInputData(checkpointId, info, seqNum, InputStream, dataLength)`（新增流式重载）。每个 SpillEntry 对应一个 checkpoint 条目，无需分块。从 spill 文件直接流式写入 checkpoint DataOutputStream，不消耗 Network Buffer Pool 或 heap buffer
+Checkpoint 分两阶段完成，就绪 buffer 和磁盘数据分别由不同组件负责：
 
-Store 持有属于本 channel 的 pending SpillEntry 列表（由 OutputWriter 在活跃 SpillEntry 密封时通过 `addPendingSpillEntry()` 添加，drain 重放时通过 `removePendingSpillEntry()` 移除）。checkpoint 遍历此列表读取数据，但不消费 entry（entry 仍留给 drain 重放）。
+**阶段 1：就绪 buffer（Store 负责，per-channel 触发）**
 
-checkpoint 运行在 Task 线程，drain 运行在 Recovery 线程，两者通过独立 SpillFileReader 实例并发读取同一文件（FileChannel 支持 positional read）。
+每个 channel 触发 `checkpointStarted()` 时调用 `store.checkpoint()`：retain 队列中每个 buffer，传给 `ChannelStateWriter.addInputData(CloseableIterator<Buffer>)`（现有 API）。
+
+**阶段 2：磁盘数据（OutputWriter 负责，等所有 channel 触发后统一执行）**
+
+OutputWriter 等待所有 channel 都触发 checkpoint 后，**一次性顺序遍历** spillEntryQueue，对每个 entry 通过 file reader 的 `openInputStream(offset, length)` 获取 InputStream，传给 `ChannelStateWriter.addInputData(checkpointId, entry.getChannelInfo(), seqNum, InputStream, dataLength)`（流式重载）。
+
+**为什么等所有 channel 触发后批量执行**：
+
+1. **顺序 I/O**：spillEntryQueue 中 entries 按文件 offset 顺序排列，一次遍历 = 顺序读磁盘。如果按 channel 逐个触发，每次需要扫描队列过滤特定 channel 的 entries，导致同一文件的随机读
+2. **数据一致性**：每个 channel 内的 FIFO 顺序是 `[ready buffers] → [spill entries]`。阶段 1 先 snapshot 就绪 buffer（per-channel 触发时立即执行），阶段 2 后 snapshot 磁盘数据（全部触发后执行）。先 buffer 后 disk，天然保证顺序
+3. **一次读取覆盖全部**：一次遍历写出所有 channel 的所有 pending entries，无需 per-channel 扫描或索引。`addInputData` 接口接受 `channelInfo` 参数，interleaved 写入由 ChannelStateWriter 内部按 channel 聚合
 
 ### Checkpoint 流式写入扩展
 
@@ -135,7 +145,7 @@ checkpoint 运行在 Task 线程，drain 运行在 Recovery 线程，两者通�
 
 **写入格式兼容**：流式路径写入的格式与现有 Buffer 路径完全一致：`[4字节长度前缀][数据字节]`。Recovery 读取路径无需任何修改。
 
-**I/O 传输**：writeInputStreaming() 通过 `InputStream.transferTo(DataOutputStream)` 流式拷贝，不分配任何 Buffer 对象（Network Buffer Pool 或 heap buffer）。
+**I/O 传输**：writeInputStreaming() 通过 8KB byte[] 手动循环从 InputStream 读取并写入 DataOutputStream（`transferTo` 无法精确控制写入长度），不分配 Network Buffer Pool 或 heap buffer。
 
 ### SpillFile I/O
 
@@ -146,10 +156,12 @@ checkpoint 运行在 Task 线程，drain 运行在 Recovery 线程，两者通�
 **职责**：追加原始字节到 spill 文件。管理文件轮转。
 
 - 使用 FileChannel（与 Flink 现有 spill 代码一致，参见业界调研 spill_io_patterns.md）
-- 追加写入：`write(byte[] data, int offset, int length)` → 返回文件内 offset
+- 追加写入：`write(byte[] data, int offset, int length)` → 返回文件内 offset。使用 `FileUtils.writeCompletely()` 保证完整写入
+- 构造参数仅 `String[] spillDirs`（无 memorySegmentSize，该参数不在 writer 内部使用）
 - 文件轮转：当文件超过 64MB 时创建新文件（REQ-SFMG，参见业界调研 spill_file_rotation_cleanup.md）
 - 多目录 round-robin 轮转（参见业界调研 spill_file_rotation_cleanup.md）
 - 不调用 fsync（临时数据，参见业界调研 spill_io_patterns.md）
+- close 后 write 抛 IllegalStateException（REQ-JD2C）
 - close() 使用 try-finally 保证文件句柄释放（REQ-JD2C）
 
 #### SpillFileReader
@@ -179,9 +191,7 @@ checkpoint 运行在 Task 线程，drain 运行在 Recovery 线程，两者通�
 
 OutputWriter 内部追踪当前累积状态（起始 offset、已累积长度、当前 channelInfo），仅在密封时创建不可变的 SpillEntry 对象并加入 FIFO 队列。
 
-**与文件的关系**：Entry 通过 offset 定位数据在 spill 文件中的位置。文件轮转时，Entry 需要能定位到正确的文件。
-
-**文件轮转后定位**：OutputWriter 内部维护文件序号映射。SpillEntry 在实现层面需要能定位到正确的物理文件（通过文件序号或文件引用）。全局 FIFO 队列保证重放顺序，文件按创建顺序依次读取和删除。
+**SpillEntry 不持有文件引用**：SpillEntry 是纯元数据，不持有 SpillFileReader、文件路径或任何 I/O 资源引用。文件定位由 OutputWriter 负责：OutputWriter 内部维护 `allSpillFileReaders` 列表和 `lastKnownFileCount` 计数器，文件轮转时检测到新文件创建则生成新 reader（同一文件共享同一 reader 实例，避免重复打开 FileChannel）。密封 SpillEntry 时，OutputWriter 记录当前 reader 的关联（entries 在 FIFO 队列中按文件顺序排列，drain 时按队列顺序遍历，天然切换 reader）。全局 FIFO 队列保证重放顺序，文件按创建顺序依次读取和删除。
 
 ### Spill 文件管理（REQ-SFMG, REQ-CRSR）
 
@@ -308,7 +318,7 @@ pre-filter source buffer 使用 Heap 内存，与 Network Buffer Pool 完全隔�
 
 - 每个 gate 最多 5 个 Heap Buffer（约 160KB）
 - Gate 按 virtual channel 顺序处理（一次处理一个 channel）
-- 计数器：AtomicInteger per-gate，allocate 时 increment，source buffer 回收时 decrement
+- 计数器：Semaphore(5) per-gate，allocate 时 acquire，source buffer 回收时 release（内置阻塞语义，当 5 个 buffer 全部在使用时自动等待释放）
 - Non-filtering 模式不分配 Heap Buffer（REQ-NPBY）
 
 ## Buffer 请求接口（REQ-GGPR）
@@ -351,7 +361,7 @@ OutputWriter 通过构造器接收这两个方法的函数式接口引用，解�
 | Spill 文件格式 | 纯字节流，无 header/metadata | 与 Spark ExternalSorter、Flink PartitionedFile 一致，参见 `industry_research/spill_metadata_management.md` Topic 2 |
 | 元数据管理 | 纯内存 Queue\<SpillEntry\> | 生命周期短、崩溃后不需恢复，参见 `industry_research/spill_metadata_management.md` Topic 1 |
 | fsync | 不调用 | 临时数据，Flink/Spark 均不 fsync，参见 `industry_research/spill_io_patterns.md` Topic 3 |
-| Partial write | while(hasRemaining) 循环 | Java NIO 标准模式，复用 FileUtils.writeCompletely()，参见 `industry_research/spill_io_patterns.md` Topic 4 |
+| Partial write | FileUtils.writeCompletely() | Java NIO 标准模式，复用 Flink 已有工具方法，参见 `industry_research/spill_io_patterns.md` Topic 4 |
 | 文件轮转阈值 | 64MB | 与 Flink file-merging (32MB)、RocksDB (64MB) 同一量级，参见 `industry_research/spill_file_rotation_cleanup.md` |
 | 目录轮转 | Round-robin | 与 Flink FileChannelManagerImpl 一致，参见 `industry_research/spill_file_rotation_cleanup.md` |
 | 文件清理 | 三层防线 | 覆盖正常/异常/kill-9，参见 `industry_research/spill_file_rotation_cleanup.md` |
