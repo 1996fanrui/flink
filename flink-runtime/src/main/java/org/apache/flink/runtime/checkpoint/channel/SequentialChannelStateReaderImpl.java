@@ -29,7 +29,6 @@ import org.apache.flink.runtime.io.network.partition.consumer.InputChannel;
 import org.apache.flink.runtime.io.network.partition.consumer.InputGate;
 import org.apache.flink.runtime.io.network.partition.consumer.RecoveredBufferStoreImpl;
 import org.apache.flink.runtime.io.network.partition.consumer.RecoveredInputChannel;
-import org.apache.flink.runtime.memory.MemoryManager;
 import org.apache.flink.runtime.state.AbstractChannelStateHandle;
 import org.apache.flink.runtime.state.ChannelStateHelper;
 import org.apache.flink.runtime.state.StreamStateHandle;
@@ -206,7 +205,7 @@ public class SequentialChannelStateReaderImpl implements SequentialChannelStateR
         // Find any RecoveredInputChannel for buffer suppliers
         RecoveredInputChannel anyChannel = findAnyRecoveredInputChannel(inputGates);
         String[] spillDirs = filterContext.getTmpDirectories();
-        int memorySegmentSize = MemoryManager.DEFAULT_PAGE_SIZE;
+        int memorySegmentSize = filterContext.getMemorySegmentSize();
 
         // Wrap requestBuffer in a Supplier that converts IOException to RuntimeException.
         // The IOException can only occur during the first call (exclusive buffer assignment);
