@@ -408,9 +408,9 @@ public class SingleInputGate extends IndexedInputGate {
                 }
                 try {
                     // Phase 1: Convert channel and release resources outside the lock.
-                    // These calls may acquire the receivedBuffers lock internally, so they
+                    // These calls may acquire the store lock internally, so they
                     // run outside inputChannelsWithData lock to maintain a consistent lock
-                    // order with onRecoveredStateBuffer() which acquires receivedBuffers
+                    // order with onRecoveredStateBuffer() which acquires the store lock
                     // first and then inputChannelsWithData.
                     InputChannel realInputChannel =
                             ((RecoveredInputChannel) inputChannel).toInputChannel();
