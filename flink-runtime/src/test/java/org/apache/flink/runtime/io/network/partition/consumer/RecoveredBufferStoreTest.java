@@ -24,6 +24,9 @@ import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.FreeingBufferRecycler;
 import org.apache.flink.runtime.io.network.buffer.NetworkBuffer;
 
+import org.apache.flink.shaded.guava33.com.google.common.collect.LinkedListMultimap;
+import org.apache.flink.shaded.guava33.com.google.common.collect.ListMultimap;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CountDownLatch;
@@ -281,5 +284,42 @@ class RecoveredBufferStoreTest {
         NetworkBuffer buffer = new NetworkBuffer(segment, FreeingBufferRecycler.INSTANCE);
         buffer.setSize(data.length);
         return buffer;
+    }
+
+    /**
+     * A ChannelStateWriter that extends RecordingChannelStateWriter and additionally captures
+     * streaming (InputStream) data passed via the streaming overload of addInputData.
+     */
+    private static class StreamRecordingChannelStateWriter extends RecordingChannelStateWriter {
+
+        private final ListMultimap<InputChannelInfo, byte[]> streamedInputData =
+                LinkedListMultimap.create();
+
+        @Override
+        public void addInputData(
+                long checkpointId,
+                InputChannelInfo info,
+                int startSeqNum,
+                java.io.InputStream data,
+                int dataLength) {
+            try {
+                byte[] bytes = new byte[dataLength];
+                int offset = 0;
+                while (offset < dataLength) {
+                    int read = data.read(bytes, offset, dataLength - offset);
+                    if (read < 0) {
+                        break;
+                    }
+                    offset += read;
+                }
+                streamedInputData.put(info, bytes);
+            } catch (java.io.IOException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        ListMultimap<InputChannelInfo, byte[]> getStreamedInputData() {
+            return streamedInputData;
+        }
     }
 }

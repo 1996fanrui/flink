@@ -104,9 +104,10 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     }
 
     /**
-     * Returns the store for recovered buffers. Used for store transfer during channel conversion.
+     * Returns the store for recovered buffers. Used for store transfer during channel conversion
+     * and for OutputWriter integration during filtering.
      */
-    RecoveredBufferStoreImpl getStore() {
+    public RecoveredBufferStoreImpl getStore() {
         return store;
     }
 
