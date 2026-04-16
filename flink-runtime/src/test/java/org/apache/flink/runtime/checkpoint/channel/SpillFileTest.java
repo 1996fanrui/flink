@@ -48,7 +48,7 @@ class SpillFileTest {
         byte[] data = new byte[1024];
         random.nextBytes(data);
 
-        try (SpillFileWriter writer = new SpillFileWriter(spillDirs, MEMORY_SEGMENT_SIZE)) {
+        try (SpillFileWriter writer = new SpillFileWriter(spillDirs)) {
             long offset = writer.write(data, 0, data.length);
             assertThat(offset).isEqualTo(0L);
 
@@ -67,7 +67,7 @@ class SpillFileTest {
         byte[] data1 = new byte[] {1, 2, 3, 4};
         byte[] data2 = new byte[] {5, 6, 7, 8};
 
-        try (SpillFileWriter writer = new SpillFileWriter(spillDirs, MEMORY_SEGMENT_SIZE)) {
+        try (SpillFileWriter writer = new SpillFileWriter(spillDirs)) {
             long offset1 = writer.write(data1, 0, data1.length);
             long offset2 = writer.write(data2, 0, data2.length);
 
@@ -106,7 +106,7 @@ class SpillFileTest {
         SpillFileReader[] readers = new SpillFileReader[numChunks];
 
         Random random = new Random(42);
-        try (SpillFileWriter writer = new SpillFileWriter(spillDirs, MEMORY_SEGMENT_SIZE)) {
+        try (SpillFileWriter writer = new SpillFileWriter(spillDirs)) {
             for (int i = 0; i < numChunks; i++) {
                 chunks[i] = new byte[chunkSize];
                 random.nextBytes(chunks[i]);
@@ -140,7 +140,7 @@ class SpillFileTest {
     @Test
     void testCloseReleasesFileHandle() throws Exception {
         String[] spillDirs = {temporaryFolder.toString()};
-        SpillFileWriter writer = new SpillFileWriter(spillDirs, MEMORY_SEGMENT_SIZE);
+        SpillFileWriter writer = new SpillFileWriter(spillDirs);
 
         // Write some data to open a file
         byte[] data = new byte[] {1, 2, 3};
@@ -152,7 +152,7 @@ class SpillFileTest {
         // After close, writing should throw or the channel should be closed.
         // Verify by attempting to write again.
         assertThatThrownBy(() -> writer.write(data, 0, data.length))
-                .isInstanceOf(IOException.class);
+                .isInstanceOf(IllegalStateException.class);
     }
 
     /** AT-HW4P: Truncate file, read throws IOException on partial read. */
@@ -164,7 +164,7 @@ class SpillFileTest {
         long offset;
         Path filePath;
 
-        try (SpillFileWriter writer = new SpillFileWriter(spillDirs, MEMORY_SEGMENT_SIZE)) {
+        try (SpillFileWriter writer = new SpillFileWriter(spillDirs)) {
             offset = writer.write(data, 0, data.length);
             filePath = writer.getAllFiles().get(0);
         }
@@ -191,7 +191,7 @@ class SpillFileTest {
             data[i] = (byte) i;
         }
 
-        try (SpillFileWriter writer = new SpillFileWriter(spillDirs, MEMORY_SEGMENT_SIZE)) {
+        try (SpillFileWriter writer = new SpillFileWriter(spillDirs)) {
             long offset = writer.write(data, 0, data.length);
 
             try (SpillFileReader reader = writer.getCurrentFileReader()) {
@@ -225,7 +225,7 @@ class SpillFileTest {
         String[] spillDirs = {temporaryFolder.toString()};
         byte[] data = new byte[64];
 
-        SpillFileWriter writer = new SpillFileWriter(spillDirs, MEMORY_SEGMENT_SIZE);
+        SpillFileWriter writer = new SpillFileWriter(spillDirs);
         writer.write(data, 0, data.length);
         writer.close();
 
@@ -245,29 +245,21 @@ class SpillFileTest {
     /** Verify constructor throws on empty spillDirs. */
     @Test
     void testEmptySpillDirsThrows() {
-        assertThatThrownBy(() -> new SpillFileWriter(new String[0], MEMORY_SEGMENT_SIZE))
+        assertThatThrownBy(() -> new SpillFileWriter(new String[0]))
                 .isInstanceOf(IOException.class);
     }
 
     /** Verify SpillEntry is immutable and holds correct values. */
     @Test
     void testSpillEntryImmutability() throws Exception {
-        String[] spillDirs = {temporaryFolder.toString()};
         InputChannelInfo channelInfo = new InputChannelInfo(0, 1);
-        byte[] data = new byte[100];
+        long offset = 42L;
+        int length = 100;
 
-        try (SpillFileWriter writer = new SpillFileWriter(spillDirs, MEMORY_SEGMENT_SIZE)) {
-            long offset = writer.write(data, 0, data.length);
-            SpillFileReader reader = writer.getCurrentFileReader();
+        SpillEntry entry = new SpillEntry(channelInfo, offset, length);
 
-            SpillEntry entry = new SpillEntry(channelInfo, reader, offset, data.length);
-
-            assertThat(entry.getChannelInfo()).isSameAs(channelInfo);
-            assertThat(entry.getFileReader()).isSameAs(reader);
-            assertThat(entry.getOffset()).isEqualTo(offset);
-            assertThat(entry.getLength()).isEqualTo(data.length);
-
-            reader.close();
-        }
+        assertThat(entry.getChannelInfo()).isSameAs(channelInfo);
+        assertThat(entry.getOffset()).isEqualTo(offset);
+        assertThat(entry.getLength()).isEqualTo(length);
     }
 }

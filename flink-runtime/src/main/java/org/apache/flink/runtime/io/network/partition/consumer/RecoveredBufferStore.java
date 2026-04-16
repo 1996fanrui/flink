@@ -50,7 +50,7 @@ public interface RecoveredBufferStore {
      */
     Buffer.DataType peekNextDataType();
 
-    /** Returns true if both the ready buffer queue and pending spill entries are empty. */
+    /** Returns true if the ready buffer queue is empty and no pending spill entries exist. */
     boolean isEmpty();
 
     /**

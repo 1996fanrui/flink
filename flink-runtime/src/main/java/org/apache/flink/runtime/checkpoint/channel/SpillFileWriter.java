@@ -18,6 +18,7 @@
 package org.apache.flink.runtime.checkpoint.channel;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.util.FileUtils;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -46,7 +47,6 @@ public class SpillFileWriter implements Closeable {
     private static final int FILE_ROTATION_THRESHOLD = 64 * 1024 * 1024; // 64MB
 
     private final String[] spillDirs;
-    private final int memorySegmentSize;
     private int currentDirIndex;
     private FileChannel currentChannel;
     private Path currentFilePath;
@@ -59,15 +59,13 @@ public class SpillFileWriter implements Closeable {
      *
      * @param spillDirs directories for writing spill files, obtained from
      *     IOManager.getSpillingDirectoriesPaths()
-     * @param memorySegmentSize the memory segment size, used as context for callers
      * @throws IOException if spillDirs is empty
      */
-    public SpillFileWriter(String[] spillDirs, int memorySegmentSize) throws IOException {
+    public SpillFileWriter(String[] spillDirs) throws IOException {
         if (spillDirs.length == 0) {
             throw new IOException("Spill directories must not be empty");
         }
         this.spillDirs = spillDirs;
-        this.memorySegmentSize = memorySegmentSize;
         this.currentDirIndex = 0;
         this.currentFileOffset = 0;
         this.allFiles = new ArrayList<>();
@@ -85,7 +83,7 @@ public class SpillFileWriter implements Closeable {
      */
     public long write(byte[] data, int offset, int length) throws IOException {
         if (closed) {
-            throw new IOException("SpillFileWriter is already closed");
+            throw new IllegalStateException("SpillFileWriter is already closed");
         }
 
         // Lazy file creation or rotation when threshold is exceeded
@@ -97,10 +95,7 @@ public class SpillFileWriter implements Closeable {
 
         long writeOffset = currentFileOffset;
 
-        ByteBuffer bb = ByteBuffer.wrap(data, offset, length);
-        while (bb.hasRemaining()) {
-            currentChannel.write(bb);
-        }
+        FileUtils.writeCompletely(currentChannel, ByteBuffer.wrap(data, offset, length));
 
         currentFileOffset += length;
         return writeOffset;

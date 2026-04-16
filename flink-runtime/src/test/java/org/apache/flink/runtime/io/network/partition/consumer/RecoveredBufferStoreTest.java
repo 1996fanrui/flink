@@ -20,17 +20,12 @@ package org.apache.flink.runtime.io.network.partition.consumer;
 import org.apache.flink.core.memory.MemorySegmentFactory;
 import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.runtime.checkpoint.channel.RecordingChannelStateWriter;
-import org.apache.flink.runtime.checkpoint.channel.SpillEntry;
-import org.apache.flink.runtime.checkpoint.channel.SpillFileReader;
-import org.apache.flink.runtime.checkpoint.channel.SpillFileWriter;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.FreeingBufferRecycler;
 import org.apache.flink.runtime.io.network.buffer.NetworkBuffer;
 
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 
-import java.nio.file.Path;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.atomic.AtomicReference;
@@ -39,10 +34,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for {@link RecoveredBufferStoreImpl}. */
 class RecoveredBufferStoreTest {
-
-    @TempDir private Path temporaryFolder;
-
-    private static final int MEMORY_SEGMENT_SIZE = 128;
 
     /**
      * AT-IAMJ: Create store, addBuffer, tryTake, markComplete, isComplete. Verify the full
@@ -269,29 +260,18 @@ class RecoveredBufferStoreTest {
         store.releaseAll();
     }
 
-    /** Verify pending spill entries tracking. */
+    /** Verify pending spill entry count tracking. */
     @Test
-    void testPendingSpillEntries() throws Exception {
+    void testPendingCount() {
         RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
-        InputChannelInfo channelInfo = new InputChannelInfo(0, 0);
-        String[] spillDirs = {temporaryFolder.toString()};
 
-        try (SpillFileWriter writer = new SpillFileWriter(spillDirs, MEMORY_SEGMENT_SIZE)) {
-            byte[] data = new byte[] {1, 2, 3, 4};
-            long offset = writer.write(data, 0, data.length);
-            SpillFileReader reader = writer.getCurrentFileReader();
+        store.incrementPending();
 
-            SpillEntry entry = new SpillEntry(channelInfo, reader, offset, data.length);
-            store.addPendingSpillEntry(entry);
+        // Store not empty when pending entries exist
+        assertThat(store.isEmpty()).isFalse();
 
-            // Store not empty when pending entries exist
-            assertThat(store.isEmpty()).isFalse();
-
-            store.removePendingSpillEntry(entry);
-            assertThat(store.isEmpty()).isTrue();
-
-            reader.close();
-        }
+        store.decrementPending();
+        assertThat(store.isEmpty()).isTrue();
     }
 
     private static NetworkBuffer createBuffer(byte[] data) {

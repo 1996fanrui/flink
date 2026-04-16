@@ -27,24 +27,17 @@ import org.apache.flink.annotation.Internal;
 public final class SpillEntry {
 
     private final InputChannelInfo channelInfo;
-    private final SpillFileReader fileReader;
     private final long offset;
     private final int length;
 
-    public SpillEntry(
-            InputChannelInfo channelInfo, SpillFileReader fileReader, long offset, int length) {
+    public SpillEntry(InputChannelInfo channelInfo, long offset, int length) {
         this.channelInfo = channelInfo;
-        this.fileReader = fileReader;
         this.offset = offset;
         this.length = length;
     }
 
     public InputChannelInfo getChannelInfo() {
         return channelInfo;
-    }
-
-    public SpillFileReader getFileReader() {
-        return fileReader;
     }
 
     public long getOffset() {

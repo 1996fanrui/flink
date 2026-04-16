@@ -20,7 +20,6 @@ package org.apache.flink.runtime.io.network.partition.consumer;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
 import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
-import org.apache.flink.runtime.checkpoint.channel.SpillEntry;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.util.CloseableIterator;
 
@@ -34,10 +33,10 @@ import java.util.List;
 
 /**
  * Thread-safe implementation of {@link RecoveredBufferStore} that manages per-channel recovered
- * buffers. Buffers can be either ready (in-memory, available for consumption) or pending (on disk
- * as spill entries, awaiting materialization).
+ * buffers. Buffers are either ready (in-memory, available for consumption) or pending (on disk,
+ * tracked by count only — the actual spill entries are owned by OutputWriter).
  *
- * <p>Thread safety: all methods that access {@code readyBuffers} or {@code pendingSpillEntries} are
+ * <p>Thread safety: all methods that access {@code readyBuffers} or {@code pendingCount} are
  * synchronized on {@code this}. The {@code complete} flag is volatile since it is only written
  * once.
  *
@@ -51,7 +50,7 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
     private final ArrayDeque<Buffer> readyBuffers = new ArrayDeque<>();
 
     @GuardedBy("this")
-    private final List<SpillEntry> pendingSpillEntries = new ArrayList<>();
+    private int pendingCount = 0;
 
     private volatile boolean complete = false;
     private volatile boolean released = false;
@@ -73,7 +72,7 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
 
     @Override
     public synchronized boolean isEmpty() {
-        return readyBuffers.isEmpty() && pendingSpillEntries.isEmpty();
+        return readyBuffers.isEmpty() && pendingCount == 0;
     }
 
     @Override
@@ -93,15 +92,14 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
     }
 
     /**
-     * Checkpoints the current store contents. Ready buffers are retained and passed to the writer
-     * via CloseableIterator. Pending spill entries on disk will be checkpointed via the
-     * ChannelStateWriter streaming overload added in a separate commit.
+     * Checkpoints the ready buffers to the given ChannelStateWriter. Ready buffers are retained and
+     * passed to the writer via CloseableIterator. Pending spill entries on disk are checkpointed by
+     * OutputWriter, which owns the spill entries and file readers.
      */
     @Override
     public synchronized void checkpoint(
             ChannelStateWriter writer, long checkpointId, InputChannelInfo channelInfo)
             throws IOException {
-        // Checkpoint ready buffers: retain each and pass to writer
         if (!readyBuffers.isEmpty()) {
             List<Buffer> retained = new ArrayList<>(readyBuffers.size());
             for (Buffer buffer : readyBuffers) {
@@ -113,9 +111,6 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
                     ChannelStateWriter.SEQUENCE_NUMBER_RESTORED,
                     CloseableIterator.fromList(retained, Buffer::recycleBuffer));
         }
-
-        // Pending spill entries are checkpointed via ChannelStateWriter streaming overload,
-        // which is added in a separate commit. Integration wires this in C6.
     }
 
     @Override
@@ -125,7 +120,7 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
             buffer.recycleBuffer();
         }
         readyBuffers.clear();
-        pendingSpillEntries.clear();
+        pendingCount = 0;
     }
 
     // --- Internal methods (Recovery thread, called by OutputWriter) ---
@@ -155,17 +150,20 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
      * Sets the callback invoked when a buffer is added to a previously empty store. Used to notify
      * the InputChannel that data is available.
      */
-    public void setNotificationCallback(Runnable callback) {
+    public synchronized void setNotificationCallback(Runnable callback) {
         this.notificationCallback = callback;
     }
 
-    /** Adds a pending spill entry referencing data on disk. */
-    public synchronized void addPendingSpillEntry(SpillEntry entry) {
-        pendingSpillEntries.add(entry);
+    /** Increments the pending spill entry count. Called when OutputWriter spills data to disk. */
+    public synchronized void incrementPending() {
+        pendingCount++;
     }
 
-    /** Removes a pending spill entry (after its data has been materialized into a buffer). */
-    public synchronized void removePendingSpillEntry(SpillEntry entry) {
-        pendingSpillEntries.remove(entry);
+    /**
+     * Decrements the pending spill entry count. Called when OutputWriter drains a spill entry into
+     * a buffer.
+     */
+    public synchronized void decrementPending() {
+        pendingCount--;
     }
 }
