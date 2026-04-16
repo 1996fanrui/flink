@@ -87,6 +87,7 @@ class InputChannelRecoveredStateHandlerTest extends RecoveredChannelStateHandler
                                             .InflightDataGateOrPartitionRescalingDescriptor
                                             .MappingType.IDENTITY)
                         }),
+                null,
                 null);
     }
 
@@ -114,6 +115,7 @@ class InputChannelRecoveredStateHandlerTest extends RecoveredChannelStateHandler
                                             .InflightDataGateOrPartitionRescalingDescriptor
                                             .MappingType.RESCALING)
                         }),
+                null,
                 null);
     }
 
@@ -375,6 +377,7 @@ class InputChannelRecoveredStateHandlerTest extends RecoveredChannelStateHandler
                                             .InflightDataGateOrPartitionRescalingDescriptor
                                             .MappingType.IDENTITY)
                         }),
-                stubFilteringHandler);
+                stubFilteringHandler,
+                null);
     }
 }

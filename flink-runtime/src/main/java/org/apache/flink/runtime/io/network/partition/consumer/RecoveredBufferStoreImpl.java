@@ -28,6 +28,7 @@ import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
@@ -94,8 +95,8 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
 
     /**
      * Checkpoints the current store contents. Ready buffers are retained and passed to the writer
-     * via CloseableIterator. Pending spill entries on disk will be checkpointed via the
-     * ChannelStateWriter streaming overload added in a separate commit.
+     * via CloseableIterator. Pending spill entries on disk are streamed to the writer via the
+     * ChannelStateWriter streaming overload, avoiding buffer allocation for disk-backed data.
      */
     @Override
     public synchronized void checkpoint(
@@ -114,8 +115,19 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
                     CloseableIterator.fromList(retained, Buffer::recycleBuffer));
         }
 
-        // Pending spill entries are checkpointed via ChannelStateWriter streaming overload,
-        // which is added in a separate commit. Integration wires this in C6.
+        // Checkpoint pending spill entries via streaming overload: data flows directly from the
+        // spill file to checkpoint storage without consuming Network Buffer Pool or heap buffers.
+        for (SpillEntry entry : pendingSpillEntries) {
+            try (InputStream is =
+                    entry.getFileReader().openInputStream(entry.getOffset(), entry.getLength())) {
+                writer.addInputData(
+                        checkpointId,
+                        channelInfo,
+                        ChannelStateWriter.SEQUENCE_NUMBER_RESTORED,
+                        is,
+                        entry.getLength());
+            }
+        }
     }
 
     @Override
