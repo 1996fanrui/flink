@@ -20,13 +20,16 @@ package org.apache.flink.runtime.checkpoint.channel;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.partition.consumer.RecoveredBufferStoreImpl;
+import org.apache.flink.util.Preconditions;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
+import java.util.Set;
 import java.util.function.Supplier;
 
 /**
@@ -49,10 +52,18 @@ public class OutputWriterImpl implements OutputWriter {
 
     /** Blocking supplier that may wait for a buffer to become available. */
     @FunctionalInterface
-    public interface BlockingSupplier<T> {
+    interface BlockingSupplier<T> {
         T get() throws InterruptedException, IOException;
     }
 
+    /**
+     * Per-channel stores used by this OutputWriter. Typed as the concrete {@link
+     * RecoveredBufferStoreImpl} rather than {@link
+     * org.apache.flink.runtime.io.network.partition.consumer.RecoveredBufferStore} because the
+     * writer-side methods (addBuffer, markComplete, incrementPending, decrementPending) are
+     * intentionally not part of the public interface — they are only called by OutputWriter, which
+     * is the sole producer of buffers for the stores.
+     */
     private final Map<InputChannelInfo, RecoveredBufferStoreImpl> storesByChannel;
     private final String[] spillDirs;
     private final int memorySegmentSize;
@@ -76,6 +87,10 @@ public class OutputWriterImpl implements OutputWriter {
     private final List<SpillFileReader> allSpillFileReaders;
     private int lastKnownFileCount;
     private byte[] drainBuffer;
+
+    // Checkpoint wait-set state machine (Task thread via onChannelCheckpointStarted)
+    private long currentCheckpointId = -1L;
+    private Set<InputChannelInfo> waitSet;
 
     // Lifecycle flags
     private boolean flushed;
@@ -112,10 +127,16 @@ public class OutputWriterImpl implements OutputWriter {
         this.lastKnownFileCount = 0;
         this.activeSpillEntryLength = 0;
         this.drainBuffer = null;
+
+        // Register this OutputWriter as the checkpoint callback on every per-channel store.
+        // EMPTY store's setCheckpointCallback is a no-op, so this is safe for all store types.
+        for (RecoveredBufferStoreImpl store : storesByChannel.values()) {
+            store.setCheckpointCallback(this::onChannelCheckpointStarted);
+        }
     }
 
     @Override
-    public void write(byte[] data, int length, InputChannelInfo channelInfo)
+    public synchronized void write(byte[] data, int length, InputChannelInfo channelInfo)
             throws IOException, InterruptedException {
         if (flushed || closed) {
             throw new IllegalStateException("Cannot write after " + (closed ? "close" : "flush"));
@@ -136,7 +157,7 @@ public class OutputWriterImpl implements OutputWriter {
     }
 
     @Override
-    public void flush() throws IOException {
+    public synchronized void flush() throws IOException {
         if (flushed || closed) {
             return;
         }
@@ -150,7 +171,7 @@ public class OutputWriterImpl implements OutputWriter {
     }
 
     @Override
-    public void close() throws IOException, InterruptedException {
+    public synchronized void close() throws IOException, InterruptedException {
         if (closed) {
             return;
         }
@@ -169,7 +190,11 @@ public class OutputWriterImpl implements OutputWriter {
             SpillEntry entry = spillEntryQueue.poll();
             SpillFileReader reader = spillEntryReaderQueue.poll();
             loadEntryIntoBuffer(entry, reader, buffer);
-            RecoveredBufferStoreImpl store = storesByChannel.get(entry.getChannelInfo());
+            RecoveredBufferStoreImpl store =
+                    Preconditions.checkNotNull(
+                            storesByChannel.get(entry.getChannelInfo()),
+                            "No store for channel %s",
+                            entry.getChannelInfo());
             store.addBuffer(buffer);
             store.decrementPending();
         }
@@ -186,6 +211,42 @@ public class OutputWriterImpl implements OutputWriter {
         // Mark all stores as complete
         for (RecoveredBufferStoreImpl store : storesByChannel.values()) {
             store.markComplete();
+        }
+    }
+
+    /**
+     * Called by each per-channel store (via {@link
+     * org.apache.flink.runtime.io.network.partition.consumer.CheckpointCallback}) when that
+     * channel's ready buffers have been snapshotted into the ChannelStateWriter.
+     *
+     * <p>On the first callback for a given checkpointId, the wait-set is built by scanning {@code
+     * spillEntryQueue} for channels with pending spill entries. Subsequent callbacks for the same
+     * checkpoint remove their channel from the wait-set. When the wait-set becomes empty, all
+     * channels with disk data have reported in and phase2 snapshot can proceed.
+     *
+     * <p>Phase2 disk snapshot (calling {@code drainSpillEntriesToCheckpoint}) is deferred to commit
+     * 5's fix because it requires the {@code ChannelStateWriter.addInputData(InputStream)}
+     * streaming overload introduced by commit 5.
+     *
+     * <p>Called from the Task thread; synchronized on {@code this} to be mutually exclusive with
+     * the Recovery thread's {@link #write} / {@link #flush} / {@link #close}.
+     */
+    public synchronized void onChannelCheckpointStarted(
+            long checkpointId, InputChannelInfo channelInfo) {
+        if (checkpointId != currentCheckpointId) {
+            // New checkpoint: rebuild the wait-set by scanning the current spillEntryQueue.
+            // Only channels that have at least one pending spill entry need to be waited for.
+            currentCheckpointId = checkpointId;
+            waitSet = new HashSet<>();
+            for (SpillEntry entry : spillEntryQueue) {
+                waitSet.add(entry.getChannelInfo());
+            }
+        }
+        waitSet.remove(channelInfo);
+        if (waitSet.isEmpty()) {
+            // TODO: trigger drainSpillEntriesToCheckpoint(checkpointId) to write unreplayed
+            //  spill entries to ChannelStateWriter via streaming API. Deferred to the fix
+            //  for commit 5, which introduces ChannelStateWriter.addInputData(InputStream).
         }
     }
 
@@ -212,7 +273,11 @@ public class OutputWriterImpl implements OutputWriter {
                 // Buffer full — deliver to store
                 if (activeBufferPosition >= memorySegmentSize) {
                     activeBuffer.setSize(memorySegmentSize);
-                    storesByChannel.get(channelInfo).addBuffer(activeBuffer);
+                    Preconditions.checkNotNull(
+                                    storesByChannel.get(channelInfo),
+                                    "No store for channel %s",
+                                    channelInfo)
+                            .addBuffer(activeBuffer);
                     activeBuffer = null;
                     activeBufferPosition = 0;
                 }
@@ -267,7 +332,11 @@ public class OutputWriterImpl implements OutputWriter {
             SpillEntry entry = spillEntryQueue.poll();
             SpillFileReader reader = spillEntryReaderQueue.poll();
             loadEntryIntoBuffer(entry, reader, buffer);
-            RecoveredBufferStoreImpl store = storesByChannel.get(entry.getChannelInfo());
+            RecoveredBufferStoreImpl store =
+                    Preconditions.checkNotNull(
+                            storesByChannel.get(entry.getChannelInfo()),
+                            "No store for channel %s",
+                            entry.getChannelInfo());
             store.addBuffer(buffer);
             store.decrementPending();
         }
@@ -288,7 +357,11 @@ public class OutputWriterImpl implements OutputWriter {
     private void flushActiveBuffer() {
         if (activeBuffer != null && activeBufferPosition > 0) {
             activeBuffer.setSize(activeBufferPosition);
-            storesByChannel.get(activeChannelInfo).addBuffer(activeBuffer);
+            Preconditions.checkNotNull(
+                            storesByChannel.get(activeChannelInfo),
+                            "No store for channel %s",
+                            activeChannelInfo)
+                    .addBuffer(activeBuffer);
         } else if (activeBuffer != null) {
             // Buffer allocated but nothing written — recycle it
             activeBuffer.recycleBuffer();
@@ -307,7 +380,11 @@ public class OutputWriterImpl implements OutputWriter {
                             activeSpillEntryLength);
             spillEntryQueue.add(entry);
             spillEntryReaderQueue.add(getCurrentSpillFileReader());
-            storesByChannel.get(activeSpillChannelInfo).incrementPending();
+            Preconditions.checkNotNull(
+                            storesByChannel.get(activeSpillChannelInfo),
+                            "No store for channel %s",
+                            activeSpillChannelInfo)
+                    .incrementPending();
             activeSpillEntryLength = 0;
             activeSpillChannelInfo = null;
         }
