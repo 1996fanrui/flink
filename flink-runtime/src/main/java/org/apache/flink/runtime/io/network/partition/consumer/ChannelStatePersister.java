@@ -39,6 +39,7 @@ import java.util.List;
 import java.util.OptionalLong;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
+import static org.apache.flink.util.Preconditions.checkState;
 
 /** Helper class for persisting channel state via {@link ChannelStateWriter}. */
 @NotThreadSafe
@@ -58,8 +59,8 @@ public final class ChannelStatePersister {
     private long lastSeenBarrier = -1L;
 
     /**
-     * Writer must be initialized before usage. {@link #startPersisting(long, List)} enforces this
-     * invariant.
+     * Writer must be initialized before usage. {@link #startPersisting(long, RecoveredBufferStore,
+     * List)} enforces this invariant.
      */
     private final ChannelStateWriter channelStateWriter;
 
@@ -68,7 +69,30 @@ public final class ChannelStatePersister {
         this.channelInfo = checkNotNull(channelInfo);
     }
 
-    protected void startPersisting(long barrierId, List<Buffer> knownBuffers)
+    /**
+     * Starts persisting channel state for the given checkpoint barrier.
+     *
+     * <p>Performs the following steps in order:
+     *
+     * <ol>
+     *   <li>Validates that this checkpoint has not been superseded (throws {@link
+     *       CheckpointException} if a newer barrier was already received).
+     *   <li>Asserts the credit=0 invariant: {@code store.isEmpty() XOR knownBuffers.isEmpty()}. If
+     *       both are non-empty the upstream credit gating in {@link RemoteInputChannel} has failed.
+     *   <li>Delegates ready-buffer snapshot and OutputWriter callback to {@link
+     *       RecoveredBufferStore#checkpoint}.
+     *   <li>Writes network inflight buffers (Remote only) via {@link
+     *       ChannelStateWriter#addInputData}.
+     * </ol>
+     *
+     * @param barrierId the barrier/checkpoint ID
+     * @param store the per-channel recovered buffer store (use {@link RecoveredBufferStore#EMPTY}
+     *     when no recovery data is present)
+     * @param knownBuffers network inflight buffers to persist (empty for LocalInputChannel)
+     * @throws CheckpointException if checkpointing fails or the checkpoint has been superseded
+     */
+    protected void startPersisting(
+            long barrierId, RecoveredBufferStore store, List<Buffer> knownBuffers)
             throws CheckpointException {
         logEvent("startPersisting", barrierId);
         if (checkpointStatus == CheckpointStatus.BARRIER_RECEIVED && lastSeenBarrier > barrierId) {
@@ -90,7 +114,32 @@ public final class ChannelStatePersister {
             checkpointStatus = CheckpointStatus.BARRIER_PENDING;
             lastSeenBarrier = barrierId;
         }
-        if (knownBuffers.size() > 0) {
+
+        // Defensive invariant check: store non-empty and knownBuffers non-empty must not coexist.
+        // The credit=0 gating in RemoteInputChannel ensures that when recovered data is still
+        // present (store non-empty), no new network data enters receivedBuffers. Violations here
+        // indicate a credit gating bug and must fail-fast rather than silently produce corrupt
+        // channel state.
+        checkState(
+                store.isEmpty() || knownBuffers.isEmpty(),
+                "Invariant violated: store has data (size=%s) AND knownBuffers non-empty (size=%s) at barrier %s. "
+                        + "This means credit=0 gating in RemoteInputChannel failed.",
+                store.size(),
+                knownBuffers.size(),
+                barrierId);
+
+        // Step 1: snapshot ready buffers and fire OutputWriter callback via store.checkpoint().
+        try {
+            store.checkpoint(channelStateWriter, barrierId, channelInfo);
+        } catch (IOException e) {
+            throw new CheckpointException(
+                    "Failed to checkpoint recovered store",
+                    CheckpointFailureReason.IO_EXCEPTION,
+                    e);
+        }
+
+        // Step 2: persist network inflight buffers (Remote only; Local always passes emptyList).
+        if (!knownBuffers.isEmpty()) {
             channelStateWriter.addInputData(
                     barrierId,
                     channelInfo,

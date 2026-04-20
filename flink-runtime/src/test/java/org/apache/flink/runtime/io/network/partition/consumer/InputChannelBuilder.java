@@ -165,7 +165,7 @@ public class InputChannelBuilder {
                 metrics.getNumBytesInLocalCounter(),
                 metrics.getNumBuffersInLocalCounter(),
                 stateWriter,
-                null);
+                RecoveredBufferStore.EMPTY);
     }
 
     public RemoteInputChannel buildRemoteChannel(SingleInputGate inputGate) {
@@ -183,7 +183,7 @@ public class InputChannelBuilder {
                 metrics.getNumBytesInRemoteCounter(),
                 metrics.getNumBuffersInRemoteCounter(),
                 stateWriter,
-                null);
+                RecoveredBufferStore.EMPTY);
     }
 
     public LocalRecoveredInputChannel buildLocalRecoveredChannel(SingleInputGate inputGate) {

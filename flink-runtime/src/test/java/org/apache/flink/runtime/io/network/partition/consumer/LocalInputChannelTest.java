@@ -986,6 +986,74 @@ class LocalInputChannelTest {
         assertThat(next.get().buffer().getSize()).isEqualTo(10);
     }
 
+    @Test
+    void testEmptyRecoveredStoreHasNoBuffers() throws Exception {
+        // Callers with no recovered data pass RecoveredBufferStore.EMPTY explicitly.
+        // EMPTY.isEmpty() == true so getBuffersInUseCount() should count 0 from the store.
+        // EMPTY.releaseAll() is a no-op, so releaseAllResources() must not throw.
+        SingleInputGate inputGate = new SingleInputGateBuilder().build();
+        LocalInputChannel channel =
+                new LocalInputChannel(
+                        inputGate,
+                        0,
+                        new ResultPartitionID(),
+                        new ResultSubpartitionIndexSet(0),
+                        new ResultPartitionManager(),
+                        new TaskEventDispatcher(),
+                        0,
+                        0,
+                        new SimpleCounter(),
+                        new SimpleCounter(),
+                        ChannelStateWriter.NO_OP,
+                        RecoveredBufferStore.EMPTY);
+
+        inputGate.setInputChannels(channel);
+
+        // The EMPTY store contributes 0 to the queued buffer count.
+        assertThat(channel.getBuffersInUseCount()).isEqualTo(0);
+        // releaseAllResources() must not throw (EMPTY.releaseAll() is a no-op).
+        channel.releaseAllResources();
+    }
+
+    @Test
+    void testCheckpointStartedPassesEmptyKnownBuffers() throws Exception {
+        // LocalInputChannel has no network inflight buffers; it always passes emptyList to
+        // startPersisting so that toBeConsumedBuffers are NOT snapshotted (they are ordinary
+        // FullyFilledBuffer splits, not channel state).
+        SingleInputGate inputGate = new SingleInputGateBuilder().build();
+        RecordingChannelStateWriter stateWriter = new RecordingChannelStateWriter();
+
+        LocalInputChannel channel =
+                new LocalInputChannel(
+                        inputGate,
+                        0,
+                        new ResultPartitionID(),
+                        new ResultSubpartitionIndexSet(0),
+                        new ResultPartitionManager(),
+                        new TaskEventDispatcher(),
+                        0,
+                        0,
+                        new SimpleCounter(),
+                        new SimpleCounter(),
+                        stateWriter,
+                        RecoveredBufferStore.EMPTY);
+
+        inputGate.setInputChannels(channel);
+
+        CheckpointOptions options =
+                CheckpointOptions.unaligned(CheckpointType.CHECKPOINT, getDefault());
+        stateWriter.start(1L, options);
+        CheckpointBarrier barrier = new CheckpointBarrier(1L, 0L, options);
+
+        // checkpointStarted must not throw and should produce no persisted inflight data
+        // (knownBuffers is always emptyList for Local).
+        channel.checkpointStarted(barrier);
+
+        List<Buffer> persisted = stateWriter.getAddedInput().get(channel.getChannelInfo());
+        // No inflight buffers persisted (store is EMPTY, knownBuffers is emptyList).
+        assertThat(persisted).isNullOrEmpty();
+    }
+
     /**
      * Creates a LocalInputChannel with recovered buffers and a live subpartition, ready for
      * priority event tests. The channel has already called requestSubpartitions().
