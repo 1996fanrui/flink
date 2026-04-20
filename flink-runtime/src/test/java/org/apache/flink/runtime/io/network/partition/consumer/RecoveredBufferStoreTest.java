@@ -354,9 +354,7 @@ class RecoveredBufferStoreTest {
     // Tests for setOnBecameEmptyCallback (Item 4)
     // ---------------------------------------------------------------------------
 
-    /**
-     * Verify onBecameEmpty fires when tryTake() drains the last buffer and pendingCount == 0.
-     */
+    /** Verify onBecameEmpty fires when tryTake() drains the last buffer and pendingCount == 0. */
     @Test
     void testOnBecameEmptyCallbackFiredByTryTake() {
         RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
@@ -375,9 +373,7 @@ class RecoveredBufferStoreTest {
         assertThat(callCount[0]).isEqualTo(1);
     }
 
-    /**
-     * Verify onBecameEmpty does NOT fire when tryTake drains readyBuffers but pendingCount > 0.
-     */
+    /** Verify onBecameEmpty does NOT fire when tryTake drains readyBuffers but pendingCount > 0. */
     @Test
     void testOnBecameEmptyNotFiredWhenPendingCountNonZero() {
         RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
@@ -501,7 +497,7 @@ class RecoveredBufferStoreTest {
         empty.checkpoint(writer, 1L, channelInfo);
 
         // No data must have been written
-        assertThat(writer.getAddedInput()).doesNotContainKey(channelInfo);
+        assertThat(writer.getAddedInput().containsKey(channelInfo)).isFalse();
     }
 
     /** Verify releaseAll() on EMPTY does not throw. */

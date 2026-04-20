@@ -129,9 +129,9 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
 
     /**
      * Checkpoints the ready buffers to the given ChannelStateWriter. Ready buffers are retained and
-     * passed to the writer via CloseableIterator. After snapshotting, the {@link CheckpointCallback}
-     * is invoked <em>outside</em> the store lock so that OutputWriter can safely acquire its own
-     * lock without risking a deadlock.
+     * passed to the writer via CloseableIterator. After snapshotting, the {@link
+     * CheckpointCallback} is invoked <em>outside</em> the store lock so that OutputWriter can
+     * safely acquire its own lock without risking a deadlock.
      *
      * <p>Pending spill entries on disk are checkpointed by OutputWriter, which owns the spill
      * entries and file readers, triggered via the CheckpointCallback.
@@ -225,9 +225,9 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
     }
 
     /**
-     * Marks this store as complete — no more buffers will be added by the recovery thread.
-     * If the store is already empty when markComplete is called and the onBecameEmpty callback
-     * has not yet fired for this empty state, it is fired outside any lock.
+     * Marks this store as complete — no more buffers will be added by the recovery thread. If the
+     * store is already empty when markComplete is called and the onBecameEmpty callback has not yet
+     * fired for this empty state, it is fired outside any lock.
      */
     public void markComplete() {
         Runnable cb = null;

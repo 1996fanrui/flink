@@ -30,8 +30,8 @@ import javax.annotation.Nullable;
  * <p>Exposed as {@link RecoveredBufferStore#EMPTY}. All methods either return their neutral/empty
  * sentinel value or do nothing. Callback setters silently discard the supplied callbacks.
  *
- * <p>Using this singleton eliminates {@code null} checks at every call site and makes the
- * "no store" case an explicit, named contract.
+ * <p>Using this singleton eliminates {@code null} checks at every call site and makes the "no
+ * store" case an explicit, named contract.
  */
 class EmptyRecoveredBufferStore implements RecoveredBufferStore {
 

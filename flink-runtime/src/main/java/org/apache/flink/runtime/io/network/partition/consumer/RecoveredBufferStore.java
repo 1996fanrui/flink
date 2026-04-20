@@ -88,8 +88,8 @@ public interface RecoveredBufferStore {
     void releaseAll();
 
     /**
-     * Registers a callback that is invoked after this channel's ready buffers have been
-     * snapshotted during a checkpoint. The callback is fired outside any store-level lock.
+     * Registers a callback that is invoked after this channel's ready buffers have been snapshotted
+     * during a checkpoint. The callback is fired outside any store-level lock.
      *
      * <p>The typical recipient is OutputWriter, which uses the callback to maintain its per-channel
      * wait-set and flush pending spill entries once all channels have reported in.
