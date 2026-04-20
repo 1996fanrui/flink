@@ -78,9 +78,6 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
 
     private final ChannelStatePersister channelStatePersister;
 
-    /** Writer reference for store.checkpoint() delegation. */
-    private final ChannelStateWriter stateWriter;
-
     private final Deque<BufferAndBacklog> toBeConsumedBuffers = new ArrayDeque<>();
 
     /**
@@ -122,7 +119,6 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
 
         this.partitionManager = checkNotNull(partitionManager);
         this.taskEventPublisher = checkNotNull(taskEventPublisher);
-        this.stateWriter = stateWriter;
         this.channelStatePersister = new ChannelStatePersister(stateWriter, getChannelInfo());
 
         // Use EMPTY sentinel when no recovered data is present. Unconditional assignment avoids

@@ -123,9 +123,6 @@ public class RemoteInputChannel extends InputChannel {
 
     private final ChannelStatePersister channelStatePersister;
 
-    /** Writer reference for store.checkpoint() delegation. */
-    private final ChannelStateWriter stateWriter;
-
     /**
      * Store for recovered buffers. Always non-null: callers that have no recovered data pass {@code
      * null} which is converted to {@link RecoveredBufferStore#EMPTY} in the constructor.
@@ -173,7 +170,6 @@ public class RemoteInputChannel extends InputChannel {
         this.connectionId = checkNotNull(connectionId);
         this.connectionManager = checkNotNull(connectionManager);
         this.bufferManager = new BufferManager(inputGate.getMemorySegmentProvider(), this, 0);
-        this.stateWriter = stateWriter;
         this.channelStatePersister = new ChannelStatePersister(stateWriter, getChannelInfo());
 
         // Use EMPTY sentinel when no recovered data is present. Unconditional assignment avoids
