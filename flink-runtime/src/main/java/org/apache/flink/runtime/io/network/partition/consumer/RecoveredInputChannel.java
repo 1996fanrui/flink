@@ -27,7 +27,6 @@ import org.apache.flink.runtime.event.TaskEvent;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
 import org.apache.flink.runtime.io.network.api.serialization.EventSerializer;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
-import org.apache.flink.runtime.io.network.logger.NetworkActionsLogger;
 import org.apache.flink.runtime.io.network.partition.ChannelStateHolder;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 import org.apache.flink.runtime.io.network.partition.ResultSubpartitionIndexSet;
@@ -104,9 +103,11 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     }
 
     /**
-     * Returns the store for recovered buffers. Used for store transfer during channel conversion.
+     * Returns the store for recovered buffers. Used for store transfer during channel conversion
+     * and by {@link org.apache.flink.runtime.checkpoint.channel.RecoveredChannelStateHandler} to
+     * add recovered buffers directly.
      */
-    RecoveredBufferStoreImpl getStore() {
+    public RecoveredBufferStoreImpl getStore() {
         return store;
     }
 
@@ -156,16 +157,6 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
 
     CompletableFuture<?> getStateConsumedFuture() {
         return stateConsumedFuture;
-    }
-
-    public void onRecoveredStateBuffer(Buffer buffer) {
-        NetworkActionsLogger.traceRecover(
-                "InputChannelRecoveredStateHandler#recover",
-                buffer,
-                inputGate.getOwningTaskName(),
-                channelInfo);
-        // Delegate to the store; addBuffer handles released state and notification internally.
-        store.addBuffer(buffer);
     }
 
     public void finishReadRecoveredState() throws IOException {

@@ -2075,6 +2075,139 @@ class RemoteInputChannelTest {
     }
 
     @Test
+    void testNullRecoveredStoreDefaultsToEmpty() throws Exception {
+        // When no recovered data is passed (null), the constructor must substitute EMPTY.
+        // EMPTY.isEmpty() == true so credit is not gated and getInitialCredit() returns
+        // initialCredit directly. releaseAllResources() must not throw (EMPTY.releaseAll() is a
+        // no-op).
+        SingleInputGate inputGate = createSingleInputGate(1);
+        ConnectionID connectionId =
+                new ConnectionID(
+                        org.apache.flink.runtime.clusterframework.types.ResourceID.generate(),
+                        new java.net.InetSocketAddress("localhost", 0),
+                        0);
+        RemoteInputChannel channel =
+                new RemoteInputChannel(
+                        inputGate,
+                        0,
+                        new ResultPartitionID(),
+                        new ResultSubpartitionIndexSet(0),
+                        connectionId,
+                        InputChannelTestUtils.mockConnectionManagerWithPartitionRequestClient(
+                                mock(PartitionRequestClient.class)),
+                        0,
+                        0,
+                        0,
+                        2 /* initialCredit */,
+                        new SimpleCounter(),
+                        new SimpleCounter(),
+                        ChannelStateWriter.NO_OP,
+                        null /* no recovered data → EMPTY */);
+
+        inputGate.setInputChannels(channel);
+
+        // EMPTY store is already empty: credit must not be gated.
+        assertThat(channel.getInitialCredit()).isEqualTo(2);
+        // releaseAllResources() must not throw (EMPTY.releaseAll() is a no-op).
+        channel.releaseAllResources();
+    }
+
+    @Test
+    void testCreditGatedWhileRecoveredStoreNonEmpty() throws Exception {
+        // While the recovered store has data, getInitialCredit() must return 0 so that
+        // the upstream PartitionRequest advertises 0 credit (credit=0 invariant §2.6).
+        SingleInputGate inputGate = createSingleInputGate(1);
+
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        store.addBuffer(TestBufferFactory.createBuffer(10));
+
+        ConnectionID connectionId =
+                new ConnectionID(
+                        org.apache.flink.runtime.clusterframework.types.ResourceID.generate(),
+                        new java.net.InetSocketAddress("localhost", 0),
+                        0);
+        RemoteInputChannel channel =
+                new RemoteInputChannel(
+                        inputGate,
+                        0,
+                        new ResultPartitionID(),
+                        new ResultSubpartitionIndexSet(0),
+                        connectionId,
+                        InputChannelTestUtils.mockConnectionManagerWithPartitionRequestClient(
+                                mock(PartitionRequestClient.class)),
+                        0,
+                        0,
+                        0,
+                        2 /* initialCredit */,
+                        new SimpleCounter(),
+                        new SimpleCounter(),
+                        ChannelStateWriter.NO_OP,
+                        store);
+
+        inputGate.setInputChannels(channel);
+
+        // Store is non-empty: initial credit must be gated to 0.
+        assertThat(channel.getInitialCredit()).isEqualTo(0);
+    }
+
+    @Test
+    void testCreditReleasedWhenRecoveredStoreDrains() throws Exception {
+        // When the recovered store drains, releaseHeldCredit() fires via the onBecameEmpty
+        // callback, announcing initialCredit to the upstream.
+        SingleInputGate inputGate = createSingleInputGate(1);
+
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        store.addBuffer(TestBufferFactory.createBuffer(10));
+
+        AtomicBoolean creditNotifyFired = new AtomicBoolean(false);
+        PartitionRequestClient mockClient = mock(PartitionRequestClient.class);
+        org.mockito.Mockito.doAnswer(
+                        inv -> {
+                            creditNotifyFired.set(true);
+                            return null;
+                        })
+                .when(mockClient)
+                .notifyCreditAvailable(any(RemoteInputChannel.class));
+
+        ConnectionID connectionId =
+                new ConnectionID(
+                        org.apache.flink.runtime.clusterframework.types.ResourceID.generate(),
+                        new java.net.InetSocketAddress("localhost", 0),
+                        0);
+        RemoteInputChannel channel =
+                new RemoteInputChannel(
+                        inputGate,
+                        0,
+                        new ResultPartitionID(),
+                        new ResultSubpartitionIndexSet(0),
+                        connectionId,
+                        InputChannelTestUtils.mockConnectionManagerWithPartitionRequestClient(
+                                mockClient),
+                        0,
+                        0,
+                        0,
+                        2 /* initialCredit */,
+                        new SimpleCounter(),
+                        new SimpleCounter(),
+                        ChannelStateWriter.NO_OP,
+                        store);
+
+        inputGate.setInputChannels(channel);
+        channel.setup();
+        channel.requestSubpartitions();
+
+        // Before drain: credit gated.
+        assertThat(channel.getInitialCredit()).isEqualTo(0);
+        assertThat(creditNotifyFired.get()).isFalse();
+
+        // Drain the store — this triggers onBecameEmpty → releaseHeldCredit().
+        Optional<BufferAndAvailability> buf = channel.getNextBuffer();
+        assertThat(buf).isPresent();
+        // Store is now empty; releaseHeldCredit() should have fired.
+        assertThat(creditNotifyFired.get()).isTrue();
+    }
+
+    @Test
     void testGetNextBufferWithRecoveredStore() throws Exception {
         // given: RemoteInputChannel with recovered buffers in a store
         SingleInputGate inputGate = createSingleInputGate(1);

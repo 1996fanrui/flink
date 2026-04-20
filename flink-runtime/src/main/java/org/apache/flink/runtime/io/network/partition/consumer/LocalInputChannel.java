@@ -21,7 +21,6 @@ package org.apache.flink.runtime.io.network.partition.consumer;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.runtime.checkpoint.CheckpointException;
-import org.apache.flink.runtime.checkpoint.CheckpointFailureReason;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
 import org.apache.flink.runtime.event.TaskEvent;
 import org.apache.flink.runtime.execution.CancelTaskException;
@@ -47,7 +46,7 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
-import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.List;
 import java.util.Optional;
@@ -84,8 +83,11 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
 
     private final Deque<BufferAndBacklog> toBeConsumedBuffers = new ArrayDeque<>();
 
-    /** Store for recovered buffers, non-null only during recovery. */
-    @Nullable private RecoveredBufferStore recoveredStore;
+    /**
+     * Store for recovered buffers. Always non-null: callers that have no recovered data pass {@code
+     * null} which is converted to {@link RecoveredBufferStore#EMPTY} in the constructor.
+     */
+    private RecoveredBufferStore recoveredStore;
 
     /**
      * Flag indicating whether there is a pending priority event (e.g., checkpoint barrier) in the
@@ -123,15 +125,11 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
         this.stateWriter = stateWriter;
         this.channelStatePersister = new ChannelStatePersister(stateWriter, getChannelInfo());
 
-        // Store reference to recovered buffer store if provided.
-        // The store will be consumed before normal data path.
-        if (recoveredStore != null && !recoveredStore.isEmpty()) {
-            this.recoveredStore = recoveredStore;
-            if (recoveredStore instanceof RecoveredBufferStoreImpl) {
-                ((RecoveredBufferStoreImpl) recoveredStore)
-                        .setNotificationCallback(this::notifyChannelNonEmpty);
-            }
-        }
+        // Use EMPTY sentinel when no recovered data is present. Unconditional assignment avoids
+        // 15+ null guards scattered throughout the class and eliminates the buggy "isEmpty() guard"
+        // that could discard the store reference while OutputWriter still has pending writes.
+        this.recoveredStore = recoveredStore != null ? recoveredStore : RecoveredBufferStore.EMPTY;
+        this.recoveredStore.setNotificationCallback(this::notifyChannelNonEmpty);
     }
 
     // ------------------------------------------------------------------------
@@ -139,27 +137,13 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
     // ------------------------------------------------------------------------
 
     public void checkpointStarted(CheckpointBarrier barrier) throws CheckpointException {
-        // Checkpoint recovered data via store if present
-        if (recoveredStore != null) {
-            try {
-                recoveredStore.checkpoint(stateWriter, barrier.getId(), getChannelInfo());
-            } catch (IOException e) {
-                throw new CheckpointException(
-                        "Failed to checkpoint recovered store",
-                        CheckpointFailureReason.IO_EXCEPTION,
-                        e);
-            }
-        }
-
-        // Collect inflight buffers from toBeConsumedBuffers to be persisted.
-        // These are buffers that have not been consumed yet when the checkpoint barrier arrives.
-        List<Buffer> inflightBuffers = new ArrayList<>();
-        for (BufferAndBacklog bufferAndBacklog : toBeConsumedBuffers) {
-            if (bufferAndBacklog.buffer().isBuffer()) {
-                inflightBuffers.add(bufferAndBacklog.buffer().retainBuffer());
-            }
-        }
-        channelStatePersister.startPersisting(barrier.getId(), inflightBuffers);
+        // Local channel has no network inflight buffers to snapshot (barriers and data arrive
+        // together via the local subpartition view). toBeConsumedBuffers contains only
+        // FullyFilledBuffer splits — ordinary data fragments that do not belong in channel state.
+        // The recoveredStore is passed so that ready buffers + OutputWriter callback are handled
+        // by the centralized startPersisting path.
+        channelStatePersister.startPersisting(
+                barrier.getId(), recoveredStore, Collections.emptyList());
     }
 
     public void checkpointStopped(long checkpointId) {
@@ -278,13 +262,8 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
         checkError();
 
         // Check recovered store first (recovery path)
-        if (recoveredStore != null && !recoveredStore.isEmpty()) {
+        if (!recoveredStore.isEmpty()) {
             return getNextRecoveredBuffer();
-        }
-
-        // If store is complete and empty, release it
-        if (recoveredStore != null && recoveredStore.isComplete()) {
-            recoveredStore = null;
         }
 
         if (!toBeConsumedBuffers.isEmpty()) {
@@ -374,7 +353,7 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
             if (!expectedNextDataType.hasPriority()) {
                 // Reset hasPendingPriorityEvent to false if no more priority event
                 hasPendingPriorityEvent = false;
-                if (recoveredStore != null && !recoveredStore.isEmpty()) {
+                if (!recoveredStore.isEmpty()) {
                     // Correct nextDataType: if recoveredStore has data, the actual next
                     // element to consume is from recoveredStore, not from subpartitionView
                     expectedNextDataType = recoveredStore.peekNextDataType();
@@ -397,8 +376,8 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
         Buffer.DataType nextDataType = recoveredStore.peekNextDataType();
         int sequenceNumber = Integer.MIN_VALUE; // recovered buffers use MIN_VALUE sequence range
 
-        // If this is the last recovered buffer and nextDataType is NONE,
-        // dynamically check if subpartitionView has data available.
+        // If this is the last recovered buffer and nextDataType is NONE, dynamically check if
+        // subpartitionView has data available so the consumer is woken up without a round-trip.
         if (nextDataType == Buffer.DataType.NONE && subpartitionView != null) {
             ResultSubpartitionView.AvailabilityWithBacklog availability =
                     subpartitionView.getAvailabilityAndBacklog(true);
@@ -533,11 +512,8 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
                 subpartitionView = null;
             }
 
-            // Release recovered store if present
-            if (recoveredStore != null) {
-                recoveredStore.releaseAll();
-                recoveredStore = null;
-            }
+            // Release recovered store (EMPTY.releaseAll() is a no-op, so no null check needed).
+            recoveredStore.releaseAll();
 
             // Release any remaining buffers in toBeConsumedBuffers to avoid memory leak.
             // These may be partial buffers from FullyFilledBuffer.
@@ -561,7 +537,7 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
     @Override
     int getBuffersInUseCount() {
         ResultSubpartitionView view = this.subpartitionView;
-        return (recoveredStore != null ? recoveredStore.size() : 0)
+        return recoveredStore.size()
                 + toBeConsumedBuffers.size()
                 + (view == null ? 0 : view.getNumberOfQueuedBuffers());
     }
@@ -570,8 +546,7 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
     public int unsynchronizedGetNumberOfQueuedBuffers() {
         ResultSubpartitionView view = subpartitionView;
 
-        int count =
-                (recoveredStore != null ? recoveredStore.size() : 0) + toBeConsumedBuffers.size();
+        int count = recoveredStore.size() + toBeConsumedBuffers.size();
         if (view != null) {
             count += view.unsynchronizedGetNumberOfQueuedBuffers();
         }

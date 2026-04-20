@@ -126,8 +126,18 @@ public class RemoteInputChannel extends InputChannel {
     /** Writer reference for store.checkpoint() delegation. */
     private final ChannelStateWriter stateWriter;
 
-    /** Store for recovered buffers, non-null only during recovery. */
-    @Nullable private RecoveredBufferStore recoveredStore;
+    /**
+     * Store for recovered buffers. Always non-null: callers that have no recovered data pass {@code
+     * null} which is converted to {@link RecoveredBufferStore#EMPTY} in the constructor.
+     */
+    private RecoveredBufferStore recoveredStore;
+
+    /**
+     * Guards against redundant credit releases. Set to true the first time {@link
+     * #releaseHeldCredit()} fires so that the callback is idempotent even if the onBecameEmpty
+     * trigger fires more than once.
+     */
+    private volatile boolean creditReleased = false;
 
     private long totalQueueSizeInBytes;
 
@@ -166,14 +176,16 @@ public class RemoteInputChannel extends InputChannel {
         this.stateWriter = stateWriter;
         this.channelStatePersister = new ChannelStatePersister(stateWriter, getChannelInfo());
 
-        // Store reference to recovered buffer store if provided.
-        if (recoveredStore != null && !recoveredStore.isEmpty()) {
-            this.recoveredStore = recoveredStore;
-            if (recoveredStore instanceof RecoveredBufferStoreImpl) {
-                ((RecoveredBufferStoreImpl) recoveredStore)
-                        .setNotificationCallback(this::notifyChannelNonEmpty);
-            }
-        }
+        // Use EMPTY sentinel when no recovered data is present. Unconditional assignment avoids
+        // null guards throughout the class and eliminates the buggy isEmpty() guard that would
+        // discard the store reference while OutputWriter still has pending writes.
+        this.recoveredStore = recoveredStore != null ? recoveredStore : RecoveredBufferStore.EMPTY;
+        this.recoveredStore.setNotificationCallback(this::notifyChannelNonEmpty);
+
+        // Gate credit until the recovered store is drained. The callback fires when isEmpty()
+        // first becomes true (either via tryTake or markComplete), at which point the held
+        // initialCredit is released to the upstream partition.
+        this.recoveredStore.setOnBecameEmptyCallback(this::releaseHeldCredit);
     }
 
     @VisibleForTesting
@@ -257,7 +269,7 @@ public class RemoteInputChannel extends InputChannel {
     @Override
     protected int peekNextBufferSubpartitionIdInternal() throws IOException {
         synchronized (receivedBuffers) {
-            checkReadability();
+            checkPartitionRequestQueueInitialized();
 
             final SequenceBuffer next = receivedBuffers.peek();
 
@@ -271,8 +283,9 @@ public class RemoteInputChannel extends InputChannel {
 
     @Override
     public Optional<BufferAndAvailability> getNextBuffer() throws IOException {
-        // Check recovered store first (recovery path)
-        if (recoveredStore != null && !recoveredStore.isEmpty()) {
+        // Check recovered store first (recovery path). EMPTY.tryTake() always returns null so this
+        // is a no-op on the normal (non-recovery) path.
+        if (!recoveredStore.isEmpty()) {
             Buffer next = recoveredStore.tryTake();
             if (next != null) {
                 DataType nextDataType = recoveredStore.peekNextDataType();
@@ -283,16 +296,11 @@ public class RemoteInputChannel extends InputChannel {
             }
         }
 
-        // If store is complete and empty, release it
-        if (recoveredStore != null && recoveredStore.isComplete()) {
-            recoveredStore = null;
-        }
-
         final SequenceBuffer next;
         final DataType nextDataType;
 
         synchronized (receivedBuffers) {
-            checkReadability();
+            checkPartitionRequestQueueInitialized();
 
             next = receivedBuffers.poll();
 
@@ -354,11 +362,8 @@ public class RemoteInputChannel extends InputChannel {
     void releaseAllResources() throws IOException {
         if (isReleased.compareAndSet(false, true)) {
 
-            // Release recovered store if present
-            if (recoveredStore != null) {
-                recoveredStore.releaseAll();
-                recoveredStore = null;
-            }
+            // Release recovered store (EMPTY.releaseAll() is a no-op, so no null check needed).
+            recoveredStore.releaseAll();
 
             final ArrayDeque<Buffer> releasedBuffers;
             synchronized (receivedBuffers) {
@@ -382,7 +387,7 @@ public class RemoteInputChannel extends InputChannel {
 
     @Override
     int getBuffersInUseCount() {
-        return (recoveredStore != null ? recoveredStore.size() : 0)
+        return recoveredStore.size()
                 + getNumberOfQueuedBuffers()
                 + Math.max(0, bufferManager.getNumberOfRequiredBuffers() - initialCredit);
     }
@@ -464,11 +469,52 @@ public class RemoteInputChannel extends InputChannel {
     /**
      * The unannounced credit is increased by the given amount and might notify increased credit to
      * the producer.
+     *
+     * <p>While the recovered store is non-empty (i.e., recovery data has not yet been fully
+     * consumed), credit announcements are suppressed. This enforces the credit=0 invariant (§2.6):
+     * upstream cannot send new network data until recovery is complete, preventing disk and network
+     * inflight data from coexisting in the same checkpoint snapshot.
      */
     @Override
     public void notifyBufferAvailable(int numAvailableBuffers) throws IOException {
+        if (!recoveredStore.isEmpty()) {
+            // Credit gated: store still has data; do not announce credit to upstream.
+            return;
+        }
         if (numAvailableBuffers > 0 && unannouncedCredit.getAndAdd(numAvailableBuffers) == 0) {
             notifyCreditAvailable();
+        }
+    }
+
+    /**
+     * Releases the held initial credit to the upstream partition. Called once when the recovered
+     * store transitions from non-empty to empty (via {@link
+     * RecoveredBufferStore#setOnBecameEmptyCallback}). After this point the channel operates
+     * normally and credit flows through {@link #notifyBufferAvailable}.
+     *
+     * <p>Idempotent: subsequent invocations are no-ops guarded by {@link #creditReleased}.
+     */
+    private void releaseHeldCredit() {
+        if (creditReleased) {
+            return;
+        }
+        creditReleased = true;
+        // If requestSubpartitions() has not been called yet, skip: the correct initialCredit will
+        // be included in the PartitionRequest message when requestSubpartitions() is called,
+        // because getInitialCredit() returns initialCredit once the store is empty.
+        if (partitionRequestClient == null) {
+            return;
+        }
+        // Announce the initial credit that was gated during recovery. This triggers the upstream
+        // to start sending network data to this channel.
+        try {
+            if (initialCredit > 0 && unannouncedCredit.getAndAdd(initialCredit) == 0) {
+                notifyCreditAvailable();
+            }
+        } catch (IOException e) {
+            // Propagate as a channel error so the task fails cleanly rather than silently
+            // dropping the credit and hanging indefinitely.
+            onError(e);
         }
     }
 
@@ -545,8 +591,7 @@ public class RemoteInputChannel extends InputChannel {
 
     @Override
     public int unsynchronizedGetNumberOfQueuedBuffers() {
-        return (recoveredStore != null ? recoveredStore.size() : 0)
-                + Math.max(0, receivedBuffers.size());
+        return recoveredStore.size() + Math.max(0, receivedBuffers.size());
     }
 
     @Override
@@ -567,8 +612,14 @@ public class RemoteInputChannel extends InputChannel {
         return id;
     }
 
+    /**
+     * Returns the credit to advertise in the initial partition request. When the recovered store is
+     * non-empty, credit is gated to 0 to prevent upstream from sending network data before recovery
+     * completes (§2.6 credit=0 invariant). Credit is released by {@link #releaseHeldCredit()} once
+     * the store drains.
+     */
     public int getInitialCredit() {
-        return initialCredit;
+        return recoveredStore.isEmpty() ? initialCredit : 0;
     }
 
     public BufferProvider getBufferProvider() throws IOException {
@@ -595,9 +646,16 @@ public class RemoteInputChannel extends InputChannel {
      * is less than backlog + initialCredit, it will request floating buffers from the buffer
      * manager, and then notify unannounced credits to the producer.
      *
+     * <p>While the recovered store is non-empty, this is a no-op: credit is gated and the upstream
+     * is not allowed to send new data (see {@link #notifyBufferAvailable}).
+     *
      * @param backlog The number of unsent buffers in the producer's sub partition.
      */
     public void onSenderBacklog(int backlog) throws IOException {
+        if (!recoveredStore.isEmpty()) {
+            // Credit gated during recovery; ignore backlog signals from upstream.
+            return;
+        }
         notifyBufferAvailable(bufferManager.requestFloatingBuffers(backlog + initialCredit));
     }
 
@@ -728,20 +786,13 @@ public class RemoteInputChannel extends InputChannel {
     /**
      * Spills all queued buffers on checkpoint start. If barrier has already been received (and
      * reordered), spill only the overtaken buffers.
+     *
+     * <p>The recoveredStore is passed to the centralized {@link
+     * ChannelStatePersister#startPersisting} so that ready-buffer snapshot and OutputWriter
+     * callback are handled in one place. Network inflight buffers from {@code receivedBuffers} are
+     * collected here (Remote-specific) and passed as {@code knownBuffers}.
      */
     public void checkpointStarted(CheckpointBarrier barrier) throws CheckpointException {
-        // Checkpoint recovered data via store if present
-        if (recoveredStore != null) {
-            try {
-                recoveredStore.checkpoint(stateWriter, barrier.getId(), getChannelInfo());
-            } catch (IOException e) {
-                throw new CheckpointException(
-                        "Failed to checkpoint recovered store",
-                        CheckpointFailureReason.IO_EXCEPTION,
-                        e);
-            }
-        }
-
         synchronized (receivedBuffers) {
             if (barrier.getId() < lastBarrierId) {
                 throw new CheckpointException(
@@ -753,14 +804,13 @@ public class RemoteInputChannel extends InputChannel {
                 // checkpoint is possible
             } else if (barrier.getId() > lastBarrierId) {
                 // This channel has received some obsolete barrier, older compared to the
-                // checkpointId
-                // which we are processing right now, and we should ignore that obsoleted checkpoint
-                // barrier sequence number.
+                // checkpointId which we are processing right now, and we should ignore that
+                // obsoleted checkpoint barrier sequence number.
                 resetLastBarrier();
             }
 
             channelStatePersister.startPersisting(
-                    barrier.getId(), getInflightBuffersUnsafe(barrier.getId()));
+                    barrier.getId(), recoveredStore, getInflightBuffersUnsafe(barrier.getId()));
         }
     }
 
@@ -931,19 +981,6 @@ public class RemoteInputChannel extends InputChannel {
 
     public void onError(Throwable cause) {
         setError(cause);
-    }
-
-    /**
-     * Checks readability of receivedBuffers. With recovered buffers now in a separate store,
-     * receivedBuffers only contains network data. When empty, requires full client initialization.
-     */
-    private void checkReadability() throws IOException {
-        assert Thread.holdsLock(receivedBuffers);
-        if (receivedBuffers.isEmpty()) {
-            checkPartitionRequestQueueInitialized();
-        } else {
-            checkError();
-        }
     }
 
     private void checkPartitionRequestQueueInitialized() throws IOException {
