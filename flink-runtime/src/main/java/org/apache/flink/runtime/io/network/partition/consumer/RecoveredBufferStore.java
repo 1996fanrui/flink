@@ -31,9 +31,19 @@ import java.io.IOException;
  * either in-memory (ready for consumption) or on disk (pending spill entries). This interface
  * provides thread-safe access for consumption by the Task thread and population by the Recovery
  * thread.
+ *
+ * <p>Use {@link #EMPTY} as a sentinel when no recovered data is present (non-filtering mode, or
+ * after recovery has fully drained), rather than holding {@code null} references.
  */
 @Internal
 public interface RecoveredBufferStore {
+
+    /**
+     * Singleton no-op store used when there is no recovered data for a channel. All query methods
+     * return their neutral/empty sentinel values; all mutating methods and callback setters are
+     * no-ops.
+     */
+    RecoveredBufferStore EMPTY = new EmptyRecoveredBufferStore();
 
     /**
      * Takes the next buffer from the store. Returns null if no ready buffer is available.
@@ -62,7 +72,9 @@ public interface RecoveredBufferStore {
     int size();
 
     /**
-     * Checkpoints the current store contents to the given ChannelStateWriter.
+     * Checkpoints the current store contents to the given ChannelStateWriter. Implementations
+     * should snapshot ready buffers first, then fire the {@link CheckpointCallback} (if one is
+     * registered) <em>outside</em> any store-level lock to avoid deadlock with the OutputWriter.
      *
      * @param writer the channel state writer to checkpoint to
      * @param checkpointId the checkpoint ID
@@ -74,4 +86,33 @@ public interface RecoveredBufferStore {
 
     /** Releases all buffers held in this store and clears all state. */
     void releaseAll();
+
+    /**
+     * Registers a callback that is invoked after this channel's ready buffers have been
+     * snapshotted during a checkpoint. The callback is fired outside any store-level lock.
+     *
+     * <p>The typical recipient is OutputWriter, which uses the callback to maintain its per-channel
+     * wait-set and flush pending spill entries once all channels have reported in.
+     *
+     * @param callback the callback to invoke; replaces any previously registered callback
+     */
+    void setCheckpointCallback(CheckpointCallback callback);
+
+    /**
+     * Registers a callback that is invoked once when the store transitions from non-empty to empty
+     * (i.e., {@link #isEmpty()} first becomes {@code true}). Used by {@code RemoteInputChannel} to
+     * release held credit back to the upstream partition when recovery data has been fully
+     * consumed.
+     *
+     * @param callback the callback to invoke; replaces any previously registered callback
+     */
+    void setOnBecameEmptyCallback(Runnable callback);
+
+    /**
+     * Registers a callback that is invoked when a buffer is added to a previously empty ready
+     * queue. Used to notify the InputChannel that data is available for consumption.
+     *
+     * @param callback the callback to invoke; replaces any previously registered callback
+     */
+    void setNotificationCallback(Runnable callback);
 }
