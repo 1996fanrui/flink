@@ -11,6 +11,32 @@
 
 ---
 
+## 0. Fix Commit 规范（可复用）
+
+> 基于 cherry-pick 原始 commit + 补 fix 的开发流程通用规范。其他 agent / 开发者接手同类任务时
+> 必须遵守。
+
+**核心原则**：每个原始 commit（记为 commit i）后**紧跟 ≤1 个** fix commit，该 fix commit 捆绑
+针对 commit i 的**所有**修改（可跨多个 feature / 修复点）。
+
+**约束**：
+1. 一个 fix commit **只绑定一个**原始 commit——跨 commit i / commit j 的改动必须按"主要归属"拆到对应 fix。
+2. 一个原始 commit **只能有一个** fix commit——多点 fix 合并到同一 commit 内，以多段 diff 出现。
+3. 顺序严格 `... commit i → commit i 的 fix → commit i+1 → commit i+1 的 fix → ...`，禁止跨越。
+4. 原始 commit 无需修改的不加 fix，直接进入下一原始 commit。
+
+**目的**：人工最终 squash (commit i + commit i 的 fix) 得到"完整自洽"的单 commit；避免跨 commit 依赖
+导致编译断层或 rebase 冲突；每对 (commit i + commit i 的 fix) 独立可验证。
+
+**跨 commit 依赖处理**：
+- 若 commit i 的 fix 需要引用 commit j（j > i）引入的新 API，把该改动**挪到 commit j 的 fix**（作为
+  commit j 新 API 的首次使用者），不塞进 commit i 的 fix。例：phase2 流式写入本想修 commit 3 的
+  OutputWriter，但需 commit 5 的流式 overload，故归入 commit 5 的 fix。
+- 若 commit i 的 fix 依赖 commit j 的 fix（j > i）的符号，同理挪到后者；或在 commit i 的 fix 提前
+  只声明不使用，commit j 的 fix 再使用。
+
+---
+
 ## 1. 背景：旧迁移路径 vs. 新 store 路径
 
 ### 旧路径（commit `d1914c63`, `3aef0932`, `cebc174a`, `9ce47b21`）
@@ -399,24 +425,55 @@ private void drainSpillEntriesToCheckpoint(long id) {
   `waitSet` 的访问在该锁下。
 - Recovery 线程的 drain（close()）也要取同一把锁改 `spillEntryQueue`（现在没加，要补）。
 
-### 4.4 Commit 切分策略：cherry-pick 增量修复
+### 4.4 Commit 切分策略：cherry-pick + 单 fix per commit
 
-**原则**：每个 fix commit 紧挨着"引入它的原始 commit"。
+遵循 §0 Fix Commit 规范：每个原始 commit 后紧跟 ≤1 个 fix commit，捆绑所有针对该原始 commit 的修改。
 
-**操作**：开新分支；按原 commit 顺序 cherry-pick，每 cherry-pick 一个原始 commit 就把对应的 fix commit
-紧跟其后 cherry-pick。避免跨 commit 的代码冲突。
+**两类 commit**：
+- **Base history（不 cherry-pick）**：FLINK-39018 的 4 个 commit（`3aef0932` / `d1914c63` / `cebc174a` /
+  `9ce47b21`）已在基线中。fix A/B/D 清理的就是它们留下的死代码，按"首个触及该文件的原始 commit"归入
+  commit 4 的 fix。
+- **待 cherry-pick 6 个 FLINK-38544 code commit**（源分支 `38544-spilling/20260420-01-organize-commits`）：
 
-**初步映射**（需用户确认）：
-| 原 commit | 内容 | 紧跟的 fix |
-|----------|------|-----------|
-| `3aef0932` | Local checkpointStarted 遍历 toBeConsumedBuffers | fix A: 恢复 emptyList |
-| `d1914c63` | Buffer migration to 旧 deque + checkReadability | fix B: 删 checkReadability |
-| `cebc174a` | priority event 补丁（基于 toBeConsumedBuffers） | 无（F 判断保留） |
-| `9ce47b21` | 计数修复 | 无（G/H 判断保留） |
-| `6c6bc972` | Adapt to RecoveredBufferStore | fix D: 删 onRecoveredStateBuffer；fix E: EMPTY 单例；§4.1 集中化 |
-| `b3c30f02` | OutputWriter 三数据路径 | fix J: §4.3 disk checkpoint + callback 机制 |
-| `3bdd88a0` | ChannelStateWriter streaming overload | 保留（J 会调用） |
-| `5c1d4546` | 集成 OutputWriter 到 filtering flow | 无 |
+| # | Hash | 主题 |
+|---|------|------|
+| commit 1 | `df93451f799` | Add source buffer heap allocation and buffer request interface |
+| commit 2 | `29c8c105653` | Add SpillFile I/O components and RecoveredBufferStore |
+| commit 3 | `b3c30f02e11` | Add OutputWriter with three data paths and drain loop |
+| commit 4 | `6c6bc972f85` | Adapt InputChannels to consume from RecoveredBufferStore |
+| commit 5 | `3bdd88a0f29` | Add ChannelStateWriter streaming overload for disk data |
+| commit 6 | `5c1d4546c82` | Integrate OutputWriter into filtering flow |
+
+**每个原始 commit 的 fix 归属**：
+
+| 原始 commit | fix 名称 | 内容 |
+|------------|---------|------|
+| commit 1 | — | 无需修正 |
+| commit 2 | **commit 2 的 fix** | `CheckpointCallback` 接口 + `setCheckpointCallback` / `setOnBecameEmptyCallback` 加到接口+Impl；`setNotificationCallback` 升接口；`RecoveredBufferStoreImpl.checkpoint()` 内调用 callback（前文 J.2.a）；创建 `RecoveredBufferStore.EMPTY` 单例（所有方法 no-op） |
+| commit 3 | **commit 3 的 fix** | OutputWriter：持有 callback 注册、wait-set 状态机（`onChannelCheckpointStarted` 入口、首次扫 `spillEntryQueue`、后续 O(1) 移除）、`synchronized(this)` 覆盖 queue/wait-set/checkpointId（drain 循环同锁）、构造时向各 store 注册 callback。**不含** phase2 磁盘写入（依赖 commit 5） |
+| commit 4 | **commit 4 的 fix** | §4.1 集中化（`startPersisting(barrierId, store, knownBuffers)` + `checkState(store.isEmpty() \|\| knownBuffers.isEmpty())`）；fix A（Local 改 emptyList）；fix B（删 Remote.checkReadability）；fix D（删 RecoveredInputChannel.onRecoveredStateBuffer）；fix E（Local/Remote 无条件持有 store，默认 EMPTY，消 15 处 null 守卫 + instanceof）；J.2.b（RemoteInputChannel credit=0 gating + `releaseHeldCredit` + 注册 `onBecameEmpty` callback） |
+| commit 5 | **commit 5 的 fix** | OutputWriter `drainSpillEntriesToCheckpoint(id)`：遍历 queue 经 `SpillFileReader.openInputStream` 调 commit 5 新增的 `ChannelStateWriter.addInputData(InputStream)`；"snapshot + drain" 合并避免双写 |
+| commit 6 | — | 无需修正 |
+
+**最终 10 个 commit**：
+
+```
+ 1. commit 1                                 6. commit 4
+ 2. commit 2                                 7. commit 4 的 fix  ← §4.1 + A + B + D + E + credit gating
+ 3. commit 2 的 fix  ← Store 层完整           8. commit 5
+ 4. commit 3                                 9. commit 5 的 fix  ← OutputWriter phase2 流式
+ 5. commit 3 的 fix  ← OutputWriter 层      10. commit 6
+```
+
+Squash (原始 commit + 对应的 fix) 后得 6 个干净 commit，一一对应 commit 1–commit 6 的语义。
+
+**Stage 映射**：
+| Stage | 含 | 验证目标 |
+|-------|---|---------|
+| 1 | commit 1 + commit 2 + commit 2 的 fix | Store 层自足，单测 Impl.checkpoint() 触发 callback |
+| 2 | commit 3 + commit 3 的 fix | OutputWriter wait-set + 并发同步，单测状态机 |
+| 3 | commit 4 + commit 4 的 fix | InputChannel 适配 + 集中化 + 死代码清理 + credit gating，Local/Remote 测试通过 |
+| 4 | commit 5 + commit 5 的 fix + commit 6 | disk checkpoint 流式写入贯通 + filtering 集成，端到端测试 |
 
 ### 4.5 实现细节清单
 
@@ -487,7 +544,7 @@ channelStatePersister.startPersisting(
 | Q2 | Wait-set 实现 | **首个 callback 到达时扫描 `spillEntryQueue` 一次**计算 wait-set，后续 O(1) 移除。 |
 | Q3 | 磁盘数据 snapshot 的 `seqNum` | **保持与 ready buffers 一致**——`SEQUENCE_NUMBER_RESTORED`。本分支语义上只是把 buffer 搬到 disk 再回放，同一批 recovered 数据不应因存储介质不同而改 seqNum。 |
 | Q4 | Callback 接口形态 | 专用 `@FunctionalInterface CheckpointCallback { onChannelCheckpointStarted(long, InputChannelInfo) }`，不用 `BiConsumer<Long, InputChannelInfo>`。 |
-| Q5/Q6 | Commit 切分与死代码清理 | **每个 fix 紧跟引入它的原始 commit**，按 §4.4 cherry-pick 流程执行。A → 紧跟 `3aef0932`；B → 紧跟 `d1914c63`；D → 紧跟 `6c6bc972`（因为 `6c6bc972` 让它成为死代码）；E 集中化 → 紧跟 `6c6bc972`（引入 null 守卫与 `instanceof`）；§4.1 集中化 → 紧跟 `6c6bc972`；J → 紧跟 `b3c30f02`。不统一打一个 "cleanup" commit。 |
+| Q5/Q6 | Commit 切分与死代码清理 | 按 §0 Fix Commit 规范：每个原始 commit 后最多 1 个 fix commit，捆绑所有针对该原始 commit 的改动。10 个 commit（6 cherry-pick + 4 fix）：commit 1 → commit 2 → commit 2 的 fix → commit 3 → commit 3 的 fix → commit 4 → commit 4 的 fix → commit 5 → commit 5 的 fix → commit 6。详见 §4.4。 |
 
 ### Q7（已定）. `ChannelStatePersister.startPersisting` 内的阶段顺序
 
@@ -555,6 +612,15 @@ channelStatePersister.startPersisting(
 - Non-filtering 模式：EMPTY store，无需 callback 机制。
 - Commit 切分策略：cherry-pick based incremental fix（§4.4）。
 
+### Round 6：§4.4 commit 映射迭代（开发前）
+- 原表错把 FLINK-39018 的 4 个 commit 列为 cherry-pick 目标；实际在 base 历史里不动。漏了
+  commit 1 / commit 2。改为明确区分 base history 与待 cherry-pick 的 commit 1–commit 6。
+- 初版为 fix J 把 commit 5 前移到 commit 4 之前，经讨论判定不必要：保持原 commit 顺序即可。
+- 用户提 fix J 应拆 J.1（OutputWriter 内部）+ J.2（Integration），曾改成 15 步细粒度。
+- 最终用户定下 §0 Fix Commit 规范：每个原始 commit 最多 1 个 fix commit，捆绑所有针对该原始 commit
+  的改动。10 步终稿：commit 1 → commit 2 → commit 2 的 fix → commit 3 → commit 3 的 fix →
+  commit 4 → commit 4 的 fix → commit 5 → commit 5 的 fix → commit 6。
+
 ---
 
 ## 7. 总结表
@@ -572,4 +638,4 @@ channelStatePersister.startPersisting(
 | I | Remote 构造器迁移循环 | 已删除 | 确认无残留 |
 | J | OutputWriter disk 数据 checkpoint | 未实现 | §4.3 新设计 |
 | K | `ChannelStatePersister.startPersisting` 集中化 | 未实现 | §4.1 |
-| L | `disk + network inflight` 不共存不变量 | 未强制 | §2.6 选 (a)/(b)/(c) |
+| L | `disk + network inflight` 不共存不变量 | 未强制 | §2.6 采纳 credit=0 方案 |
