@@ -987,8 +987,8 @@ class LocalInputChannelTest {
     }
 
     @Test
-    void testNullRecoveredStoreDefaultsToEmpty() throws Exception {
-        // When no recovered data is passed (null), the constructor must substitute EMPTY.
+    void testEmptyRecoveredStoreHasNoBuffers() throws Exception {
+        // Callers with no recovered data pass RecoveredBufferStore.EMPTY explicitly.
         // EMPTY.isEmpty() == true so getBuffersInUseCount() should count 0 from the store.
         // EMPTY.releaseAll() is a no-op, so releaseAllResources() must not throw.
         SingleInputGate inputGate = new SingleInputGateBuilder().build();
@@ -1005,7 +1005,7 @@ class LocalInputChannelTest {
                         new SimpleCounter(),
                         new SimpleCounter(),
                         ChannelStateWriter.NO_OP,
-                        null /* no recovered data → EMPTY */);
+                        RecoveredBufferStore.EMPTY);
 
         inputGate.setInputChannels(channel);
 
@@ -1036,7 +1036,7 @@ class LocalInputChannelTest {
                         new SimpleCounter(),
                         new SimpleCounter(),
                         stateWriter,
-                        null /* EMPTY store */);
+                        RecoveredBufferStore.EMPTY);
 
         inputGate.setInputChannels(channel);
 

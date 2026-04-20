@@ -124,8 +124,8 @@ public class RemoteInputChannel extends InputChannel {
     private final ChannelStatePersister channelStatePersister;
 
     /**
-     * Store for recovered buffers. Always non-null: callers that have no recovered data pass {@code
-     * null} which is converted to {@link RecoveredBufferStore#EMPTY} in the constructor.
+     * Store for recovered buffers. Always non-null: callers with no recovered data pass {@link
+     * RecoveredBufferStore#EMPTY}.
      */
     private RecoveredBufferStore recoveredStore;
 
@@ -152,7 +152,7 @@ public class RemoteInputChannel extends InputChannel {
             Counter numBytesIn,
             Counter numBuffersIn,
             ChannelStateWriter stateWriter,
-            @Nullable RecoveredBufferStore recoveredStore) {
+            RecoveredBufferStore recoveredStore) {
 
         super(
                 inputGate,
@@ -172,10 +172,10 @@ public class RemoteInputChannel extends InputChannel {
         this.bufferManager = new BufferManager(inputGate.getMemorySegmentProvider(), this, 0);
         this.channelStatePersister = new ChannelStatePersister(stateWriter, getChannelInfo());
 
-        // Use EMPTY sentinel when no recovered data is present. Unconditional assignment avoids
-        // null guards throughout the class and eliminates the buggy isEmpty() guard that would
-        // discard the store reference while OutputWriter still has pending writes.
-        this.recoveredStore = recoveredStore != null ? recoveredStore : RecoveredBufferStore.EMPTY;
+        // Callers with no recovered data pass RecoveredBufferStore.EMPTY; unconditional assignment
+        // avoids null guards throughout the class and eliminates the buggy isEmpty() guard that
+        // would discard the store reference while OutputWriter still has pending writes.
+        this.recoveredStore = checkNotNull(recoveredStore);
         this.recoveredStore.setNotificationCallback(this::notifyChannelNonEmpty);
 
         // Gate credit until the recovered store is drained. The callback fires when isEmpty()

@@ -184,7 +184,7 @@ class UnknownInputChannel extends InputChannel implements ChannelStateHolder {
                 metrics.getNumBytesInRemoteCounter(),
                 metrics.getNumBuffersInRemoteCounter(),
                 channelStateWriter == null ? ChannelStateWriter.NO_OP : channelStateWriter,
-                null);
+                RecoveredBufferStore.EMPTY);
     }
 
     public LocalInputChannel toLocalInputChannel(ResultPartitionID resultPartitionID) {
@@ -200,7 +200,7 @@ class UnknownInputChannel extends InputChannel implements ChannelStateHolder {
                 metrics.getNumBytesInLocalCounter(),
                 metrics.getNumBuffersInLocalCounter(),
                 channelStateWriter == null ? ChannelStateWriter.NO_OP : channelStateWriter,
-                null);
+                RecoveredBufferStore.EMPTY);
     }
 
     @Override

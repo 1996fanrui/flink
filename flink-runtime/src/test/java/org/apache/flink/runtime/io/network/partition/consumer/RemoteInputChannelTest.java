@@ -2102,7 +2102,7 @@ class RemoteInputChannelTest {
                         new SimpleCounter(),
                         new SimpleCounter(),
                         ChannelStateWriter.NO_OP,
-                        null /* no recovered data → EMPTY */);
+                        RecoveredBufferStore.EMPTY);
 
         inputGate.setInputChannels(channel);
 
