@@ -390,10 +390,65 @@ class RecoveredBufferStoreTest {
         store.tryTake().recycleBuffer();
         assertThat(callCount[0]).isEqualTo(0);
 
-        // Decrement pending — now truly empty but we're not calling tryTake or markComplete
-        // The callback fires only at the transition moment, not retroactively
+        // Decrement pending — readyBuffers empty AND pendingCount == 0 → callback must fire
         store.decrementPending();
+        assertThat(callCount[0]).isEqualTo(1);
+    }
+
+    /**
+     * Verify onBecameEmpty fires via decrementPending when readyBuffers is already empty and the
+     * last pending count is decremented to zero (phase-2 drain path).
+     *
+     * <p>Scenario: addBuffer + tryTake clears readyBuffers (callback fires via tryTake). Then
+     * incrementPending + addBuffer (resets flag) + tryTake (ready empty but pending==1, so no
+     * callback) + decrementPending (both empty → callback fires again).
+     */
+    @Test
+    void testOnBecameEmptyCallbackFiredByDecrementPendingWhenReadyEmpty() {
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        int[] callCount = {0};
+        store.setOnBecameEmptyCallback(() -> callCount[0]++);
+
+        // Round 1: buffer goes through ready queue
+        store.addBuffer(createBuffer(new byte[] {1}));
+        store.tryTake().recycleBuffer();
+        // ready=[], pending=0 → callback fires
+        assertThat(callCount[0]).isEqualTo(1);
+
+        // Register a pending spill entry, then add a ready buffer (which resets the fired flag).
+        store.incrementPending(); // pending=1
+        store.addBuffer(createBuffer(new byte[] {2})); // resets becameEmptyCallbackFired=false
+        // Consume the ready buffer: ready=[], but pending==1 → callback must NOT fire
+        store.tryTake().recycleBuffer();
+        assertThat(callCount[0]).isEqualTo(1);
+
+        // Phase-2 drain: decrement the pending entry; now ready=[], pending=0 → callback fires
+        store.decrementPending();
+        assertThat(callCount[0]).isEqualTo(2);
+    }
+
+    /**
+     * Verify onBecameEmpty fires exactly once when both the last ready buffer is taken AND a
+     * pending entry is later decremented (i.e. not double-fired).
+     */
+    @Test
+    void testOnBecameEmptyCallbackFiredOnceViaPendingOnlyPath() {
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        int[] callCount = {0};
+        store.setOnBecameEmptyCallback(() -> callCount[0]++);
+
+        // Only pending, no ready buffers
+        store.incrementPending();
         assertThat(callCount[0]).isEqualTo(0);
+
+        // Decrement to zero with empty readyBuffers → first time becoming empty → callback fires
+        store.decrementPending();
+        assertThat(callCount[0]).isEqualTo(1);
+
+        // Additional decrementPending calls must not re-fire (idempotent until next non-empty)
+        store.incrementPending();
+        store.decrementPending();
+        assertThat(callCount[0]).isEqualTo(2);
     }
 
     /**

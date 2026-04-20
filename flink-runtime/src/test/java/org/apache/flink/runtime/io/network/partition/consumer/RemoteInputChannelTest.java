@@ -2252,6 +2252,241 @@ class RemoteInputChannelTest {
         assertThat(second.get().buffer().getSize()).isEqualTo(20);
     }
 
+    // ---------------------------------------------------------------------------
+    // Credit gating: notifyBufferAvailable and onSenderBacklog short-circuit paths
+    // ---------------------------------------------------------------------------
+
+    /**
+     * While the recovered store is non-empty, {@link RemoteInputChannel#notifyBufferAvailable} must
+     * not announce credit to the upstream (credit-gating invariant §2.6).
+     */
+    @Test
+    void testNotifyBufferAvailableShortCircuitsWhenStoreNonEmpty() throws Exception {
+        SingleInputGate inputGate = createSingleInputGate(1);
+
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        store.addBuffer(TestBufferFactory.createBuffer(10));
+
+        AtomicBoolean creditNotifyFired = new AtomicBoolean(false);
+        PartitionRequestClient mockClient = mock(PartitionRequestClient.class);
+        org.mockito.Mockito.doAnswer(
+                        inv -> {
+                            creditNotifyFired.set(true);
+                            return null;
+                        })
+                .when(mockClient)
+                .notifyCreditAvailable(any(RemoteInputChannel.class));
+
+        ConnectionID connectionId =
+                new ConnectionID(
+                        org.apache.flink.runtime.clusterframework.types.ResourceID.generate(),
+                        new java.net.InetSocketAddress("localhost", 0),
+                        0);
+        RemoteInputChannel channel =
+                new RemoteInputChannel(
+                        inputGate,
+                        0,
+                        new ResultPartitionID(),
+                        new ResultSubpartitionIndexSet(0),
+                        connectionId,
+                        InputChannelTestUtils.mockConnectionManagerWithPartitionRequestClient(
+                                mockClient),
+                        0,
+                        0,
+                        0,
+                        2 /* initialCredit */,
+                        new SimpleCounter(),
+                        new SimpleCounter(),
+                        ChannelStateWriter.NO_OP,
+                        store);
+
+        inputGate.setInputChannels(channel);
+        channel.setup();
+        channel.requestSubpartitions();
+
+        // Store is non-empty: notifyBufferAvailable must not trigger credit send
+        channel.notifyBufferAvailable(5);
+        assertThat(creditNotifyFired.get()).isFalse();
+    }
+
+    /**
+     * While the recovered store is non-empty, {@link RemoteInputChannel#onSenderBacklog} must not
+     * trigger credit announcement to the upstream.
+     */
+    @Test
+    void testOnSenderBacklogShortCircuitsWhenStoreNonEmpty() throws Exception {
+        SingleInputGate inputGate = createSingleInputGate(1);
+
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        store.addBuffer(TestBufferFactory.createBuffer(10));
+
+        AtomicBoolean creditNotifyFired = new AtomicBoolean(false);
+        PartitionRequestClient mockClient = mock(PartitionRequestClient.class);
+        org.mockito.Mockito.doAnswer(
+                        inv -> {
+                            creditNotifyFired.set(true);
+                            return null;
+                        })
+                .when(mockClient)
+                .notifyCreditAvailable(any(RemoteInputChannel.class));
+
+        ConnectionID connectionId =
+                new ConnectionID(
+                        org.apache.flink.runtime.clusterframework.types.ResourceID.generate(),
+                        new java.net.InetSocketAddress("localhost", 0),
+                        0);
+        RemoteInputChannel channel =
+                new RemoteInputChannel(
+                        inputGate,
+                        0,
+                        new ResultPartitionID(),
+                        new ResultSubpartitionIndexSet(0),
+                        connectionId,
+                        InputChannelTestUtils.mockConnectionManagerWithPartitionRequestClient(
+                                mockClient),
+                        0,
+                        0,
+                        0,
+                        2 /* initialCredit */,
+                        new SimpleCounter(),
+                        new SimpleCounter(),
+                        ChannelStateWriter.NO_OP,
+                        store);
+
+        inputGate.setInputChannels(channel);
+        channel.setup();
+        channel.requestSubpartitions();
+
+        // Store is non-empty: onSenderBacklog must not trigger credit send
+        channel.onSenderBacklog(10);
+        assertThat(creditNotifyFired.get()).isFalse();
+    }
+
+    /**
+     * When the recovered store is empty, {@link RemoteInputChannel#notifyBufferAvailable} must
+     * announce credit to the upstream as usual.
+     */
+    @Test
+    void testNotifyBufferAvailableProceedsWhenStoreEmpty() throws Exception {
+        SingleInputGate inputGate = createSingleInputGate(1);
+
+        // Store is empty from the start (no buffers added)
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        store.markComplete();
+
+        AtomicBoolean creditNotifyFired = new AtomicBoolean(false);
+        PartitionRequestClient mockClient = mock(PartitionRequestClient.class);
+        org.mockito.Mockito.doAnswer(
+                        inv -> {
+                            creditNotifyFired.set(true);
+                            return null;
+                        })
+                .when(mockClient)
+                .notifyCreditAvailable(any(RemoteInputChannel.class));
+
+        ConnectionID connectionId =
+                new ConnectionID(
+                        org.apache.flink.runtime.clusterframework.types.ResourceID.generate(),
+                        new java.net.InetSocketAddress("localhost", 0),
+                        0);
+        RemoteInputChannel channel =
+                new RemoteInputChannel(
+                        inputGate,
+                        0,
+                        new ResultPartitionID(),
+                        new ResultSubpartitionIndexSet(0),
+                        connectionId,
+                        InputChannelTestUtils.mockConnectionManagerWithPartitionRequestClient(
+                                mockClient),
+                        0,
+                        0,
+                        0,
+                        2 /* initialCredit */,
+                        new SimpleCounter(),
+                        new SimpleCounter(),
+                        ChannelStateWriter.NO_OP,
+                        store);
+
+        inputGate.setInputChannels(channel);
+        channel.setup();
+        channel.requestSubpartitions();
+
+        // Store is empty: notifyBufferAvailable must proceed and fire credit
+        channel.notifyBufferAvailable(5);
+        assertThat(creditNotifyFired.get()).isTrue();
+    }
+
+    /**
+     * When the recovered store is empty, {@link RemoteInputChannel#onSenderBacklog} must proceed
+     * normally — it must not short-circuit and must pass through to {@link
+     * RemoteInputChannel#notifyBufferAvailable}. We verify this by confirming credit is announced
+     * when there are floating buffers available in the gate's buffer pool.
+     */
+    @Test
+    void testOnSenderBacklogProceedsWhenStoreEmpty() throws Exception {
+        final NetworkBufferPool networkBufferPool = new NetworkBufferPool(16, 32);
+
+        // Store is empty from the start (no buffers added)
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        store.markComplete();
+
+        AtomicBoolean creditNotifyFired = new AtomicBoolean(false);
+        PartitionRequestClient mockClient = mock(PartitionRequestClient.class);
+        org.mockito.Mockito.doAnswer(
+                        inv -> {
+                            creditNotifyFired.set(true);
+                            return null;
+                        })
+                .when(mockClient)
+                .notifyCreditAvailable(any(RemoteInputChannel.class));
+
+        ConnectionID connectionId =
+                new ConnectionID(
+                        org.apache.flink.runtime.clusterframework.types.ResourceID.generate(),
+                        new java.net.InetSocketAddress("localhost", 0),
+                        0);
+
+        // Build the gate with a real buffer pool so requestFloatingBuffers can return > 0.
+        SingleInputGate inputGate =
+                new SingleInputGateBuilder()
+                        .setNumberOfChannels(1)
+                        .setSegmentProvider(networkBufferPool)
+                        .setBufferPoolFactory(networkBufferPool.createBufferPool(8, 8))
+                        .build();
+
+        RemoteInputChannel channel =
+                new RemoteInputChannel(
+                        inputGate,
+                        0,
+                        new ResultPartitionID(),
+                        new ResultSubpartitionIndexSet(0),
+                        connectionId,
+                        InputChannelTestUtils.mockConnectionManagerWithPartitionRequestClient(
+                                mockClient),
+                        0,
+                        0,
+                        0,
+                        2 /* initialCredit */,
+                        new SimpleCounter(),
+                        new SimpleCounter(),
+                        ChannelStateWriter.NO_OP,
+                        store);
+
+        inputGate.setInputChannels(channel);
+        try {
+            inputGate.setup();
+            channel.requestSubpartitions();
+
+            // Store is empty: onSenderBacklog must pass through and fire credit
+            channel.onSenderBacklog(4);
+            assertThat(creditNotifyFired.get()).isTrue();
+        } finally {
+            inputGate.close();
+            networkBufferPool.destroyAllBufferPools();
+            networkBufferPool.destroy();
+        }
+    }
+
     private static final class TestBufferPool extends NoOpBufferPool {
 
         @Override

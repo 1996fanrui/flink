@@ -20,6 +20,7 @@ package org.apache.flink.runtime.checkpoint.channel;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.partition.consumer.RecoveredBufferStoreImpl;
+import org.apache.flink.util.Preconditions;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -52,11 +53,20 @@ public class OutputWriterImpl implements OutputWriter {
 
     /** Blocking supplier that may wait for a buffer to become available. */
     @FunctionalInterface
-    public interface BlockingSupplier<T> {
+    interface BlockingSupplier<T> {
         T get() throws InterruptedException, IOException;
     }
 
+    /**
+     * Per-channel stores used by this OutputWriter. Typed as the concrete {@link
+     * RecoveredBufferStoreImpl} rather than {@link
+     * org.apache.flink.runtime.io.network.partition.consumer.RecoveredBufferStore} because the
+     * writer-side methods (addBuffer, markComplete, incrementPending, decrementPending) are
+     * intentionally not part of the public interface — they are only called by OutputWriter, which
+     * is the sole producer of buffers for the stores.
+     */
     private final Map<InputChannelInfo, RecoveredBufferStoreImpl> storesByChannel;
+
     private final ChannelStateWriter channelStateWriter;
     private final String[] spillDirs;
     private final int memorySegmentSize;
@@ -187,7 +197,11 @@ public class OutputWriterImpl implements OutputWriter {
             SpillEntry entry = spillEntryQueue.poll();
             SpillFileReader reader = spillEntryReaderQueue.poll();
             loadEntryIntoBuffer(entry, reader, buffer);
-            RecoveredBufferStoreImpl store = storesByChannel.get(entry.getChannelInfo());
+            RecoveredBufferStoreImpl store =
+                    Preconditions.checkNotNull(
+                            storesByChannel.get(entry.getChannelInfo()),
+                            "No store for channel %s",
+                            entry.getChannelInfo());
             store.addBuffer(buffer);
             store.decrementPending();
         }
@@ -273,10 +287,12 @@ public class OutputWriterImpl implements OutputWriter {
                     entry.getLength());
             // Decrement pending so that store.isEmpty() returns true once phase2 completes,
             // allowing RemoteInputChannel to release held credit to the upstream.
-            RecoveredBufferStoreImpl store = storesByChannel.get(entry.getChannelInfo());
-            if (store != null) {
-                store.decrementPending();
-            }
+            RecoveredBufferStoreImpl store =
+                    Preconditions.checkNotNull(
+                            storesByChannel.get(entry.getChannelInfo()),
+                            "No store for channel %s",
+                            entry.getChannelInfo());
+            store.decrementPending();
         }
     }
 
@@ -303,7 +319,11 @@ public class OutputWriterImpl implements OutputWriter {
                 // Buffer full — deliver to store
                 if (activeBufferPosition >= memorySegmentSize) {
                     activeBuffer.setSize(memorySegmentSize);
-                    storesByChannel.get(channelInfo).addBuffer(activeBuffer);
+                    Preconditions.checkNotNull(
+                                    storesByChannel.get(channelInfo),
+                                    "No store for channel %s",
+                                    channelInfo)
+                            .addBuffer(activeBuffer);
                     activeBuffer = null;
                     activeBufferPosition = 0;
                 }
@@ -358,7 +378,11 @@ public class OutputWriterImpl implements OutputWriter {
             SpillEntry entry = spillEntryQueue.poll();
             SpillFileReader reader = spillEntryReaderQueue.poll();
             loadEntryIntoBuffer(entry, reader, buffer);
-            RecoveredBufferStoreImpl store = storesByChannel.get(entry.getChannelInfo());
+            RecoveredBufferStoreImpl store =
+                    Preconditions.checkNotNull(
+                            storesByChannel.get(entry.getChannelInfo()),
+                            "No store for channel %s",
+                            entry.getChannelInfo());
             store.addBuffer(buffer);
             store.decrementPending();
         }
@@ -379,7 +403,11 @@ public class OutputWriterImpl implements OutputWriter {
     private void flushActiveBuffer() {
         if (activeBuffer != null && activeBufferPosition > 0) {
             activeBuffer.setSize(activeBufferPosition);
-            storesByChannel.get(activeChannelInfo).addBuffer(activeBuffer);
+            Preconditions.checkNotNull(
+                            storesByChannel.get(activeChannelInfo),
+                            "No store for channel %s",
+                            activeChannelInfo)
+                    .addBuffer(activeBuffer);
         } else if (activeBuffer != null) {
             // Buffer allocated but nothing written — recycle it
             activeBuffer.recycleBuffer();
@@ -398,7 +426,11 @@ public class OutputWriterImpl implements OutputWriter {
                             activeSpillEntryLength);
             spillEntryQueue.add(entry);
             spillEntryReaderQueue.add(getCurrentSpillFileReader());
-            storesByChannel.get(activeSpillChannelInfo).incrementPending();
+            Preconditions.checkNotNull(
+                            storesByChannel.get(activeSpillChannelInfo),
+                            "No store for channel %s",
+                            activeSpillChannelInfo)
+                    .incrementPending();
             activeSpillEntryLength = 0;
             activeSpillChannelInfo = null;
         }

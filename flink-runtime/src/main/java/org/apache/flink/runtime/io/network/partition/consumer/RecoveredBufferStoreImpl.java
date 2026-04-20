@@ -245,16 +245,41 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
         }
     }
 
-    /** Increments the pending spill entry count. Called when OutputWriter spills data to disk. */
+    /**
+     * Increments the pending spill entry count. Called when OutputWriter spills data to disk.
+     *
+     * <p>If the store was logically empty before this call (readyBuffers empty AND pendingCount was
+     * zero), reset the {@code becameEmptyCallbackFired} flag so that the next empty transition will
+     * fire the onBecameEmpty callback again.
+     */
     public synchronized void incrementPending() {
+        if (readyBuffers.isEmpty() && pendingCount == 0) {
+            // Store is transitioning from empty to non-empty; reset the flag so the callback
+            // fires again when the store next becomes empty.
+            becameEmptyCallbackFired = false;
+        }
         pendingCount++;
     }
 
     /**
-     * Decrements the pending spill entry count. Called when OutputWriter drains a spill entry into
-     * a buffer.
+     * Decrements the pending spill entry count. Called when OutputWriter drains a spill entry (into
+     * a buffer via P3/close path, or directly to checkpoint storage via phase-2 path).
+     *
+     * <p>If this decrement causes the store to become empty (readyBuffers empty AND pendingCount
+     * reaches zero) and the onBecameEmpty callback has not yet fired for this empty state, the
+     * callback is fired outside the lock to prevent deadlocks.
      */
-    public synchronized void decrementPending() {
-        pendingCount--;
+    public void decrementPending() {
+        Runnable cb = null;
+        synchronized (this) {
+            pendingCount--;
+            if (readyBuffers.isEmpty() && pendingCount == 0 && !becameEmptyCallbackFired) {
+                becameEmptyCallbackFired = true;
+                cb = onBecameEmptyCallback;
+            }
+        }
+        if (cb != null) {
+            cb.run();
+        }
     }
 }
