@@ -1,0 +1,575 @@
+# FLINK-38544 Stale Migration Code & RecoveredStore Refactor 讨论
+
+本文档汇总三条互相关联的议题：
+
+1. 由 commit `d1914c63` + `3aef0932` 引入、但在当前 store 架构下已经失效的逻辑（死代码清理）。
+2. `ChannelStatePersister.startPersisting` 接收 `RecoveredBufferStore` 的集中化重构。
+3. Checkpoint 对 OutputWriter 内未投递数据（活跃 buffer / 活跃 spill entry / FIFO spill 队列）的处理，
+   目前完全未实现。
+
+讨论过程跨多轮，重要结论汇总在本文档，避免下一次开工时细节丢失。
+
+---
+
+## 1. 背景：旧迁移路径 vs. 新 store 路径
+
+### 旧路径（commit `d1914c63`, `3aef0932`, `cebc174a`, `9ce47b21`）
+- `RecoveredInputChannel.toInputChannel()` 通过 `ArrayDeque<Buffer> initialRecoveredBuffers` 把 recovered
+  buffers 传给新 physical channel 构造器。
+- `LocalInputChannel` 塞进 `toBeConsumedBuffers`（`BufferAndBacklog` 包装）。
+- `RemoteInputChannel` 塞进 `receivedBuffers`（`SequenceBuffer` 包装）。
+- 由于 recovered 数据和 "normal" 数据共用同一 deque，下游所有读/计数/快照/优先事件/释放逻辑必须兼顾
+  两种语义。后续的 `3aef0932`、`cebc174a`、`9ce47b21` 都是在这个共用 deque 的消费/快照路径上打的补丁。
+
+### 新路径（commit `6c6bc972f85`, FLINK-38544）
+- recovered 数据住在 per-channel `RecoveredBufferStore`，通过 store reference 传递，不再走 deque。
+- `toBeConsumedBuffers` 只剩 `FullyFilledBuffer` split（正常数据路径）。
+- `receivedBuffers` 只剩网络数据。
+
+### 关键后果
+所有"为了让旧 deque 同时承载 recovered 语义"而打的补丁，**根因已不存在**。若不主动清理，就变成
+误导读者的死代码 / 不再有语义的 side effect。
+
+---
+
+## 2. 架构决策（已达成共识）
+
+以下均已与用户明确确认。
+
+### 2.1 组件粒度
+
+| 组件 | 粒度 | 代码佐证 |
+|------|------|---------|
+| `OutputWriter` | per-task（一个 task 的全部 gate / channel 共用） | `SequentialChannelStateReaderImpl:83` 创建唯一 instance，传入所有 `inputGates` |
+| `RecoveredBufferStore` | per-channel | `createPerChannelStores(inputGates)` 产出 `Map<InputChannelInfo, Store>` |
+| Spill file | per-task（与 OutputWriter 同生命周期） | REQ-SFMG |
+| `spillEntryQueue` | per-task 全局 FIFO（不同 channel entry 交错） | `OutputWriterImpl:74` |
+
+**不对称**：OutputWriter 是 per-task，store 是 per-channel。这是 disk 数据 checkpoint 需要聚合触发的根因。
+
+### 2.2 数据路径
+
+- `filterAndRewrite` → `OutputWriter.write(data, length, channelInfo)`。
+- OutputWriter 根据 `channelInfo` 把数据直接投递到目标 store（buffer 走 `addBuffer`，磁盘走 spill file 并
+  递增 store 的 `pendingCount`）。
+- InputChannel 只认 store，通过 `store.tryTake()` 消费，**不直接感知 OutputWriter**。
+- Store **只持有** ready buffers 队列 + `pendingCount`（磁盘未消费 entry 数）。不持有 SpillEntry 对象、不持有
+  SpillFile reader、不做磁盘 I/O。
+
+### 2.3 Checkpoint 路径（关键回调链）
+
+```
+InputChannel.checkpointStarted(barrier)
+  └─ channelStatePersister.startPersisting(barrier.getId(), store, inflightBuffers)
+       ├─ store.checkpoint(channelStateWriter, id, channelInfo)
+       │    ├─ snapshot ready buffers: addInputData(CloseableIterator<Buffer>)
+       │    └─ 回调 OutputWriter: checkpointCallback.onChannelCheckpointStarted(id, channelInfo)
+       │
+       └─ channelStateWriter.addInputData(id, channelInfo, UNKNOWN, inflightBuffers)
+            （Remote 传 getInflightBuffersUnsafe；Local 传 emptyList）
+
+OutputWriter.onChannelCheckpointStarted(id, channelInfo):
+  ├─ 首个 callback 到达时：扫描 spillEntryQueue，计算 wait-set = {有 pending entry 的 channel}
+  ├─ 从 wait-set 移除 channelInfo
+  └─ wait-set 空 → 触发"磁盘数据阶段 snapshot"
+        顺序遍历 spillEntryQueue：
+          for entry in spillEntryQueue:
+            writer.addInputData(id, entry.channelInfo, seqNum,
+                                spillReader.openInputStream(entry.offset, entry.length),
+                                entry.length)
+```
+
+要点：
+- **InputChannel 不直接调 `store.checkpoint`**；经过 `ChannelStatePersister.startPersisting` 统一入口。
+- **Store 不直接调 OutputWriter**：store 通过构造时注入的 `checkpointCallback` 通知（接口解耦）。
+- **OutputWriter 不感知 InputChannel**，只持有 `storesByChannel` 和每个 store 的 callback。
+- 磁盘数据的顺序写全发生在最后一个 channel callback 到达后，**一次顺序 I/O**，没有随机 I/O。
+
+### 2.4 单 checkpoint 语义
+
+参考 `ChannelStatePersister.startPersisting`：**同一时刻只有一个活跃 checkpoint**。新 barrierId 到达意味着
+旧的已结束或放弃。OutputWriter 的 wait-set 状态随之覆盖，不需要按 `checkpointId` 维护 Map。
+
+### 2.5 Checkpoint 触发时无 race
+
+Checkpoint 触发点在 Task 线程；Recovery 线程要么在 filterAndRewrite 循环的 `write()` 调用之间、要么在
+`close()` drain 循环中。**触发时机保证所有 buffer 已刷出**——不会在 `write()` 调用中途触发，因此
+活跃 buffer / 活跃 SpillEntry（用户确认了这一点）不会在 snapshot 时还"半填"。Snapshot 直接对
+稳态的 spillEntryQueue + store.readyBuffers 做即可。
+
+> **名词**：`seal` 指把 OutputWriter 正在累积的 SpillEntry（还未满 memorySegmentSize，或 channel 还未变）
+> 固化成不可变的 SpillEntry 对象并加入全局 FIFO 队列。来自 `design.md` 的"密封"描述。
+
+### 2.6 disk + network inflight 不共存不变量（需代码强保证）
+
+**约定**：单 channel 内，`store.pendingCount > 0`（磁盘未消费）时，`receivedBuffers` 必须为空；
+`receivedBuffers` 非空时，store 必须已 drain 完成。二者不共存——否则 checkpoint snapshot
+顺序会乱（disk 字节和 network 字节交错，恢复时无法还原）。
+
+**用户立场**：天然不会发生。理由：如果当前 channel 还在消费 recovered 数据，说明 upstream 也还在
+自己的 recovery 里，不会向当前 channel 发新数据。
+
+**代码现状**：该不变量**没有被代码强制**。`SingleInputGate.convertRecoveredInputChannels`（`SingleInputGate:398`）
+在 `finishReadRecoveredState` 之后立即触发 `inputChannel.requestSubpartitions()`（`SingleInputGate:448, 706`），
+此时 OutputWriter.close() 的 drain 与 Task 消费并发进行，upstream 收到 partition request 后就能
+经 `RemoteInputChannel.onBuffer`（`RemoteInputChannel:608-667`）往 `receivedBuffers` 塞数据。
+
+**enforcement 方案（已定）**：通过**信用额度（credit）强制**。
+
+- 不能用"延迟 `requestSubpartitions()`"方案——会阻塞 checkpoint barrier 从上游流向下游。
+- 不能用"副队列缓冲 onBuffer"方案——破坏网络路径简洁性。
+- 采用：**`RemoteInputChannel` 向上游发的 credit 在 `store` 非空（pendingCount > 0 或 readyBuffers 非空）期间永远为 0**。
+  upstream credit 为 0 时无法发送网络数据，`receivedBuffers` 自然保持空。Store 完全消费（`store.isEmpty()` 或
+  `store.isComplete()`）后，才开始正常发放 credit。Barrier 事件不受 credit 限制（barrier 通过 priority event 路径），
+  不会被阻塞。
+
+**实现触点**（待实现）：
+- `RemoteInputChannel.requestSubpartitions()`：partition request 的初始 credit 必须根据 store 状态决定。
+  若 store 非空，发 0；否则发 `initialCredit`。
+- `RemoteInputChannel.notifyBufferAvailable(int)` / `onSenderBacklog(int)`：在 store 非空期间，credit 增量
+  必须 short-circuit 为 0（或不发送），避免变相向上游授信。
+- Store 在 `isComplete()` / `isEmpty()` 第一次满足时需要回调 `RemoteInputChannel` 释放 credit；
+  可以通过 `store.setOnCompleteCallback(this::releaseHeldCredit)` 或在 `getNextBuffer()` 消费完最后一个
+  buffer 时触发（需要权衡及时性）。
+- `ChannelStatePersister.startPersisting` 内加 `checkState(store.isEmpty() || knownBuffers.isEmpty())`
+  作为防御层（见 §4.1）。invariant 被破坏时 checkpoint 立刻 fail，不会静默写出顺序错乱的 channel state。
+
+### 2.7 EMPTY 单例
+
+- `RecoveredBufferStore.EMPTY` 单例：`isEmpty()=true`, `isComplete()=true`, `tryTake()=null`, `size()=0`,
+  `peekNextDataType()=NONE`, `checkpoint()`/`releaseAll()`/`setNotificationCallback()` 全 no-op。
+- 构造器**无条件持有** store，删除 `!isEmpty()` 守卫（该守卫本身有 bug：转换瞬间 store 可能空，但后续
+  OutputWriter 仍会 `addBuffer`；守卫住就会丢数据）。
+- Non-filtering 路径传 EMPTY，filtering 路径传真实 store。
+- 所有 `recoveredStore != null` 删除，只留 `!store.isEmpty()` / `!store.isComplete()`。
+- `setNotificationCallback` 提升到接口，消 `instanceof RecoveredBufferStoreImpl`。
+- 用户的性能顾虑：真实 store 消费完 `isEmpty()=true`，热路径行为与 EMPTY 等价，无额外开销。
+
+### 2.8 Non-filtering 模式不受影响
+
+OutputWriter 不存在，store = EMPTY，`store.checkpoint()` 是 no-op（不回调 OutputWriter）。
+`ChannelStatePersister.startPersisting` 对 EMPTY store 表现与原来传 `emptyList` 相同。Non-filtering
+路径不需要 callback 机制。
+
+---
+
+## 3. 代码审计表
+
+每一行：设施、旧路径动机、当前 store 路径下的状态、建议处理。
+
+### A. `LocalInputChannel.checkpointStarted` 遍历 `toBeConsumedBuffers`
+
+**位置**：`LocalInputChannel.java:141-163`。
+
+**旧动机**（3aef0932）：recovered buffers 住在 `toBeConsumedBuffers` 里，要 snapshot 它们。
+
+**当前事实**：
+- Recovered 快照由 `store.checkpoint(...)` 处理（同方法内，行 142-152）。
+- `toBeConsumedBuffers` 现在只含 `FullyFilledBuffer` 切出来的尾巴——**普通数据路径**的内存切片，
+  不属于 channel state。
+- Local channel 在 master 上原本就不 snapshot inflight（`startPersisting(id, Collections.emptyList())`），
+  因为 Local 无网络 buffering，barrier 与数据同批到达。
+
+**判断**：死代码。`FullyFilledBuffer` 切片不应进入 channel state，否则 UC 快照会多写一段本不该持久化的
+普通数据，恢复时会有副作用（重复消费）。
+
+**建议**：恢复为 `channelStatePersister.startPersisting(barrier.getId(), store, Collections.emptyList())`
+（配合 §4.1）。
+
+### B. `RemoteInputChannel.checkReadability()` 特判
+
+**位置**：`RemoteInputChannel.java:940-947`；call sites `:260, :295`。
+
+**旧动机**（d1914c63）：migrated recovered buffers 在 `receivedBuffers` 里可能在 `requestSubpartitions()`
+前就被读到，所以不能强求 `partitionRequestClient` 已初始化。
+
+**当前事实**：`receivedBuffers` 只含网络数据；`getNextBuffer` 已先从 store 出数据（`:275-284`），
+`receivedBuffers` 那层永远是纯网络路径，必要求 client 初始化。
+
+**判断**：死代码 hack。对应 `design_impl_alignment.md` C4-2 "待修复"。
+
+**建议**：删除 `checkReadability()`，两处调用改回 `checkPartitionRequestQueueInitialized()`（master 原行为）。
+
+### C. `RemoteInputChannel.checkpointStarted` 里的 `getInflightBuffersUnsafe`
+
+**位置**：`RemoteInputChannel.java:732-764`。
+
+**判断**：**不是**死代码。Remote 在 master 上就要 snapshot 网络 inflight；回到原语义后仍然正确。
+列在这里是为了对比：Local（A）和 Remote（C）结论相反，不要一刀切。
+
+### D. `RecoveredInputChannel.onRecoveredStateBuffer()`
+
+**位置**：`RecoveredInputChannel.java`。
+
+**旧动机**：OutputWriter 前时代，ChannelStateHandler 直接 callback 这个方法把 buffer 塞入 channel。
+
+**当前事实**：OutputWriter 通过 `store.addBuffer()` 直接投递，按 design.md REQ-7388 应删除该包装方法。
+对应 `design_impl_alignment.md` C4-1 "待修复"。
+
+**建议**：删除 `onRecoveredStateBuffer()`，grep 并移除所有调用点。
+
+### E. Local / Remote 构造器的 null 守卫 + `instanceof RecoveredBufferStoreImpl`
+
+**位置**：
+- `LocalInputChannel.java:128-134`
+- `RemoteInputChannel.java:170-176`
+- 下游 15 处 `recoveredStore != null` 散落调用（Local 8, Remote 7）
+
+**问题**：
+1. 15 处 null 判断。
+2. `instanceof RecoveredBufferStoreImpl` 反射式强转调用 `setNotificationCallback`——接口上没这个方法。
+3. 构造器里 `if (recoveredStore != null && !recoveredStore.isEmpty()) this.recoveredStore = recoveredStore`：
+   转换瞬间 store 可能为空（drain 还没把 disk 数据加载回来），但随后 OutputWriter 会继续 `addBuffer`；
+   以"当前为空"为由丢掉引用就会丢数据。
+
+**建议**：采纳 §2.7 的 EMPTY 单例方案。
+
+### F. `LocalInputChannel.getNextRecoveredBuffer` 的优先事件分支
+
+**位置**：`LocalInputChannel.java:357-413`。
+
+**旧动机**（cebc174a）：recovered 和 subpartitionView 数据共存时，UC barrier 先从 subpartitionView 取，
+再回到 recovered。
+
+**当前事实**：数据源已从 `toBeConsumedBuffers.peek()` 改为 `recoveredStore.peekNextDataType()`。
+drain 期间 `subpartitionView` 已存在、barrier 仍可能先到，语义有效。
+
+**判断**：保留。
+
+### G. `LocalInputChannel.getBuffersInUseCount` / `unsynchronizedGetNumberOfQueuedBuffers`
+
+**位置**：`LocalInputChannel.java:564-574`。
+
+**旧动机**（9ce47b21）：加 `toBeConsumedBuffers.size()`，因为 recovered buffers 在里面要计入。
+
+**当前事实**：`toBeConsumedBuffers` 只含 `FullyFilledBuffer` 切片——也是队列里的数据，**应当**被计数。
+该 hotfix 实际修的是 master 漏计 FullyFilledBuffer split 的 bug（跟 recovered 无关）。
+
+**判断**：保留。`commit message tag` 在提交整理阶段可能可以拎出当作 master hotfix 独立发。
+
+### H. `LocalInputChannel.releaseAllResources` 回收 `toBeConsumedBuffers`
+
+**位置**：commit 9ce47b21 添加。
+
+**判断**：FullyFilledBuffer 切片也要释放，保留。
+
+### I. Remote 构造器里的 `initialRecoveredBuffers → receivedBuffers` 迁移循环
+
+**位置**：已被 commit `6c6bc972` 移除。确认无残留。
+
+### J. OutputWriter 内未投递数据的 Checkpoint 处理
+
+详见 §4.3。design.md 写了两阶段方案，代码**完全未实现**：
+- `OutputWriterImpl` 没有任何 `checkpoint(...)` / `addInputData(InputStream)` / `openInputStream` 调用。
+- 没有"等所有 channel 触发完"的聚合点。
+- `ChannelStateWriter.addInputData(InputStream, dataLength)` 已存在但**无人调用**。
+- `SpillFileReader.openInputStream` 已存在但无人调用。
+
+**后果**：recovery 期间触发 checkpoint，spill 文件里未重放的数据会丢失。REQ-KM7C 未实现。
+
+---
+
+## 4. 关键重构方案
+
+### 4.1 `ChannelStatePersister` 集中化
+
+**新签名**：
+```java
+void startPersisting(long barrierId, RecoveredBufferStore store, List<Buffer> knownBuffers)
+        throws CheckpointException;
+```
+
+**InputChannel 侧**（Local 示意，Remote 类似）：
+```java
+public void checkpointStarted(CheckpointBarrier barrier) throws CheckpointException {
+    channelStatePersister.startPersisting(
+            barrier.getId(), store, /* Local: emptyList; Remote: getInflightBuffersUnsafe */);
+}
+```
+
+**ChannelStatePersister 内部**：
+```java
+void startPersisting(long barrierId, RecoveredBufferStore store, List<Buffer> knownBuffers) {
+    // ... 原有 checkpointStatus / lastSeenBarrier 判定 ...
+
+    // 防御性 invariant 检查：store 非空与 knownBuffers 非空互斥（由 §2.6 credit=0 保证）
+    checkState(
+            store.isEmpty() || knownBuffers.isEmpty(),
+            "Invariant violated: store has data (size=%s) AND knownBuffers non-empty (size=%s) at barrier %s. "
+                    + "This means credit=0 gating in RemoteInputChannel failed.",
+            store.size(), knownBuffers.size(), barrierId);
+
+    // 阶段 1-a: store ready buffers + 通知 OutputWriter
+    try {
+        store.checkpoint(channelStateWriter, barrierId, channelInfo);
+    } catch (IOException e) {
+        throw new CheckpointException(
+                "Failed to checkpoint recovered store",
+                CheckpointFailureReason.IO_EXCEPTION, e);
+    }
+
+    // 阶段 1-b: 已有 inflight 数据（Remote 网络 inflight）
+    if (!knownBuffers.isEmpty()) {
+        channelStateWriter.addInputData(barrierId, channelInfo,
+                SEQUENCE_NUMBER_UNKNOWN,
+                CloseableIterator.fromList(knownBuffers, Buffer::recycleBuffer));
+    }
+}
+```
+
+**防御性 check 说明**：invariant 要求 store 非空时 knownBuffers 必须为空（来自 §2.6 credit=0 机制）。
+加一个 `checkState` 兜底，任何破坏 invariant 的改动（例如未来误改 credit 逻辑、或 enforcement 实现有漏）
+会在 checkpoint 时立刻 fail，不会静默写出顺序错乱的 channel state。
+
+**好处**：
+- InputChannel 不直接调 `store.checkpoint`，单入口。
+- try-catch IOException → CheckpointException 只写一次。
+- Local 和 Remote 的 `checkpointStarted` 各缩成 1-2 行。
+
+**前一轮讨论**：曾考虑"磁盘 snapshot 已由 OutputWriter 独立处理、startPersisting 加 store 没意义"，
+被用户驳回——理由是 InputChannel 不应直接调 `store.checkpoint`。采纳集中化方案。
+
+### 4.2 EMPTY 单例
+
+见 §2.7。
+
+### 4.3 OutputWriter disk checkpoint（J 节的完整方案）
+
+**核心数据结构变化**：
+- `OutputWriterImpl` 新增 `Map<InputChannelInfo, CheckpointCallback>`（每个 store 一份 callback 的反向注册，
+  构造时建立）——或更简洁地让 OutputWriter 为每个 store `setCheckpointCallback(this::onChannelCheckpointStarted)`。
+- `OutputWriterImpl` 新增状态：`long currentCheckpointId = -1`、`Set<InputChannelInfo> waitSet`。
+- `RecoveredBufferStore` 接口新增 `setCheckpointCallback(CheckpointCallback)`——专用函数接口
+  `@FunctionalInterface CheckpointCallback { void onChannelCheckpointStarted(long checkpointId, InputChannelInfo info); }`。
+  不用 `BiConsumer<Long, InputChannelInfo>`，以明确语义并避免装箱。
+
+**Store 侧**（`RecoveredBufferStoreImpl.checkpoint` 扩展）：
+```java
+synchronized void checkpoint(ChannelStateWriter writer, long id, InputChannelInfo info) {
+    // 1) snapshot ready buffers（与现有一致）
+    if (!readyBuffers.isEmpty()) {
+        List<Buffer> retained = retainAll(readyBuffers);
+        writer.addInputData(id, info, SEQUENCE_NUMBER_RESTORED,
+                CloseableIterator.fromList(retained, Buffer::recycleBuffer));
+    }
+    // 2) 通知 OutputWriter
+    if (checkpointCallback != null) {
+        checkpointCallback.accept(id, info);
+    }
+}
+```
+
+**OutputWriter 侧**：
+```java
+synchronized void onChannelCheckpointStarted(long id, InputChannelInfo info) {
+    if (id != currentCheckpointId) {
+        // 新 checkpoint，重算 wait-set（单 checkpoint 语义）
+        currentCheckpointId = id;
+        waitSet = extractChannelsWithPending(spillEntryQueue); // 扫描一次
+    }
+    waitSet.remove(info);
+    if (waitSet.isEmpty()) {
+        drainSpillEntriesToCheckpoint(id);
+    }
+}
+
+private void drainSpillEntriesToCheckpoint(long id) {
+    // 顺序遍历，逐 entry 写入（ChannelStateWriter 按 channelInfo 聚合）
+    for (SpillEntry entry : spillEntryQueue) {
+        SpillFileReader reader = readerFor(entry);
+        InputStream is = reader.openInputStream(entry.getOffset(), entry.getLength());
+        channelStateWriter.addInputData(
+                id, entry.getChannelInfo(),
+                SEQUENCE_NUMBER_RESTORED, // 保持与 store.checkpoint ready buffers 一致
+                is, entry.getLength());
+    }
+}
+```
+
+**要点**：
+- Wait-set 在首个 callback 到达时扫描 `spillEntryQueue` 一次计算；之后 O(1) 移除。
+- 没有 pending entry 的 channel 不在 wait-set 里；它的 callback 直接"空跑"，不影响流程。
+- Callback 全部到位后，一次 `drainSpillEntriesToCheckpoint` 做顺序 I/O。
+- `ChannelStateWriter.addInputData(InputStream)` 走流式重载，读 I/O 在 writer 的 executor 线程，**不在
+  Task 线程上做磁盘读**。
+
+**线程安全**：
+- Store 内部已 synchronized；callback 在 store 的锁外调用（避免死锁）。
+- OutputWriter 的 callback handler synchronized on `this`；`spillEntryQueue` / `currentCheckpointId` /
+  `waitSet` 的访问在该锁下。
+- Recovery 线程的 drain（close()）也要取同一把锁改 `spillEntryQueue`（现在没加，要补）。
+
+### 4.4 Commit 切分策略：cherry-pick 增量修复
+
+**原则**：每个 fix commit 紧挨着"引入它的原始 commit"。
+
+**操作**：开新分支；按原 commit 顺序 cherry-pick，每 cherry-pick 一个原始 commit 就把对应的 fix commit
+紧跟其后 cherry-pick。避免跨 commit 的代码冲突。
+
+**初步映射**（需用户确认）：
+| 原 commit | 内容 | 紧跟的 fix |
+|----------|------|-----------|
+| `3aef0932` | Local checkpointStarted 遍历 toBeConsumedBuffers | fix A: 恢复 emptyList |
+| `d1914c63` | Buffer migration to 旧 deque + checkReadability | fix B: 删 checkReadability |
+| `cebc174a` | priority event 补丁（基于 toBeConsumedBuffers） | 无（F 判断保留） |
+| `9ce47b21` | 计数修复 | 无（G/H 判断保留） |
+| `6c6bc972` | Adapt to RecoveredBufferStore | fix D: 删 onRecoveredStateBuffer；fix E: EMPTY 单例；§4.1 集中化 |
+| `b3c30f02` | OutputWriter 三数据路径 | fix J: §4.3 disk checkpoint + callback 机制 |
+| `3bdd88a0` | ChannelStateWriter streaming overload | 保留（J 会调用） |
+| `5c1d4546` | 集成 OutputWriter 到 filtering flow | 无 |
+
+### 4.5 实现细节清单
+
+以下三条不需要额外设计拍板，但容易在 coding 时漏掉，列出作为 checklist。
+
+#### 4.5.1 Credit 释放时机（§2.6 invariant 的落地）
+
+store 从"非空"变"空"的瞬间必须向上游释放 credit。触发路径：
+
+- Store 在 `tryTake()` 导致队列变空、且 `pendingCount==0` 时，或 `markComplete()` 被调用时，判断
+  `isEmpty()` 首次为 true，触发反向回调 `onBecameEmptyCallback`。
+- `RecoveredBufferStore` 接口新增 `setOnBecameEmptyCallback(Runnable)`，EMPTY 实现为 no-op。
+- `RemoteInputChannel` 在构造时注册 `store.setOnBecameEmptyCallback(this::releaseHeldCredit)`。
+- `releaseHeldCredit()`：把之前 gate 住的 initialCredit 一次性 announce 给上游
+  （通过 `partitionRequestClient.notifyCreditAvailable` 或 `notifyBufferAvailable` 机制）。
+- `requestSubpartitions()`：若构造时 store 已非空，partition request 的初始 credit 发 0；
+  store 空则按 `initialCredit` 正常发。
+- `notifyBufferAvailable(int)` / `onSenderBacklog(int)`：store 非空期间 short-circuit，不向上游发 credit。
+
+单测必须覆盖：store 非空→构造 Remote→credit=0；store drain 完成→credit 释放→upstream 开始
+发送→`receivedBuffers` 开始有数据。
+
+#### 4.5.2 Phase 2 与 drain 的并发同步
+
+Task 线程（`onChannelCheckpointStarted` 触发的 phase 2 遍历）和 Recovery 线程（`OutputWriterImpl.close()`
+drain 循环）都访问/修改 `spillEntryQueue`。当前 `OutputWriterImpl` **完全没加同步**（`ArrayDeque` 非线程安全）。
+
+实现要求：
+- `OutputWriterImpl` 所有对 `spillEntryQueue` / `spillEntryReaderQueue` / `currentCheckpointId` / `waitSet`
+  的访问 `synchronized(this)`。
+- `drainSpillEntriesToCheckpoint(id)` 在锁内遍历并调 `addInputData(InputStream, length)`。
+  注意：`addInputData` 本身是 enqueue 到 ChannelStateWriter 的 executor，不阻塞 I/O；在锁内调用安全。
+- `close()` 的 drain 循环每次 `poll` 前拿锁；`onChannelCheckpointStarted` 也拿锁。两者互斥。
+- 同一 SpillEntry 不会"既被 drain 消费又被 phase 2 snapshot"——锁保证原子性：
+  - 若 drain 先拿锁：entry 从队列移除，投递 buffer 到 store；phase 2 后拿锁，只看到剩余 entry，缺失
+    的那部分已在 store readyBuffers 里，由 `store.checkpoint()` 负责写出。
+  - 若 phase 2 先拿锁：entry 还在队列，被 phase 2 写出；drain 后拿锁 poll 走同一 entry，投递到 store
+    作为正常消费。此时 checkpoint 已写过，存在数据重复——需避免。
+
+**避免重复的实现**：phase 2 写出的同时立刻把 entry 从 queue 里 poll 出来（"snapshot + drain" 合并）。
+phase 2 完成后，队列为空；drain 线程后续 poll 只能拿到 phase 2 之后新加的 entry（正常路径下没有新的，
+因为 filtering 已结束）。保证 entry 只被 snapshot 一次或被 drain 一次，不会双写。
+
+#### 4.5.3 死代码 A 的改法与新签名一致
+
+`LocalInputChannel.checkpointStarted` 的改法必须用 §4.1 的新签名：
+```java
+channelStatePersister.startPersisting(barrier.getId(), store, Collections.emptyList());
+```
+不要回退到旧签名 `startPersisting(barrierId, emptyList)`。否则 store 的 checkpoint 通路（ready buffers +
+OutputWriter 回调）就断了。
+
+Remote 同理：
+```java
+channelStatePersister.startPersisting(
+        barrier.getId(), store, getInflightBuffersUnsafe(barrier.getId()));
+```
+
+---
+
+## 5. Open Questions 与已定决议
+
+### 已定决议
+
+| # | 议题 | 决议 |
+|---|------|------|
+| Q1 | `disk + network inflight 不共存` 不变量 enforcement | **Credit=0 方案**：store 非空期间，RemoteInputChannel 向上游发的 credit 恒为 0；不延迟 `requestSubpartitions`（否则 barrier 堵在上游）。详见 §2.6。 |
+| Q2 | Wait-set 实现 | **首个 callback 到达时扫描 `spillEntryQueue` 一次**计算 wait-set，后续 O(1) 移除。 |
+| Q3 | 磁盘数据 snapshot 的 `seqNum` | **保持与 ready buffers 一致**——`SEQUENCE_NUMBER_RESTORED`。本分支语义上只是把 buffer 搬到 disk 再回放，同一批 recovered 数据不应因存储介质不同而改 seqNum。 |
+| Q4 | Callback 接口形态 | 专用 `@FunctionalInterface CheckpointCallback { onChannelCheckpointStarted(long, InputChannelInfo) }`，不用 `BiConsumer<Long, InputChannelInfo>`。 |
+| Q5/Q6 | Commit 切分与死代码清理 | **每个 fix 紧跟引入它的原始 commit**，按 §4.4 cherry-pick 流程执行。A → 紧跟 `3aef0932`；B → 紧跟 `d1914c63`；D → 紧跟 `6c6bc972`（因为 `6c6bc972` 让它成为死代码）；E 集中化 → 紧跟 `6c6bc972`（引入 null 守卫与 `instanceof`）；§4.1 集中化 → 紧跟 `6c6bc972`；J → 紧跟 `b3c30f02`。不统一打一个 "cleanup" commit。 |
+
+### Q7（已定）. `ChannelStatePersister.startPersisting` 内的阶段顺序
+
+签名 `startPersisting(barrierId, store, knownBuffers)` 内两段调用：
+- `store.checkpoint(writer, id, channelInfo)`（内部 `addInputData(ready iterator)` + 回调 OutputWriter）
+- `channelStateWriter.addInputData(id, channelInfo, UNKNOWN, knownBuffers iterator)`（Remote 网络 inflight）
+
+**结论**：顺序无关，两段在任何 checkpoint 时刻**恰好互斥**，由 §2.6 credit=0 invariant 保证。
+
+- **Case A**：`!store.isEmpty()` → 上游 credit=0 → `receivedBuffers` 空 → `knownBuffers = emptyList`。
+  `startPersisting` 内只有 `store.checkpoint()` 有效（写 ready buffers + 回调 OutputWriter 触发 phase 2 写 disk）。
+- **Case B**：`store.isEmpty()` → credit 已释放 → `receivedBuffers` 可能非空。
+  `startPersisting` 内 `store.checkpoint()` 对 ready 是 no-op；回调进 OutputWriter 的 wait-set 时，
+  该 channel 的 `pendingCount=0`，不在 wait-set 内（或 no-op 空跑）。
+  `addInputData(knownBuffers)` 写网络 inflight。
+
+**结论要点**：
+- 两段不共存，任何顺序都正确。
+- 实现上仍写成 `store.checkpoint()` 在前、`addInputData(knownBuffers)` 在后，语义直观。
+- 不再依赖 `ChannelStateWriter` 的请求顺序保证（虽然 `ChannelStateWriterImpl` 确实是单线程 executor
+  按 enqueue 顺序处理）。
+
+---
+
+## 6. 历次讨论记录
+
+避免下次开工时细节丢失。
+
+### Round 1：初始三问
+- **Q1.1**：`ChannelStatePersister.startPersisting` 加 `RecoveredBufferStore` 参数。
+  → 结论：采纳（§4.1）。曾一度被我建议放弃（理由：disk 独立处理后意义变小），用户驳回——
+     InputChannel 不应直接调 `store.checkpoint`。
+- **Q1.2**：Checkpoint 对 OutputWriter 未投递数据的处理。
+  → 设计 gap，新方案见 §4.3。
+- **Q1.3**：`recoveredStore` nullability（15 处 null 判断）。
+  → 结论：采纳 EMPTY 单例（§2.7）。
+
+### Round 2：旧 commit stale 审计
+- 用户指出 `LocalInputChannel.checkpointStarted` 遍历 `toBeConsumedBuffers` 不合理（FullyFilledBuffer 切片
+  不属于 channel state）。
+- 扩展为系统 audit A-J（§3）。
+- 用户要求：沿 `d1914c63` / `3aef0932` 引入、在 store 架构下已失效的逻辑统统清理，不要只看用户
+  举的那一个例子。
+
+### Round 3：OutputWriter 粒度
+- 确认 per-task（§2.1 代码佐证）。
+- 暴露 OutputWriter 与 store 的不对称性 → disk checkpoint 需要 per-task 聚合触发。
+
+### Round 4：用户给出新架构
+- OutputWriter 根据 `channelInfo` 直接投递到 store，不经 InputChannel。
+- Store 持有数据（ready buffers）+ pending 计数，但**不**持有 spill file / reader。
+- InputChannel 只消费 store。
+- Checkpoint callback 机制：InputChannel → store → OutputWriter，中间不跳层。
+- 最后一个 channel callback 到达时，OutputWriter 做**一次顺序遍历** `spillEntryQueue` 写入
+  ChannelStateWriter，保证顺序 I/O。
+- 只为"有 pending entry 的 channel"等 callback；无 pending 的 channel 不参与 wait-set。
+
+### Round 5：进一步细节
+- 用户澄清：callback 链是 `InputChannel → store → OutputWriter`，不是 `InputChannel → OutputWriter`。
+- 用户澄清：`startPersisting` 接收 store 的方案仍然保留，InputChannel 不直接调 `store.checkpoint`。
+- 用户提出 `disk + network inflight` 不共存不变量，要求代码强保证。
+- `seal` 语义澄清（§2.5）。
+- Checkpoint 触发时无 race：write() 不在中途触发，活跃 buffer/SpillEntry 不会"半填"。
+- 单 checkpoint 语义：参考 `ChannelStatePersister`，无需并发 checkpoint 支持。
+- Non-filtering 模式：EMPTY store，无需 callback 机制。
+- Commit 切分策略：cherry-pick based incremental fix（§4.4）。
+
+---
+
+## 7. 总结表
+
+| # | 代码位置 | 当前状态 | 处理 |
+|---|---------|---------|------|
+| A | `LocalInputChannel.checkpointStarted` 遍历 `toBeConsumedBuffers` | 死代码，错误持久化 FullyFilledBuffer 切片 | 恢复为 emptyList（配合 §4.1） |
+| B | `RemoteInputChannel.checkReadability` | 死代码 hack | 删除，调用点回退 |
+| C | `RemoteInputChannel` 网络 inflight snapshot | 有效 | 保留 |
+| D | `RecoveredInputChannel.onRecoveredStateBuffer` | 死代码包装 | 删除 |
+| E | null 守卫 + `instanceof` + 构造器 `!isEmpty()` 守卫丢数据风险 | 架构瑕疵 + 潜在 bug | EMPTY 单例（§2.7） |
+| F | `Local.getNextRecoveredBuffer` 优先事件分支 | 有效 | 保留 |
+| G | `Local.getBuffersInUseCount` 加 `toBeConsumedBuffers.size()` | 有效（独立于 recovered） | 保留 |
+| H | `Local.releaseAllResources` 回收 `toBeConsumedBuffers` | 有效 | 保留 |
+| I | Remote 构造器迁移循环 | 已删除 | 确认无残留 |
+| J | OutputWriter disk 数据 checkpoint | 未实现 | §4.3 新设计 |
+| K | `ChannelStatePersister.startPersisting` 集中化 | 未实现 | §4.1 |
+| L | `disk + network inflight` 不共存不变量 | 未强制 | §2.6 选 (a)/(b)/(c) |
