@@ -84,7 +84,7 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
      * Store for recovered buffers. Always non-null: callers with no recovered data pass {@link
      * RecoveredBufferStore#EMPTY}.
      */
-    private RecoveredBufferStore recoveredStore;
+    private final RecoveredBufferStore recoveredStore;
 
     /**
      * Flag indicating whether there is a pending priority event (e.g., checkpoint barrier) in the

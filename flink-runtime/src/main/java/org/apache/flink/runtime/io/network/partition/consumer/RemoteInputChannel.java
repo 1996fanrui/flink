@@ -127,7 +127,7 @@ public class RemoteInputChannel extends InputChannel {
      * Store for recovered buffers. Always non-null: callers with no recovered data pass {@link
      * RecoveredBufferStore#EMPTY}.
      */
-    private RecoveredBufferStore recoveredStore;
+    private final RecoveredBufferStore recoveredStore;
 
     /**
      * Guards against redundant credit releases. Set to true the first time {@link
