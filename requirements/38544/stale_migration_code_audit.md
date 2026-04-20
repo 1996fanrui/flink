@@ -25,8 +25,11 @@
 3. 顺序严格 `... commit i → commit i 的 fix → commit i+1 → commit i+1 的 fix → ...`，禁止跨越。
 4. 原始 commit 无需修改的不加 fix，直接进入下一原始 commit。
 
-**目的**：人工最终 squash (commit i + commit i 的 fix) 得到"完整自洽"的单 commit；避免跨 commit 依赖
-导致编译断层或 rebase 冲突；每对 (commit i + commit i 的 fix) 独立可验证。
+**目的**：
+- **fix 必须作为独立 commit 保留**，不要自动 squash。人工 review 时能够单独查看每个 fix 的 diff
+  （相对原始 commit 是纯增量），review 通过后由人工决定是否手动 squash。
+- 避免跨 commit 依赖导致编译断层或 rebase 冲突；每对 (commit i + commit i 的 fix) 独立可验证。
+- 最终（由人工决定）squash (commit i + commit i 的 fix) 可得"完整自洽"的单 commit，用于正式合入。
 
 **跨 commit 依赖处理**：
 - 若 commit i 的 fix 需要引用 commit j（j > i）引入的新 API，把该改动**挪到 commit j 的 fix**（作为
@@ -465,7 +468,8 @@ private void drainSpillEntriesToCheckpoint(long id) {
  5. commit 3 的 fix  ← OutputWriter 层      10. commit 6
 ```
 
-Squash (原始 commit + 对应的 fix) 后得 6 个干净 commit，一一对应 commit 1–commit 6 的语义。
+**fix commit 不自动 squash**，作为独立 commit 保留以便人工 review。10 个 commit 完整呈现给 reviewer；
+review 通过后由人工决定是否手动 squash (原始 commit + 对应的 fix) 合成 6 个 clean commit。
 
 **Stage 映射**：
 | Stage | 含 | 验证目标 |
