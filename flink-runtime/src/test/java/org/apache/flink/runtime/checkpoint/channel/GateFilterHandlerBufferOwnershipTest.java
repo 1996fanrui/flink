@@ -175,6 +175,7 @@ class GateFilterHandlerBufferOwnershipTest {
         String[] spillDirs = new String[] {temporaryFolder.toString()};
         return new OutputWriterImpl(
                 storesByChannel,
+                ChannelStateWriter.NO_OP,
                 spillDirs,
                 BUFFER_SIZE,
                 this::createEmptyBuffer,
