@@ -38,7 +38,8 @@ import java.util.List;
  *
  * <p>Thread safety: all methods that access {@code readyBuffers} or {@code pendingCount} are
  * synchronized on {@code this}. The {@code complete} flag is volatile since it is only written
- * once.
+ * once. Callbacks are invoked <em>outside</em> any store-level lock to prevent deadlocks with
+ * OutputWriter's own synchronisation.
  *
  * <p>Public interface methods are called from the Task thread. Internal methods (addBuffer,
  * markComplete, etc.) are called from the Recovery thread (OutputWriter).
@@ -54,14 +55,49 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
 
     private volatile boolean complete = false;
     private volatile boolean released = false;
+
+    @GuardedBy("this")
     private Runnable notificationCallback;
 
-    // --- Public interface methods (Task thread) ---
+    @GuardedBy("this")
+    private CheckpointCallback checkpointCallback;
+
+    @GuardedBy("this")
+    private Runnable onBecameEmptyCallback;
+
+    /**
+     * Tracks whether the onBecameEmpty callback has already fired for the current empty state.
+     * Reset to false each time a buffer is added (store becomes non-empty again), so subsequent
+     * transitions from non-empty to empty fire the callback again.
+     */
+    @GuardedBy("this")
+    private boolean becameEmptyCallbackFired = false;
+
+    // ---------------------------------------------------------------------------
+    // Public interface methods (Task thread)
+    // ---------------------------------------------------------------------------
 
     @Nullable
     @Override
-    public synchronized Buffer tryTake() {
-        return readyBuffers.poll();
+    public Buffer tryTake() {
+        // Capture the buffer and whether the store just became empty under the lock.
+        // Then fire the onBecameEmpty callback outside the lock to avoid deadlock.
+        Buffer buffer;
+        Runnable cb = null;
+        synchronized (this) {
+            buffer = readyBuffers.poll();
+            if (buffer != null
+                    && readyBuffers.isEmpty()
+                    && pendingCount == 0
+                    && !becameEmptyCallbackFired) {
+                becameEmptyCallbackFired = true;
+                cb = onBecameEmptyCallback;
+            }
+        }
+        if (cb != null) {
+            cb.run();
+        }
+        return buffer;
     }
 
     @Override
@@ -93,23 +129,37 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
 
     /**
      * Checkpoints the ready buffers to the given ChannelStateWriter. Ready buffers are retained and
-     * passed to the writer via CloseableIterator. Pending spill entries on disk are checkpointed by
-     * OutputWriter, which owns the spill entries and file readers.
+     * passed to the writer via CloseableIterator. After snapshotting, the {@link
+     * CheckpointCallback} is invoked <em>outside</em> the store lock so that OutputWriter can
+     * safely acquire its own lock without risking a deadlock.
+     *
+     * <p>Pending spill entries on disk are checkpointed by OutputWriter, which owns the spill
+     * entries and file readers, triggered via the CheckpointCallback.
      */
     @Override
-    public synchronized void checkpoint(
+    public void checkpoint(
             ChannelStateWriter writer, long checkpointId, InputChannelInfo channelInfo)
             throws IOException {
-        if (!readyBuffers.isEmpty()) {
-            List<Buffer> retained = new ArrayList<>(readyBuffers.size());
-            for (Buffer buffer : readyBuffers) {
-                retained.add(buffer.retainBuffer());
+        // Step 1: snapshot ready buffers under lock; capture callback reference.
+        CheckpointCallback cb;
+        synchronized (this) {
+            if (!readyBuffers.isEmpty()) {
+                List<Buffer> retained = new ArrayList<>(readyBuffers.size());
+                for (Buffer buffer : readyBuffers) {
+                    retained.add(buffer.retainBuffer());
+                }
+                writer.addInputData(
+                        checkpointId,
+                        channelInfo,
+                        ChannelStateWriter.SEQUENCE_NUMBER_RESTORED,
+                        CloseableIterator.fromList(retained, Buffer::recycleBuffer));
             }
-            writer.addInputData(
-                    checkpointId,
-                    channelInfo,
-                    ChannelStateWriter.SEQUENCE_NUMBER_RESTORED,
-                    CloseableIterator.fromList(retained, Buffer::recycleBuffer));
+            cb = checkpointCallback;
+        }
+
+        // Step 2: fire callback outside lock to avoid deadlock with OutputWriter's lock.
+        if (cb != null) {
+            cb.onChannelCheckpointStarted(checkpointId, channelInfo);
         }
     }
 
@@ -123,11 +173,39 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
         pendingCount = 0;
     }
 
-    // --- Internal methods (Recovery thread, called by OutputWriter) ---
+    // ---------------------------------------------------------------------------
+    // Callback setters (interface methods)
+    // ---------------------------------------------------------------------------
+
+    @Override
+    public synchronized void setCheckpointCallback(CheckpointCallback callback) {
+        this.checkpointCallback = callback;
+    }
+
+    @Override
+    public synchronized void setOnBecameEmptyCallback(Runnable callback) {
+        this.onBecameEmptyCallback = callback;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The notification callback fires when a buffer is added to a previously empty ready queue,
+     * waking up the Task thread waiting for data.
+     */
+    @Override
+    public synchronized void setNotificationCallback(Runnable callback) {
+        this.notificationCallback = callback;
+    }
+
+    // ---------------------------------------------------------------------------
+    // Internal methods (Recovery thread, called by OutputWriter)
+    // ---------------------------------------------------------------------------
 
     /**
      * Adds a recovered buffer to the ready queue. If the queue was previously empty, the
-     * notification callback is invoked to wake up the Task thread.
+     * notification callback is invoked to wake up the Task thread. The becameEmpty flag is also
+     * reset so a subsequent drain-to-empty transition fires the onBecameEmpty callback again.
      */
     public synchronized void addBuffer(Buffer buffer) {
         if (released) {
@@ -136,34 +214,72 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
         }
         boolean wasEmpty = readyBuffers.isEmpty();
         readyBuffers.add(buffer);
-        if (wasEmpty && notificationCallback != null) {
-            notificationCallback.run();
+        if (wasEmpty) {
+            // Reset the flag: now that the store is non-empty again, the next time it
+            // transitions to empty the callback should fire.
+            becameEmptyCallbackFired = false;
+            if (notificationCallback != null) {
+                notificationCallback.run();
+            }
         }
     }
 
-    /** Marks this store as complete — no more buffers will be added by the recovery thread. */
+    /**
+     * Marks this store as complete — no more buffers will be added by the recovery thread. If the
+     * store is already empty when markComplete is called and the onBecameEmpty callback has not yet
+     * fired for this empty state, it is fired outside any lock.
+     */
     public void markComplete() {
-        complete = true;
+        Runnable cb = null;
+        synchronized (this) {
+            complete = true;
+            // If already empty at the moment of completion and callback hasn't fired yet,
+            // fire it now to ensure the empty transition is always signalled.
+            if (readyBuffers.isEmpty() && pendingCount == 0 && !becameEmptyCallbackFired) {
+                becameEmptyCallbackFired = true;
+                cb = onBecameEmptyCallback;
+            }
+        }
+        if (cb != null) {
+            cb.run();
+        }
     }
 
     /**
-     * Sets the callback invoked when a buffer is added to a previously empty store. Used to notify
-     * the InputChannel that data is available.
+     * Increments the pending spill entry count. Called when OutputWriter spills data to disk.
+     *
+     * <p>If the store was logically empty before this call (readyBuffers empty AND pendingCount was
+     * zero), reset the {@code becameEmptyCallbackFired} flag so that the next empty transition will
+     * fire the onBecameEmpty callback again.
      */
-    public synchronized void setNotificationCallback(Runnable callback) {
-        this.notificationCallback = callback;
-    }
-
-    /** Increments the pending spill entry count. Called when OutputWriter spills data to disk. */
     public synchronized void incrementPending() {
+        if (readyBuffers.isEmpty() && pendingCount == 0) {
+            // Store is transitioning from empty to non-empty; reset the flag so the callback
+            // fires again when the store next becomes empty.
+            becameEmptyCallbackFired = false;
+        }
         pendingCount++;
     }
 
     /**
-     * Decrements the pending spill entry count. Called when OutputWriter drains a spill entry into
-     * a buffer.
+     * Decrements the pending spill entry count. Called when OutputWriter drains a spill entry (into
+     * a buffer via P3/close path, or directly to checkpoint storage via phase-2 path).
+     *
+     * <p>If this decrement causes the store to become empty (readyBuffers empty AND pendingCount
+     * reaches zero) and the onBecameEmpty callback has not yet fired for this empty state, the
+     * callback is fired outside the lock to prevent deadlocks.
      */
-    public synchronized void decrementPending() {
-        pendingCount--;
+    public void decrementPending() {
+        Runnable cb = null;
+        synchronized (this) {
+            pendingCount--;
+            if (readyBuffers.isEmpty() && pendingCount == 0 && !becameEmptyCallbackFired) {
+                becameEmptyCallbackFired = true;
+                cb = onBecameEmptyCallback;
+            }
+        }
+        if (cb != null) {
+            cb.run();
+        }
     }
 }

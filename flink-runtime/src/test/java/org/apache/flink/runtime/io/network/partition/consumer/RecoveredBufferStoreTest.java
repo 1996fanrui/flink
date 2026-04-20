@@ -24,8 +24,13 @@ import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.FreeingBufferRecycler;
 import org.apache.flink.runtime.io.network.buffer.NetworkBuffer;
 
+import org.apache.flink.shaded.guava33.com.google.common.collect.LinkedListMultimap;
+import org.apache.flink.shaded.guava33.com.google.common.collect.ListMultimap;
+
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.atomic.AtomicReference;
@@ -274,6 +279,303 @@ class RecoveredBufferStoreTest {
         assertThat(store.isEmpty()).isTrue();
     }
 
+    // ---------------------------------------------------------------------------
+    // Tests for CheckpointCallback (Item 1 and 3)
+    // ---------------------------------------------------------------------------
+
+    /**
+     * Verify that setCheckpointCallback registers a callback that is fired during checkpoint()
+     * after snapshotting ready buffers. The callback should receive the correct checkpointId and
+     * channelInfo.
+     */
+    @Test
+    void testCheckpointCallbackFiredAfterSnapshot() throws Exception {
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        InputChannelInfo channelInfo = new InputChannelInfo(0, 0);
+
+        List<Long> capturedIds = new ArrayList<>();
+        List<InputChannelInfo> capturedInfos = new ArrayList<>();
+
+        store.setCheckpointCallback(
+                (id, info) -> {
+                    capturedIds.add(id);
+                    capturedInfos.add(info);
+                });
+
+        store.addBuffer(createBuffer(new byte[] {1, 2}));
+
+        RecordingChannelStateWriter writer = new RecordingChannelStateWriter();
+        long checkpointId = 42L;
+        writer.start(checkpointId, null);
+
+        store.checkpoint(writer, checkpointId, channelInfo);
+
+        // Callback must have been fired exactly once with correct args
+        assertThat(capturedIds).containsExactly(42L);
+        assertThat(capturedInfos).containsExactly(channelInfo);
+
+        // Writer received the ready buffer before callback fired (snapshot happened first)
+        assertThat(writer.getAddedInput().get(channelInfo)).hasSize(1);
+
+        writer.getAddedInput().get(channelInfo).forEach(Buffer::recycleBuffer);
+        store.releaseAll();
+    }
+
+    /** Verify checkpoint() without any ready buffers still fires the CheckpointCallback. */
+    @Test
+    void testCheckpointCallbackFiredEvenWhenNoReadyBuffers() throws Exception {
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        InputChannelInfo channelInfo = new InputChannelInfo(1, 2);
+
+        int[] callCount = {0};
+        store.setCheckpointCallback((id, info) -> callCount[0]++);
+
+        RecordingChannelStateWriter writer = new RecordingChannelStateWriter();
+        writer.start(1L, null);
+        store.checkpoint(writer, 1L, channelInfo);
+
+        assertThat(callCount[0]).isEqualTo(1);
+    }
+
+    /** Verify no callback is fired if setCheckpointCallback was never called. */
+    @Test
+    void testCheckpointWithNoCallbackSetDoesNotThrow() throws Exception {
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        InputChannelInfo channelInfo = new InputChannelInfo(0, 0);
+        store.addBuffer(createBuffer(new byte[] {1}));
+
+        RecordingChannelStateWriter writer = new RecordingChannelStateWriter();
+        writer.start(1L, null);
+        // Should not throw even without a callback registered
+        store.checkpoint(writer, 1L, channelInfo);
+
+        writer.getAddedInput().get(channelInfo).forEach(Buffer::recycleBuffer);
+        store.releaseAll();
+    }
+
+    // ---------------------------------------------------------------------------
+    // Tests for setOnBecameEmptyCallback (Item 4)
+    // ---------------------------------------------------------------------------
+
+    /** Verify onBecameEmpty fires when tryTake() drains the last buffer and pendingCount == 0. */
+    @Test
+    void testOnBecameEmptyCallbackFiredByTryTake() {
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        int[] callCount = {0};
+        store.setOnBecameEmptyCallback(() -> callCount[0]++);
+
+        store.addBuffer(createBuffer(new byte[] {1}));
+        store.addBuffer(createBuffer(new byte[] {2}));
+
+        // Taking first buffer: still one left — callback must NOT fire
+        store.tryTake().recycleBuffer();
+        assertThat(callCount[0]).isEqualTo(0);
+
+        // Taking second buffer: store is now empty — callback must fire once
+        store.tryTake().recycleBuffer();
+        assertThat(callCount[0]).isEqualTo(1);
+    }
+
+    /** Verify onBecameEmpty does NOT fire when tryTake drains readyBuffers but pendingCount > 0. */
+    @Test
+    void testOnBecameEmptyNotFiredWhenPendingCountNonZero() {
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        int[] callCount = {0};
+        store.setOnBecameEmptyCallback(() -> callCount[0]++);
+
+        store.incrementPending();
+        store.addBuffer(createBuffer(new byte[] {1}));
+
+        // Draining ready queue but pending still 1 — must NOT fire
+        store.tryTake().recycleBuffer();
+        assertThat(callCount[0]).isEqualTo(0);
+
+        // Decrement pending — readyBuffers empty AND pendingCount == 0 → callback must fire
+        store.decrementPending();
+        assertThat(callCount[0]).isEqualTo(1);
+    }
+
+    /**
+     * Verify onBecameEmpty fires via decrementPending when readyBuffers is already empty and the
+     * last pending count is decremented to zero (phase-2 drain path).
+     *
+     * <p>Scenario: addBuffer + tryTake clears readyBuffers (callback fires via tryTake). Then
+     * incrementPending + addBuffer (resets flag) + tryTake (ready empty but pending==1, so no
+     * callback) + decrementPending (both empty → callback fires again).
+     */
+    @Test
+    void testOnBecameEmptyCallbackFiredByDecrementPendingWhenReadyEmpty() {
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        int[] callCount = {0};
+        store.setOnBecameEmptyCallback(() -> callCount[0]++);
+
+        // Round 1: buffer goes through ready queue
+        store.addBuffer(createBuffer(new byte[] {1}));
+        store.tryTake().recycleBuffer();
+        // ready=[], pending=0 → callback fires
+        assertThat(callCount[0]).isEqualTo(1);
+
+        // Register a pending spill entry, then add a ready buffer (which resets the fired flag).
+        store.incrementPending(); // pending=1
+        store.addBuffer(createBuffer(new byte[] {2})); // resets becameEmptyCallbackFired=false
+        // Consume the ready buffer: ready=[], but pending==1 → callback must NOT fire
+        store.tryTake().recycleBuffer();
+        assertThat(callCount[0]).isEqualTo(1);
+
+        // Phase-2 drain: decrement the pending entry; now ready=[], pending=0 → callback fires
+        store.decrementPending();
+        assertThat(callCount[0]).isEqualTo(2);
+    }
+
+    /**
+     * Verify onBecameEmpty fires exactly once when both the last ready buffer is taken AND a
+     * pending entry is later decremented (i.e. not double-fired).
+     */
+    @Test
+    void testOnBecameEmptyCallbackFiredOnceViaPendingOnlyPath() {
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        int[] callCount = {0};
+        store.setOnBecameEmptyCallback(() -> callCount[0]++);
+
+        // Only pending, no ready buffers
+        store.incrementPending();
+        assertThat(callCount[0]).isEqualTo(0);
+
+        // Decrement to zero with empty readyBuffers → first time becoming empty → callback fires
+        store.decrementPending();
+        assertThat(callCount[0]).isEqualTo(1);
+
+        // Additional decrementPending calls must not re-fire (idempotent until next non-empty)
+        store.incrementPending();
+        store.decrementPending();
+        assertThat(callCount[0]).isEqualTo(2);
+    }
+
+    /**
+     * Verify onBecameEmpty fires via markComplete when store was already empty and pendingCount
+     * transitions to zero at markComplete time (readyBuffers empty and no pending).
+     */
+    @Test
+    void testOnBecameEmptyCallbackFiredByMarkCompleteWhenAlreadyEmpty() {
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        int[] callCount = {0};
+        store.setOnBecameEmptyCallback(() -> callCount[0]++);
+
+        // Store is empty from the start; markComplete should trigger the callback
+        store.markComplete();
+        assertThat(callCount[0]).isEqualTo(1);
+    }
+
+    /**
+     * Verify onBecameEmpty fires via markComplete when the last ready buffer was already consumed
+     * and pendingCount == 0 at the time markComplete is called.
+     */
+    @Test
+    void testOnBecameEmptyCallbackFiredByMarkCompleteAfterDrain() {
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        int[] callCount = {0};
+        store.setOnBecameEmptyCallback(() -> callCount[0]++);
+
+        store.addBuffer(createBuffer(new byte[] {1}));
+        store.tryTake().recycleBuffer();
+        // At this point readyBuffers empty and pendingCount == 0; callback fired by tryTake
+        assertThat(callCount[0]).isEqualTo(1);
+
+        // markComplete after already empty — must NOT fire again
+        store.markComplete();
+        assertThat(callCount[0]).isEqualTo(1);
+    }
+
+    /**
+     * Verify onBecameEmpty fires again when the store becomes empty a second time (add → take →
+     * empty fires; add again → take again → empty fires again).
+     */
+    @Test
+    void testOnBecameEmptyCallbackFiredOnEachTransitionToEmpty() {
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        int[] callCount = {0};
+        store.setOnBecameEmptyCallback(() -> callCount[0]++);
+
+        // First round
+        store.addBuffer(createBuffer(new byte[] {1}));
+        store.tryTake().recycleBuffer();
+        assertThat(callCount[0]).isEqualTo(1);
+
+        // Second round: add a new buffer and drain again
+        store.addBuffer(createBuffer(new byte[] {2}));
+        store.tryTake().recycleBuffer();
+        assertThat(callCount[0]).isEqualTo(2);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Tests for setNotificationCallback via interface (Item 2)
+    // ---------------------------------------------------------------------------
+
+    /**
+     * Verify setNotificationCallback can be called through the RecoveredBufferStore interface
+     * without instanceof casts.
+     */
+    @Test
+    void testSetNotificationCallbackViaInterface() {
+        RecoveredBufferStore store = new RecoveredBufferStoreImpl();
+        int[] callCount = {0};
+        // Must compile and run without instanceof check
+        store.setNotificationCallback(() -> callCount[0]++);
+
+        ((RecoveredBufferStoreImpl) store).addBuffer(createBuffer(new byte[] {1}));
+        assertThat(callCount[0]).isEqualTo(1);
+
+        store.releaseAll();
+    }
+
+    // ---------------------------------------------------------------------------
+    // Tests for RecoveredBufferStore.EMPTY singleton (Item 5)
+    // ---------------------------------------------------------------------------
+
+    /** Verify all methods of EMPTY return expected no-op / sentinel values. */
+    @Test
+    void testEmptySingletonBehavior() throws Exception {
+        RecoveredBufferStore empty = RecoveredBufferStore.EMPTY;
+
+        assertThat(empty.tryTake()).isNull();
+        assertThat(empty.peekNextDataType()).isEqualTo(Buffer.DataType.NONE);
+        assertThat(empty.isEmpty()).isTrue();
+        assertThat(empty.isComplete()).isTrue();
+        assertThat(empty.size()).isEqualTo(0);
+    }
+
+    /** Verify checkpoint() on EMPTY is a no-op and does not write any channel state. */
+    @Test
+    void testEmptySingletonCheckpointIsNoOp() throws Exception {
+        RecoveredBufferStore empty = RecoveredBufferStore.EMPTY;
+        InputChannelInfo channelInfo = new InputChannelInfo(0, 0);
+
+        RecordingChannelStateWriter writer = new RecordingChannelStateWriter();
+        writer.start(1L, null);
+        empty.checkpoint(writer, 1L, channelInfo);
+
+        // No data must have been written
+        assertThat(writer.getAddedInput().containsKey(channelInfo)).isFalse();
+    }
+
+    /** Verify releaseAll() on EMPTY does not throw. */
+    @Test
+    void testEmptySingletonReleaseAllIsNoOp() {
+        RecoveredBufferStore.EMPTY.releaseAll();
+    }
+
+    /** Verify all setter callbacks on EMPTY are no-ops (accept and discard without throwing). */
+    @Test
+    void testEmptySingletonSettersAreNoOp() {
+        RecoveredBufferStore empty = RecoveredBufferStore.EMPTY;
+
+        // All three setters must silently discard
+        empty.setCheckpointCallback((id, info) -> {});
+        empty.setOnBecameEmptyCallback(() -> {});
+        empty.setNotificationCallback(() -> {});
+        // No exception == pass
+    }
+
     private static NetworkBuffer createBuffer(byte[] data) {
         org.apache.flink.core.memory.MemorySegment segment =
                 MemorySegmentFactory.allocateUnpooledSegment(data.length);
@@ -281,5 +583,42 @@ class RecoveredBufferStoreTest {
         NetworkBuffer buffer = new NetworkBuffer(segment, FreeingBufferRecycler.INSTANCE);
         buffer.setSize(data.length);
         return buffer;
+    }
+
+    /**
+     * A ChannelStateWriter that extends RecordingChannelStateWriter and additionally captures
+     * streaming (InputStream) data passed via the streaming overload of addInputData.
+     */
+    private static class StreamRecordingChannelStateWriter extends RecordingChannelStateWriter {
+
+        private final ListMultimap<InputChannelInfo, byte[]> streamedInputData =
+                LinkedListMultimap.create();
+
+        @Override
+        public void addInputData(
+                long checkpointId,
+                InputChannelInfo info,
+                int startSeqNum,
+                java.io.InputStream data,
+                int dataLength) {
+            try {
+                byte[] bytes = new byte[dataLength];
+                int offset = 0;
+                while (offset < dataLength) {
+                    int read = data.read(bytes, offset, dataLength - offset);
+                    if (read < 0) {
+                        break;
+                    }
+                    offset += read;
+                }
+                streamedInputData.put(info, bytes);
+            } catch (java.io.IOException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        ListMultimap<InputChannelInfo, byte[]> getStreamedInputData() {
+            return streamedInputData;
+        }
     }
 }
