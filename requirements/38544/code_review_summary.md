@@ -2,15 +2,15 @@
 
 ## 总览
 
-| 阶段 | 内容 | Commits | 一致性评分 |
-|------|------|---------|-----------|
-| C1 | Source Buffer Heap 分配 + buffer 请求接口 | `e55a7f1` | 9/10 |
-| C2 | SpillFile I/O + RecoveredBufferStore | `44c700b` | 7.5/10 |
-| C3 | OutputWriter 三条数据路径 + drain 循环 | `d911490` | 9/10 |
-| C4 | InputChannel 从 RecoveredBufferStore 消费 | `90c4e49` | 8/10 |
-| C5 | ChannelStateWriter streaming overload | `c379f4b` | 9/10 |
-| C6 | 集成：filterAndRewrite 写入 OutputWriter | `e8ee9b2` | 9/10 |
-| **总计** | | **6 commits** | **8.6/10** |
+| 阶段 | 内容 | JIRA | 一致性评分 |
+|------|------|------|-----------|
+| C1 | Source Buffer Heap 分配 + buffer 请求接口 | FLINK-39519 | 9/10 |
+| C2 | SpillFile I/O + RecoveredBufferStore | FLINK-39520 | 7.5/10 |
+| C3 | OutputWriter 三条数据路径 + drain 循环 | FLINK-39521 | 9/10 |
+| C4 | InputChannel 从 RecoveredBufferStore 消费 | FLINK-39522 | 8/10 |
+| C5 | ChannelStateWriter streaming overload | FLINK-39523 | 9/10 |
+| C6 | 集成：filterAndRewrite 写入 OutputWriter | FLINK-39524 | 9/10 |
+| **总计** | | **6 JIRAs** | **8.6/10** |
 
 ---
 
@@ -232,9 +232,9 @@
 | # | 阶段 | 问题 | 说明 | 状态 |
 |---|------|------|------|------|
 | 1 | C2 | SpillFileReader 实例创建过多 | `getCurrentFileReader()` 每次创建新 FileChannel。OutputWriter 已有共享机制（`allSpillFileReaders` + `lastKnownFileCount`），实际不会每 entry 创建新 reader | **已澄清**：review 误判，OutputWriter 已正确共享 reader |
-| 2 | C1/C6 | memorySegmentSize 硬编码 DEFAULT_PAGE_SIZE | C1 已修复（amend commit 改用 `filterContext.getMemorySegmentSize()`）。C6 待 cherry-pick 后确认 | **C1 已修复** |
+| 2 | C1/C6 | memorySegmentSize 硬编码 DEFAULT_PAGE_SIZE | C1 已修复（改用 `filterContext.getMemorySegmentSize()`）。C6 待 cherry-pick 后确认 | **C1 已修复** |
 | 3 | C4 | isReleased 失去线程安全保护 | 移除 `@GuardedBy` 后无同步机制，建议改为 volatile | 待修复 |
-| 4 | C2 | notificationCallback 缺少线程安全 | `setNotificationCallback()` 未同步，channel conversion 时可能竞态 | **已修复**：C2 fix commit 中 setNotificationCallback 加 synchronized |
+| 4 | C2 | notificationCallback 缺少线程安全 | `setNotificationCallback()` 未同步，channel conversion 时可能竞态 | **已修复**：FLINK-39520 的 fix 中 setNotificationCallback 加 synchronized |
 
 ### 可改进（低风险）
 
@@ -250,12 +250,12 @@
 | # | 内容 | 状态 |
 |---|------|------|
 | 1 | C1: Semaphore(5) → 单 segment 复用 + 运行时 inUse 检查 | **已更新** |
-| 2 | C2: SpillEntry fileReader 字段 → 纯元数据 3 字段 | **已更新**（design.md, interfaces.md, commit_plan.md） |
+| 2 | C2: SpillEntry fileReader 字段 → 纯元数据 3 字段 | **已更新**（design.md, interfaces.md, 实现计划文档） |
 | 3 | C5: InputStream.transferTo() → 8KB 手动循环 | **已更新** |
-| 4 | C2: Store pendingSpillEntries → pendingCount | **已更新**（design.md, interfaces.md, commit_plan.md） |
+| 4 | C2: Store pendingSpillEntries → pendingCount | **已更新**（design.md, interfaces.md, 实现计划文档） |
 | 5 | C2: Checkpoint 磁盘数据职责从 Store 移至 OutputWriter | **已更新**（design.md, interfaces.md, data_flow.md） |
 | 6 | C2: SpillFileWriter 删除 memorySegmentSize 参数, 使用 FileUtils.writeCompletely() | **已更新** |
-| 7 | Commit 拆分：原 C1 拆为 C1（heap alloc）+ C2（buffer 请求接口），整体 commit 数从 6 增至 7 | **已更新**（commit_plan.md, design.md） |
+| 7 | 拆分：原 C1 拆为 C1（heap alloc）+ C2（buffer 请求接口），总步骤从 6 增至 7（其后又合回 6，以 JIRA 为单位） | **已更新**（实现计划文档, design.md） |
 
 ---
 

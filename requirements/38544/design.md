@@ -376,12 +376,11 @@ OutputWriter 通过构造器接收这两个方法的函数式接口引用，解�
 
 ## 提交策略
 
-参见 `commit_plan.md`。7 个 commit，按依赖关系排列：
+参见 `implementation_plan.md`。6 个 JIRA，按依赖关系排列：
 
-1. [FLINK-39519] Source Buffer Heap 分配（单 segment 复用 + 运行时检查）
-2. [FLINK-39524] Buffer 请求接口（`requestBuffer()` 新增 + `requestBufferBlocking()` 删 heap fallback）—— 开发期保留此顺序，合并前重排到 C7 旁边
-3. [FLINK-39520] SpillFile I/O + RecoveredBufferStore
-4. [FLINK-39521] OutputWriter
-5. [FLINK-39522] InputChannel 从 RecoveredBufferStore 消费
-6. [FLINK-39523] ChannelStateWriter 流式重载（checkpoint 用，可与其他 commit 并行开发）
-7. [FLINK-39524] 集成：filterAndRewrite 写入 OutputWriter（C2 归属同 ticket，合并前重排相邻）
+1. [FLINK-39519] Source Buffer Heap 分配（单 segment 复用 + 运行时检查） + 新的 `requestBuffer()` 非阻塞接口、移除 `requestBufferBlocking()` 的 heap fallback
+2. [FLINK-39520] SpillFile I/O + RecoveredBufferStore
+3. [FLINK-39521] OutputWriter
+4. [FLINK-39522] InputChannel 从 RecoveredBufferStore 消费
+5. [FLINK-39523] ChannelStateWriter 流式重载（checkpoint 用，可与其他 JIRA 并行开发）
+6. [FLINK-39524] 集成：filterAndRewrite 写入 OutputWriter
