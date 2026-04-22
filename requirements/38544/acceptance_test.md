@@ -46,194 +46,198 @@
 
 Network Buffer Pool has buffer, no disk data → filtered data written to Network Buffer → InputChannel. No spill file created.
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=OutputWriterTest#testP1MemoryPath -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredBufferDispatcherTest#testP1MemoryPath -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-GE7G P2 Spill Path
 
 Network Buffer Pool exhausted → filtered data written to spill file on disk. Disk cursor indicates unreplayed data.
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=OutputWriterTest#testP2SpillPath -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredBufferDispatcherTest#testP2SpillPath -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-SX5O P3 Replay Path
 
 Disk has unreplayed data, Network Buffer available → replay oldest 32KB chunk from disk to InputChannel. Data content matches original.
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=OutputWriterTest#testP3ReplayPath -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredBufferDispatcherTest#testP3ReplayPath -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-QUBL P3 FIFO Ordering
 
 When disk has data, new filtered data must go to disk (not directly to InputChannel). Replay order matches write order across all channels.
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=OutputWriterTest#testP3FIFOOrdering -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredBufferDispatcherTest#testP3FIFOOrdering -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-P3DL P3 Eager Drain
 
 On each write(), P3 replay loops until no buffer available or disk empty. Not just one entry per write.
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=OutputWriterTest#testP3EagerDrain -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredBufferDispatcherTest#testP3EagerDrain -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-36DP Source Buffer Heap Isolation
 
 getBuffer() in filtering mode returns Heap Buffer (allocateUnpooledSegment). Network Buffer Pool available count unchanged.
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=RecoveredInputChannelTest#testHeapBufferIsolation -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=InputChannelRecoveredStateHandlerTest#testPreFilterBufferIsolationFromNetworkBufferPool -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
-### [L1-测试] AT-41PK Source Buffer One-At-A-Time Invariant
+### [L3-测试] AT-41PK Source Buffer One-At-A-Time Invariant
 
-Feed a record that spans multiple source buffers (small segmentSize + large record) through the real `ChannelStateChunkReader` + filtering pipeline. Observe every `getBuffer()` call via a wrapping tracker. Assertions:
-1. `getBuffer()` is called more than once (confirms the record does span multiple source buffers).
-2. At every observation point, `maxOutstanding == 1` (the previous buffer is always recycled before the next one is issued).
-3. The same `MemorySegment` instance is reused across calls (single-segment reuse).
-4. After the pipeline completes, the segment's `inUse` flag is false.
+End-to-end coverage: a large record spanning multiple source buffers flows through the full filtering pipeline. Assertions: every getBuffer() call recycles the prior buffer first (maxOutstanding == 1), the same MemorySegment instance is reused across calls, and after the pipeline completes the segment is no longer in use.
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=InputChannelRecoveredStateHandlerTest#testLargeRecordSpansMultipleSourceBuffers -P java11-target -P java11`
+**命令 (L3)**: `./mvnw test -pl flink-tests -Dtest=RecoveredStateFilteringLargeRecordITCase -P java11-target -P java11`
 **断言**: test pass, exit code 0
+
+Sub-invariants at L1 level:
+- Segment reuse across successive getBuffer() calls: `InputChannelRecoveredStateHandlerTest#testPreFilterSegmentReusedAcrossCalls`
+- Runtime check fires when prior buffer is not recycled: `InputChannelRecoveredStateHandlerTest#testGetBufferThrowsWhenPriorBufferNotRecycled`
+
+**命令 (L1 segment reuse)**: `./mvnw test -pl flink-runtime -Dtest=InputChannelRecoveredStateHandlerTest#testPreFilterSegmentReusedAcrossCalls -P java11-target -P java11`
+**命令 (L1 runtime check)**: `./mvnw test -pl flink-runtime -Dtest=InputChannelRecoveredStateHandlerTest#testGetBufferThrowsWhenPriorBufferNotRecycled -P java11-target -P java11`
 
 ### [L1-测试] AT-UE7O Runtime Check on Non-Recycled Prior Buffer
 
 Allocate a heap source buffer via `getBuffer()`, do not recycle it, then call `getBuffer()` again. The second call must throw `IllegalStateException` (invariant check).
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=InputChannelRecoveredStateHandlerTest#testCheckFailsWhenPriorBufferNotRecycled -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=InputChannelRecoveredStateHandlerTest#testGetBufferThrowsWhenPriorBufferNotRecycled -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-DWGD Backend Downgrade Only
 
 Within one writeToBackend call: start with buffer, buffer full → request fails → downgrade to file. Once on file, stays on file for remainder of call.
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=OutputWriterTest#testBackendDowngradeOnly -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredBufferDispatcherTest#testBackendDowngradeOnly -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-BYPS Cross-Backend Record Spanning
 
 Write a record that starts in a Network Buffer and ends in a file (buffer full mid-record, no new buffer available). After replay, Task Thread deserializes the record correctly via SpanningWrapper.
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=OutputWriterTest#testCrossBackendRecordSpanning -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredBufferDispatcherTest#testCrossBackendRecordSpanning -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-CHDL Channel Change Detection
 
 Write data for channel A, then channel B. Verify current backend is flushed between channel transitions. SpillEntry queue has correct channelInfo per entry.
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=OutputWriterTest#testChannelChangeDetection -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredBufferDispatcherTest#testChannelChangeDetection -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-SFMG Single File Per Task
 
 Multiple channels across multiple gates write to OutputWriter. Verify only one spill file created (not one per channel or per gate). All entries in same file with correct offsets.
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=OutputWriterTest#testSingleFilePerTask -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredBufferDispatcherTest#testSingleFilePerTask -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-5097 File Rotation
 
 Write more than 64MB of data. Verify multiple spill files created. All data replayed correctly across files. Old files deleted after all entries replayed.
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=SpillFileTest#testFileRotation -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredSpillFileTest#testFileRotation -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-CRSR Cursor-Based Tracking
 
 Spill data, replay partially. hasDiskData() returns true. Replay all remaining. hasDiskData() returns false. Subsequent writes can use Network Buffer (no forced file path).
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=OutputWriterTest#testCursorBasedTracking -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredBufferDispatcherTest#testCursorBasedTracking -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-DRIN Close Drain
 
 After all S3 data consumed, call close(). All remaining disk data drained to InputChannel via blocking buffer requests. Disk empty after close.
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=OutputWriterTest#testCloseDrain -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredBufferDispatcherTest#testCloseDrain -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-CLID Close Idempotent
 
 Calling close() twice does not throw.
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=OutputWriterTest#testCloseIdempotent -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredBufferDispatcherTest#testCloseIdempotent -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-CLFL Close Cleanup
 
 After close(), all spill files deleted from disk.
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=OutputWriterTest#testCloseCleanup -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredBufferDispatcherTest#testCloseCleanup -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-CWRT Write After Close
 
 write() after close() throws IllegalStateException.
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=OutputWriterTest#testWriteAfterClose -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredBufferDispatcherTest#testWriteAfterClose -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-FWRT Write After Flush
 
 write() after flush() throws IllegalStateException. flush() signals no more data will be written.
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=OutputWriterTest#testWriteAfterFlush -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredBufferDispatcherTest#testWriteAfterFlush -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-HY10 SpillFileWriter Try-Finally
 
 SpillFileWriter.close() uses try-finally to guarantee file handle release even when IOException occurs during close.
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=SpillFileTest#testCloseReleasesFileHandle -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredSpillFileTest#testCloseReleasesFileHandle -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-HW4P Truncated File
 
 Truncate a spill file mid-entry. Replay throws IOException with expected vs actual byte count.
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=SpillFileTest#testTruncatedFileThrows -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredSpillFileTest#testTruncatedFileThrows -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-C3MK Spill Directory Source
 
 OutputWriter constructor accepts String[] from IOManager. No fallback to java.io.tmpdir. Empty array throws IOException.
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=OutputWriterTest#testSpillDirectorySource -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredBufferDispatcherTest#testSpillDirectorySource -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-U7Q2 Non-Filtering Unchanged
 
 unalignedDuringRecoveryEnabled=false or NO_RESCALE: no OutputWriter created, no Heap Buffer allocated, original path used.
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=RecoveredChannelStateHandlerTest#testNonFilteringUnchanged -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=InputChannelRecoveredStateHandlerTest#testNonFilteringModeUsesNetworkBufferPool -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-LN5V Large Data Multi-Rotation
 
 Write enough data to trigger 3+ file rotations. All data replayed in FIFO order. Content matches. All files cleaned up.
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=OutputWriterTest#testLargeDataMultiRotation -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredBufferDispatcherTest#testLargeDataMultiRotation -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-9632 OutputWriter Abstraction
 
 filterAndRewrite writes to a unified OutputWriter interface. Filter logic does not know whether the backend is a Network Buffer or a File. Verify OutputWriter.write() accepts raw bytes and channelInfo, internally routes to buffer or file.
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=OutputWriterTest#testUnifiedWriteInterface -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredBufferDispatcherTest#testUnifiedWriteInterface -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-7OWS Disk Pure Byte Stream
 
 Spill files store raw bytes only. No metadata (record boundaries, channel context, DataType, etc.) on disk. All metadata lives in in-memory Queue<SpillEntry>. 每个 SpillEntry 与 Network Buffer 1:1 对应（最大 memorySegmentSize），重放时一个 entry 直接加载到一个 buffer。
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=SpillFileTest#testPureByteStream -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredSpillFileTest#testPureByteStream -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-CTTS Checkpoint Snapshot of Unreplayed Disk Data
 
 When checkpoint triggers during recovery with unreplayed spill data, all unreplayed disk data is included in the checkpoint snapshot via store.checkpoint(). Disk data is read directly to checkpoint storage without consuming Network Buffers.
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=RecoveredBufferStoreTest#testCheckpointWithDiskData -P java11-target -P java11`
-**断言**: test pass, exit code 0
+**命令 (ready buffers path)**: `./mvnw test -pl flink-runtime -Dtest=RecoveredBufferStoreTest#testCheckpointWithReadyBuffers -P java11-target -P java11`
+**命令 (disk data streaming path)**: `./mvnw test -pl flink-runtime -Dtest=FilteredBufferDispatcherTest#testPhase2WritesDiskDataThroughStreamingApi -P java11-target -P java11`
+**断言**: both tests pass, exit code 0
 
 ### [L1-测试] AT-N3YQ Concurrent Checkpoint Snapshot and Replay
 
@@ -246,7 +250,7 @@ Checkpoint snapshot and drain loop replay run concurrently on the same spill fil
 
 SpillEntry 与 Network Buffer 1:1 对应。多次 write() 累积到同一个 SpillEntry，满（memorySegmentSize）或 channel 变更时密封。重放时一个 SpillEntry 直接加载到一个 Network Buffer。验证：写入 3 个 record（总大小 > memorySegmentSize），产生多个 SpillEntry，每个 entry 重放为恰好一个 buffer。
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=OutputWriterTest#testBufferAlignedEntryReplay -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredBufferDispatcherTest#testBufferAlignedEntryReplay -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-IAMJ RecoveredBufferStore Lifecycle
@@ -267,7 +271,7 @@ After channel conversion (RecoveredInputChannel → LocalInputChannel/RemoteInpu
 
 requestBuffer() is non-blocking, returns null when pool exhausted. requestBufferBlocking() in filtering mode no longer falls back to heap buffer — blocks until Network Buffer available.
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=RecoveredInputChannelTest#testBufferRequestInterface -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=RecoveredInputChannelTest#testRequestBufferNonBlockingAndBlockingHasNoHeapFallback -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-TD4O Checkpoint Protocol Compatibility
