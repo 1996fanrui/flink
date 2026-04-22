@@ -4,19 +4,19 @@
 > 不评价实现是否合理，不提供改进建议。
 
 
-## 7 个 Commit 的实现计划 vs 实际提交
+## 实现计划 vs 实际提交
 
-> 注：原 C1（`1c36e8b204c`，FLINK-39519）在 review 中被拆成两个 commit — C1（heap 分配，保留 FLINK-39519）与 C2（buffer 请求接口，归属 FLINK-39524/Integration）。C2 在合并前会重排到 C7 旁边（同 ticket，同逻辑阶段）。
+> 注：原 C1（FLINK-39519）在 review 中一度被拆成两步 — C1（heap 分配，保留 FLINK-39519）与 C2（buffer 请求接口，归属 FLINK-39524/Integration）。当前 PR 已将两部分合入同一个 FLINK-39519 JIRA；此表保留 7 行结构以便追溯历史讨论。
 
-| 计划 | JIRA | 内容 | 对应实际 Commit |
-|------|------|------|----------------|
-| C1 | FLINK-39519 | Source Buffer Heap 分配（单 segment 复用 + 运行时检查） | (拆分自 `1c36e8b204c`，重新实现) |
-| C2 | FLINK-39524 | Buffer 请求接口（`requestBuffer()` + 删 `requestBufferBlocking` heap fallback）；合并前重排到 C7 旁边 | (拆分自 `1c36e8b204c`) |
-| C3 | FLINK-39520 | SpillFile I/O + RecoveredBufferStore | `44c700b` |
-| C4 | FLINK-39521 | OutputWriter 三条数据路径 + drain 循环 | `d911490` |
-| C5 | FLINK-39522 | InputChannel 从 RecoveredBufferStore 消费 | `90c4e49` |
-| C6 | FLINK-39523 | ChannelStateWriter streaming overload（checkpoint） | `c379f4b` |
-| C7 | FLINK-39524 | 集成：filterAndRewrite 写入 OutputWriter | `e8ee9b2` |
+| 计划 | JIRA | 内容 |
+|------|------|------|
+| C1 | FLINK-39519 | Source Buffer Heap 分配（单 segment 复用 + 运行时检查） |
+| C2 | FLINK-39524 | Buffer 请求接口（`requestBuffer()` + 删 `requestBufferBlocking` heap fallback）；合并前重排到 C7 旁边 |
+| C3 | FLINK-39520 | SpillFile I/O + RecoveredBufferStore |
+| C4 | FLINK-39521 | OutputWriter 三条数据路径 + drain 循环 |
+| C5 | FLINK-39522 | InputChannel 从 RecoveredBufferStore 消费 |
+| C6 | FLINK-39523 | ChannelStateWriter streaming overload（checkpoint） |
+| C7 | FLINK-39524 | 集成：filterAndRewrite 写入 OutputWriter |
 
 ## 总览
 
@@ -48,7 +48,7 @@
 - 新增 `requestBuffer()` 非阻塞接口
 - `requestBufferBlocking()` 删 filtering 模式下的 heap fallback
 
-此 commit 在合并前会被重排到 C7 旁边（同 ticket，同逻辑阶段）。heap fallback 只有在 OutputWriter 接入后才能安全删除，因此归属 Integration 最符合语义。
+此部分在合并前会被重排到 C7 旁边（同 ticket，同逻辑阶段）。heap fallback 只有在 OutputWriter 接入后才能安全删除，因此归属 Integration 最符合语义。
 
 ---
 

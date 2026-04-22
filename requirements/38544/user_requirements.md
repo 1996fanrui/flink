@@ -187,7 +187,7 @@ Note: priority event handling (hasPendingPriorityEvent, fetching from subpartiti
 
 **Impact on existing code:**
 
-The following commits introduced buffer migration and recovered buffer handling in physical channels. With RecoveredBufferStore, these changes are **replaced** — physical channels no longer receive recovered buffers in their existing queues. Instead, they hold a `RecoveredBufferStore` reference and consume via `store.tryTake()`.
+The FLINK-39018 lineage introduced buffer migration and recovered buffer handling in physical channels. With RecoveredBufferStore, those changes are **replaced** — physical channels no longer receive recovered buffers in their existing queues. Instead, they hold a `RecoveredBufferStore` reference and consume via `store.tryTake()`.
 
 LocalInputChannel:
 - `toBeConsumedBuffers` no longer receives recovered buffers. It is retained **only** for `FullyFilledBuffer` splits (normal data path, unrelated to recovery).
