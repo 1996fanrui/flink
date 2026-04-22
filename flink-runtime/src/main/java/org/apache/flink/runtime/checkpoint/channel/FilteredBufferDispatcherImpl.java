@@ -33,7 +33,7 @@ import java.util.Set;
 import java.util.function.Supplier;
 
 /**
- * Implementation of {@link OutputWriter} that manages three data paths:
+ * Implementation of {@link FilteredBufferDispatcher} that manages three data paths:
  *
  * <ul>
  *   <li><b>P1 (buffer)</b>: Data is written directly to a network buffer and delivered to the
@@ -48,7 +48,7 @@ import java.util.function.Supplier;
  * spill files are deleted, and all stores are marked complete.
  */
 @Internal
-public class OutputWriterImpl implements OutputWriter {
+public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
 
     /** Blocking supplier that may wait for a buffer to become available. */
     @FunctionalInterface
@@ -57,14 +57,15 @@ public class OutputWriterImpl implements OutputWriter {
     }
 
     /**
-     * Per-channel stores used by this OutputWriter. Typed as the concrete {@link
+     * Per-channel stores used by this dispatcher. Typed as the concrete {@link
      * RecoveredBufferStoreImpl} rather than {@link
      * org.apache.flink.runtime.io.network.partition.consumer.RecoveredBufferStore} because the
-     * writer-side methods (addBuffer, markComplete, incrementPending, decrementPending) are
-     * intentionally not part of the public interface — they are only called by OutputWriter, which
-     * is the sole producer of buffers for the stores.
+     * producer-side methods (addBuffer, markComplete, incrementPending, decrementPending) are
+     * intentionally not part of the public interface — they are only called by
+     * FilteredBufferDispatcher, which is the sole producer of buffers for the stores.
      */
     private final Map<InputChannelInfo, RecoveredBufferStoreImpl> storesByChannel;
+
     private final String[] spillDirs;
     private final int memorySegmentSize;
     private final Supplier<Buffer> bufferSupplier;
@@ -97,7 +98,7 @@ public class OutputWriterImpl implements OutputWriter {
     private boolean closed;
 
     /**
-     * Creates a new OutputWriterImpl.
+     * Creates a new FilteredBufferDispatcherImpl.
      *
      * @param storesByChannel per-channel stores for delivering recovered buffers
      * @param spillDirs directories for spill files
@@ -106,7 +107,7 @@ public class OutputWriterImpl implements OutputWriter {
      * @param blockingBufferSupplier blocking supplier used during close() drain
      * @throws IOException if spillDirs is empty
      */
-    public OutputWriterImpl(
+    public FilteredBufferDispatcherImpl(
             Map<InputChannelInfo, RecoveredBufferStoreImpl> storesByChannel,
             String[] spillDirs,
             int memorySegmentSize,
@@ -128,7 +129,7 @@ public class OutputWriterImpl implements OutputWriter {
         this.activeSpillEntryLength = 0;
         this.drainBuffer = null;
 
-        // Register this OutputWriter as the checkpoint listener on every per-channel store.
+        // Register this dispatcher as the checkpoint listener on every per-channel store.
         // EMPTY store's setCheckpointListener is a no-op, so this is safe for all store types.
         for (RecoveredBufferStoreImpl store : storesByChannel.values()) {
             store.setCheckpointListener(this::onChannelCheckpointStarted);
@@ -343,7 +344,8 @@ public class OutputWriterImpl implements OutputWriter {
     }
 
     /** Loads a spill entry's data from disk into a buffer. */
-    private void loadEntryIntoBuffer(FilteredSpillFile.Entry entry, FilteredSpillFile.Reader reader, Buffer buffer)
+    private void loadEntryIntoBuffer(
+            FilteredSpillFile.Entry entry, FilteredSpillFile.Reader reader, Buffer buffer)
             throws IOException {
         if (drainBuffer == null || drainBuffer.length < entry.getLength()) {
             drainBuffer = new byte[memorySegmentSize];

@@ -75,7 +75,7 @@ public interface RecoveredBufferStore {
      * Checkpoints the current store contents to the given ChannelStateWriter. Implementations
      * should snapshot ready buffers first, then fire the {@link ChannelCheckpointStartedListener}
      * (if one is registered) <em>outside</em> any store-level lock to avoid deadlock with the
-     * OutputWriter.
+     * FilteredBufferDispatcher.
      *
      * @param writer the channel state writer to checkpoint to
      * @param checkpointId the checkpoint ID
@@ -92,8 +92,8 @@ public interface RecoveredBufferStore {
      * Registers a callback that is invoked after this channel's ready buffers have been snapshotted
      * during a checkpoint. The callback is fired outside any store-level lock.
      *
-     * <p>The typical recipient is OutputWriter, which uses the callback to maintain its per-channel
-     * wait-set and flush pending spill entries once all channels have reported in.
+     * <p>The typical recipient is FilteredBufferDispatcher, which uses the callback to maintain its
+     * per-channel wait-set and flush pending spill entries once all channels have reported in.
      *
      * @param listener the listener to invoke; replaces any previously registered listener
      */
