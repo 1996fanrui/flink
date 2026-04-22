@@ -60,7 +60,7 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
     private Runnable notificationCallback;
 
     @GuardedBy("this")
-    private CheckpointCallback checkpointCallback;
+    private ChannelCheckpointStartedListener checkpointListener;
 
     @GuardedBy("this")
     private Runnable onBecameEmptyCallback;
@@ -130,18 +130,18 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
     /**
      * Checkpoints the ready buffers to the given ChannelStateWriter. Ready buffers are retained and
      * passed to the writer via CloseableIterator. After snapshotting, the {@link
-     * CheckpointCallback} is invoked <em>outside</em> the store lock so that OutputWriter can
-     * safely acquire its own lock without risking a deadlock.
+     * ChannelCheckpointStartedListener} is invoked <em>outside</em> the store lock so that
+     * OutputWriter can safely acquire its own lock without risking a deadlock.
      *
      * <p>Pending spill entries on disk are checkpointed by OutputWriter, which owns the spill
-     * entries and file readers, triggered via the CheckpointCallback.
+     * entries and file readers, triggered via the ChannelCheckpointStartedListener.
      */
     @Override
     public void checkpoint(
             ChannelStateWriter writer, long checkpointId, InputChannelInfo channelInfo)
             throws IOException {
         // Step 1: snapshot ready buffers under lock; capture callback reference.
-        CheckpointCallback cb;
+        ChannelCheckpointStartedListener cb;
         synchronized (this) {
             if (!readyBuffers.isEmpty()) {
                 List<Buffer> retained = new ArrayList<>(readyBuffers.size());
@@ -154,7 +154,7 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
                         ChannelStateWriter.SEQUENCE_NUMBER_RESTORED,
                         CloseableIterator.fromList(retained, Buffer::recycleBuffer));
             }
-            cb = checkpointCallback;
+            cb = checkpointListener;
         }
 
         // Step 2: fire callback outside lock to avoid deadlock with OutputWriter's lock.
@@ -178,8 +178,8 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
     // ---------------------------------------------------------------------------
 
     @Override
-    public synchronized void setCheckpointCallback(CheckpointCallback callback) {
-        this.checkpointCallback = callback;
+    public synchronized void setCheckpointListener(ChannelCheckpointStartedListener listener) {
+        this.checkpointListener = listener;
     }
 
     @Override

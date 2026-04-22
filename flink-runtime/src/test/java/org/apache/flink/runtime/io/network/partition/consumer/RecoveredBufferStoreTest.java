@@ -41,8 +41,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class RecoveredBufferStoreTest {
 
     /**
-     * AT-IAMJ: Create store, addBuffer, tryTake, markComplete, isComplete. Verify the full
-     * lifecycle of the store.
+     * Create store, addBuffer, tryTake, markComplete, isComplete. Verify the full lifecycle of the
+     * store.
      */
     @Test
     void testStoreLifecycle() {
@@ -99,7 +99,7 @@ class RecoveredBufferStoreTest {
     }
 
     /**
-     * AT-CTTS: Checkpoint with ready buffers. Ready buffers should be retained and passed to the
+     * Checkpoint with ready buffers. Ready buffers should be retained and passed to the
      * ChannelStateWriter.
      */
     @Test
@@ -128,10 +128,7 @@ class RecoveredBufferStoreTest {
         store.releaseAll();
     }
 
-    /**
-     * AT-N3YQ: Concurrent access from two threads. One thread adds buffers and the other takes
-     * them.
-     */
+    /** Concurrent access from two threads. One thread adds buffers and the other takes them. */
     @Test
     void testConcurrentCheckpointAndReplay() throws Exception {
         RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
@@ -186,8 +183,8 @@ class RecoveredBufferStoreTest {
     }
 
     /**
-     * AT-OOJG: Simulate store transfer by adding buffers, then taking them in another "context"
-     * (simulating conversion). Continue consuming after conversion.
+     * Simulate store transfer by adding buffers, then taking them in another "context" (simulating
+     * conversion). Continue consuming after conversion.
      */
     @Test
     void testConsumptionAfterConversion() {
@@ -280,12 +277,12 @@ class RecoveredBufferStoreTest {
     }
 
     // ---------------------------------------------------------------------------
-    // Tests for CheckpointCallback (Item 1 and 3)
+    // Tests for ChannelCheckpointStartedListener
     // ---------------------------------------------------------------------------
 
     /**
-     * Verify that setCheckpointCallback registers a callback that is fired during checkpoint()
-     * after snapshotting ready buffers. The callback should receive the correct checkpointId and
+     * Verify that setCheckpointListener registers a listener that is fired during checkpoint()
+     * after snapshotting ready buffers. The listener should receive the correct checkpointId and
      * channelInfo.
      */
     @Test
@@ -296,7 +293,7 @@ class RecoveredBufferStoreTest {
         List<Long> capturedIds = new ArrayList<>();
         List<InputChannelInfo> capturedInfos = new ArrayList<>();
 
-        store.setCheckpointCallback(
+        store.setCheckpointListener(
                 (id, info) -> {
                     capturedIds.add(id);
                     capturedInfos.add(info);
@@ -321,14 +318,17 @@ class RecoveredBufferStoreTest {
         store.releaseAll();
     }
 
-    /** Verify checkpoint() without any ready buffers still fires the CheckpointCallback. */
+    /**
+     * Verify checkpoint() without any ready buffers still fires the
+     * ChannelCheckpointStartedListener.
+     */
     @Test
     void testCheckpointCallbackFiredEvenWhenNoReadyBuffers() throws Exception {
         RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
         InputChannelInfo channelInfo = new InputChannelInfo(1, 2);
 
         int[] callCount = {0};
-        store.setCheckpointCallback((id, info) -> callCount[0]++);
+        store.setCheckpointListener((id, info) -> callCount[0]++);
 
         RecordingChannelStateWriter writer = new RecordingChannelStateWriter();
         writer.start(1L, null);
@@ -337,7 +337,7 @@ class RecoveredBufferStoreTest {
         assertThat(callCount[0]).isEqualTo(1);
     }
 
-    /** Verify no callback is fired if setCheckpointCallback was never called. */
+    /** Verify no callback is fired if setCheckpointListener was never called. */
     @Test
     void testCheckpointWithNoCallbackSetDoesNotThrow() throws Exception {
         RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
@@ -570,7 +570,7 @@ class RecoveredBufferStoreTest {
         RecoveredBufferStore empty = RecoveredBufferStore.EMPTY;
 
         // All three setters must silently discard
-        empty.setCheckpointCallback((id, info) -> {});
+        empty.setCheckpointListener((id, info) -> {});
         empty.setOnBecameEmptyCallback(() -> {});
         empty.setNotificationCallback(() -> {});
         // No exception == pass

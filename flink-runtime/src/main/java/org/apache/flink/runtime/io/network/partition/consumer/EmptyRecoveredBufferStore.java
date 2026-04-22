@@ -23,16 +23,7 @@ import org.apache.flink.runtime.io.network.buffer.Buffer;
 
 import javax.annotation.Nullable;
 
-/**
- * No-op implementation of {@link RecoveredBufferStore} used as a sentinel value for channels that
- * have no recovered data (non-filtering mode, or filtering mode after recovery has fully drained).
- *
- * <p>Exposed as {@link RecoveredBufferStore#EMPTY}. All methods either return their neutral/empty
- * sentinel value or do nothing. Callback setters silently discard the supplied callbacks.
- *
- * <p>Using this singleton eliminates {@code null} checks at every call site and makes the "no
- * store" case an explicit, named contract.
- */
+/** No-op {@link RecoveredBufferStore} sentinel for channels without recovered data. */
 class EmptyRecoveredBufferStore implements RecoveredBufferStore {
 
     @Nullable
@@ -61,34 +52,19 @@ class EmptyRecoveredBufferStore implements RecoveredBufferStore {
         return 0;
     }
 
-    /** No-op: EMPTY store holds no data, nothing to checkpoint. */
     @Override
     public void checkpoint(
-            ChannelStateWriter writer, long checkpointId, InputChannelInfo channelInfo) {
-        // no-op
-    }
+            ChannelStateWriter writer, long checkpointId, InputChannelInfo channelInfo) {}
 
-    /** No-op: EMPTY store holds no buffers to release. */
     @Override
-    public void releaseAll() {
-        // no-op
-    }
+    public void releaseAll() {}
 
-    /** No-op: EMPTY store never transitions to non-empty, so the callback would never fire. */
     @Override
-    public void setCheckpointCallback(CheckpointCallback callback) {
-        // no-op
-    }
+    public void setCheckpointListener(ChannelCheckpointStartedListener listener) {}
 
-    /** No-op: EMPTY store is always empty, so the callback would never fire. */
     @Override
-    public void setOnBecameEmptyCallback(Runnable callback) {
-        // no-op
-    }
+    public void setOnBecameEmptyCallback(Runnable callback) {}
 
-    /** No-op: EMPTY store never receives buffers, so the notification would never fire. */
     @Override
-    public void setNotificationCallback(Runnable callback) {
-        // no-op
-    }
+    public void setNotificationCallback(Runnable callback) {}
 }

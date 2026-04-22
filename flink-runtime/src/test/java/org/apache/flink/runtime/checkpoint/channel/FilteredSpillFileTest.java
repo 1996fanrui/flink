@@ -17,6 +17,8 @@
 
 package org.apache.flink.runtime.checkpoint.channel;
 
+import org.apache.flink.runtime.memory.MemoryManager;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -30,16 +32,18 @@ import java.util.Random;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Tests for {@link SpillFileWriter} and {@link SpillFileReader}. */
-class SpillFileTest {
+/**
+ * Tests for {@link FilteredSpillFile.Writer}, {@link FilteredSpillFile.Reader}, and {@link
+ * FilteredSpillFile.Entry}.
+ */
+class FilteredSpillFileTest {
 
     @TempDir private Path temporaryFolder;
 
-    private static final int MEMORY_SEGMENT_SIZE = 32 * 1024;
+    private static final int MEMORY_SEGMENT_SIZE = MemoryManager.DEFAULT_PAGE_SIZE;
 
     /**
-     * AT-7OWS: Write data, read back, verify raw bytes match. The file contains pure bytes with no
-     * metadata.
+     * Write data, read back, verify raw bytes match. The file contains pure bytes with no metadata.
      */
     @Test
     void testPureByteStream() throws Exception {
@@ -48,11 +52,11 @@ class SpillFileTest {
         byte[] data = new byte[1024];
         random.nextBytes(data);
 
-        try (SpillFileWriter writer = new SpillFileWriter(spillDirs)) {
+        try (FilteredSpillFile.Writer writer = new FilteredSpillFile.Writer(spillDirs)) {
             long offset = writer.write(data, 0, data.length);
             assertThat(offset).isEqualTo(0L);
 
-            try (SpillFileReader reader = writer.getCurrentFileReader()) {
+            try (FilteredSpillFile.Reader reader = writer.getCurrentFileReader()) {
                 byte[] readBack = new byte[data.length];
                 reader.read(offset, readBack, data.length);
                 assertThat(readBack).isEqualTo(data);
@@ -60,21 +64,21 @@ class SpillFileTest {
         }
     }
 
-    /** AT-7OWS continued: verify multiple writes produce contiguous offsets. */
+    /** Verify multiple writes produce contiguous offsets. */
     @Test
     void testMultipleWritesContiguous() throws Exception {
         String[] spillDirs = {temporaryFolder.toString()};
         byte[] data1 = new byte[] {1, 2, 3, 4};
         byte[] data2 = new byte[] {5, 6, 7, 8};
 
-        try (SpillFileWriter writer = new SpillFileWriter(spillDirs)) {
+        try (FilteredSpillFile.Writer writer = new FilteredSpillFile.Writer(spillDirs)) {
             long offset1 = writer.write(data1, 0, data1.length);
             long offset2 = writer.write(data2, 0, data2.length);
 
             assertThat(offset1).isEqualTo(0L);
             assertThat(offset2).isEqualTo(4L);
 
-            try (SpillFileReader reader = writer.getCurrentFileReader()) {
+            try (FilteredSpillFile.Reader reader = writer.getCurrentFileReader()) {
                 byte[] readBack1 = new byte[4];
                 reader.read(offset1, readBack1, 4);
                 assertThat(readBack1).isEqualTo(data1);
@@ -87,8 +91,8 @@ class SpillFileTest {
     }
 
     /**
-     * AT-5097: Write more than 64MB to trigger file rotation, verify multiple files created and
-     * data correct across files.
+     * Write more than 64MB to trigger file rotation, verify multiple files created and data correct
+     * across files.
      */
     @Test
     void testFileRotation() throws Exception {
@@ -103,10 +107,10 @@ class SpillFileTest {
         int numChunks = 2100;
         byte[][] chunks = new byte[numChunks][];
         long[] offsets = new long[numChunks];
-        SpillFileReader[] readers = new SpillFileReader[numChunks];
+        FilteredSpillFile.Reader[] readers = new FilteredSpillFile.Reader[numChunks];
 
         Random random = new Random(42);
-        try (SpillFileWriter writer = new SpillFileWriter(spillDirs)) {
+        try (FilteredSpillFile.Writer writer = new FilteredSpillFile.Writer(spillDirs)) {
             for (int i = 0; i < numChunks; i++) {
                 chunks[i] = new byte[chunkSize];
                 random.nextBytes(chunks[i]);
@@ -125,7 +129,7 @@ class SpillFileTest {
             }
 
             // Clean up readers
-            for (SpillFileReader reader : readers) {
+            for (FilteredSpillFile.Reader reader : readers) {
                 if (reader != null) {
                     reader.close();
                 }
@@ -133,14 +137,11 @@ class SpillFileTest {
         }
     }
 
-    /**
-     * AT-HY10: SpillFileWriter.close() releases file handle even on error. Verify no resource
-     * leaks.
-     */
+    /** Writer.close() releases file handle even on error. Verify no resource leaks. */
     @Test
     void testCloseReleasesFileHandle() throws Exception {
         String[] spillDirs = {temporaryFolder.toString()};
-        SpillFileWriter writer = new SpillFileWriter(spillDirs);
+        FilteredSpillFile.Writer writer = new FilteredSpillFile.Writer(spillDirs);
 
         // Write some data to open a file
         byte[] data = new byte[] {1, 2, 3};
@@ -149,13 +150,12 @@ class SpillFileTest {
         // Close the writer
         writer.close();
 
-        // After close, writing should throw or the channel should be closed.
-        // Verify by attempting to write again.
+        // After close, writing should throw
         assertThatThrownBy(() -> writer.write(data, 0, data.length))
                 .isInstanceOf(IllegalStateException.class);
     }
 
-    /** AT-HW4P: Truncate file, read throws IOException on partial read. */
+    /** Truncate file, read throws IOException on partial read. */
     @Test
     void testTruncatedFileThrows() throws Exception {
         String[] spillDirs = {temporaryFolder.toString()};
@@ -164,7 +164,7 @@ class SpillFileTest {
         long offset;
         Path filePath;
 
-        try (SpillFileWriter writer = new SpillFileWriter(spillDirs)) {
+        try (FilteredSpillFile.Writer writer = new FilteredSpillFile.Writer(spillDirs)) {
             offset = writer.write(data, 0, data.length);
             filePath = writer.getAllFiles().get(0);
         }
@@ -175,7 +175,7 @@ class SpillFileTest {
         }
 
         // Reading full length from the truncated file should throw IOException
-        try (SpillFileReader reader = new SpillFileReader(filePath)) {
+        try (FilteredSpillFile.Reader reader = new FilteredSpillFile.Reader(filePath)) {
             byte[] readBack = new byte[data.length];
             assertThatThrownBy(() -> reader.read(offset, readBack, data.length))
                     .isInstanceOf(IOException.class);
@@ -191,10 +191,10 @@ class SpillFileTest {
             data[i] = (byte) i;
         }
 
-        try (SpillFileWriter writer = new SpillFileWriter(spillDirs)) {
+        try (FilteredSpillFile.Writer writer = new FilteredSpillFile.Writer(spillDirs)) {
             long offset = writer.write(data, 0, data.length);
 
-            try (SpillFileReader reader = writer.getCurrentFileReader()) {
+            try (FilteredSpillFile.Reader reader = writer.getCurrentFileReader()) {
                 // Read a sub-range via InputStream
                 int readOffset = 64;
                 int readLength = 128;
@@ -225,7 +225,7 @@ class SpillFileTest {
         String[] spillDirs = {temporaryFolder.toString()};
         byte[] data = new byte[64];
 
-        SpillFileWriter writer = new SpillFileWriter(spillDirs);
+        FilteredSpillFile.Writer writer = new FilteredSpillFile.Writer(spillDirs);
         writer.write(data, 0, data.length);
         writer.close();
 
@@ -245,18 +245,18 @@ class SpillFileTest {
     /** Verify constructor throws on empty spillDirs. */
     @Test
     void testEmptySpillDirsThrows() {
-        assertThatThrownBy(() -> new SpillFileWriter(new String[0]))
+        assertThatThrownBy(() -> new FilteredSpillFile.Writer(new String[0]))
                 .isInstanceOf(IOException.class);
     }
 
-    /** Verify SpillEntry is immutable and holds correct values. */
+    /** Verify Entry is immutable and holds correct values. */
     @Test
-    void testSpillEntryImmutability() throws Exception {
+    void testEntryImmutability() throws Exception {
         InputChannelInfo channelInfo = new InputChannelInfo(0, 1);
         long offset = 42L;
         int length = 100;
 
-        SpillEntry entry = new SpillEntry(channelInfo, offset, length);
+        FilteredSpillFile.Entry entry = new FilteredSpillFile.Entry(channelInfo, offset, length);
 
         assertThat(entry.getChannelInfo()).isSameAs(channelInfo);
         assertThat(entry.getOffset()).isEqualTo(offset);
