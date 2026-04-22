@@ -22,13 +22,14 @@ import org.apache.flink.annotation.Internal;
 import java.io.IOException;
 
 /**
- * Accepts filtered channel state data and manages the buffer/disk backend transparently. Callers
- * use {@link #write(byte[], int, InputChannelInfo)} to push data for a target channel, and the
- * implementation decides whether to use a network buffer (P1), spill to disk (P2), or replay from
- * disk (P3).
+ * Dispatches filtered channel state data across multiple channels' {@link
+ * org.apache.flink.runtime.io.network.partition.consumer.RecoveredBufferStore}s, managing the
+ * buffer/disk backend transparently. Callers use {@link #write(byte[], int, InputChannelInfo)} to
+ * push data for a target channel, and the implementation decides whether to use a network buffer
+ * (P1), spill to disk (P2), or replay from disk (P3).
  */
 @Internal
-public interface OutputWriter extends AutoCloseable {
+public interface FilteredBufferDispatcher extends AutoCloseable {
 
     /**
      * Writes data for the given channel.

@@ -22,12 +22,12 @@ import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 
 /**
  * Listener invoked when a per-channel checkpoint snapshot has started. Used by {@link
- * RecoveredBufferStoreImpl} to notify the OutputWriter that this channel's ready buffers have been
- * snapshotted, so the OutputWriter can update its wait-set and, when all channels are accounted
- * for, flush pending spill entries into the checkpoint.
+ * RecoveredBufferStoreImpl} to notify the FilteredBufferDispatcher that this channel's ready
+ * buffers have been snapshotted, so the FilteredBufferDispatcher can update its wait-set and, when
+ * all channels are accounted for, flush pending spill entries into the checkpoint.
  *
  * <p>The listener is always invoked outside any store-level lock to avoid deadlocks with the
- * OutputWriter's own synchronisation.
+ * FilteredBufferDispatcher's own synchronisation.
  */
 @Internal
 @FunctionalInterface

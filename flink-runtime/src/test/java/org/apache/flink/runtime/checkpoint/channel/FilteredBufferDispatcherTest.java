@@ -44,8 +44,8 @@ import java.util.stream.Stream;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Tests for {@link OutputWriterImpl}. */
-class OutputWriterTest {
+/** Tests for {@link FilteredBufferDispatcherImpl}. */
+class FilteredBufferDispatcherTest {
 
     private static final int SEGMENT_SIZE = 64;
 
@@ -140,13 +140,14 @@ class OutputWriterTest {
 
     // --- Tests ---
 
-    /** AT-2W3J: Buffer always available, no disk. All data flows to stores via buffers. */
+    /** Buffer always available, no disk. All data flows to stores via buffers. */
     @Test
     void testP1MemoryPath() throws Exception {
         // Provide plenty of buffers so no spilling happens
         Queue<Buffer> pool = createBufferPool(10);
-        OutputWriterImpl writer =
-                new OutputWriterImpl(stores, spillDirs, SEGMENT_SIZE, pool::poll, pool::poll);
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores, spillDirs, SEGMENT_SIZE, pool::poll, pool::poll);
 
         byte[] data = createTestData(SEGMENT_SIZE, (byte) 0xAA);
         writer.write(data, data.length, ch0);
@@ -159,13 +160,14 @@ class OutputWriterTest {
         assertThat(store0.isComplete()).isTrue();
     }
 
-    /** AT-GE7G: Buffer supplier always returns null. Data goes to disk, replayed on close. */
+    /** Buffer supplier always returns null. Data goes to disk, replayed on close. */
     @Test
     void testP2SpillPath() throws Exception {
         // No buffers for write, but provide blocking buffers for close drain
         Queue<Buffer> drainPool = createBufferPool(5);
-        OutputWriterImpl writer =
-                new OutputWriterImpl(stores, spillDirs, SEGMENT_SIZE, () -> null, drainPool::poll);
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores, spillDirs, SEGMENT_SIZE, () -> null, drainPool::poll);
 
         byte[] data = createTestData(SEGMENT_SIZE, (byte) 0xBB);
         writer.write(data, data.length, ch0);
@@ -183,13 +185,14 @@ class OutputWriterTest {
         assertThat(store0.isComplete()).isTrue();
     }
 
-    /** AT-SX5O: First write spills, then buffer becomes available. P3 replays from disk. */
+    /** First write spills, then buffer becomes available. P3 replays from disk. */
     @Test
     void testP3ReplayPath() throws Exception {
         Queue<Buffer> pool = new LinkedList<>();
         // No buffer initially — first write spills
-        OutputWriterImpl writer =
-                new OutputWriterImpl(stores, spillDirs, SEGMENT_SIZE, pool::poll, pool::poll);
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores, spillDirs, SEGMENT_SIZE, pool::poll, pool::poll);
 
         // Write exactly SEGMENT_SIZE so the spill entry is auto-sealed
         byte[] data1 = createTestData(SEGMENT_SIZE, (byte) 0x11);
@@ -213,14 +216,14 @@ class OutputWriterTest {
     }
 
     /**
-     * AT-QUBL: Multiple channels' data goes to disk. Replay order matches FIFO write order across
-     * channels.
+     * Multiple channels' data goes to disk. Replay order matches FIFO write order across channels.
      */
     @Test
     void testP3FIFOOrdering() throws Exception {
         Queue<Buffer> drainPool = createBufferPool(10);
-        OutputWriterImpl writer =
-                new OutputWriterImpl(stores, spillDirs, SEGMENT_SIZE, () -> null, drainPool::poll);
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores, spillDirs, SEGMENT_SIZE, () -> null, drainPool::poll);
 
         // Write to ch0 then ch1 — both spill to disk
         byte[] d0 = createTestData(SEGMENT_SIZE, (byte) 0x10);
@@ -236,15 +239,15 @@ class OutputWriterTest {
     }
 
     /**
-     * AT-P3DL: Multiple entries on disk, multiple buffers available. P3 loops until no buffer or
-     * disk empty.
+     * Multiple entries on disk, multiple buffers available. P3 loops until no buffer or disk empty.
      */
     @Test
     void testP3EagerDrain() throws Exception {
         Queue<Buffer> pool = new LinkedList<>();
         // No buffers initially
-        OutputWriterImpl writer =
-                new OutputWriterImpl(stores, spillDirs, SEGMENT_SIZE, pool::poll, pool::poll);
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores, spillDirs, SEGMENT_SIZE, pool::poll, pool::poll);
 
         // Spill 3 entries for ch0 (each exactly SEGMENT_SIZE so they auto-seal)
         for (int i = 0; i < 3; i++) {
@@ -272,15 +275,16 @@ class OutputWriterTest {
     }
 
     /**
-     * AT-DWGD: Start with buffer, buffer fills, no new buffer available. Remaining data goes to
-     * file. Cannot upgrade back to buffer within one writeToBackend call.
+     * Start with buffer, buffer fills, no new buffer available. Remaining data goes to file. Cannot
+     * upgrade back to buffer within one writeToBackend call.
      */
     @Test
     void testBackendDowngradeOnly() throws Exception {
         Queue<Buffer> pool = createBufferPool(1); // Only 1 buffer available
         Queue<Buffer> drainPool = createBufferPool(5);
-        OutputWriterImpl writer =
-                new OutputWriterImpl(stores, spillDirs, SEGMENT_SIZE, pool::poll, drainPool::poll);
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores, spillDirs, SEGMENT_SIZE, pool::poll, drainPool::poll);
 
         // Write data larger than one buffer — first SEGMENT_SIZE goes to buffer, rest to disk
         byte[] data = createTestData(SEGMENT_SIZE * 2, (byte) 0x44);
@@ -294,13 +298,14 @@ class OutputWriterTest {
         assertThat(actual).isEqualTo(data);
     }
 
-    /** AT-BYPS: Data starts in buffer, spans to file when buffer full. */
+    /** Data starts in buffer, spans to file when buffer full. */
     @Test
     void testCrossBackendRecordSpanning() throws Exception {
         Queue<Buffer> pool = createBufferPool(1); // 1 buffer of SEGMENT_SIZE
         Queue<Buffer> drainPool = createBufferPool(5);
-        OutputWriterImpl writer =
-                new OutputWriterImpl(stores, spillDirs, SEGMENT_SIZE, pool::poll, drainPool::poll);
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores, spillDirs, SEGMENT_SIZE, pool::poll, drainPool::poll);
 
         // Write half a buffer
         byte[] part1 = createTestData(SEGMENT_SIZE / 2, (byte) 0x55);
@@ -322,12 +327,13 @@ class OutputWriterTest {
         assertThat(actual).isEqualTo(expected);
     }
 
-    /** AT-CHDL: Write to channel A, then B. Verify flush between transitions. */
+    /** Write to channel A, then B. Verify flush between transitions. */
     @Test
     void testChannelChangeDetection() throws Exception {
         Queue<Buffer> pool = createBufferPool(10);
-        OutputWriterImpl writer =
-                new OutputWriterImpl(stores, spillDirs, SEGMENT_SIZE, pool::poll, pool::poll);
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores, spillDirs, SEGMENT_SIZE, pool::poll, pool::poll);
 
         // Write partial data to ch0
         byte[] d0 = createTestData(SEGMENT_SIZE / 2, (byte) 0x77);
@@ -348,12 +354,13 @@ class OutputWriterTest {
         assertThat(concat(results1)).isEqualTo(d1);
     }
 
-    /** AT-SFMG: Multiple channels share one spill file. */
+    /** Multiple channels share one spill file. */
     @Test
     void testSingleFilePerTask() throws Exception {
         Queue<Buffer> drainPool = createBufferPool(10);
-        OutputWriterImpl writer =
-                new OutputWriterImpl(stores, spillDirs, SEGMENT_SIZE, () -> null, drainPool::poll);
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores, spillDirs, SEGMENT_SIZE, () -> null, drainPool::poll);
 
         byte[] d0 = createTestData(SEGMENT_SIZE, (byte) 0x99);
         byte[] d1 = createTestData(SEGMENT_SIZE, (byte) 0xAA);
@@ -367,12 +374,13 @@ class OutputWriterTest {
         assertThat(concat(drainStore(store1))).isEqualTo(d1);
     }
 
-    /** AT-CRSR: Spill, partial replay, verify tracking state. */
+    /** Spill, partial replay, verify tracking state. */
     @Test
     void testCursorBasedTracking() throws Exception {
         Queue<Buffer> pool = new LinkedList<>();
-        OutputWriterImpl writer =
-                new OutputWriterImpl(stores, spillDirs, SEGMENT_SIZE, pool::poll, pool::poll);
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores, spillDirs, SEGMENT_SIZE, pool::poll, pool::poll);
 
         // Spill 2 entries to ch0 (each exactly SEGMENT_SIZE so they auto-seal)
         byte[] d1 = createTestData(SEGMENT_SIZE, (byte) 0x01);
@@ -399,12 +407,13 @@ class OutputWriterTest {
         assertThat(results0.get(1)).isEqualTo(d2);
     }
 
-    /** AT-DRIN: close() drains all disk data. */
+    /** close() drains all disk data. */
     @Test
     void testCloseDrain() throws Exception {
         Queue<Buffer> drainPool = createBufferPool(10);
-        OutputWriterImpl writer =
-                new OutputWriterImpl(stores, spillDirs, SEGMENT_SIZE, () -> null, drainPool::poll);
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores, spillDirs, SEGMENT_SIZE, () -> null, drainPool::poll);
 
         // Spill multiple entries
         for (int i = 0; i < 5; i++) {
@@ -426,12 +435,13 @@ class OutputWriterTest {
         }
     }
 
-    /** AT-CLID: close() twice doesn't throw. */
+    /** close() twice doesn't throw. */
     @Test
     void testCloseIdempotent() throws Exception {
         Queue<Buffer> pool = createBufferPool(5);
-        OutputWriterImpl writer =
-                new OutputWriterImpl(stores, spillDirs, SEGMENT_SIZE, pool::poll, pool::poll);
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores, spillDirs, SEGMENT_SIZE, pool::poll, pool::poll);
 
         writer.flush();
         writer.close();
@@ -439,12 +449,13 @@ class OutputWriterTest {
         writer.close();
     }
 
-    /** AT-CLFL: After close(), spill files deleted. */
+    /** After close(), spill files deleted. */
     @Test
     void testCloseCleanup() throws Exception {
         Queue<Buffer> drainPool = createBufferPool(10);
-        OutputWriterImpl writer =
-                new OutputWriterImpl(stores, spillDirs, SEGMENT_SIZE, () -> null, drainPool::poll);
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores, spillDirs, SEGMENT_SIZE, () -> null, drainPool::poll);
 
         byte[] data = createTestData(SEGMENT_SIZE * 3, (byte) 0xCC);
         writer.write(data, data.length, ch0);
@@ -465,12 +476,13 @@ class OutputWriterTest {
         }
     }
 
-    /** AT-CWRT: write() after close() throws IllegalStateException. */
+    /** write() after close() throws IllegalStateException. */
     @Test
     void testWriteAfterClose() throws Exception {
         Queue<Buffer> pool = createBufferPool(5);
-        OutputWriterImpl writer =
-                new OutputWriterImpl(stores, spillDirs, SEGMENT_SIZE, pool::poll, pool::poll);
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores, spillDirs, SEGMENT_SIZE, pool::poll, pool::poll);
 
         writer.flush();
         writer.close();
@@ -480,12 +492,13 @@ class OutputWriterTest {
                 .isInstanceOf(IllegalStateException.class);
     }
 
-    /** AT-FWRT: write() after flush() throws IllegalStateException. */
+    /** write() after flush() throws IllegalStateException. */
     @Test
     void testWriteAfterFlush() throws Exception {
         Queue<Buffer> pool = createBufferPool(5);
-        OutputWriterImpl writer =
-                new OutputWriterImpl(stores, spillDirs, SEGMENT_SIZE, pool::poll, pool::poll);
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores, spillDirs, SEGMENT_SIZE, pool::poll, pool::poll);
 
         writer.flush();
 
@@ -494,12 +507,12 @@ class OutputWriterTest {
                 .isInstanceOf(IllegalStateException.class);
     }
 
-    /** AT-C3MK: Empty spill dirs throws IOException. */
+    /** Empty spill dirs throws IOException. */
     @Test
     void testSpillDirectorySource() {
         assertThatThrownBy(
                         () ->
-                                new OutputWriterImpl(
+                                new FilteredBufferDispatcherImpl(
                                         stores,
                                         new String[0],
                                         SEGMENT_SIZE,
@@ -508,7 +521,7 @@ class OutputWriterTest {
                 .isInstanceOf(IOException.class);
     }
 
-    /** AT-LN5V: Enough data for 3+ file rotations. All replayed correctly. */
+    /** Enough data for 3+ file rotations. All replayed correctly. */
     @Test
     void testLargeDataMultiRotation() throws Exception {
         // SpillFileWriter rotates at 64MB. Use small segments and many writes to trigger rotation.
@@ -530,8 +543,9 @@ class OutputWriterTest {
         }
 
         String[] dirs = new String[] {tempDir.toString()};
-        OutputWriterImpl writer =
-                new OutputWriterImpl(stores, dirs, segmentSize, () -> null, drainPool::poll);
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores, dirs, segmentSize, () -> null, drainPool::poll);
 
         byte[][] expectedData = new byte[entryCount][];
         for (int i = 0; i < entryCount; i++) {
@@ -549,12 +563,13 @@ class OutputWriterTest {
         }
     }
 
-    /** AT-9632: OutputWriter.write(data, length, channelInfo) is the unified write interface. */
+    /** FilteredBufferDispatcher.write(data, length, channelInfo) is the unified write interface. */
     @Test
     void testUnifiedWriteInterface() throws Exception {
         Queue<Buffer> pool = createBufferPool(10);
-        OutputWriterImpl writer =
-                new OutputWriterImpl(stores, spillDirs, SEGMENT_SIZE, pool::poll, pool::poll);
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores, spillDirs, SEGMENT_SIZE, pool::poll, pool::poll);
 
         // The write method accepts data, length, channelInfo — this is the unified interface
         // used by filterAndRewrite. Verify it works for multiple channels.
@@ -570,12 +585,13 @@ class OutputWriterTest {
         assertThat(concat(drainStore(store1))).isEqualTo(d1);
     }
 
-    /** AT-HQB4: SpillEntry aligns with memorySegmentSize, 1:1 with buffer. */
+    /** SpillEntry aligns with memorySegmentSize, 1:1 with buffer. */
     @Test
     void testBufferAlignedEntryReplay() throws Exception {
         Queue<Buffer> drainPool = createBufferPool(5);
-        OutputWriterImpl writer =
-                new OutputWriterImpl(stores, spillDirs, SEGMENT_SIZE, () -> null, drainPool::poll);
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores, spillDirs, SEGMENT_SIZE, () -> null, drainPool::poll);
 
         // Write exactly 3 * SEGMENT_SIZE bytes — should create exactly 3 spill entries
         for (int i = 0; i < 3; i++) {
@@ -599,8 +615,8 @@ class OutputWriterTest {
     // ---------------------------------------------------------------------------
 
     /**
-     * AT-CB01: After construction, each store's checkpointListener is registered to
-     * OutputWriter.onChannelCheckpointStarted.
+     * After construction, each store's checkpointListener is registered to
+     * FilteredBufferDispatcher.onChannelCheckpointStarted.
      */
     @Test
     void testCheckpointCallbackRegisteredOnConstruction() throws Exception {
@@ -611,7 +627,8 @@ class OutputWriterTest {
         trackStores.put(ch1, trackStore1);
 
         Queue<Buffer> pool = createBufferPool(5);
-        new OutputWriterImpl(trackStores, spillDirs, SEGMENT_SIZE, pool::poll, pool::poll);
+        new FilteredBufferDispatcherImpl(
+                trackStores, spillDirs, SEGMENT_SIZE, pool::poll, pool::poll);
 
         // Both stores must have had setCheckpointListener called exactly once with a non-null
         // listener.
@@ -622,15 +639,16 @@ class OutputWriterTest {
     }
 
     /**
-     * AT-CB02: First onChannelCheckpointStarted call for a checkpointId scans spillEntryQueue and
-     * builds the correct wait-set; subsequent calls for the same checkpointId remove channels.
+     * First onChannelCheckpointStarted call for a checkpointId scans spillEntryQueue and builds the
+     * correct wait-set; subsequent calls for the same checkpointId remove channels.
      */
     @Test
     void testWaitSetBuiltOnFirstCallback() throws Exception {
         // Spill one entry per channel so both appear in the wait-set.
         Queue<Buffer> drainPool = createBufferPool(10);
-        OutputWriterImpl writer =
-                new OutputWriterImpl(stores, spillDirs, SEGMENT_SIZE, () -> null, drainPool::poll);
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores, spillDirs, SEGMENT_SIZE, () -> null, drainPool::poll);
 
         byte[] d0 = createTestData(SEGMENT_SIZE, (byte) 0x10);
         byte[] d1 = createTestData(SEGMENT_SIZE, (byte) 0x20);
@@ -648,12 +666,13 @@ class OutputWriterTest {
         writer.close();
     }
 
-    /** AT-CB03: New checkpointId causes wait-set to be rebuilt from current spillEntryQueue. */
+    /** New checkpointId causes wait-set to be rebuilt from current spillEntryQueue. */
     @Test
     void testWaitSetRebuiltOnNewCheckpointId() throws Exception {
         Queue<Buffer> drainPool = createBufferPool(10);
-        OutputWriterImpl writer =
-                new OutputWriterImpl(stores, spillDirs, SEGMENT_SIZE, () -> null, drainPool::poll);
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores, spillDirs, SEGMENT_SIZE, () -> null, drainPool::poll);
 
         // Spill entries for both channels.
         writer.write(createTestData(SEGMENT_SIZE, (byte) 0x30), SEGMENT_SIZE, ch0);
@@ -675,8 +694,8 @@ class OutputWriterTest {
     }
 
     /**
-     * AT-CB04: Channel not present in spillEntryQueue is not in wait-set; removing it is a no-op.
-     * Uses a fresh store map so only ch0 has a spill entry; ch1 callback is a no-op.
+     * Channel not present in spillEntryQueue is not in wait-set; removing it is a no-op. Uses a
+     * fresh store map so only ch0 has a spill entry; ch1 callback is a no-op.
      */
     @Test
     void testCallbackForChannelWithNoPendingEntryIsNoOp() throws Exception {
@@ -688,8 +707,8 @@ class OutputWriterTest {
         freshStores.put(ch1, freshStore1);
 
         Queue<Buffer> drainPool = createBufferPool(5);
-        OutputWriterImpl writer =
-                new OutputWriterImpl(
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
                         freshStores, spillDirs, SEGMENT_SIZE, () -> null, drainPool::poll);
 
         // Only ch0 spills; ch1 has no entries in the queue.
@@ -705,14 +724,15 @@ class OutputWriterTest {
     }
 
     /**
-     * AT-CB05: Duplicate callback for the same channel in the same checkpoint is idempotent
-     * (Set.remove on an already-absent element is a no-op).
+     * Duplicate callback for the same channel in the same checkpoint is idempotent (Set.remove on
+     * an already-absent element is a no-op).
      */
     @Test
     void testDuplicateCallbackForSameChannelIsIdempotent() throws Exception {
         Queue<Buffer> drainPool = createBufferPool(5);
-        OutputWriterImpl writer =
-                new OutputWriterImpl(stores, spillDirs, SEGMENT_SIZE, () -> null, drainPool::poll);
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores, spillDirs, SEGMENT_SIZE, () -> null, drainPool::poll);
 
         writer.write(createTestData(SEGMENT_SIZE, (byte) 0x70), SEGMENT_SIZE, ch0);
         writer.flush();
@@ -725,14 +745,15 @@ class OutputWriterTest {
     }
 
     /**
-     * AT-CB06: wait-set reaching empty state is the gate for phase2; no actual snapshot logic is
-     * executed (phase2 deferred to commit 5 fix). Verify no exception and correct state.
+     * wait-set reaching empty state is the gate for phase2; no actual snapshot logic is executed
+     * (phase2 deferred to commit 5 fix). Verify no exception and correct state.
      */
     @Test
     void testWaitSetEmptyReachedNoActualSnapshot() throws Exception {
         Queue<Buffer> drainPool = createBufferPool(5);
-        OutputWriterImpl writer =
-                new OutputWriterImpl(stores, spillDirs, SEGMENT_SIZE, () -> null, drainPool::poll);
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores, spillDirs, SEGMENT_SIZE, () -> null, drainPool::poll);
 
         writer.write(createTestData(SEGMENT_SIZE, (byte) 0x80), SEGMENT_SIZE, ch0);
         writer.flush();
