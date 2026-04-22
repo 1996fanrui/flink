@@ -182,9 +182,9 @@ class FilteredSpillFileTest {
         }
     }
 
-    /** Verify openInputStream reads the correct bounded range. */
+    /** Verify openSequentialStream reads the correct bytes starting from the given offset. */
     @Test
-    void testOpenInputStream() throws Exception {
+    void testOpenSequentialStream() throws Exception {
         String[] spillDirs = {temporaryFolder.toString()};
         byte[] data = new byte[256];
         for (int i = 0; i < data.length; i++) {
@@ -195,26 +195,29 @@ class FilteredSpillFileTest {
             long offset = writer.write(data, 0, data.length);
 
             try (FilteredSpillFile.Reader reader = writer.getCurrentFileReader()) {
-                // Read a sub-range via InputStream
+                // Open a sequential stream at a mid-file offset and read exactly readLength bytes.
+                // Simulates drainSpillEntriesToCheckpoint using one stream per physical file.
                 int readOffset = 64;
                 int readLength = 128;
-                try (InputStream is = reader.openInputStream(offset + readOffset, readLength)) {
-                    byte[] readBack = new byte[readLength];
-                    int totalRead = 0;
-                    int bytesRead;
-                    while ((bytesRead = is.read(readBack, totalRead, readLength - totalRead))
-                            != -1) {
-                        totalRead += bytesRead;
+                InputStream is = reader.openSequentialStream(offset + readOffset);
+                byte[] readBack = new byte[readLength];
+                int totalRead = 0;
+                while (totalRead < readLength) {
+                    int n = is.read(readBack, totalRead, readLength - totalRead);
+                    if (n < 0) {
+                        break;
                     }
-                    assertThat(totalRead).isEqualTo(readLength);
-
-                    byte[] expected = new byte[readLength];
-                    System.arraycopy(data, readOffset, expected, 0, readLength);
-                    assertThat(readBack).isEqualTo(expected);
-
-                    // Further reads should return -1
-                    assertThat(is.read()).isEqualTo(-1);
+                    totalRead += n;
                 }
+                assertThat(totalRead).isEqualTo(readLength);
+
+                byte[] expected = new byte[readLength];
+                System.arraycopy(data, readOffset, expected, 0, readLength);
+                assertThat(readBack).isEqualTo(expected);
+
+                // Stream continues past readLength — verify next byte is correct
+                int nextByte = is.read();
+                assertThat((byte) nextByte).isEqualTo(data[readOffset + readLength]);
             }
         }
     }

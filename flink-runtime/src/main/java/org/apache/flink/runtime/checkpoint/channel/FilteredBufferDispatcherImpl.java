@@ -257,6 +257,12 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
      * directly to checkpoint storage via {@link ChannelStateWriter#addInputData(long,
      * InputChannelInfo, int, InputStream, int)}.
      *
+     * <p>Entries belonging to the same physical spill file are streamed through a single {@link
+     * FilteredSpillFile.Reader} opened once per file. When the reader changes (indicating a file
+     * rotation boundary), a new sequential stream is opened starting at the first entry's offset in
+     * the new file. Reusing one stream per file avoids the overhead of creating a new bounded
+     * InputStream object for every individual entry.
+     *
      * <p>The "snapshot + drain" is merged: each entry is polled from the queue as it is written to
      * the checkpoint, ensuring that the same entry is not double-written if {@link #close()} runs
      * concurrently on the Recovery thread. Because this method runs under {@code
@@ -272,18 +278,29 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
      * <p>Must be called under {@code synchronized(this)}.
      */
     private void drainSpillEntriesToCheckpoint(long checkpointId) {
-        // Sequential pass: poll each entry and stream it to checkpoint storage.
-        // addInputData(InputStream) enqueues I/O to the ChannelStateWriter's executor thread,
-        // so this call does not block on disk I/O and is safe to hold the lock for.
+        // One sequential stream per physical spill file.
+        // ChannelStateWriter's executor is single-threaded and processes requests FIFO, so
+        // sharing one InputStream across consecutive addInputData calls for the same file is safe:
+        // each call reads exactly dataLength bytes and advances the stream position before the
+        // next call begins.
+        FilteredSpillFile.Reader currentReader = null;
+        InputStream currentStream = null;
+
         while (!spillEntryQueue.isEmpty()) {
             FilteredSpillFile.Entry entry = spillEntryQueue.poll();
             FilteredSpillFile.Reader reader = spillEntryReaderQueue.poll();
-            InputStream is = reader.openInputStream(entry.getOffset(), entry.getLength());
+
+            if (reader != currentReader) {
+                // File rotation boundary or first entry: open a new stream at this entry's offset.
+                currentReader = reader;
+                currentStream = reader.openSequentialStream(entry.getOffset());
+            }
+
             channelStateWriter.addInputData(
                     checkpointId,
                     entry.getChannelInfo(),
                     ChannelStateWriter.SEQUENCE_NUMBER_RESTORED,
-                    is,
+                    currentStream,
                     entry.getLength());
             // Decrement pending so that store.isEmpty() returns true once phase2 completes,
             // allowing RemoteInputChannel to release held credit to the upstream.
