@@ -195,52 +195,65 @@ public class SequentialChannelStateReaderImpl implements SequentialChannelStateR
     }
 
     /**
-     * Creates a {@link FilteredBufferDispatcher} from the per-channel stores. Uses the first
-     * RecoveredInputChannel's buffer request methods for buffer allocation.
+     * Creates a {@link FilteredBufferDispatcher} from the per-channel stores. Buffer suppliers are
+     * keyed by {@link InputChannelInfo} so each channel draws from its own pool.
      */
     private FilteredBufferDispatcher createFilteredBufferDispatcher(
             InputGate[] inputGates,
             Map<InputChannelInfo, RecoveredBufferStoreImpl> storesByChannel,
             RecordFilterContext filterContext)
             throws IOException {
-        // Find any RecoveredInputChannel for buffer suppliers
-        RecoveredInputChannel anyChannel = findAnyRecoveredInputChannel(inputGates);
+        Map<InputChannelInfo, RecoveredInputChannel> channelMap = buildChannelMap(inputGates);
         String[] spillDirs = filterContext.getTmpDirectories();
         int memorySegmentSize = filterContext.getMemorySegmentSize();
 
-        // Wrap requestBuffer in a Supplier that converts IOException to RuntimeException.
-        // The IOException can only occur during the first call (exclusive buffer assignment);
-        // subsequent calls only return null when the pool is exhausted.
-        java.util.function.Supplier<Buffer> nonBlockingSupplier =
-                () -> {
-                    try {
-                        return anyChannel.requestBuffer();
-                    } catch (IOException e) {
-                        throw new RuntimeException(
-                                "Failed to request buffer from RecoveredInputChannel", e);
-                    }
-                };
+        // Use the channelStateWriter from any channel (all channels share the same writer).
+        RecoveredInputChannel anyChannel = channelMap.values().iterator().next();
+
+        FilteredBufferDispatcherImpl.BlockingFunction<InputChannelInfo, Buffer>
+                blockingBufferSupplier =
+                        info -> {
+                            RecoveredInputChannel ch = channelMap.get(info);
+                            if (ch == null) {
+                                throw new IllegalArgumentException(
+                                        "No RecoveredInputChannel for channelInfo: " + info);
+                            }
+                            return ch.requestBufferBlocking();
+                        };
 
         return new FilteredBufferDispatcherImpl(
                 storesByChannel,
                 anyChannel.getChannelStateWriter(),
                 spillDirs,
                 memorySegmentSize,
-                nonBlockingSupplier,
-                anyChannel::requestBufferBlocking);
+                info -> {
+                    RecoveredInputChannel ch = channelMap.get(info);
+                    if (ch == null) {
+                        throw new IllegalArgumentException(
+                                "No RecoveredInputChannel for channelInfo: " + info);
+                    }
+                    try {
+                        return ch.requestBuffer();
+                    } catch (IOException e) {
+                        throw new RuntimeException(
+                                "Failed to request buffer from RecoveredInputChannel", e);
+                    }
+                },
+                blockingBufferSupplier);
     }
 
-    private RecoveredInputChannel findAnyRecoveredInputChannel(InputGate[] inputGates) {
+    private Map<InputChannelInfo, RecoveredInputChannel> buildChannelMap(InputGate[] inputGates) {
+        Map<InputChannelInfo, RecoveredInputChannel> channelMap = new HashMap<>();
         for (InputGate gate : inputGates) {
             for (int i = 0; i < gate.getNumberOfInputChannels(); i++) {
                 InputChannel ch = gate.getChannel(i);
                 if (ch instanceof RecoveredInputChannel) {
-                    return (RecoveredInputChannel) ch;
+                    RecoveredInputChannel recoveredCh = (RecoveredInputChannel) ch;
+                    channelMap.put(recoveredCh.getChannelInfo(), recoveredCh);
                 }
             }
         }
-        throw new IllegalStateException(
-                "No RecoveredInputChannel found; filtering requires at least one.");
+        return channelMap;
     }
 
     private Stream<OperatorSubtaskState> streamSubtaskStates() {

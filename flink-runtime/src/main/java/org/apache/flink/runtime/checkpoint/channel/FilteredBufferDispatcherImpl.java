@@ -31,7 +31,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
-import java.util.function.Supplier;
+import java.util.function.Function;
 
 /**
  * Implementation of {@link FilteredBufferDispatcher} that manages three data paths:
@@ -51,10 +51,13 @@ import java.util.function.Supplier;
 @Internal
 public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
 
-    /** Blocking supplier that may wait for a buffer to become available. */
+    /**
+     * Function variant that may block waiting for a resource to become available for the given
+     * channel.
+     */
     @FunctionalInterface
-    interface BlockingSupplier<T> {
-        T get() throws InterruptedException, IOException;
+    interface BlockingFunction<K, V> {
+        V apply(K key) throws InterruptedException, IOException;
     }
 
     /**
@@ -70,8 +73,8 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
     private final ChannelStateWriter channelStateWriter;
     private final String[] spillDirs;
     private final int memorySegmentSize;
-    private final Supplier<Buffer> bufferSupplier;
-    private final BlockingSupplier<Buffer> blockingBufferSupplier;
+    private final Function<InputChannelInfo, Buffer> bufferSupplier;
+    private final BlockingFunction<InputChannelInfo, Buffer> blockingBufferSupplier;
 
     // Active buffer state
     private Buffer activeBuffer;
@@ -107,8 +110,9 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
      *     storage without allocating network buffers
      * @param spillDirs directories for spill files
      * @param memorySegmentSize the size of a memory segment / network buffer
-     * @param bufferSupplier non-blocking supplier, returns null when exhausted
-     * @param blockingBufferSupplier blocking supplier used during close() drain
+     * @param bufferSupplier non-blocking per-channel supplier; returns null when the channel's pool
+     *     is exhausted
+     * @param blockingBufferSupplier blocking per-channel supplier used during close() drain
      * @throws IOException if spillDirs is empty
      */
     public FilteredBufferDispatcherImpl(
@@ -116,8 +120,8 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
             ChannelStateWriter channelStateWriter,
             String[] spillDirs,
             int memorySegmentSize,
-            Supplier<Buffer> bufferSupplier,
-            BlockingSupplier<Buffer> blockingBufferSupplier)
+            Function<InputChannelInfo, Buffer> bufferSupplier,
+            BlockingFunction<InputChannelInfo, Buffer> blockingBufferSupplier)
             throws IOException {
         if (spillDirs.length == 0) {
             throw new IOException("Spill directories must not be empty");
@@ -191,10 +195,11 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
             flushed = true;
         }
 
-        // Blocking drain: drain all spill entries using blocking buffer supplier
+        // Blocking drain: drain all spill entries using blocking buffer supplier keyed by channel
         while (!spillEntryQueue.isEmpty()) {
-            Buffer buffer = blockingBufferSupplier.get();
-            FilteredSpillFile.Entry entry = spillEntryQueue.poll();
+            FilteredSpillFile.Entry entry = spillEntryQueue.peek();
+            Buffer buffer = blockingBufferSupplier.apply(entry.getChannelInfo());
+            spillEntryQueue.poll();
             FilteredSpillFile.Reader reader = spillEntryReaderQueue.poll();
             loadEntryIntoBuffer(entry, reader, buffer);
             RecoveredBufferStoreImpl store =
@@ -350,7 +355,7 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
                     // Disk has data — must stay on file to preserve ordering
                     downgradedToFile = true;
                 } else {
-                    Buffer newBuffer = bufferSupplier.get();
+                    Buffer newBuffer = bufferSupplier.apply(channelInfo);
                     if (newBuffer != null) {
                         // P1: got a buffer
                         activeBuffer = newBuffer;
@@ -388,11 +393,12 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
     /** Eagerly drains spill entries while non-blocking buffers are available. */
     private void eagerDrain() throws IOException {
         while (!spillEntryQueue.isEmpty()) {
-            Buffer buffer = bufferSupplier.get();
+            FilteredSpillFile.Entry entry = spillEntryQueue.peek();
+            Buffer buffer = bufferSupplier.apply(entry.getChannelInfo());
             if (buffer == null) {
                 break;
             }
-            FilteredSpillFile.Entry entry = spillEntryQueue.poll();
+            spillEntryQueue.poll();
             FilteredSpillFile.Reader reader = spillEntryReaderQueue.poll();
             loadEntryIntoBuffer(entry, reader, buffer);
             RecoveredBufferStoreImpl store =
