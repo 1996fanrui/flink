@@ -10,8 +10,8 @@
 | AT-QUBL | P3 priority over P1 (FIFO ordering) | REQ-8HRS,REQ-CRSR | 待测试 | 代码自动化 | |
 | AT-P3DL | P3 eager drain (loop until no buffer or disk empty) | REQ-8HRS | 待测试 | 代码自动化 | |
 | AT-36DP | Source Buffer uses Heap, does not compete with Pool | REQ-NHLB | 待测试 | 代码自动化 | |
-| AT-41PK | Heap Buffer max 5 per gate | REQ-QY68 | 待测试 | 代码自动化 | |
-| AT-UE7O | Gate processes channels sequentially | REQ-QY68 | 待测试 | 代码自动化 | |
+| AT-41PK | Source Buffer one-at-a-time: large record spans multiple buffers, maxOutstanding == 1, same segment reused | REQ-NHLB,REQ-QY68 | 待测试 | 代码自动化 | |
+| AT-UE7O | Runtime check: getBuffer() throws IllegalStateException when prior buffer not recycled | REQ-QY68 | 待测试 | 代码自动化 | |
 | AT-DWGD | Backend downgrade only (buffer → file), no upgrade | REQ-WRTR | 待测试 | 代码自动化 | |
 | AT-BYPS | Record spans across buffer and file correctly | REQ-BYPS | 待测试 | 代码自动化 | |
 | AT-CHDL | Channel change auto-detected, flush on change | REQ-CHDL | 待测试 | 代码自动化 | |
@@ -84,18 +84,22 @@ getBuffer() in filtering mode returns Heap Buffer (allocateUnpooledSegment). Net
 **命令**: `./mvnw test -pl flink-runtime -Dtest=RecoveredInputChannelTest#testHeapBufferIsolation -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
-### [L1-测试] AT-41PK Heap Buffer Limit
+### [L1-测试] AT-41PK Source Buffer One-At-A-Time Invariant
 
-Exceeding 5 Heap Buffers per gate blocks or throws.
+Feed a record that spans multiple source buffers (small segmentSize + large record) through the real `ChannelStateChunkReader` + filtering pipeline. Observe every `getBuffer()` call via a wrapping tracker. Assertions:
+1. `getBuffer()` is called more than once (confirms the record does span multiple source buffers).
+2. At every observation point, `maxOutstanding == 1` (the previous buffer is always recycled before the next one is issued).
+3. The same `MemorySegment` instance is reused across calls (single-segment reuse).
+4. After the pipeline completes, the segment's `inUse` flag is false.
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=RecoveredChannelStateHandlerTest#testHeapBufferLimit -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=InputChannelRecoveredStateHandlerTest#testLargeRecordSpansMultipleSourceBuffers -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
-### [L1-测试] AT-UE7O Sequential Channel Processing
+### [L1-测试] AT-UE7O Runtime Check on Non-Recycled Prior Buffer
 
-Only one channel's data processed at a time within a gate. No concurrent Source Buffer holding.
+Allocate a heap source buffer via `getBuffer()`, do not recycle it, then call `getBuffer()` again. The second call must throw `IllegalStateException` (invariant check).
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=RecoveredChannelStateHandlerTest#testSequentialChannelProcessing -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=InputChannelRecoveredStateHandlerTest#testCheckFailsWhenPriorBufferNotRecycled -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-DWGD Backend Downgrade Only

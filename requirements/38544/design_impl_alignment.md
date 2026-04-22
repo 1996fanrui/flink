@@ -4,48 +4,55 @@
 > 不评价实现是否合理，不提供改进建议。
 
 
- 6 个 Commit 的实现计划 vs 实际提交
+## 7 个 Commit 的实现计划 vs 实际提交
 
-  ┌──────┬─────────────────────────────────────────────────────┬──────────────────────────────────────────┐
-  │ 计划  │                        内容                          │             对应实际 Commit              │
-  ├──────┼─────────────────────────────────────────────────────┼──────────────────────────────────────────┤
-  │ C1   │ Source Buffer Heap 分配 + buffer 请求接口             │ e55a7f1                                  │
-  ├──────┼─────────────────────────────────────────────────────┼──────────────────────────────────────────┤
-  │ C2   │ SpillFile I/O + RecoveredBufferStore                │ 44c700b                                  │
-  ├──────┼─────────────────────────────────────────────────────┼──────────────────────────────────────────┤
-  │ C3   │ OutputWriter 三条数据路径 + drain 循环                │ d911490                                  │
-  ├──────┼─────────────────────────────────────────────────────┼──────────────────────────────────────────┤
-  │ C4   │ InputChannel 从 RecoveredBufferStore 消费            │ 90c4e49                                  │
-  ├──────┼─────────────────────────────────────────────────────┼──────────────────────────────────────────┤
-  │ C5   │ ChannelStateWriter streaming overload（checkpoint）  │ c379f4b                                  │
-  ├──────┼─────────────────────────────────────────────────────┼──────────────────────────────────────────┤
-  │ C6   │ 集成：filterAndRewrite 写入 OutputWriter              │ e8ee9b2                                  │
-  └──────┴─────────────────────────────────────────────────────┴──────────────────────────────────────────┘
+> 注：原 C1（`1c36e8b204c`，FLINK-39519）在 review 中被拆成两个 commit — C1（heap 分配，保留 FLINK-39519）与 C2（buffer 请求接口，归属 FLINK-39524/Integration）。C2 在合并前会重排到 C7 旁边（同 ticket，同逻辑阶段）。
+
+| 计划 | JIRA | 内容 | 对应实际 Commit |
+|------|------|------|----------------|
+| C1 | FLINK-39519 | Source Buffer Heap 分配（单 segment 复用 + 运行时检查） | (拆分自 `1c36e8b204c`，重新实现) |
+| C2 | FLINK-39524 | Buffer 请求接口（`requestBuffer()` + 删 `requestBufferBlocking` heap fallback）；合并前重排到 C7 旁边 | (拆分自 `1c36e8b204c`) |
+| C3 | FLINK-39520 | SpillFile I/O + RecoveredBufferStore | `44c700b` |
+| C4 | FLINK-39521 | OutputWriter 三条数据路径 + drain 循环 | `d911490` |
+| C5 | FLINK-39522 | InputChannel 从 RecoveredBufferStore 消费 | `90c4e49` |
+| C6 | FLINK-39523 | ChannelStateWriter streaming overload（checkpoint） | `c379f4b` |
+| C7 | FLINK-39524 | 集成：filterAndRewrite 写入 OutputWriter | `e8ee9b2` |
 
 ## 总览
 
 | 阶段 | 不一致项数 |
 |------|-----------|
-| C1 | 2 |
-| C2 | 3 |
-| C3 | 0 |
-| C4 | 2 |
-| C5 | 1 |
+| C1 | 0（按新设计重新实现） |
+| C2 | — |
+| C3 | 3 |
+| C4 | 0 |
+| C5 | 2 |
 | C6 | 1 |
-| **合计** | **9** |
+| C7 | 1 |
+| **合计** | **7** |
 
 ---
 
-## C1: Source Buffer Heap 分配 + buffer 请求接口
+## C1: Source Buffer Heap 分配（重新设计）
 
-| # | 设计文档描述 | 实际代码实现 | 出处 | 状态 |
-|---|-------------|-------------|------|------|
-| 1 | per-gate 并发控制使用 **AtomicInteger** 计数器 | 使用 **Semaphore(5)**（合理改进，内置阻塞语义） | design.md "Source Buffer 隔离" 节；`RecoveredChannelStateHandler.java` | **已更新设计文档** |
-| 2 | Heap Buffer 大小为 **memorySegmentSize**（与 Network Buffer 对齐） | 使用 `filterContext.getMemorySegmentSize()` 从运行时获取 | design.md REQ-NHLB；`RecoveredChannelStateHandler.getHeapBuffer()` | **已修复**（C1 commit 中已 amend） |
+原 C1（使用 `Semaphore(5)` + `MAX_HEAP_BUFFERS_PER_GATE`）在 review 中被证明过度设计：Flink 的 `ChannelStateChunkReader` 串行消费 + `SpillingAdaptiveSpanningRecordDeserializer` 的 `isBufferConsumed` 立即回收 + `SpanningWrapper` 跨 buffer 字节总是 copy-out，结构性保证任意时刻最多 1 个 source buffer in-flight。原 C1 被完全重写：
+
+- 单 `MemorySegment` per task（首次 `getBuffer()` 懒初始化），反复复用
+- 自定义 BufferRecycler 翻转 `inUse` 标志
+- `getBuffer()` 前 assert `!inUse`，违反则抛 `IllegalStateException`
+- 移除 `Semaphore[]`、`MAX_HEAP_BUFFERS_PER_GATE` 常量、REQ-QY68 中原有的 "5 per gate" 语义（REQ-QY68 已重写为"复用 + 运行时检查"）
+
+## C2: Buffer 请求接口（原 C1 的一部分，归属 FLINK-39524）
+
+拆分自原 C1，归属 **FLINK-39524 Integration** ticket：
+- 新增 `requestBuffer()` 非阻塞接口
+- `requestBufferBlocking()` 删 filtering 模式下的 heap fallback
+
+此 commit 在合并前会被重排到 C7 旁边（同 ticket，同逻辑阶段）。heap fallback 只有在 OutputWriter 接入后才能安全删除，因此归属 Integration 最符合语义。
 
 ---
 
-## C2: SpillFile I/O + RecoveredBufferStore
+## C3: SpillFile I/O + RecoveredBufferStore
 
 | # | 设计文档描述 | 实际代码实现 | 出处 | 状态 |
 |---|-------------|-------------|------|------|
@@ -55,13 +62,13 @@
 
 ---
 
-## C3: OutputWriter 三条数据路径 + drain 循环
+## C4: OutputWriter 三条数据路径 + drain 循环
 
 无不一致项。所有设计要求（P1/P2/P3 路径判定、writeToBackend 仅降级、channel 变更检测、flush/close 行为、drain 逻辑、幂等性、资源清理）均与设计文档一致。
 
 ---
 
-## C4: InputChannel 从 RecoveredBufferStore 消费
+## C5: InputChannel 从 RecoveredBufferStore 消费
 
 | # | 设计文档描述 | 实际代码实现 | 出处 |
 |---|-------------|-------------|------|
@@ -70,7 +77,7 @@
 
 ---
 
-## C5: ChannelStateWriter streaming overload
+## C6: ChannelStateWriter streaming overload
 
 | # | 设计文档描述 | 实际代码实现 | 出处 |
 |---|-------------|-------------|------|
@@ -78,7 +85,7 @@
 
 ---
 
-## C6: 集成 — filterAndRewrite 写入 OutputWriter
+## C7: 集成 — filterAndRewrite 写入 OutputWriter
 
 | # | 设计文档描述 | 实际代码实现 | 出处 |
 |---|-------------|-------------|------|
@@ -92,22 +99,20 @@
 
 | # | 项目 | 状态 |
 |---|------|------|
-| C2-1 | SpillEntry 3 字段 vs 4 字段 | **已修复** |
-| C2-2 | closed write 抛 IllegalStateException vs IOException | **已修复** |
-| C4-1 | onRecoveredStateBuffer() 设计要求删除，实际保留 | 待修复 |
-| C4-2 | checkReadability() hack 设计要求删除，实际保留 | 待修复 |
+| C3-1 | SpillEntry 3 字段 vs 4 字段 | **已修复** |
+| C3-2 | closed write 抛 IllegalStateException vs IOException | **已修复** |
+| C5-1 | onRecoveredStateBuffer() 设计要求删除，实际保留 | 待修复 |
+| C5-2 | checkReadability() hack 设计要求删除，实际保留 | 待修复 |
 
 ### 实现机制不一致（功能等价但技术手段不同）
 
 | # | 项目 | 状态 |
 |---|------|------|
-| C1-1 | AtomicInteger vs Semaphore | **已更新设计文档**（采纳 Semaphore） |
-| C2-3 | FileUtils.writeCompletely() vs 自行循环 | **已修复** |
-| C5-1 | InputStream.transferTo() vs 8KB 手动循环 | **已更新设计文档**（采纳 8KB 循环） |
+| C3-3 | FileUtils.writeCompletely() vs 自行循环 | **已修复** |
+| C6-1 | InputStream.transferTo() vs 8KB 手动循环 | **已更新设计文档**（采纳 8KB 循环） |
 
 ### 配置来源不一致（应动态获取但硬编码了默认值）
 
 | # | 项目 | 状态 |
 |---|------|------|
-| C1-2 | Heap Buffer 大小硬编码 DEFAULT_PAGE_SIZE | 待修复 |
-| C6-1 | memorySegmentSize 硬编码 DEFAULT_PAGE_SIZE | 待修复 |
+| C7-1 | memorySegmentSize 硬编码 DEFAULT_PAGE_SIZE | 待修复 |

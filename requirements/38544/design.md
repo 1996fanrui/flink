@@ -262,7 +262,7 @@ OutputWriter 内部追踪当前累积状态（起始 offset、已累积长度、
 
 修改项：
 
-- **修改 getBuffer() (InputChannelRecoveredStateHandler)**：filtering 模式下，pre-filter source buffer 使用 Heap 内存分配（`MemorySegmentFactory.allocateUnpooledSegment`），隔离于 Network Buffer Pool（REQ-NHLB）。每个 gate 最多 5 个 Heap Buffer（REQ-QY68），通过 AtomicInteger per-gate 计数器控制
+- **修改 getBuffer() (InputChannelRecoveredStateHandler)**：filtering 模式下，pre-filter source buffer 使用 Heap 内存分配（`MemorySegmentFactory.allocateUnpooledSegment`），隔离于 Network Buffer Pool（REQ-NHLB）。每个 task 只分配一个 `MemorySegment` 并反复复用（REQ-QY68）；自定义 BufferRecycler 在 recycle 时翻转 `inUse` 标志；下一次 getBuffer 前 assert 上一次已 recycle，违反则抛 IllegalStateException
 - **修改 recoverWithFiltering()**：调用 filterAndRewrite 时传入 OutputWriter 和目标 channelInfo（post-rescaling），不再收集 `List<Buffer>` 和调用 `onRecoveredStateBuffer()`
 - **新增 OutputWriter 字段**：构造时接收，传递到 filterAndRewrite
 
@@ -316,9 +316,16 @@ OutputWriter 内部追踪当前累积状态（起始 offset、已累积长度、
 
 pre-filter source buffer 使用 Heap 内存，与 Network Buffer Pool 完全隔离。这消除了 source buffer 和 filtered buffer 竞争同一 pool 导致的死锁。
 
-- 每个 gate 最多 5 个 Heap Buffer（约 160KB）
-- Gate 按 virtual channel 顺序处理（一次处理一个 channel）
-- 计数器：Semaphore(5) per-gate，allocate 时 acquire，source buffer 回收时 release（内置阻塞语义，当 5 个 buffer 全部在使用时自动等待释放）
+**"一次一个" 不变式**：任意时刻 task 内最多 1 个 source heap buffer in-flight（≈ `memorySegmentSize`，默认 32KB）。由 Flink 现有机制结构性保证：
+- `ChannelStateChunkReader.readChunk()` 单线程串行循环（`getBuffer → fill → recover(finally recycle)`），下一次 `getBuffer()` 只能在上一次 `recover()` 返回后开始
+- `SpillingAdaptiveSpanningRecordDeserializer.getNextRecord()` 在 `isBufferConsumed=true` 时立即回收 `currentBuffer`（`PARTIAL_RECORD` 和 `LAST_RECORD_FROM_BUFFER` 两种情形），`filterAndRewrite()` 的内层 while 循环在同一条件下 break
+- 跨 buffer 的字节在 recycle 前总是已经 copy 出源 buffer：`SpanningWrapper.transferFrom` / `addNextChunkFromMemorySegment` 将 partial 字节拷到内部 `byte[]`（≥ 5MB 的 record 则 spill 到 SpanningWrapper 自己的文件）
+- 异常路径通过 `ChannelStateFilteringHandler.close() → VirtualChannel.clear() → deserializer.clear()` 收敛回 refcount=0
+
+**实现要点**（REQ-QY68）：
+- **复用**：每个 task 内仅分配一个 `MemorySegment`（首次 `getBuffer()` 时懒初始化），反复包装到新的 `NetworkBuffer` 返回给调用方，直到 state handler close 时释放 segment
+- **运行时检查**：自定义 `BufferRecycler` 在 recycle 时将 `inUse` 标志置 false；`getBuffer()` 发出下一个 buffer 前 assert `!inUse`，违反则抛 `IllegalStateException`。一旦未来有改动意外破坏"一次一个"不变式，会立即 fail-loud，不会静默出现并发读写同一 segment 的 memory corruption
+- **无 semaphore / 无 per-gate 计数器 / 无全局计数**：内存上限由不变式天然保证
 - Non-filtering 模式不分配 Heap Buffer（REQ-NPBY）
 
 ## Buffer 请求接口（REQ-GGPR）
@@ -350,7 +357,7 @@ OutputWriter 通过构造器接收这两个方法的函数式接口引用，解�
 | 配置项 | 默认值 | 选择理由 |
 |-------|--------|---------|
 | Spill 文件轮转阈值 | 64MB | 与 Flink file-merging (32MB)、RocksDB (64MB) 同一量级，参见 `industry_research/spill_file_rotation_cleanup.md` |
-| Source Buffer 并发上限 | 5 per gate（约 160KB） | 限制 pre-filter source buffer 内存，足够支持 gate 按 virtual channel 顺序处理 |
+| Source Buffer 内存占用 | 1 × memorySegmentSize per task（默认 32KB） | "一次一个" 不变式结构性保证；反复复用单个 segment |
 | SpillEntry 最大大小 | memorySegmentSize（默认 32KB） | 与 Network Buffer 1:1 对应，一次磁盘读 = 一个 buffer |
 
 ## 设计决策与业界参考
@@ -369,11 +376,12 @@ OutputWriter 通过构造器接收这两个方法的函数式接口引用，解�
 
 ## 提交策略
 
-参见 `commit_plan.md`。6 个 commit，按依赖关系排列：
+参见 `commit_plan.md`。7 个 commit，按依赖关系排列：
 
-1. Source Buffer Heap 分配 + buffer 请求接口
-2. SpillFile I/O + RecoveredBufferStore
-3. OutputWriter
-4. InputChannel 从 RecoveredBufferStore 消费
-5. ChannelStateWriter 流式重载（checkpoint 用，可与 C1-C4 并行开发）
-6. 集成：filterAndRewrite 写入 OutputWriter
+1. [FLINK-39519] Source Buffer Heap 分配（单 segment 复用 + 运行时检查）
+2. [FLINK-39524] Buffer 请求接口（`requestBuffer()` 新增 + `requestBufferBlocking()` 删 heap fallback）—— 开发期保留此顺序，合并前重排到 C7 旁边
+3. [FLINK-39520] SpillFile I/O + RecoveredBufferStore
+4. [FLINK-39521] OutputWriter
+5. [FLINK-39522] InputChannel 从 RecoveredBufferStore 消费
+6. [FLINK-39523] ChannelStateWriter 流式重载（checkpoint 用，可与其他 commit 并行开发）
+7. [FLINK-39524] 集成：filterAndRewrite 写入 OutputWriter（C2 归属同 ticket，合并前重排相邻）
