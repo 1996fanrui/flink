@@ -21,17 +21,17 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 
 /**
- * Callback invoked when a per-channel checkpoint snapshot has started. Used by {@link
+ * Listener invoked when a per-channel checkpoint snapshot has started. Used by {@link
  * RecoveredBufferStoreImpl} to notify the OutputWriter that this channel's ready buffers have been
  * snapshotted, so the OutputWriter can update its wait-set and, when all channels are accounted
  * for, flush pending spill entries into the checkpoint.
  *
- * <p>The callback is always invoked outside any store-level lock to avoid deadlocks with the
+ * <p>The listener is always invoked outside any store-level lock to avoid deadlocks with the
  * OutputWriter's own synchronisation.
  */
 @Internal
 @FunctionalInterface
-public interface CheckpointCallback {
+public interface ChannelCheckpointStartedListener {
 
     /**
      * Called after a channel's ready buffers have been snapshotted into the {@link
