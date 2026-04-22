@@ -53,7 +53,8 @@ class ChannelStatePersisterTest {
                 checkpointId, CheckpointOptions.unaligned(CheckpointType.CHECKPOINT, getDefault()));
 
         persister.checkForBarrier(barrier(checkpointId));
-        persister.startPersisting(checkpointId, Arrays.asList(buildSomeBuffer()));
+        persister.startPersisting(
+                checkpointId, RecoveredBufferStore.EMPTY, Arrays.asList(buildSomeBuffer()));
         assertThat(channelStateWriter.getAddedInput().get(channelInfo)).hasSize(1);
 
         persister.maybePersist(buildSomeBuffer());
@@ -75,8 +76,8 @@ class ChannelStatePersisterTest {
         ChannelStatePersister persister =
                 new ChannelStatePersister(ChannelStateWriter.NO_OP, new InputChannelInfo(0, 0));
 
-        persister.startPersisting(1L, Collections.emptyList());
-        persister.startPersisting(2L, Collections.emptyList());
+        persister.startPersisting(1L, RecoveredBufferStore.EMPTY, Collections.emptyList());
+        persister.startPersisting(2L, RecoveredBufferStore.EMPTY, Collections.emptyList());
 
         assertThat(persister.checkForBarrier(barrier(1L))).isNotPresent();
 
@@ -110,7 +111,8 @@ class ChannelStatePersisterTest {
         long lateCheckpointId = 1L;
         long checkpointId = 2L;
         if (startCheckpointOnLateBarrier) {
-            persister.startPersisting(lateCheckpointId, Collections.emptyList());
+            persister.startPersisting(
+                    lateCheckpointId, RecoveredBufferStore.EMPTY, Collections.emptyList());
         }
         if (cancelCheckpointBeforeLateBarrier) {
             persister.stopPersisting(lateCheckpointId);
@@ -118,13 +120,40 @@ class ChannelStatePersisterTest {
         persister.checkForBarrier(barrier(lateCheckpointId));
         channelStateWriter.start(
                 checkpointId, CheckpointOptions.unaligned(CheckpointType.CHECKPOINT, getDefault()));
-        persister.startPersisting(checkpointId, Arrays.asList(buildSomeBuffer()));
+        persister.startPersisting(
+                checkpointId, RecoveredBufferStore.EMPTY, Arrays.asList(buildSomeBuffer()));
         persister.maybePersist(buildSomeBuffer());
         persister.checkForBarrier(barrier(checkpointId));
         persister.maybePersist(buildSomeBuffer());
 
         assertThat(persister.hasBarrierReceived()).isTrue();
         assertThat(channelStateWriter.getAddedInput().get(channelInfo)).hasSize(2);
+    }
+
+    @Test
+    void testStartPersistingRejectsNonEmptyStoreAndNonEmptyKnownBuffers() throws Exception {
+        // The credit=0 invariant: store non-empty and knownBuffers non-empty must not coexist.
+        // When RemoteInputChannel credit-gates correctly, by the time a barrier arrives the store
+        // is already drained or knownBuffers is empty. Violating this means a credit gating bug.
+        RecordingChannelStateWriter channelStateWriter = new RecordingChannelStateWriter();
+        InputChannelInfo channelInfo = new InputChannelInfo(0, 0);
+        ChannelStatePersister persister =
+                new ChannelStatePersister(channelStateWriter, channelInfo);
+
+        long checkpointId = 1L;
+        channelStateWriter.start(
+                checkpointId, CheckpointOptions.unaligned(CheckpointType.CHECKPOINT, getDefault()));
+
+        RecoveredBufferStoreImpl nonEmptyStore = new RecoveredBufferStoreImpl();
+        nonEmptyStore.addBuffer(buildSomeBuffer());
+        assertThatThrownBy(
+                        () ->
+                                persister.startPersisting(
+                                        checkpointId,
+                                        nonEmptyStore,
+                                        Arrays.asList(buildSomeBuffer())))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Invariant violated");
     }
 
     @Test
@@ -137,7 +166,11 @@ class ChannelStatePersisterTest {
 
         persister.checkForBarrier(barrier(checkpointId));
         assertThatThrownBy(
-                        () -> persister.startPersisting(lateCheckpointId, Collections.emptyList()))
+                        () ->
+                                persister.startPersisting(
+                                        lateCheckpointId,
+                                        RecoveredBufferStore.EMPTY,
+                                        Collections.emptyList()))
                 .isInstanceOf(CheckpointException.class);
     }
 

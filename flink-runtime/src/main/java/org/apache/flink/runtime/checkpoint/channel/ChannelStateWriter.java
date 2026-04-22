@@ -26,6 +26,7 @@ import org.apache.flink.runtime.state.ResultSubpartitionStateHandle;
 import org.apache.flink.util.CloseableIterator;
 
 import java.io.Closeable;
+import java.io.InputStream;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
@@ -125,6 +126,24 @@ public interface ChannelStateWriter extends Closeable {
             CloseableIterator<Buffer> data);
 
     /**
+     * Add input data from an InputStream for checkpoint, used for streaming disk-backed spill data
+     * directly to checkpoint storage without consuming Network Buffer Pool or heap buffer.
+     *
+     * @param checkpointId checkpoint identifier
+     * @param info input channel info
+     * @param startSeqNum start sequence number
+     * @param data InputStream containing the data to checkpoint
+     * @param dataLength exact number of bytes to read from the InputStream
+     */
+    void addInputData(
+            long checkpointId,
+            InputChannelInfo info,
+            int startSeqNum,
+            InputStream data,
+            int dataLength)
+            throws IllegalArgumentException;
+
+    /**
      * Add in-flight buffers from the {@link
      * org.apache.flink.runtime.io.network.partition.ResultSubpartition ResultSubpartition}. Must be
      * called after {@link #start} and before {@link #finishOutput(long)}. Buffers are recycled
@@ -203,6 +222,14 @@ public interface ChannelStateWriter extends Closeable {
                 InputChannelInfo info,
                 int startSeqNum,
                 CloseableIterator<Buffer> data) {}
+
+        @Override
+        public void addInputData(
+                long checkpointId,
+                InputChannelInfo info,
+                int startSeqNum,
+                InputStream data,
+                int dataLength) {}
 
         @Override
         public void addOutputData(

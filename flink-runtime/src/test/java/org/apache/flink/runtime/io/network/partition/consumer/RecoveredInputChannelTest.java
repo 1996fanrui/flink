@@ -21,15 +21,17 @@ package org.apache.flink.runtime.io.network.partition.consumer;
 import org.apache.flink.metrics.SimpleCounter;
 import org.apache.flink.runtime.checkpoint.CheckpointException;
 import org.apache.flink.runtime.checkpoint.CheckpointType;
+import org.apache.flink.runtime.io.network.NettyShuffleEnvironment;
+import org.apache.flink.runtime.io.network.NettyShuffleEnvironmentBuilder;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
+import org.apache.flink.runtime.io.network.buffer.BufferPool;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 import org.apache.flink.runtime.io.network.partition.ResultSubpartitionIndexSet;
 
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
-import java.util.ArrayDeque;
 
 import static org.apache.flink.runtime.checkpoint.CheckpointOptions.unaligned;
 import static org.apache.flink.runtime.state.CheckpointStorageLocationReference.getDefault;
@@ -151,6 +153,105 @@ class RecoveredInputChannelTest {
         }
     }
 
+    // AT-O9MD: requestBuffer() is non-blocking, returns null when pool exhausted.
+    // requestBufferBlocking() in filtering mode no longer falls back to heap buffer.
+    @Test
+    void testBufferRequestInterface() throws Exception {
+        // Use a real buffer pool with limited buffers to test exhaustion behavior.
+        // networkBuffersPerChannel=2 so the channel requests 2 exclusive buffers.
+        int numBuffers = 3;
+        int segmentSize = 1024;
+        NettyShuffleEnvironment environment =
+                new NettyShuffleEnvironmentBuilder()
+                        .setNumNetworkBuffers(numBuffers)
+                        .setBufferSize(segmentSize)
+                        .build();
+        try {
+            SingleInputGate filteringGate =
+                    new SingleInputGateBuilder()
+                            .setChannelFactory(InputChannelBuilder::buildLocalRecoveredChannel)
+                            .setupBufferPoolFactory(environment)
+                            .setCheckpointingDuringRecoveryEnabled(true)
+                            .build();
+            // Create the local buffer pool so requestBufferBlocking() can block on it
+            filteringGate.setup();
+
+            // Get the recovered channel from the gate
+            RecoveredInputChannel channel = (RecoveredInputChannel) filteringGate.getChannel(0);
+
+            // 1. Test requestBuffer() is non-blocking and returns null when exhausted.
+            // requestBuffer() triggers exclusive buffer assignment on first call.
+            java.util.List<Buffer> allBuffers = new java.util.ArrayList<>();
+            while (true) {
+                Buffer b = channel.requestBuffer();
+                if (b == null) {
+                    break;
+                }
+                allBuffers.add(b);
+            }
+            // requestBuffer() returned null (not blocked) -- verifies non-blocking behavior
+            assertThat(channel.requestBuffer()).isNull();
+
+            // Also drain the gate's floating buffer pool. requestBuffer() only drains
+            // exclusive buffers from the channel's bufferQueue, but requestBufferBlocking()
+            // also tries the gate's buffer pool. We must exhaust both to test blocking.
+            BufferPool bufferPool = filteringGate.getBufferPool();
+            while (true) {
+                Buffer b = bufferPool.requestBuffer();
+                if (b == null) {
+                    break;
+                }
+                allBuffers.add(b);
+            }
+
+            // 2. Test requestBufferBlocking() in filtering mode does NOT fall back to heap.
+            // Since the pool is exhausted, it should block (not return a heap buffer).
+            java.util.concurrent.CompletableFuture<Buffer> blockingFuture =
+                    new java.util.concurrent.CompletableFuture<>();
+            Thread blockingThread =
+                    new Thread(
+                            () -> {
+                                try {
+                                    Buffer buf = channel.requestBufferBlocking();
+                                    blockingFuture.complete(buf);
+                                } catch (Exception e) {
+                                    blockingFuture.completeExceptionally(e);
+                                }
+                            });
+            blockingThread.start();
+
+            // Poll until the thread blocks on buffer pool (WAITING state)
+            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+            while (blockingThread.getState() != Thread.State.WAITING
+                    && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+
+            // The future should NOT be completed -- the thread is blocked waiting for
+            // a pool buffer (no heap fallback in filtering mode)
+            assertThat(blockingFuture.isDone()).isFalse();
+
+            // Release a buffer to unblock
+            allBuffers.get(0).recycleBuffer();
+            allBuffers.remove(0);
+
+            // Now the blocking thread should complete with a pool buffer
+            Buffer poolBuffer = blockingFuture.get(5, java.util.concurrent.TimeUnit.SECONDS);
+            assertThat(poolBuffer).isNotNull();
+            poolBuffer.recycleBuffer();
+
+            // Clean up remaining buffers
+            for (Buffer b : allBuffers) {
+                b.recycleBuffer();
+            }
+
+            blockingThread.join(5000);
+            filteringGate.close();
+        } finally {
+            environment.close();
+        }
+    }
+
     private RecoveredInputChannel buildChannel(boolean checkpointingDuringRecoveryEnabled) {
         try {
             SingleInputGate inputGate =
@@ -169,7 +270,8 @@ class RecoveredInputChannelTest {
                     new SimpleCounter(),
                     10) {
                 @Override
-                protected InputChannel toInputChannelInternal(ArrayDeque<Buffer> remainingBuffers) {
+                protected InputChannel toInputChannelInternal(
+                        RecoveredBufferStoreImpl recoveredStore) {
                     throw new AssertionError("channel conversion succeeded");
                 }
             };
@@ -210,7 +312,7 @@ class RecoveredInputChannelTest {
         }
 
         @Override
-        protected InputChannel toInputChannelInternal(ArrayDeque<Buffer> remainingBuffers) {
+        protected InputChannel toInputChannelInternal(RecoveredBufferStoreImpl recoveredStore) {
             return new TestInputChannel(inputGate, 0);
         }
     }
