@@ -27,7 +27,6 @@ import org.apache.flink.runtime.event.TaskEvent;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
 import org.apache.flink.runtime.io.network.api.serialization.EventSerializer;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
-import org.apache.flink.runtime.io.network.logger.NetworkActionsLogger;
 import org.apache.flink.runtime.io.network.partition.ChannelStateHolder;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 import org.apache.flink.runtime.io.network.partition.ResultSubpartitionIndexSet;
@@ -37,7 +36,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
-import javax.annotation.concurrent.GuardedBy;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
@@ -53,7 +51,7 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
 
     private static final Logger LOG = LoggerFactory.getLogger(RecoveredInputChannel.class);
 
-    private final ArrayDeque<Buffer> receivedBuffers = new ArrayDeque<>();
+    private final RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
     private final CompletableFuture<?> stateConsumedFuture = new CompletableFuture<>();
     protected final BufferManager bufferManager;
 
@@ -64,8 +62,7 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
      */
     private final CompletableFuture<Void> bufferFilteringCompleteFuture = new CompletableFuture<>();
 
-    @GuardedBy("receivedBuffers")
-    private boolean isReleased;
+    private volatile boolean isReleased;
 
     protected ChannelStateWriter channelStateWriter;
 
@@ -102,6 +99,16 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
 
         bufferManager = new BufferManager(inputGate.getMemorySegmentProvider(), this, 0);
         this.networkBuffersPerChannel = networkBuffersPerChannel;
+        store.setNotificationCallback(this::notifyChannelNonEmpty);
+    }
+
+    /**
+     * Returns the store for recovered buffers. Used for store transfer during channel conversion
+     * and by {@link org.apache.flink.runtime.checkpoint.channel.RecoveredChannelStateHandler} to
+     * add recovered buffers directly.
+     */
+    public RecoveredBufferStoreImpl getStore() {
+        return store;
     }
 
     @Override
@@ -118,15 +125,8 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
                     stateConsumedFuture.isDone(), "recovered state is not fully consumed");
         }
 
-        // Extract remaining buffers before conversion.
-        // These buffers have been filtered but not yet consumed by the Task.
-        final ArrayDeque<Buffer> remainingBuffers;
-        synchronized (receivedBuffers) {
-            remainingBuffers = new ArrayDeque<>(receivedBuffers);
-            receivedBuffers.clear();
-        }
-
-        final InputChannel inputChannel = toInputChannelInternal(remainingBuffers);
+        // Pass the store reference to the physical channel for continued consumption.
+        final InputChannel inputChannel = toInputChannelInternal(store);
         inputChannel.checkpointStopped(lastStoppedCheckpointId);
         return inputChannel;
     }
@@ -139,11 +139,12 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     /**
      * Creates the physical InputChannel from this recovered channel.
      *
-     * @param remainingBuffers buffers that have been filtered but not yet consumed by the Task.
-     *     These buffers will be migrated to the new physical channel.
+     * @param recoveredStore the store containing recovered buffers that have been filtered but not
+     *     yet consumed by the Task. The store reference is passed to the physical channel for
+     *     continued consumption.
      * @return the physical InputChannel (LocalInputChannel or RemoteInputChannel)
      */
-    protected abstract InputChannel toInputChannelInternal(ArrayDeque<Buffer> remainingBuffers)
+    protected abstract InputChannel toInputChannelInternal(RecoveredBufferStoreImpl recoveredStore)
             throws IOException;
 
     /**
@@ -158,52 +159,19 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
         return stateConsumedFuture;
     }
 
-    public void onRecoveredStateBuffer(Buffer buffer) {
-        boolean recycleBuffer = true;
-        NetworkActionsLogger.traceRecover(
-                "InputChannelRecoveredStateHandler#recover",
-                buffer,
-                inputGate.getOwningTaskName(),
-                channelInfo);
-        try {
-            final boolean wasEmpty;
-            synchronized (receivedBuffers) {
-                // Similar to notifyBufferAvailable(), make sure that we never add a buffer
-                // after releaseAllResources() released all buffers from receivedBuffers.
-                if (isReleased) {
-                    wasEmpty = false;
-                } else {
-                    wasEmpty = receivedBuffers.isEmpty();
-                    receivedBuffers.add(buffer);
-                    recycleBuffer = false;
-                }
-            }
-
-            if (wasEmpty) {
-                notifyChannelNonEmpty();
-            }
-        } finally {
-            if (recycleBuffer) {
-                buffer.recycleBuffer();
-            }
-        }
-    }
-
     public void finishReadRecoveredState() throws IOException {
-        // Adding the event and completing the future must be atomic under receivedBuffers lock.
+        // Adding the event and completing the future must be atomic under the store lock.
         // Without this, either ordering has a race:
         // - event first: task thread consumes EndOfInputChannelStateEvent, which completes
         //   stateConsumedFuture. When checkpointing during recovery is disabled,
         //   stateConsumedFuture triggers requestPartitions -> toInputChannel(), which
         //   fails because bufferFilteringCompleteFuture is not yet done.
-        // - future first: toInputChannel() extracts buffers before the event is added,
+        // - future first: toInputChannel() passes the store before the event is added,
         //   losing the EndOfInputChannelStateEvent.
-        // Both toInputChannel() and getNextRecoveredStateBuffer() synchronize on
-        // receivedBuffers, so holding the same lock here guarantees
-        // bufferFilteringCompleteFuture is always done before stateConsumedFuture.
-        synchronized (receivedBuffers) {
-            onRecoveredStateBuffer(
-                    EventSerializer.toBuffer(EndOfInputChannelStateEvent.INSTANCE, false));
+        // RecoveredBufferStoreImpl.addBuffer is synchronized, so we synchronize on the store
+        // to guarantee atomicity of adding the event and completing the future.
+        synchronized (store) {
+            store.addBuffer(EventSerializer.toBuffer(EndOfInputChannelStateEvent.INSTANCE, false));
             bufferFilteringCompleteFuture.complete(null);
         }
         bufferManager.releaseFloatingBuffers();
@@ -212,14 +180,8 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
 
     @Nullable
     private BufferAndAvailability getNextRecoveredStateBuffer() throws IOException {
-        final Buffer next;
-        final Buffer.DataType nextDataType;
-
-        synchronized (receivedBuffers) {
-            checkState(!isReleased, "Trying to read from released RecoveredInputChannel");
-            next = receivedBuffers.poll();
-            nextDataType = peekDataTypeUnsafe();
-        }
+        checkState(!isReleased, "Trying to read from released RecoveredInputChannel");
+        final Buffer next = store.tryTake();
 
         if (next == null) {
             return null;
@@ -229,6 +191,7 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
             stateConsumedFuture.complete(null);
             return null;
         } else {
+            final Buffer.DataType nextDataType = store.peekNextDataType();
             return new BufferAndAvailability(next, nextDataType, 0, sequenceNumber++);
         }
     }
@@ -254,18 +217,9 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
         return Optional.ofNullable(getNextRecoveredStateBuffer());
     }
 
-    private Buffer.DataType peekDataTypeUnsafe() {
-        assert Thread.holdsLock(receivedBuffers);
-
-        final Buffer first = receivedBuffers.peek();
-        return first != null ? first.getDataType() : Buffer.DataType.NONE;
-    }
-
     @Override
     int getBuffersInUseCount() {
-        synchronized (receivedBuffers) {
-            return receivedBuffers.size();
-        }
+        return store.size();
     }
 
     @Override
@@ -297,34 +251,20 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
 
     @Override
     boolean isReleased() {
-        synchronized (receivedBuffers) {
-            return isReleased;
-        }
+        return isReleased;
     }
 
     void releaseAllResources() throws IOException {
-        ArrayDeque<Buffer> releasedBuffers = new ArrayDeque<>();
-        boolean shouldRelease = false;
-
-        synchronized (receivedBuffers) {
-            if (!isReleased) {
-                isReleased = true;
-                shouldRelease = true;
-                releasedBuffers.addAll(receivedBuffers);
-                receivedBuffers.clear();
-            }
-        }
-
-        if (shouldRelease) {
-            bufferManager.releaseAllBuffers(releasedBuffers);
+        if (!isReleased) {
+            isReleased = true;
+            store.releaseAll();
+            bufferManager.releaseAllBuffers(new ArrayDeque<>());
         }
     }
 
     @VisibleForTesting
     protected int getNumberOfQueuedBuffers() {
-        synchronized (receivedBuffers) {
-            return receivedBuffers.size();
-        }
+        return store.size();
     }
 
     /**
