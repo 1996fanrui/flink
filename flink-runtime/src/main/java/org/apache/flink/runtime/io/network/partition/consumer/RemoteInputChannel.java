@@ -466,10 +466,10 @@ public class RemoteInputChannel extends InputChannel {
      * The unannounced credit is increased by the given amount and might notify increased credit to
      * the producer.
      *
-     * <p>While the recovered store is non-empty (i.e., recovery data has not yet been fully
-     * consumed), credit announcements are suppressed. This enforces the credit=0 invariant (§2.6):
-     * upstream cannot send new network data until recovery is complete, preventing disk and network
-     * inflight data from coexisting in the same checkpoint snapshot.
+     * <p>While the recovered store is non-empty (i.e., {@code readyBuffers} is non-empty OR {@code
+     * pendingCount > 0}), credit announcements are suppressed so the upstream producer cannot send
+     * new network data into {@code receivedBuffers} and interleave with recovered data. Credit is
+     * released the moment the store becomes empty, via {@link #releaseHeldCredit()}.
      */
     @Override
     public void notifyBufferAvailable(int numAvailableBuffers) throws IOException {
@@ -610,9 +610,9 @@ public class RemoteInputChannel extends InputChannel {
 
     /**
      * Returns the credit to advertise in the initial partition request. When the recovered store is
-     * non-empty, credit is gated to 0 to prevent upstream from sending network data before recovery
-     * completes (§2.6 credit=0 invariant). Credit is released by {@link #releaseHeldCredit()} once
-     * the store drains.
+     * non-empty (readyBuffers non-empty OR pendingCount &gt; 0), credit is gated to 0 to prevent
+     * the upstream from sending network data before recovery completes. Credit is released by
+     * {@link #releaseHeldCredit()} once the store drains.
      */
     public int getInitialCredit() {
         return recoveredStore.isEmpty() ? initialCredit : 0;

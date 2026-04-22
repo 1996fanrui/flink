@@ -792,7 +792,7 @@ class LocalInputChannelTest {
                 .containsExactly(10, 20, 30);
     }
 
-    // AT-TD4O: Verify that checkpoint delegates to RecoveredBufferStore when present
+    // Verify that checkpoint delegates to RecoveredBufferStore when present
     @Test
     void testCheckpointWithRecoveredStore() throws Exception {
         // given: LocalInputChannel with a RecoveredBufferStore containing buffers
