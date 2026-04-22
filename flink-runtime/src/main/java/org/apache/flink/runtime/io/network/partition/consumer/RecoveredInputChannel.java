@@ -118,6 +118,17 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
         this.channelStateWriter = checkNotNull(channelStateWriter);
     }
 
+    /**
+     * Returns the ChannelStateWriter assigned to this channel. Used by OutputWriter to obtain the
+     * writer for phase2 disk checkpoint without threading it through every call site.
+     *
+     * <p>Must be called after {@link #setChannelStateWriter} has been invoked (i.e., after channel
+     * state writer injection during task initialization).
+     */
+    public ChannelStateWriter getChannelStateWriter() {
+        return checkNotNull(channelStateWriter, "ChannelStateWriter has not been set yet");
+    }
+
     public final InputChannel toInputChannel() throws IOException {
         Preconditions.checkState(
                 bufferFilteringCompleteFuture.isDone(), "buffer filtering is not complete");
