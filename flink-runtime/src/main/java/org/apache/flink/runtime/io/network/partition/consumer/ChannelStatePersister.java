@@ -79,7 +79,7 @@ public final class ChannelStatePersister {
      *       CheckpointException} if a newer barrier was already received).
      *   <li>Asserts the credit=0 invariant: {@code store.isEmpty() XOR knownBuffers.isEmpty()}. If
      *       both are non-empty the upstream credit gating in {@link RemoteInputChannel} has failed.
-     *   <li>Delegates ready-buffer snapshot and OutputWriter callback to {@link
+     *   <li>Delegates ready-buffer snapshot and FilteredBufferDispatcher callback to {@link
      *       RecoveredBufferStore#checkpoint}.
      *   <li>Writes network inflight buffers (Remote only) via {@link
      *       ChannelStateWriter#addInputData}.
@@ -128,7 +128,8 @@ public final class ChannelStatePersister {
                 knownBuffers.size(),
                 barrierId);
 
-        // Step 1: snapshot ready buffers and fire OutputWriter callback via store.checkpoint().
+        // Step 1: snapshot ready buffers and fire FilteredBufferDispatcher callback via
+        // store.checkpoint().
         try {
             store.checkpoint(channelStateWriter, barrierId, channelInfo);
         } catch (IOException e) {
