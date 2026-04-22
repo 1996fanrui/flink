@@ -23,6 +23,7 @@ import org.apache.flink.runtime.io.network.partition.consumer.RecoveredBufferSto
 import org.apache.flink.util.Preconditions;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -66,6 +67,7 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
      */
     private final Map<InputChannelInfo, RecoveredBufferStoreImpl> storesByChannel;
 
+    private final ChannelStateWriter channelStateWriter;
     private final String[] spillDirs;
     private final int memorySegmentSize;
     private final Supplier<Buffer> bufferSupplier;
@@ -101,6 +103,8 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
      * Creates a new FilteredBufferDispatcherImpl.
      *
      * @param storesByChannel per-channel stores for delivering recovered buffers
+     * @param channelStateWriter writer used during phase2 to stream spill entries to checkpoint
+     *     storage without allocating network buffers
      * @param spillDirs directories for spill files
      * @param memorySegmentSize the size of a memory segment / network buffer
      * @param bufferSupplier non-blocking supplier, returns null when exhausted
@@ -109,6 +113,7 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
      */
     public FilteredBufferDispatcherImpl(
             Map<InputChannelInfo, RecoveredBufferStoreImpl> storesByChannel,
+            ChannelStateWriter channelStateWriter,
             String[] spillDirs,
             int memorySegmentSize,
             Supplier<Buffer> bufferSupplier,
@@ -118,6 +123,7 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
             throw new IOException("Spill directories must not be empty");
         }
         this.storesByChannel = storesByChannel;
+        this.channelStateWriter = channelStateWriter;
         this.spillDirs = spillDirs;
         this.memorySegmentSize = memorySegmentSize;
         this.bufferSupplier = bufferSupplier;
@@ -223,11 +229,8 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
      * <p>On the first callback for a given checkpointId, the wait-set is built by scanning {@code
      * spillEntryQueue} for channels with pending spill entries. Subsequent callbacks for the same
      * checkpoint remove their channel from the wait-set. When the wait-set becomes empty, all
-     * channels with disk data have reported in and phase2 snapshot can proceed.
-     *
-     * <p>Phase2 disk snapshot (calling {@code drainSpillEntriesToCheckpoint}) is deferred to commit
-     * 5's fix because it requires the {@code ChannelStateWriter.addInputData(InputStream)}
-     * streaming overload introduced by commit 5.
+     * channels with disk data have reported in and {@link #drainSpillEntriesToCheckpoint} is
+     * triggered to write the remaining spill entries via the streaming InputStream overload.
      *
      * <p>Called from the Task thread; synchronized on {@code this} to be mutually exclusive with
      * the Recovery thread's {@link #write} / {@link #flush} / {@link #close}.
@@ -245,9 +248,68 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
         }
         waitSet.remove(channelInfo);
         if (waitSet.isEmpty()) {
-            // TODO: trigger drainSpillEntriesToCheckpoint(checkpointId) to write unreplayed
-            //  spill entries to ChannelStateWriter via streaming API. Deferred to the fix
-            //  for commit 5, which introduces ChannelStateWriter.addInputData(InputStream).
+            drainSpillEntriesToCheckpoint(checkpointId);
+        }
+    }
+
+    /**
+     * Performs a single sequential pass over {@code spillEntryQueue}, streaming each spill entry
+     * directly to checkpoint storage via {@link ChannelStateWriter#addInputData(long,
+     * InputChannelInfo, int, InputStream, int)}.
+     *
+     * <p>Entries belonging to the same physical spill file are streamed through a single {@link
+     * FilteredSpillFile.Reader} opened once per file. When the reader changes (indicating a file
+     * rotation boundary), a new sequential stream is opened starting at the first entry's offset in
+     * the new file. Reusing one stream per file avoids the overhead of creating a new bounded
+     * InputStream object for every individual entry.
+     *
+     * <p>The "snapshot + drain" is merged: each entry is polled from the queue as it is written to
+     * the checkpoint, ensuring that the same entry is not double-written if {@link #close()} runs
+     * concurrently on the Recovery thread. Because this method runs under {@code
+     * synchronized(this)} and {@link #close()}'s drain loop also holds the same lock, the two are
+     * mutually exclusive.
+     *
+     * <p>After phase2, the queue is empty. The {@link #close()} drain loop sees an empty queue and
+     * exits immediately (no double-write). Each channel store's pending count is decremented so
+     * that {@link
+     * org.apache.flink.runtime.io.network.partition.consumer.RecoveredBufferStore#isEmpty()}
+     * becomes true once phase2 completes, allowing credit release.
+     *
+     * <p>Must be called under {@code synchronized(this)}.
+     */
+    private void drainSpillEntriesToCheckpoint(long checkpointId) {
+        // One sequential stream per physical spill file.
+        // ChannelStateWriter's executor is single-threaded and processes requests FIFO, so
+        // sharing one InputStream across consecutive addInputData calls for the same file is safe:
+        // each call reads exactly dataLength bytes and advances the stream position before the
+        // next call begins.
+        FilteredSpillFile.Reader currentReader = null;
+        InputStream currentStream = null;
+
+        while (!spillEntryQueue.isEmpty()) {
+            FilteredSpillFile.Entry entry = spillEntryQueue.poll();
+            FilteredSpillFile.Reader reader = spillEntryReaderQueue.poll();
+
+            if (reader != currentReader) {
+                // File rotation boundary or first entry: open a new stream at this entry's offset.
+                currentReader = reader;
+                currentStream = reader.openSequentialStream(entry.getOffset());
+            }
+
+            channelStateWriter.addInputData(
+                    checkpointId,
+                    entry.getChannelInfo(),
+                    ChannelStateWriter.SEQUENCE_NUMBER_RESTORED,
+                    currentStream,
+                    entry.getLength());
+            // Decrement pending so that store.isEmpty() returns true once phase2 completes,
+            // allowing RemoteInputChannel to release held credit to the upstream.
+            RecoveredBufferStoreImpl store =
+                    Preconditions.checkNotNull(
+                            storesByChannel.get(entry.getChannelInfo()),
+                            "No store for channel %s",
+                            entry.getChannelInfo());
+            store.decrementPending();
         }
     }
 
