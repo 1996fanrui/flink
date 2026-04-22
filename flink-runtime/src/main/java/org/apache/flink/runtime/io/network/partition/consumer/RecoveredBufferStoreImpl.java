@@ -34,15 +34,15 @@ import java.util.List;
 /**
  * Thread-safe implementation of {@link RecoveredBufferStore} that manages per-channel recovered
  * buffers. Buffers are either ready (in-memory, available for consumption) or pending (on disk,
- * tracked by count only — the actual spill entries are owned by OutputWriter).
+ * tracked by count only — the actual spill entries are owned by FilteredBufferDispatcher).
  *
  * <p>Thread safety: all methods that access {@code readyBuffers} or {@code pendingCount} are
  * synchronized on {@code this}. The {@code complete} flag is volatile since it is only written
  * once. Callbacks are invoked <em>outside</em> any store-level lock to prevent deadlocks with
- * OutputWriter's own synchronisation.
+ * FilteredBufferDispatcher's own synchronisation.
  *
  * <p>Public interface methods are called from the Task thread. Internal methods (addBuffer,
- * markComplete, etc.) are called from the Recovery thread (OutputWriter).
+ * markComplete, etc.) are called from the Recovery thread (FilteredBufferDispatcher).
  */
 @Internal
 public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
@@ -131,10 +131,10 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
      * Checkpoints the ready buffers to the given ChannelStateWriter. Ready buffers are retained and
      * passed to the writer via CloseableIterator. After snapshotting, the {@link
      * ChannelCheckpointStartedListener} is invoked <em>outside</em> the store lock so that
-     * OutputWriter can safely acquire its own lock without risking a deadlock.
+     * FilteredBufferDispatcher can safely acquire its own lock without risking a deadlock.
      *
-     * <p>Pending spill entries on disk are checkpointed by OutputWriter, which owns the spill
-     * entries and file readers, triggered via the ChannelCheckpointStartedListener.
+     * <p>Pending spill entries on disk are checkpointed by FilteredBufferDispatcher, which owns the
+     * spill entries and file readers, triggered via the ChannelCheckpointStartedListener.
      */
     @Override
     public void checkpoint(
@@ -157,7 +157,8 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
             cb = checkpointListener;
         }
 
-        // Step 2: fire callback outside lock to avoid deadlock with OutputWriter's lock.
+        // Step 2: fire callback outside lock to avoid deadlock with FilteredBufferDispatcher's
+        // lock.
         if (cb != null) {
             cb.onChannelCheckpointStarted(checkpointId, channelInfo);
         }
@@ -199,7 +200,7 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
     }
 
     // ---------------------------------------------------------------------------
-    // Internal methods (Recovery thread, called by OutputWriter)
+    // Internal methods (Recovery thread, called by FilteredBufferDispatcher)
     // ---------------------------------------------------------------------------
 
     /**
@@ -246,7 +247,8 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
     }
 
     /**
-     * Increments the pending spill entry count. Called when OutputWriter spills data to disk.
+     * Increments the pending spill entry count. Called when FilteredBufferDispatcher spills data to
+     * disk.
      *
      * <p>If the store was logically empty before this call (readyBuffers empty AND pendingCount was
      * zero), reset the {@code becameEmptyCallbackFired} flag so that the next empty transition will
@@ -262,8 +264,8 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
     }
 
     /**
-     * Decrements the pending spill entry count. Called when OutputWriter drains a spill entry (into
-     * a buffer via P3/close path, or directly to checkpoint storage via phase-2 path).
+     * Decrements the pending spill entry count. Called when FilteredBufferDispatcher drains a spill
+     * entry (into a buffer via P3/close path, or directly to checkpoint storage via phase-2 path).
      *
      * <p>If this decrement causes the store to become empty (readyBuffers empty AND pendingCount
      * reaches zero) and the onBecameEmpty callback has not yet fired for this empty state, the
