@@ -26,7 +26,7 @@ OutputWriter delivers buffers to per-channel `RecoveredBufferStore`. InputChanne
 ```mermaid
 graph TD
     S3[(S3)]
-    SB["Source Buffer<br/>(Heap, max 5/gate)"]
+    SB["Source Buffer<br/>(Heap, 1 per task, reused)"]
     Filter["filterAndRewrite"]
     OW["OutputWriter<br/>(per-task)"]
     Pool["Network Buffer Pool"]

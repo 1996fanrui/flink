@@ -10,7 +10,7 @@
 
 Disk data is logically equivalent to heap buffer data at the byte level: same bytes, different storage medium. Anywhere heap buffers work today, disk data must work identically after being loaded back into Network Buffers.
 
-Note on Heap Buffer: this branch **removes** the unbounded heap fallback in post-filter path (requestBufferBlocking → allocateUnpooledSegment), replacing it with disk spilling. Separately, it **introduces** a bounded heap allocation for pre-filter source buffers (REQ-NHLB, max 5 per gate ≈ 160KB) to avoid deadlock between source and filtered buffers competing for the same Network Buffer Pool. These are different uses of heap at different pipeline stages — the former caused OOM and is removed, the latter is bounded and safe.
+Note on Heap Buffer: this branch **removes** the unbounded heap fallback in post-filter path (requestBufferBlocking → allocateUnpooledSegment), replacing it with disk spilling. Separately, it **introduces** a heap allocation for pre-filter source buffers (REQ-NHLB) to avoid deadlock between source and filtered buffers competing for the same Network Buffer Pool. The pre-filter heap path is intrinsically bounded to **1 buffer per task** (≈ 32KB) by the serial recovery loop and the deserializer's ownership contract — no explicit limiter is needed. These are different uses of heap at different pipeline stages — the former caused OOM and is removed, the latter is bounded-by-construction and safe.
 
 ## Core Architecture
 
@@ -28,9 +28,20 @@ See data_flow.md for the detailed data flow diagram.
 
 Source Buffer (pre-filter) uses Heap memory, isolated from Network Buffer Pool. This eliminates deadlock where Source Buffer and Filtered Buffer compete for the same pool.
 
-### REQ-QY68 Source Buffer Concurrency Control
+**Memory bound**: at most 1 source buffer is in flight per task at any moment (≈ `memorySegmentSize`, default 32KB). This is guaranteed structurally — no explicit counter or semaphore is required:
 
-Gate processes Virtual Channels sequentially (one at a time). Max 5 Heap Buffers per gate (~160KB). Prevents unbounded heap growth.
+1. `ChannelStateChunkReader.readChunk()` is a single-threaded while-loop that allocates one source buffer, fills it, and passes it to `recover()`, which recycles it in a `finally` block before the next iteration.
+2. `SpillingAdaptiveSpanningRecordDeserializer` recycles `currentBuffer` the instant `isBufferConsumed=true` (on `PARTIAL_RECORD` and `LAST_RECORD_FROM_BUFFER`). `filterAndRewrite()`'s inner loop breaks on the same condition.
+3. Cross-buffer bytes are always copied out before recycle: `SpanningWrapper.transferFrom` / `addNextChunkFromMemorySegment` copy partial bytes into an internal `byte[]` (or into `SpanningWrapper`'s own spill file for records ≥ 5MB). No retained segment pointer survives past `isBufferConsumed=true`.
+4. Exception paths converge through `ChannelStateFilteringHandler.close() → VirtualChannel.clear() → deserializer.clear()`, which recycles any buffer still held.
+
+A unit test feeds a record spanning multiple source buffers and asserts `maxOutstanding == 1` to guard this invariant against regression.
+
+### REQ-QY68 Source Buffer Reuse and Runtime Check
+
+**Reuse**: allocate one heap `MemorySegment` per task on first `getBuffer()` call in filtering mode and reuse it for every subsequent source-buffer request. Avoids allocation churn; segment is freed when the state handler closes.
+
+**Runtime check**: before wrapping the segment in a new `NetworkBuffer` for the next request, assert that the buffer from the previous request has been recycled (via a custom recycler that flips an `inUse` flag). Violating the assertion throws `IllegalStateException` — this makes any future regression of the one-at-a-time invariant fail loudly instead of silently corrupting memory.
 
 ### REQ-8HRS Three Data Paths
 

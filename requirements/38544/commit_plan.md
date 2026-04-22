@@ -2,28 +2,47 @@
 
 ## Overview
 
-| Commit | Summary | Type | Key Files |
-|--------|---------|------|-----------|
-| 1 | Source Buffer Heap allocation + buffer request interface | Modify | `RecoveredChannelStateHandler`, `RecoveredInputChannel` |
-| 2 | SpillFile I/O + RecoveredBufferStore | New | `SpillFileWriter`, `SpillFileReader`, `SpillEntry`, `RecoveredBufferStore`, `RecoveredBufferStoreImpl` |
-| 3 | OutputWriter (write + P3 drain + flush + close) | New | `OutputWriter`, `OutputWriterImpl` |
-| 4 | InputChannel consumes from RecoveredBufferStore | Modify | `RecoveredInputChannel`, `LocalInputChannel`, `RemoteInputChannel`, `*RecoveredInputChannel` |
-| 5 | ChannelStateWriter streaming overload for checkpoint | Modify | `ChannelStateWriter`, `ChannelStateWriterImpl`, `ChannelStateWriteRequest`, `ChannelStateCheckpointWriter` |
-| 6 | Integration: filterAndRewrite writes to OutputWriter | Modify | `ChannelStateFilteringHandler`, `RecoveredChannelStateHandler`, `SequentialChannelStateReaderImpl` |
+| Commit | JIRA | Summary | Type | Key Files |
+|--------|------|---------|------|-----------|
+| 1 | FLINK-39519 | Source Buffer Heap allocation (single reusable segment per task, with invariant check) | Modify | `RecoveredChannelStateHandler` |
+| 2 | FLINK-39524 | Buffer request interface: add `requestBuffer()`, remove heap fallback from `requestBufferBlocking()`. **Kept here for code preservation; will be reordered to the end of the sequence and logically merged into the Integration step.** | Modify | `RecoveredInputChannel` |
+| 3 | FLINK-39520 | SpillFile I/O + RecoveredBufferStore | New | `SpillFileWriter`, `SpillFileReader`, `SpillEntry`, `RecoveredBufferStore`, `RecoveredBufferStoreImpl` |
+| 4 | FLINK-39521 | OutputWriter (write + P3 drain + flush + close) | New | `OutputWriter`, `OutputWriterImpl` |
+| 5 | FLINK-39522 | InputChannel consumes from RecoveredBufferStore | Modify | `RecoveredInputChannel`, `LocalInputChannel`, `RemoteInputChannel`, `*RecoveredInputChannel` |
+| 6 | FLINK-39523 | ChannelStateWriter streaming overload for checkpoint | Modify | `ChannelStateWriter`, `ChannelStateWriterImpl`, `ChannelStateWriteRequest`, `ChannelStateCheckpointWriter` |
+| 7 | FLINK-39524 | Integration: filterAndRewrite writes to OutputWriter | Modify | `ChannelStateFilteringHandler`, `RecoveredChannelStateHandler`, `SequentialChannelStateReaderImpl` |
 
 Base package: `org.apache.flink.runtime.checkpoint.channel`
 
+**Note on JIRA assignment.** Commit 1 keeps FLINK-39519 (the original C1 ticket for "Allocate pre-filter source buffers from heap"). Commit 2 is assigned to **FLINK-39524 (Integration)**: the heap fallback in `requestBufferBlocking()` can only be safely removed after OutputWriter is wired, so the change logically belongs to the Integration step even though the code lives in a separate commit for reviewability. During development Commit 2 stays at position 2 for code preservation, but before merge it will be reordered to sit adjacent to Commit 7 (same ticket, same logical step).
+
 ---
 
-## Commit 1: Source Buffer Heap allocation + buffer request interface
+## Commit 1: Source Buffer Heap allocation
 
-Two independent changes to RecoveredInputChannel and its handler, both prerequisites for OutputWriter.
+Single-segment heap allocation for pre-filter source buffer, with runtime invariant check.
 
-**Modify:** `RecoveredChannelStateHandler.java`, `RecoveredInputChannel.java`
+**Modify:** `RecoveredChannelStateHandler.java`
 
 **Source Buffer (REQ-NHLB, REQ-QY68):**
-- In filtering mode, pre-filter `getBuffer()` allocates from Heap instead of Network Buffer Pool. Max 5 per gate. Non-filtering mode unchanged.
-- AtomicInteger per-gate counter, increment on allocate, decrement when source buffer recycled.
+- In filtering mode, `getBuffer()` returns a `NetworkBuffer` wrapping a reusable heap `MemorySegment`. Non-filtering mode unchanged.
+- Reuse: one `MemorySegment` per task, lazily allocated on first `getBuffer()` call, freed in `close()`.
+- Runtime check: custom recycler flips an `inUse` flag. `getBuffer()` asserts `!inUse` before issuing the next buffer. Violation → `IllegalStateException`. This enforces the one-at-a-time invariant at runtime; any future code change that breaks the invariant fails loudly instead of silently corrupting memory.
+- No semaphore, no per-gate limit, no counter. Memory is bounded-by-construction (see REQ-NHLB invariant proof).
+
+**Tests:**
+- Keep `testHeapBufferIsolation` (heap vs. pool isolation) and `testNonFilteringUnchanged`.
+- Remove the `testHeapBufferLimit` / `testSequentialChannelProcessing` tests (the 5-limit they asserted no longer exists).
+- Add `testLargeRecordSpansMultipleSourceBuffers`: feeds a record spanning several source buffers through a real `ChannelStateChunkReader` + filtering pipeline, asserts `maxOutstanding == 1` and that the same `MemorySegment` instance is reused across calls.
+- Add `testCheckFailsWhenPriorBufferNotRecycled`: allocates a buffer, does not recycle, calls `getBuffer()` again, expects `IllegalStateException`.
+
+---
+
+## Commit 2: Buffer request interface
+
+**Status:** Kept in current position for code preservation. Will be reordered to the end of the sequence before merge, since removing the heap fallback is only safe once commit 7 has wired OutputWriter into the post-filter path.
+
+**Modify:** `RecoveredInputChannel.java`
 
 **Buffer request (REQ-GGPR):**
 - Add `requestBuffer()` — non-blocking, returns null when pool exhausted. Wraps `bufferManager.requestBuffer()`.
@@ -31,7 +50,7 @@ Two independent changes to RecoveredInputChannel and its handler, both prerequis
 
 ---
 
-## Commit 2: SpillFile I/O + RecoveredBufferStore
+## Commit 3: SpillFile I/O + RecoveredBufferStore
 
 Two new components with no dependency on each other, grouped because both are prerequisites for OutputWriter.
 
@@ -48,13 +67,13 @@ RecoveredBufferStore (REQ-7388):
 
 ---
 
-## Commit 3: OutputWriter
+## Commit 4: OutputWriter
 
 Complete OutputWriter implementation in one commit. See `interfaces.md` for public interface.
 
 **New files:** `OutputWriter.java` (interface), `OutputWriterImpl.java` (implementation)
 
-**Depends on:** C1 (buffer request), C2 (spill I/O + store)
+**Depends on:** C2 (buffer request), C3 (spill I/O + store)
 
 **Constructor:**
 ```
@@ -83,11 +102,11 @@ OutputWriterImpl(
 
 ---
 
-## Commit 4: InputChannel consumes from RecoveredBufferStore
+## Commit 5: InputChannel consumes from RecoveredBufferStore
 
 All three InputChannel types adapted in one commit.
 
-**Depends on:** C2 (store)
+**Depends on:** C3 (store)
 
 **Modify:**
 
@@ -123,11 +142,11 @@ All three InputChannel types adapted in one commit.
 
 ---
 
-## Commit 5: ChannelStateWriter Streaming Overload
+## Commit 6: ChannelStateWriter Streaming Overload
 
 Add streaming path to checkpoint writing pipeline for disk data. No modification to existing addInputData behavior.
 
-**Depends on:** None (independent of C1-C4, can be developed in parallel)
+**Depends on:** None (independent of C1-C5, can be developed in parallel)
 
 **Modify:**
 
@@ -146,11 +165,11 @@ Add streaming path to checkpoint writing pipeline for disk data. No modification
 
 ---
 
-## Commit 6: Integration
+## Commit 7: Integration
 
-Wire OutputWriter into the filtering flow.
+Wire OutputWriter into the filtering flow. **Commit 2 (buffer request interface changes) is reordered to run immediately before or as part of this commit**, so that the heap fallback in `requestBufferBlocking()` is only removed once OutputWriter provides the disk-spilling replacement for the post-filter path.
 
-**Depends on:** C1, C3, C4, C5
+**Depends on:** C1, C4, C5, C6 (and C2 is reordered into this step)
 
 **Modify:**
 
@@ -173,18 +192,19 @@ Wire OutputWriter into the filtering flow.
 
 ```mermaid
 graph TD
-    C1["C1: Heap alloc + buffer request"]
-    C2["C2: SpillFile I/O + Store"]
-    C3["C3: OutputWriter"]
-    C4["C4: InputChannels + store"]
-    C5["C5: ChannelStateWriter streaming"]
-    C6["C6: Integration"]
+    C1["C1: Heap alloc (single segment, reuse + check)"]
+    C2["C2: Buffer request interface<br/>(reordered to end before merge)"]
+    C3["C3: SpillFile I/O + Store"]
+    C4["C4: OutputWriter"]
+    C5["C5: InputChannels + store"]
+    C6["C6: ChannelStateWriter streaming"]
+    C7["C7: Integration"]
 
-    C1 --> C3
-    C2 --> C3
-    C2 --> C4
-    C1 --> C6
-    C3 --> C6
-    C4 --> C6
-    C5 --> C6
+    C1 --> C7
+    C3 --> C4
+    C3 --> C5
+    C4 --> C7
+    C5 --> C7
+    C6 --> C7
+    C2 -.reorder.-> C7
 ```
