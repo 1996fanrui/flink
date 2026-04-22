@@ -277,19 +277,21 @@ public final class FilteredSpillFile {
         }
 
         /**
-         * Returns a bounded InputStream that reads exactly {@code length} bytes starting from
-         * {@code offset}. The InputStream uses FileChannel positional reads internally and does NOT
-         * close the FileChannel when it is closed.
+         * Returns an InputStream that reads sequentially from {@code startOffset} to end-of-file.
+         * The stream does NOT close the underlying FileChannel when it is closed — the Reader owns
+         * the channel lifecycle.
          *
-         * <p>This is used for checkpoint streaming: data flows from the spill file directly to the
-         * checkpoint DataOutputStream without consuming Network Buffer Pool or heap buffers.
+         * <p>Used for checkpoint streaming: the caller opens one stream per physical file and
+         * passes it sequentially to each {@link ChannelStateWriter#addInputData} call for that
+         * file. Each call reads exactly the number of bytes it is given ({@code dataLength}),
+         * advancing the stream position automatically so subsequent calls continue from the correct
+         * offset.
          *
-         * @param offset starting byte offset in the file
-         * @param length number of bytes the InputStream will produce
-         * @return a bounded InputStream
+         * @param startOffset byte offset in the file at which reading begins
+         * @return a sequential InputStream backed by positional FileChannel reads
          */
-        public InputStream openInputStream(long offset, int length) {
-            return new BoundedFileChannelInputStream(channel, offset, length);
+        public InputStream openSequentialStream(long startOffset) {
+            return new SequentialFileChannelInputStream(channel, startOffset);
         }
 
         @Override
@@ -298,29 +300,22 @@ public final class FilteredSpillFile {
         }
 
         /**
-         * A bounded InputStream backed by positional reads on a FileChannel. Returns exactly {@code
-         * length} bytes starting from {@code startOffset}, then returns -1.
-         *
-         * <p>Does NOT close the underlying FileChannel on close — the Reader owns the channel
-         * lifecycle.
+         * An InputStream backed by positional reads on a FileChannel. Tracks the current file
+         * position internally, advancing it with each read. Does NOT close the underlying
+         * FileChannel on close — the Reader owns the channel lifecycle.
          */
-        private static class BoundedFileChannelInputStream extends InputStream {
+        private static class SequentialFileChannelInputStream extends InputStream {
 
             private final FileChannel channel;
             private long currentPosition;
-            private int remaining;
 
-            BoundedFileChannelInputStream(FileChannel channel, long startOffset, int length) {
+            SequentialFileChannelInputStream(FileChannel channel, long startOffset) {
                 this.channel = channel;
                 this.currentPosition = startOffset;
-                this.remaining = length;
             }
 
             @Override
             public int read() throws IOException {
-                if (remaining <= 0) {
-                    return -1;
-                }
                 byte[] single = new byte[1];
                 int result = read(single, 0, 1);
                 if (result == -1) {
@@ -331,18 +326,15 @@ public final class FilteredSpillFile {
 
             @Override
             public int read(byte[] b, int off, int len) throws IOException {
-                if (remaining <= 0) {
-                    return -1;
+                if (len == 0) {
+                    return 0;
                 }
-                int toRead = Math.min(len, remaining);
-                ByteBuffer bb = ByteBuffer.wrap(b, off, toRead);
+                ByteBuffer bb = ByteBuffer.wrap(b, off, len);
                 int bytesRead = channel.read(bb, currentPosition);
                 if (bytesRead < 0) {
-                    throw new IOException(
-                            "Unexpected end of spill file at position " + currentPosition);
+                    return -1;
                 }
                 currentPosition += bytesRead;
-                remaining -= bytesRead;
                 return bytesRead;
             }
 
