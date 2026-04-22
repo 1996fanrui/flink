@@ -86,7 +86,8 @@ class InputChannelRecoveredStateHandlerTest extends RecoveredChannelStateHandler
                                             .MappingType.IDENTITY)
                         }),
                 null,
-                TEST_SEGMENT_SIZE);
+                TEST_SEGMENT_SIZE,
+                null);
     }
 
     private InputChannelRecoveredStateHandler buildMultiChannelHandler() {
@@ -114,7 +115,8 @@ class InputChannelRecoveredStateHandlerTest extends RecoveredChannelStateHandler
                                             .MappingType.RESCALING)
                         }),
                 null,
-                TEST_SEGMENT_SIZE);
+                TEST_SEGMENT_SIZE,
+                null);
     }
 
     @Test
@@ -383,6 +385,7 @@ class InputChannelRecoveredStateHandlerTest extends RecoveredChannelStateHandler
                                             .MappingType.IDENTITY)
                         }),
                 stubFilteringHandler,
-                TEST_SEGMENT_SIZE);
+                TEST_SEGMENT_SIZE,
+                null);
     }
 }
