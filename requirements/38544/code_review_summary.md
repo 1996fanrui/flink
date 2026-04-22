@@ -62,17 +62,17 @@
 
 | 设计要求 (REQ-ID) | 是否一致 | 偏差说明 |
 |---|---|---|
-| REQ-NHLB: filtering 模式 pre-filter 从 Heap 分配 | 一致 | — |
-| REQ-QY68: 每个 gate 最多 5 个 Heap Buffer | 功能一致，机制偏差 | 设计文档指定 AtomicInteger，实际使用 Semaphore（**合理改进**，内置阻塞语义更简洁） |
-| REQ-GGPR: 新增 requestBuffer() 非阻塞接口 | 一致 | — |
-| REQ-GGPR: requestBufferBlocking() 移除 heap fallback | 一致 | — |
+| REQ-NHLB: filtering 模式 pre-filter 从 Heap 分配 | 一致（重新设计后） | 原 C1 使用 `Semaphore(5)` + 5 上限；review 证明 task 内结构性保证最多 1 个 source buffer in-flight，C1 重写为单 segment 复用 + 运行时检查 |
+| REQ-QY68: 单 segment 复用 + 运行时 inUse 检查 | 一致（重新设计后） | 原 REQ-QY68 为 "5 per gate"，已重写为 reuse + check |
+| REQ-GGPR: 新增 requestBuffer() 非阻塞接口 | 一致（见 C2） | 拆到独立的 C2，合并前重排到末尾 |
+| REQ-GGPR: requestBufferBlocking() 移除 heap fallback | 一致（见 C2） | 同上 |
 | REQ-NPBY: 非过滤模式不受影响 | 一致 | — |
 
 ### 发现的问题
 
-1. **[低] Semaphore vs AtomicInteger** — 设计文档描述 AtomicInteger，实际使用 Semaphore。功能等价且更优，建议更新设计文档
-2. **[低] Heap Buffer 大小硬编码** — 使用 `MemoryManager.DEFAULT_PAGE_SIZE`（32KB），若用户配置非默认 `segment-size` 可能不匹配
-3. **[低] 测试中使用 Thread.sleep** — `testHeapBufferLimit()` 用固定时间等待验证阻塞，CI 环境可能 flaky
+1. ~~[低] Semaphore vs AtomicInteger~~ — **已解决**：重新设计后无 Semaphore、无计数器，单 segment 复用 + 运行时检查
+2. ~~[低] Heap Buffer 大小硬编码~~ — **已解决**：`filterContext.getMemorySegmentSize()` 从运行时配置获取
+3. ~~[低] 测试中使用 Thread.sleep~~ — **已解决**：依赖阻塞语义的 `testHeapBufferLimit` 已删除
 
 ---
 
@@ -243,25 +243,24 @@
 | 5 | C4 | checkReadability() hack 未按设计删除（dead code 残留） | 待修复 |
 | 6 | C3 | loadEntryIntoBuffer 每次 new byte[] 临时数组，可复用 | 待修复 |
 | 7 | C3 | close() drain 循环缺少 released store 短路 | 待修复 |
-| 8 | C1 | 测试中 Thread.sleep 验证阻塞（可能 flaky） | 待修复 |
+| 8 | ~~C1~~ | ~~测试中 Thread.sleep 验证阻塞~~ | **已解决**（相关测试已删除） |
 
 ### 需同步更新设计文档
 
 | # | 内容 | 状态 |
 |---|------|------|
-| 1 | C1: AtomicInteger → Semaphore | **已更新** |
+| 1 | C1: Semaphore(5) → 单 segment 复用 + 运行时 inUse 检查 | **已更新** |
 | 2 | C2: SpillEntry fileReader 字段 → 纯元数据 3 字段 | **已更新**（design.md, interfaces.md, commit_plan.md） |
 | 3 | C5: InputStream.transferTo() → 8KB 手动循环 | **已更新** |
 | 4 | C2: Store pendingSpillEntries → pendingCount | **已更新**（design.md, interfaces.md, commit_plan.md） |
 | 5 | C2: Checkpoint 磁盘数据职责从 Store 移至 OutputWriter | **已更新**（design.md, interfaces.md, data_flow.md） |
 | 6 | C2: SpillFileWriter 删除 memorySegmentSize 参数, 使用 FileUtils.writeCompletely() | **已更新** |
+| 7 | Commit 拆分：原 C1 拆为 C1（heap alloc）+ C2（buffer 请求接口），整体 commit 数从 6 增至 7 | **已更新**（commit_plan.md, design.md） |
 
 ---
 
 ## 总体评价
 
-实现与设计文档的整体一致性很高（8.6/10）。6 个阶段的核心架构——三条数据路径（P1/P2/P3）、OutputWriter 调度、RecoveredBufferStore 抽象、SpillFile I/O、Checkpoint 流式写入、InputChannel 消费——全部按设计实现，无功能性缺失。
-
-少数偏差均属于合理的实现选择（Semaphore 替代 AtomicInteger、手动循环替代 transferTo），或渐进式改造的中间状态（onRecoveredStateBuffer 保留为委托方法）。
+实现与设计文档的整体一致性很高。原 C1 在 review 中被证明过度设计（Semaphore(5) 上限没有理论依据），重写为单 segment 复用 + 运行时检查，更符合 MVP 原则。其余阶段的核心架构——三条数据路径（P1/P2/P3）、OutputWriter 调度、RecoveredBufferStore 抽象、SpillFile I/O、Checkpoint 流式写入、InputChannel 消费——全部按设计实现，无功能性缺失。
 
 需要重点关注的是 **SpillFileReader 实例创建过多**（文件句柄风险）和 **memorySegmentSize 硬编码**（配置不一致风险）这两个中风险问题。
