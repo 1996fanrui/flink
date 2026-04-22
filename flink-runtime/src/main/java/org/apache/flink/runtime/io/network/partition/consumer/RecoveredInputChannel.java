@@ -41,6 +41,7 @@ import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.apache.flink.runtime.checkpoint.CheckpointFailureReason.CHECKPOINT_DECLINED_TASK_NOT_READY;
 import static org.apache.flink.util.Preconditions.checkNotNull;
@@ -62,7 +63,7 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
      */
     private final CompletableFuture<Void> bufferFilteringCompleteFuture = new CompletableFuture<>();
 
-    private volatile boolean isReleased;
+    private final AtomicBoolean isReleased = new AtomicBoolean(false);
 
     protected ChannelStateWriter channelStateWriter;
 
@@ -180,7 +181,7 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
 
     @Nullable
     private BufferAndAvailability getNextRecoveredStateBuffer() throws IOException {
-        checkState(!isReleased, "Trying to read from released RecoveredInputChannel");
+        checkState(!isReleased.get(), "Trying to read from released RecoveredInputChannel");
         final Buffer next = store.tryTake();
 
         if (next == null) {
@@ -251,12 +252,11 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
 
     @Override
     boolean isReleased() {
-        return isReleased;
+        return isReleased.get();
     }
 
     void releaseAllResources() throws IOException {
-        if (!isReleased) {
-            isReleased = true;
+        if (isReleased.compareAndSet(false, true)) {
             store.releaseAll();
             bufferManager.releaseAllBuffers(new ArrayDeque<>());
         }
