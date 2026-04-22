@@ -2,7 +2,7 @@
 
 本文档汇总三条互相关联的议题：
 
-1. 由 commit `d1914c63` + `3aef0932` 引入、但在当前 store 架构下已经失效的逻辑（死代码清理）。
+1. 由 FLINK-39018 引入、但在当前 store 架构下已经失效的逻辑（死代码清理）。
 2. `ChannelStatePersister.startPersisting` 接收 `RecoveredBufferStore` 的集中化重构。
 3. Checkpoint 对 OutputWriter 内未投递数据（活跃 buffer / 活跃 spill entry / FIFO spill 队列）的处理，
    目前完全未实现。
@@ -11,46 +11,46 @@
 
 ---
 
-## 0. Fix Commit 规范（可复用）
+## 0. Fix 规范（可复用）
 
-> 基于 cherry-pick 原始 commit + 补 fix 的开发流程通用规范。其他 agent / 开发者接手同类任务时
-> 必须遵守。
+> 基于 cherry-pick 原始变更 + 补 fix 的开发流程通用规范。其他 agent / 开发者接手同类任务时
+> 必须遵守。所有文档引用统一使用 JIRA ID（不出现 git hash 或序号）。
 
-**核心原则**：每个原始 commit（记为 commit i）后**紧跟 ≤1 个** fix commit，该 fix commit 捆绑
-针对 commit i 的**所有**修改（可跨多个 feature / 修复点）。
+**核心原则**：每个原始 JIRA（记为 JIRA i）对应的变更后**紧跟 ≤1 个** fix 变更，该 fix 变更捆绑
+针对 JIRA i 的**所有**修改（可跨多个 feature / 修复点）。
 
 **约束**：
-1. 一个 fix commit **只绑定一个**原始 commit——跨 commit i / commit j 的改动必须按"主要归属"拆到对应 fix。
-2. 一个原始 commit **只能有一个** fix commit——多点 fix 合并到同一 commit 内，以多段 diff 出现。
-3. 顺序严格 `... commit i → commit i 的 fix → commit i+1 → commit i+1 的 fix → ...`，禁止跨越。
-4. 原始 commit 无需修改的不加 fix，直接进入下一原始 commit。
+1. 一个 fix 变更**只绑定一个** JIRA——跨 JIRA i / JIRA j 的改动必须按"主要归属"拆到对应 fix。
+2. 一个 JIRA **只能有一个** fix 变更——多点 fix 合并其中，以多段 diff 出现。
+3. 顺序严格 `... JIRA i → JIRA i 的 fix → JIRA i+1 → JIRA i+1 的 fix → ...`，禁止跨越。
+4. 原始 JIRA 无需修改的不加 fix，直接进入下一 JIRA。
 
 **目的**：
-- **fix 必须作为独立 commit 保留**，不要自动 squash。人工 review 时能够单独查看每个 fix 的 diff
-  （相对原始 commit 是纯增量），review 通过后由人工决定是否手动 squash。
-- 避免跨 commit 依赖导致编译断层或 rebase 冲突；每对 (commit i + commit i 的 fix) 独立可验证。
-- 最终（由人工决定）squash (commit i + commit i 的 fix) 可得"完整自洽"的单 commit，用于正式合入。
+- **fix 必须作为独立变更保留**，不要自动 squash。人工 review 时能够单独查看每个 fix 的 diff
+  （相对原始变更是纯增量），review 通过后由人工决定是否手动 squash。
+- 避免跨 JIRA 依赖导致编译断层或 rebase 冲突；每对 (JIRA i + JIRA i 的 fix) 独立可验证。
+- 最终（由人工决定）squash (JIRA i + JIRA i 的 fix) 可得"完整自洽"的单个干净变更，用于正式合入。
 
-**跨 commit 依赖处理**：
-- 若 commit i 的 fix 需要引用 commit j（j > i）引入的新 API，把该改动**挪到 commit j 的 fix**（作为
-  commit j 新 API 的首次使用者），不塞进 commit i 的 fix。例：phase2 流式写入本想修 commit 3 的
-  OutputWriter，但需 commit 5 的流式 overload，故归入 commit 5 的 fix。
-- 若 commit i 的 fix 依赖 commit j 的 fix（j > i）的符号，同理挪到后者；或在 commit i 的 fix 提前
-  只声明不使用，commit j 的 fix 再使用。
+**跨 JIRA 依赖处理**：
+- 若 JIRA i 的 fix 需要引用 JIRA j（j 在 i 之后）引入的新 API，把该改动**挪到 JIRA j 的 fix**（作为
+  JIRA j 新 API 的首次使用者），不塞进 JIRA i 的 fix。例：phase2 流式写入本想修 FLINK-39521 的
+  OutputWriter，但需 FLINK-39523 的流式 overload，故归入 FLINK-39523 的 fix。
+- 若 JIRA i 的 fix 依赖 JIRA j 的 fix（j 在 i 之后）的符号，同理挪到后者；或在 JIRA i 的 fix 提前
+  只声明不使用，JIRA j 的 fix 再使用。
 
 ---
 
 ## 1. 背景：旧迁移路径 vs. 新 store 路径
 
-### 旧路径（commit `d1914c63`, `3aef0932`, `cebc174a`, `9ce47b21`）
+### 旧路径（FLINK-39018 的 4 项变更）
 - `RecoveredInputChannel.toInputChannel()` 通过 `ArrayDeque<Buffer> initialRecoveredBuffers` 把 recovered
   buffers 传给新 physical channel 构造器。
 - `LocalInputChannel` 塞进 `toBeConsumedBuffers`（`BufferAndBacklog` 包装）。
 - `RemoteInputChannel` 塞进 `receivedBuffers`（`SequenceBuffer` 包装）。
 - 由于 recovered 数据和 "normal" 数据共用同一 deque，下游所有读/计数/快照/优先事件/释放逻辑必须兼顾
-  两种语义。后续的 `3aef0932`、`cebc174a`、`9ce47b21` 都是在这个共用 deque 的消费/快照路径上打的补丁。
+  两种语义。FLINK-39018 随后的几项 patch 都是在这个共用 deque 的消费/快照路径上打的补丁。
 
-### 新路径（commit `6c6bc972f85`, FLINK-38544）
+### 新路径（FLINK-39522, FLINK-38544）
 - recovered 数据住在 per-channel `RecoveredBufferStore`，通过 store reference 传递，不再走 deque。
 - `toBeConsumedBuffers` 只剩 `FullyFilledBuffer` split（正常数据路径）。
 - `receivedBuffers` 只剩网络数据。
@@ -190,7 +190,7 @@ OutputWriter 不存在，store = EMPTY，`store.checkpoint()` 是 no-op（不回
 
 **位置**：`LocalInputChannel.java:141-163`。
 
-**旧动机**（3aef0932）：recovered buffers 住在 `toBeConsumedBuffers` 里，要 snapshot 它们。
+**旧动机**（FLINK-39018 LocalInputChannel checkpoint 快照分支）：recovered buffers 住在 `toBeConsumedBuffers` 里，要 snapshot 它们。
 
 **当前事实**：
 - Recovered 快照由 `store.checkpoint(...)` 处理（同方法内，行 142-152）。
@@ -209,7 +209,7 @@ OutputWriter 不存在，store = EMPTY，`store.checkpoint()` 是 no-op（不回
 
 **位置**：`RemoteInputChannel.java:940-947`；call sites `:260, :295`。
 
-**旧动机**（d1914c63）：migrated recovered buffers 在 `receivedBuffers` 里可能在 `requestSubpartitions()`
+**旧动机**（FLINK-39018 Buffer migration 分支）：migrated recovered buffers 在 `receivedBuffers` 里可能在 `requestSubpartitions()`
 前就被读到，所以不能强求 `partitionRequestClient` 已初始化。
 
 **当前事实**：`receivedBuffers` 只含网络数据；`getNextBuffer` 已先从 store 出数据（`:275-284`），
@@ -257,7 +257,7 @@ OutputWriter 不存在，store = EMPTY，`store.checkpoint()` 是 no-op（不回
 
 **位置**：`LocalInputChannel.java:357-413`。
 
-**旧动机**（cebc174a）：recovered 和 subpartitionView 数据共存时，UC barrier 先从 subpartitionView 取，
+**旧动机**（FLINK-39018 LocalInputChannel 优先事件修复）：recovered 和 subpartitionView 数据共存时，UC barrier 先从 subpartitionView 取，
 再回到 recovered。
 
 **当前事实**：数据源已从 `toBeConsumedBuffers.peek()` 改为 `recoveredStore.peekNextDataType()`。
@@ -269,22 +269,22 @@ drain 期间 `subpartitionView` 已存在、barrier 仍可能先到，语义有�
 
 **位置**：`LocalInputChannel.java:564-574`。
 
-**旧动机**（9ce47b21）：加 `toBeConsumedBuffers.size()`，因为 recovered buffers 在里面要计入。
+**旧动机**（FLINK-39018 `getBuffersInUseCount` hotfix）：加 `toBeConsumedBuffers.size()`，因为 recovered buffers 在里面要计入。
 
 **当前事实**：`toBeConsumedBuffers` 只含 `FullyFilledBuffer` 切片——也是队列里的数据，**应当**被计数。
 该 hotfix 实际修的是 master 漏计 FullyFilledBuffer split 的 bug（跟 recovered 无关）。
 
-**判断**：保留。`commit message tag` 在提交整理阶段可能可以拎出当作 master hotfix 独立发。
+**判断**：保留。可能在整理阶段作为 master hotfix 独立发。
 
 ### H. `LocalInputChannel.releaseAllResources` 回收 `toBeConsumedBuffers`
 
-**位置**：commit 9ce47b21 添加。
+**位置**：FLINK-39018 `getBuffersInUseCount` hotfix 引入。
 
 **判断**：FullyFilledBuffer 切片也要释放，保留。
 
 ### I. Remote 构造器里的 `initialRecoveredBuffers → receivedBuffers` 迁移循环
 
-**位置**：已被 commit `6c6bc972` 移除。确认无残留。
+**位置**：已在 FLINK-39522 中移除。确认无残留。
 
 ### J. OutputWriter 内未投递数据的 Checkpoint 处理
 
@@ -428,56 +428,55 @@ private void drainSpillEntriesToCheckpoint(long id) {
   `waitSet` 的访问在该锁下。
 - Recovery 线程的 drain（close()）也要取同一把锁改 `spillEntryQueue`（现在没加，要补）。
 
-### 4.4 Commit 切分策略：cherry-pick + 单 fix per commit
+### 4.4 切分策略：cherry-pick + 单 fix per JIRA
 
-遵循 §0 Fix Commit 规范：每个原始 commit 后紧跟 ≤1 个 fix commit，捆绑所有针对该原始 commit 的修改。
+遵循 §0 Fix 规范：每个原始 JIRA 后紧跟 ≤1 个 fix，捆绑所有针对该 JIRA 的修改。
 
-**两类 commit**：
-- **Base history（不 cherry-pick）**：FLINK-39018 的 4 个 commit（`3aef0932` / `d1914c63` / `cebc174a` /
-  `9ce47b21`）已在基线中。fix A/B/D 清理的就是它们留下的死代码，按"首个触及该文件的原始 commit"归入
-  commit 4 的 fix。
-- **待 cherry-pick 6 个 FLINK-38544 code commit**（源分支 `38544-spilling/20260420-01-organize-commits`）：
+**两类变更**：
+- **Base history（不 cherry-pick）**：FLINK-39018 的相关变更已在基线中。fix A/B/D 清理的就是它们
+  留下的死代码，按"首个触及该文件的原始 JIRA"归入 FLINK-39522 的 fix。
+- **6 个 FLINK-38544 原始 JIRA**：
 
-| # | Hash | 主题 |
-|---|------|------|
-| commit 1 | `df93451f799` | Add source buffer heap allocation and buffer request interface |
-| commit 2 | `29c8c105653` | Add SpillFile I/O components and RecoveredBufferStore |
-| commit 3 | `b3c30f02e11` | Add OutputWriter with three data paths and drain loop |
-| commit 4 | `6c6bc972f85` | Adapt InputChannels to consume from RecoveredBufferStore |
-| commit 5 | `3bdd88a0f29` | Add ChannelStateWriter streaming overload for disk data |
-| commit 6 | `5c1d4546c82` | Integrate OutputWriter into filtering flow |
+| JIRA | 主题 |
+|------|------|
+| FLINK-39519 | Add source buffer heap allocation and buffer request interface |
+| FLINK-39520 | Add SpillFile I/O components and RecoveredBufferStore |
+| FLINK-39521 | Add OutputWriter with three data paths and drain loop |
+| FLINK-39522 | Adapt InputChannels to consume from RecoveredBufferStore |
+| FLINK-39523 | Add ChannelStateWriter streaming overload for disk data |
+| FLINK-39524 | Integrate OutputWriter into filtering flow |
 
-**每个原始 commit 的 fix 归属**：
+**每个 JIRA 的 fix 归属**：
 
-| 原始 commit | fix 名称 | 内容 |
-|------------|---------|------|
-| commit 1 | — | 无需修正 |
-| commit 2 | **commit 2 的 fix** | `CheckpointCallback` 接口 + `setCheckpointCallback` / `setOnBecameEmptyCallback` 加到接口+Impl；`setNotificationCallback` 升接口；`RecoveredBufferStoreImpl.checkpoint()` 内调用 callback（前文 J.2.a）；创建 `RecoveredBufferStore.EMPTY` 单例（所有方法 no-op） |
-| commit 3 | **commit 3 的 fix** | OutputWriter：持有 callback 注册、wait-set 状态机（`onChannelCheckpointStarted` 入口、首次扫 `spillEntryQueue`、后续 O(1) 移除）、`synchronized(this)` 覆盖 queue/wait-set/checkpointId（drain 循环同锁）、构造时向各 store 注册 callback。**不含** phase2 磁盘写入（依赖 commit 5） |
-| commit 4 | **commit 4 的 fix** | §4.1 集中化（`startPersisting(barrierId, store, knownBuffers)` + `checkState(store.isEmpty() \|\| knownBuffers.isEmpty())`）；fix A（Local 改 emptyList）；fix B（删 Remote.checkReadability）；fix D（删 RecoveredInputChannel.onRecoveredStateBuffer）；fix E（Local/Remote 无条件持有 store，默认 EMPTY，消 15 处 null 守卫 + instanceof）；J.2.b（RemoteInputChannel credit=0 gating + `releaseHeldCredit` + 注册 `onBecameEmpty` callback） |
-| commit 5 | **commit 5 的 fix** | OutputWriter `drainSpillEntriesToCheckpoint(id)`：遍历 queue 经 `SpillFileReader.openInputStream` 调 commit 5 新增的 `ChannelStateWriter.addInputData(InputStream)`；"snapshot + drain" 合并避免双写 |
-| commit 6 | — | 无需修正 |
+| 原始 JIRA | fix 名称 | 内容 |
+|-----------|---------|------|
+| FLINK-39519 | — | 无需修正 |
+| FLINK-39520 | **FLINK-39520 的 fix** | `CheckpointCallback` 接口 + `setCheckpointCallback` / `setOnBecameEmptyCallback` 加到接口+Impl；`setNotificationCallback` 升接口；`RecoveredBufferStoreImpl.checkpoint()` 内调用 callback（前文 J.2.a）；创建 `RecoveredBufferStore.EMPTY` 单例（所有方法 no-op） |
+| FLINK-39521 | **FLINK-39521 的 fix** | OutputWriter：持有 callback 注册、wait-set 状态机（`onChannelCheckpointStarted` 入口、首次扫 `spillEntryQueue`、后续 O(1) 移除）、`synchronized(this)` 覆盖 queue/wait-set/checkpointId（drain 循环同锁）、构造时向各 store 注册 callback。**不含** phase2 磁盘写入（依赖 FLINK-39523） |
+| FLINK-39522 | **FLINK-39522 的 fix** | §4.1 集中化（`startPersisting(barrierId, store, knownBuffers)` + `checkState(store.isEmpty() \|\| knownBuffers.isEmpty())`）；fix A（Local 改 emptyList）；fix B（删 Remote.checkReadability）；fix D（删 RecoveredInputChannel.onRecoveredStateBuffer）；fix E（Local/Remote 无条件持有 store，默认 EMPTY，消 15 处 null 守卫 + instanceof）；J.2.b（RemoteInputChannel credit=0 gating + `releaseHeldCredit` + 注册 `onBecameEmpty` callback） |
+| FLINK-39523 | **FLINK-39523 的 fix** | OutputWriter `drainSpillEntriesToCheckpoint(id)`：遍历 queue 经 `SpillFileReader.openInputStream` 调 FLINK-39523 新增的 `ChannelStateWriter.addInputData(InputStream)`；"snapshot + drain" 合并避免双写 |
+| FLINK-39524 | — | 无需修正 |
 
-**最终 10 个 commit**：
+**最终 10 条变更**：
 
 ```
- 1. commit 1                                 6. commit 4
- 2. commit 2                                 7. commit 4 的 fix  ← §4.1 + A + B + D + E + credit gating
- 3. commit 2 的 fix  ← Store 层完整           8. commit 5
- 4. commit 3                                 9. commit 5 的 fix  ← OutputWriter phase2 流式
- 5. commit 3 的 fix  ← OutputWriter 层      10. commit 6
+ 1. FLINK-39519                                 6. FLINK-39522
+ 2. FLINK-39520                                 7. FLINK-39522 的 fix  ← §4.1 + A + B + D + E + credit gating
+ 3. FLINK-39520 的 fix  ← Store 层完整            8. FLINK-39523
+ 4. FLINK-39521                                 9. FLINK-39523 的 fix  ← OutputWriter phase2 流式
+ 5. FLINK-39521 的 fix  ← OutputWriter 层       10. FLINK-39524
 ```
 
-**fix commit 不自动 squash**，作为独立 commit 保留以便人工 review。10 个 commit 完整呈现给 reviewer；
-review 通过后由人工决定是否手动 squash (原始 commit + 对应的 fix) 合成 6 个 clean commit。
+**fix 不自动 squash**，作为独立变更保留以便人工 review。10 条变更完整呈现给 reviewer；
+review 通过后由人工决定是否手动 squash (原始 JIRA + 对应的 fix) 合成 6 条 clean 变更。
 
 **Stage 映射**：
 | Stage | 含 | 验证目标 |
 |-------|---|---------|
-| 1 | commit 1 + commit 2 + commit 2 的 fix | Store 层自足，单测 Impl.checkpoint() 触发 callback |
-| 2 | commit 3 + commit 3 的 fix | OutputWriter wait-set + 并发同步，单测状态机 |
-| 3 | commit 4 + commit 4 的 fix | InputChannel 适配 + 集中化 + 死代码清理 + credit gating，Local/Remote 测试通过 |
-| 4 | commit 5 + commit 5 的 fix + commit 6 | disk checkpoint 流式写入贯通 + filtering 集成，端到端测试 |
+| 1 | FLINK-39519 + FLINK-39520 + FLINK-39520 的 fix | Store 层自足，单测 Impl.checkpoint() 触发 callback |
+| 2 | FLINK-39521 + FLINK-39521 的 fix | OutputWriter wait-set + 并发同步，单测状态机 |
+| 3 | FLINK-39522 + FLINK-39522 的 fix | InputChannel 适配 + 集中化 + 死代码清理 + credit gating，Local/Remote 测试通过 |
+| 4 | FLINK-39523 + FLINK-39523 的 fix + FLINK-39524 | disk checkpoint 流式写入贯通 + filtering 集成，端到端测试 |
 
 ### 4.5 实现细节清单
 
@@ -548,7 +547,7 @@ channelStatePersister.startPersisting(
 | Q2 | Wait-set 实现 | **首个 callback 到达时扫描 `spillEntryQueue` 一次**计算 wait-set，后续 O(1) 移除。 |
 | Q3 | 磁盘数据 snapshot 的 `seqNum` | **保持与 ready buffers 一致**——`SEQUENCE_NUMBER_RESTORED`。本分支语义上只是把 buffer 搬到 disk 再回放，同一批 recovered 数据不应因存储介质不同而改 seqNum。 |
 | Q4 | Callback 接口形态 | 专用 `@FunctionalInterface CheckpointCallback { onChannelCheckpointStarted(long, InputChannelInfo) }`，不用 `BiConsumer<Long, InputChannelInfo>`。 |
-| Q5/Q6 | Commit 切分与死代码清理 | 按 §0 Fix Commit 规范：每个原始 commit 后最多 1 个 fix commit，捆绑所有针对该原始 commit 的改动。10 个 commit（6 cherry-pick + 4 fix）：commit 1 → commit 2 → commit 2 的 fix → commit 3 → commit 3 的 fix → commit 4 → commit 4 的 fix → commit 5 → commit 5 的 fix → commit 6。详见 §4.4。 |
+| Q5/Q6 | 切分与死代码清理 | 按 §0 Fix 规范：每个原始 JIRA 后最多 1 个 fix，捆绑所有针对该 JIRA 的改动。10 条变更（6 原始 JIRA + 4 fix）：FLINK-39519 → FLINK-39520 → FLINK-39520 的 fix → FLINK-39521 → FLINK-39521 的 fix → FLINK-39522 → FLINK-39522 的 fix → FLINK-39523 → FLINK-39523 的 fix → FLINK-39524。详见 §4.4。 |
 
 ### Q7（已定）. `ChannelStatePersister.startPersisting` 内的阶段顺序
 
@@ -586,11 +585,11 @@ channelStatePersister.startPersisting(
 - **Q1.3**：`recoveredStore` nullability（15 处 null 判断）。
   → 结论：采纳 EMPTY 单例（§2.7）。
 
-### Round 2：旧 commit stale 审计
+### Round 2：旧实现 stale 审计
 - 用户指出 `LocalInputChannel.checkpointStarted` 遍历 `toBeConsumedBuffers` 不合理（FullyFilledBuffer 切片
   不属于 channel state）。
 - 扩展为系统 audit A-J（§3）。
-- 用户要求：沿 `d1914c63` / `3aef0932` 引入、在 store 架构下已失效的逻辑统统清理，不要只看用户
+- 用户要求：沿 FLINK-39018 引入、在 store 架构下已失效的逻辑统统清理，不要只看用户
   举的那一个例子。
 
 ### Round 3：OutputWriter 粒度
@@ -614,16 +613,16 @@ channelStatePersister.startPersisting(
 - Checkpoint 触发时无 race：write() 不在中途触发，活跃 buffer/SpillEntry 不会"半填"。
 - 单 checkpoint 语义：参考 `ChannelStatePersister`，无需并发 checkpoint 支持。
 - Non-filtering 模式：EMPTY store，无需 callback 机制。
-- Commit 切分策略：cherry-pick based incremental fix（§4.4）。
+- 切分策略：cherry-pick based incremental fix（§4.4）。
 
-### Round 6：§4.4 commit 映射迭代（开发前）
-- 原表错把 FLINK-39018 的 4 个 commit 列为 cherry-pick 目标；实际在 base 历史里不动。漏了
-  commit 1 / commit 2。改为明确区分 base history 与待 cherry-pick 的 commit 1–commit 6。
-- 初版为 fix J 把 commit 5 前移到 commit 4 之前，经讨论判定不必要：保持原 commit 顺序即可。
+### Round 6：§4.4 JIRA 映射迭代（开发前）
+- 原表错把 FLINK-39018 的 4 项变更列为 cherry-pick 目标；实际在 base 历史里不动。漏了
+  FLINK-39519 / FLINK-39520。改为明确区分 base history 与待 cherry-pick 的 6 个 FLINK-38544 JIRA。
+- 初版为 fix J 把 FLINK-39523 前移到 FLINK-39522 之前，经讨论判定不必要：保持原顺序即可。
 - 用户提 fix J 应拆 J.1（OutputWriter 内部）+ J.2（Integration），曾改成 15 步细粒度。
-- 最终用户定下 §0 Fix Commit 规范：每个原始 commit 最多 1 个 fix commit，捆绑所有针对该原始 commit
-  的改动。10 步终稿：commit 1 → commit 2 → commit 2 的 fix → commit 3 → commit 3 的 fix →
-  commit 4 → commit 4 的 fix → commit 5 → commit 5 的 fix → commit 6。
+- 最终用户定下 §0 Fix 规范：每个原始 JIRA 最多 1 个 fix，捆绑所有针对该 JIRA 的改动。
+  10 步终稿：FLINK-39519 → FLINK-39520 → FLINK-39520 的 fix → FLINK-39521 → FLINK-39521 的 fix →
+  FLINK-39522 → FLINK-39522 的 fix → FLINK-39523 → FLINK-39523 的 fix → FLINK-39524。
 
 ---
 
