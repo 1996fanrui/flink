@@ -174,7 +174,8 @@ public class RemoteInputChannel extends InputChannel {
 
         // Callers with no recovered data pass RecoveredBufferStore.EMPTY; unconditional assignment
         // avoids null guards throughout the class and eliminates the buggy isEmpty() guard that
-        // would discard the store reference while OutputWriter still has pending writes.
+        // would discard the store reference while FilteredBufferDispatcher still has pending
+        // writes.
         this.recoveredStore = checkNotNull(recoveredStore);
         this.recoveredStore.setNotificationCallback(this::notifyChannelNonEmpty);
 
@@ -784,9 +785,10 @@ public class RemoteInputChannel extends InputChannel {
      * reordered), spill only the overtaken buffers.
      *
      * <p>The recoveredStore is passed to the centralized {@link
-     * ChannelStatePersister#startPersisting} so that ready-buffer snapshot and OutputWriter
-     * callback are handled in one place. Network inflight buffers from {@code receivedBuffers} are
-     * collected here (Remote-specific) and passed as {@code knownBuffers}.
+     * ChannelStatePersister#startPersisting} so that ready-buffer snapshot and
+     * FilteredBufferDispatcher callback are handled in one place. Network inflight buffers from
+     * {@code receivedBuffers} are collected here (Remote-specific) and passed as {@code
+     * knownBuffers}.
      */
     public void checkpointStarted(CheckpointBarrier barrier) throws CheckpointException {
         synchronized (receivedBuffers) {

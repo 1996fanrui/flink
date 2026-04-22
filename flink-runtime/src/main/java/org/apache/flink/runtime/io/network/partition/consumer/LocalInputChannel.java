@@ -123,7 +123,8 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
 
         // Callers with no recovered data pass RecoveredBufferStore.EMPTY; unconditional assignment
         // avoids null guards throughout the class and eliminates the buggy isEmpty() guard that
-        // would discard the store reference while OutputWriter still has pending writes.
+        // would discard the store reference while FilteredBufferDispatcher still has pending
+        // writes.
         this.recoveredStore = checkNotNull(recoveredStore);
         this.recoveredStore.setNotificationCallback(this::notifyChannelNonEmpty);
     }
@@ -136,7 +137,8 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
         // Local channel has no network inflight buffers to snapshot (barriers and data arrive
         // together via the local subpartition view). toBeConsumedBuffers contains only
         // FullyFilledBuffer splits — ordinary data fragments that do not belong in channel state.
-        // The recoveredStore is passed so that ready buffers + OutputWriter callback are handled
+        // The recoveredStore is passed so that ready buffers + FilteredBufferDispatcher callback
+        // are handled
         // by the centralized startPersisting path.
         channelStatePersister.startPersisting(
                 barrier.getId(), recoveredStore, Collections.emptyList());
