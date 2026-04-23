@@ -33,7 +33,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
-import java.util.function.Function;
 
 import static org.apache.flink.util.IOUtils.closeQuietly;
 
@@ -52,20 +51,12 @@ import static org.apache.flink.util.IOUtils.closeQuietly;
  * <p>A byte[] memory cache accumulates payload bytes for the active channel. On channel change or
  * cache full, {@link #flushCache()} is invoked: if the spill writer is idle and a buffer is
  * available the cached bytes go directly to a network buffer (P1); otherwise they are written to
- * the spill file (P2). On {@link #close()}, all remaining spill entries are drained using a
- * blocking buffer supplier, spill files are deleted, and all stores are marked complete.
+ * the spill file (P2). On {@link #close()}, all remaining spill entries are drained via {@link
+ * BufferRequester#requestBufferBlocking(InputChannelInfo)}, spill files are deleted, and all stores
+ * are marked complete.
  */
 @Internal
 public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
-
-    /**
-     * Function variant that may block waiting for a resource to become available for the given
-     * channel.
-     */
-    @FunctionalInterface
-    interface BlockingFunction<K, V> {
-        V apply(K key) throws InterruptedException, IOException;
-    }
 
     /**
      * Per-channel stores used by this dispatcher. Typed as the concrete {@link
@@ -80,8 +71,7 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
     private final ChannelStateWriter channelStateWriter;
     private final String[] spillDirs;
     private final int memorySegmentSize;
-    private final Function<InputChannelInfo, Buffer> bufferSupplier;
-    private final BlockingFunction<InputChannelInfo, Buffer> blockingBufferSupplier;
+    private final BufferRequester bufferRequester;
 
     // Memory cache state: accumulates bytes for the active channel before committing to P1 or P2
     private final byte[] cache;
@@ -107,9 +97,8 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
      *     storage without allocating network buffers
      * @param spillDirs directories for spill files
      * @param memorySegmentSize the size of a memory segment / network buffer
-     * @param bufferSupplier non-blocking per-channel supplier; returns null when the pool is
-     *     exhausted
-     * @param blockingBufferSupplier blocking per-channel supplier used during close() drain
+     * @param bufferRequester per-channel buffer source. The non-blocking variant is used for the
+     *     fast path (P1) and eager replay (P3); the blocking variant is used for the close() drain
      * @throws IOException if spillDirs is empty
      */
     public FilteredBufferDispatcherImpl(
@@ -117,8 +106,7 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
             ChannelStateWriter channelStateWriter,
             String[] spillDirs,
             int memorySegmentSize,
-            Function<InputChannelInfo, Buffer> bufferSupplier,
-            BlockingFunction<InputChannelInfo, Buffer> blockingBufferSupplier)
+            BufferRequester bufferRequester)
             throws IOException {
         if (spillDirs.length == 0) {
             throw new IOException("Spill directories must not be empty");
@@ -127,8 +115,7 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
         this.channelStateWriter = channelStateWriter;
         this.spillDirs = spillDirs;
         this.memorySegmentSize = memorySegmentSize;
-        this.bufferSupplier = bufferSupplier;
-        this.blockingBufferSupplier = blockingBufferSupplier;
+        this.bufferRequester = bufferRequester;
         this.cache = new byte[memorySegmentSize];
         this.cachePosition = 0;
 
@@ -197,7 +184,7 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
             flushed = true;
         }
 
-        // Drain remaining spill entries into buffers using the blocking supplier
+        // Drain remaining spill entries into buffers via the blocking requester
         if (spillFileWriter != null) {
             drainSpillThroughBuffers();
         }
@@ -288,14 +275,14 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
     }
 
     /**
-     * Drains all remaining spill entries into network buffers using the blocking buffer supplier.
+     * Drains all remaining spill entries into network buffers using the blocking buffer requester.
      * Only entries that have not been consumed by phase2 (drainSpillEntriesToCheckpoint) remain.
      */
     private void drainSpillThroughBuffers() throws IOException, InterruptedException {
         for (FilteredSpillFile.Reader reader : spillFileWriter.getReaders()) {
             while (reader.hasEntries()) {
                 InputChannelInfo ch = reader.peekNextChannel();
-                Buffer buffer = blockingBufferSupplier.apply(ch);
+                Buffer buffer = bufferRequester.requestBufferBlocking(ch);
                 FilteredSpillFile.Chunk chunk = reader.readNext();
                 if (chunk == null) {
                     break;
@@ -337,7 +324,7 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
 
         // P1: spill writer idle and a buffer is available — write directly to network buffer
         if (isSpillIdle()) {
-            Buffer buffer = bufferSupplier.apply(channelInfo);
+            Buffer buffer = bufferRequester.requestBuffer(channelInfo);
             if (buffer != null) {
                 Preconditions.checkState(
                         buffer.getMaxCapacity() >= bytesToFlush,
@@ -361,15 +348,19 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
     }
 
     /** Writes bytes to the spill file, creating the Writer lazily if needed. */
-    private void writeToSpillFile(byte[] data, int offset, int length, InputChannelInfo ci)
+    private void writeToSpillFile(
+            byte[] data, int offset, int length, InputChannelInfo channelInfo)
             throws IOException {
         if (spillFileWriter == null) {
             spillFileWriter = new FilteredSpillFile.Writer(spillDirs, memorySegmentSize);
         }
-        spillFileWriter.writeEntry(data, offset, length, ci);
+        spillFileWriter.writeEntry(data, offset, length, channelInfo);
         // Increment pending count so store.isEmpty() correctly reflects outstanding data
         RecoveredBufferStoreImpl store =
-                Preconditions.checkNotNull(storesByChannel.get(ci), "No store for channel %s", ci);
+                Preconditions.checkNotNull(
+                        storesByChannel.get(channelInfo),
+                        "No store for channel %s",
+                        channelInfo);
         store.incrementPending();
     }
 
@@ -381,7 +372,7 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
         for (FilteredSpillFile.Reader reader : spillFileWriter.getReaders()) {
             while (reader.hasEntries()) {
                 InputChannelInfo ch = reader.peekNextChannel();
-                Buffer buffer = bufferSupplier.apply(ch);
+                Buffer buffer = bufferRequester.requestBuffer(ch);
                 if (buffer == null) {
                     return;
                 }
