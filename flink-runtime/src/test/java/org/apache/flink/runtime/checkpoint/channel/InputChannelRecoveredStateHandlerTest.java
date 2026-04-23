@@ -83,7 +83,8 @@ class InputChannelRecoveredStateHandlerTest extends RecoveredChannelStateHandler
                                             .MappingType.IDENTITY)
                         }),
                 null,
-                MemoryManager.DEFAULT_PAGE_SIZE);
+                MemoryManager.DEFAULT_PAGE_SIZE,
+                null);
     }
 
     private InputChannelRecoveredStateHandler buildMultiChannelHandler() {
@@ -111,7 +112,8 @@ class InputChannelRecoveredStateHandlerTest extends RecoveredChannelStateHandler
                                             .MappingType.RESCALING)
                         }),
                 null,
-                MemoryManager.DEFAULT_PAGE_SIZE);
+                MemoryManager.DEFAULT_PAGE_SIZE,
+                null);
     }
 
     /** Builds a handler in filtering mode (non-null filtering handler, no-op stub). */
@@ -136,7 +138,8 @@ class InputChannelRecoveredStateHandlerTest extends RecoveredChannelStateHandler
                                             .MappingType.IDENTITY)
                         }),
                 stubFilteringHandler,
-                MemoryManager.DEFAULT_PAGE_SIZE);
+                MemoryManager.DEFAULT_PAGE_SIZE,
+                null);
     }
 
     @Test
