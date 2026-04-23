@@ -18,11 +18,11 @@
 
 以下 4 个问题是代码 review 中发现的实现层面风险（非设计偏差），按严重性排序。
 
-### 风险 1: SpillFileReader 实例创建过多 — 文件句柄耗尽风险
+### 风险 1: FilteredSpillFile.Reader 实例创建过多 — 文件句柄耗尽风险
 
 - **阶段**: C2
-- **位置**: `SpillFileWriter.getCurrentFileReader()` / `SpillEntry` 构造
-- **现象**: `getCurrentFileReader()` 每次被调用都会 `new SpillFileReader(currentFilePath)`，即打开一个新的 `FileChannel`。OutputWriter 在 `sealActiveSpillEntry()` 时调用此方法为每个 SpillEntry 绑定一个 fileReader。如果一个 spill 文件包含数千个 entry（每个最大 32KB，64MB 文件可容纳 ~2000 个），就会创建 ~2000 个指向同一物理文件的 FileChannel，导致文件句柄耗尽。
+- **位置**: `FilteredSpillFile.getCurrentFileReader()` / `SpillEntry` 构造
+- **现象**: `getCurrentFileReader()` 每次被调用都会 `new FilteredSpillFile.Reader(currentFilePath)`，即打开一个新的 `FileChannel`。OutputWriter 在 `sealActiveSpillEntry()` 时调用此方法为每个 SpillEntry 绑定一个 fileReader。如果一个 spill 文件包含数千个 entry（每个最大 32KB，64MB 文件可容纳 ~2000 个），就会创建 ~2000 个指向同一物理文件的 FileChannel，导致文件句柄耗尽。
 - **触发条件**: 大量数据 spill 到磁盘（Network Buffer Pool 长时间不足）
 - **影响**: 进程级文件描述符耗尽，后续所有文件操作（包括 checkpoint、日志）都会失败
 
@@ -42,11 +42,11 @@
 - **触发条件**: Task 取消/异常时 releaseAllResources() 与其他线程并发访问
 - **影响**: 可能导致 visibility 问题 — 一个线程设置 isReleased=true 后另一个线程读到 false，继续操作已释放的资源
 
-### 风险 4: notificationCallback 缺少线程安全保护
+### 风险 4: dataAvailableCallback 缺少线程安全保护
 
 - **阶段**: C2
 - **位置**: `RecoveredBufferStoreImpl.java`
-- **现象**: `setNotificationCallback(Runnable)` 方法未加 synchronized，但 `addBuffer()` 在 synchronized 块内读取 `notificationCallback`。如果 `setNotificationCallback` 在 recovery 线程启动前调用（初始化阶段），通过 happens-before 关系保证可见性，无问题。但 channel conversion 时（`LocalRecoveredInputChannel.toInputChannelInternal` / `RemoteRecoveredInputChannel.toInputChannelInternal`）需要更新 callback 指向新的物理 InputChannel，此时 recovery 线程可能正在并发执行 `addBuffer()`
+- **现象**: `setDataAvailableCallback(Runnable)` 方法未加 synchronized，但 `addBuffer()` 在 synchronized 块内读取 `dataAvailableCallback`。如果 `setDataAvailableCallback` 在 recovery 线程启动前调用（初始化阶段），通过 happens-before 关系保证可见性，无问题。但 channel conversion 时（`LocalRecoveredInputChannel.toInputChannelInternal` / `RemoteRecoveredInputChannel.toInputChannelInternal`）需要更新 callback 指向新的物理 InputChannel，此时 recovery 线程可能正在并发执行 `addBuffer()`
 - **触发条件**: channel conversion 与 recovery 线程的 addBuffer() 并发执行
 - **影响**: addBuffer() 可能读到旧的 callback（指向已被替换的 RecoveredInputChannel），通知错误的 channel
 
@@ -79,7 +79,7 @@
 ## C2: SpillFile I/O + RecoveredBufferStore — 7.5/10
 
 ### 涉及文件
-- **新增**: `SpillEntry.java`, `SpillFileReader.java`, `SpillFileWriter.java`
+- **新增**: `SpillEntry.java`, `FilteredSpillFile.Reader.java`, `FilteredSpillFile.java`
 - **新增**: `RecoveredBufferStore.java`（接口）, `RecoveredBufferStoreImpl.java`
 - **新增**: `SpillFileTest.java`, `RecoveredBufferStoreTest.java`
 
@@ -100,10 +100,10 @@
 
 ### 发现的问题
 
-1. **[中] SpillEntry 增加 fileReader 字段** — 设计文档定义 3 字段，实际 4 字段。更重要的是 `getCurrentFileReader()` 每次创建新 SpillFileReader 实例（新 FileChannel），大量 write 会打开过多文件句柄。应让同一文件的多个 entry 共享 reader 实例
-2. **[中] notificationCallback 缺少线程安全保护** — `setNotificationCallback()` 未同步，channel conversion 时可能存在竞态
-3. **[低] SpillFileWriter 未复用 FileUtils.writeCompletely()** — 自行实现 `while(hasRemaining)` 循环，行为等价但未复用已有代码
-4. **[低] SpillFileWriter 构造器存未使用的 memorySegmentSize 字段**
+1. **[中] SpillEntry 增加 fileReader 字段** — 设计文档定义 3 字段，实际 4 字段。更重要的是 `getCurrentFileReader()` 每次创建新 FilteredSpillFile.Reader 实例（新 FileChannel），大量 write 会打开过多文件句柄。应让同一文件的多个 entry 共享 reader 实例
+2. **[中] dataAvailableCallback 缺少线程安全保护** — `setDataAvailableCallback()` 未同步，channel conversion 时可能存在竞态
+3. **[低] FilteredSpillFile 未复用 FileUtils.writeCompletely()** — 自行实现 `while(hasRemaining)` 循环，行为等价但未复用已有代码
+4. **[低] FilteredSpillFile 构造器存未使用的 memorySegmentSize 字段**
 
 ---
 
@@ -231,10 +231,10 @@
 
 | # | 阶段 | 问题 | 说明 | 状态 |
 |---|------|------|------|------|
-| 1 | C2 | SpillFileReader 实例创建过多 | `getCurrentFileReader()` 每次创建新 FileChannel。OutputWriter 已有共享机制（`allSpillFileReaders` + `lastKnownFileCount`），实际不会每 entry 创建新 reader | **已澄清**：review 误判，OutputWriter 已正确共享 reader |
+| 1 | C2 | FilteredSpillFile.Reader 实例创建过多 | `getCurrentFileReader()` 每次创建新 FileChannel。OutputWriter 已有共享机制（`allFilteredSpillFile.Readers` + `lastKnownFileCount`），实际不会每 entry 创建新 reader | **已澄清**：review 误判，OutputWriter 已正确共享 reader |
 | 2 | C1/C6 | memorySegmentSize 硬编码 DEFAULT_PAGE_SIZE | C1 已修复（改用 `filterContext.getMemorySegmentSize()`）。C6 待 cherry-pick 后确认 | **C1 已修复** |
 | 3 | C4 | isReleased 失去线程安全保护 | 移除 `@GuardedBy` 后无同步机制，建议改为 volatile | 待修复 |
-| 4 | C2 | notificationCallback 缺少线程安全 | `setNotificationCallback()` 未同步，channel conversion 时可能竞态 | **已修复**：FLINK-39520 的 fix 中 setNotificationCallback 加 synchronized |
+| 4 | C2 | dataAvailableCallback 缺少线程安全 | `setDataAvailableCallback()` 未同步，channel conversion 时可能竞态 | **已修复**：FLINK-39520 的 fix 中 setDataAvailableCallback 加 synchronized |
 
 ### 可改进（低风险）
 
@@ -254,7 +254,7 @@
 | 3 | C5: InputStream.transferTo() → 8KB 手动循环 | **已更新** |
 | 4 | C2: Store pendingSpillEntries → pendingCount | **已更新**（design.md, interfaces.md, 实现计划文档） |
 | 5 | C2: Checkpoint 磁盘数据职责从 Store 移至 OutputWriter | **已更新**（design.md, interfaces.md, data_flow.md） |
-| 6 | C2: SpillFileWriter 删除 memorySegmentSize 参数, 使用 FileUtils.writeCompletely() | **已更新** |
+| 6 | C2: FilteredSpillFile 删除 memorySegmentSize 参数, 使用 FileUtils.writeCompletely() | **已更新** |
 | 7 | 拆分：原 C1 拆为 C1（heap alloc）+ C2（buffer 请求接口），总步骤从 6 增至 7（其后又合回 6，以 JIRA 为单位） | **已更新**（实现计划文档, design.md） |
 
 ---
@@ -263,4 +263,4 @@
 
 实现与设计文档的整体一致性很高。原 C1 在 review 中被证明过度设计（Semaphore(5) 上限没有理论依据），重写为单 segment 复用 + 运行时检查，更符合 MVP 原则。其余阶段的核心架构——三条数据路径（P1/P2/P3）、OutputWriter 调度、RecoveredBufferStore 抽象、SpillFile I/O、Checkpoint 流式写入、InputChannel 消费——全部按设计实现，无功能性缺失。
 
-需要重点关注的是 **SpillFileReader 实例创建过多**（文件句柄风险）和 **memorySegmentSize 硬编码**（配置不一致风险）这两个中风险问题。
+需要重点关注的是 **FilteredSpillFile.Reader 实例创建过多**（文件句柄风险）和 **memorySegmentSize 硬编码**（配置不一致风险）这两个中风险问题。

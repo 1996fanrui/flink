@@ -23,7 +23,7 @@
 | AT-CLFL | close() cleans up all spill files | REQ-JD2C | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testCloseCleanup |
 | AT-CWRT | write after close throws IllegalStateException | REQ-JD2C | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testWriteAfterClose |
 | AT-FWRT | write after flush throws IllegalStateException | REQ-DRIN | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testWriteAfterFlush |
-| AT-HY10 | SpillFileWriter.close() try-finally guarantees file handle release | REQ-JD2C | 通过 | 代码自动化 | FilteredSpillFileTest#testCloseReleasesFileHandle |
+| AT-HY10 | FilteredSpillFile.close() try-finally guarantees file handle release | REQ-JD2C | 通过 | 代码自动化 | FilteredSpillFileTest#testCloseReleasesFileHandle |
 | AT-HW4P | Truncated file throws IOException | REQ-T5AJ | 通过 | 代码自动化 | FilteredSpillFileTest#testTruncatedFileThrows |
 | AT-C3MK | Spill dirs from IOManager, no java.io.tmpdir fallback | REQ-SPDR | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testSpillDirectorySource |
 | AT-U7Q2 | Non-filtering scenario unchanged | REQ-NPBY | 通过 | 代码自动化 | InputChannelRecoveredStateHandlerTest#testNonFilteringModeUsesNetworkBufferPool |
@@ -182,9 +182,9 @@ write() after flush() throws IllegalStateException. flush() signals no more data
 **命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredBufferDispatcherTest#testWriteAfterFlush -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
-### [L1-测试] AT-HY10 SpillFileWriter Try-Finally
+### [L1-测试] AT-HY10 FilteredSpillFile Try-Finally
 
-SpillFileWriter.close() uses try-finally to guarantee file handle release even when IOException occurs during close.
+FilteredSpillFile.close() uses try-finally to guarantee file handle release even when IOException occurs during close.
 
 **命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredSpillFileTest#testCloseReleasesFileHandle -P java11-target -P java11`
 **断言**: test pass, exit code 0
@@ -241,7 +241,7 @@ When checkpoint triggers during recovery with unreplayed spill data, all unrepla
 
 ### [L1-测试] AT-N3YQ Concurrent Checkpoint Snapshot and Replay
 
-Checkpoint snapshot and drain loop replay run concurrently on the same spill file. Both use independent SpillFileReader instances. No data corruption or deadlock.
+Checkpoint snapshot and drain loop replay run concurrently on the same spill file. Both use independent FilteredSpillFile.Reader instances. No data corruption or deadlock.
 
 **命令**: `./mvnw test -pl flink-runtime -Dtest=RecoveredBufferStoreTest#testConcurrentCheckpointAndReplay -P java11-target -P java11`
 **断言**: test pass, exit code 0
@@ -283,7 +283,7 @@ After conversion, LocalInputChannel/RemoteInputChannel's checkpoint protocol (ba
 
 ### [L2-Agent] AT-1KTC Minimal Code Invasion
 
-All new logic (OutputWriter, SpillFileWriter, SpillFileReader, SpillEntry) lives in new classes. Existing files only call writer.write(). No internal details leak into existing code.
+All new logic (OutputWriter, FilteredSpillFile, FilteredSpillFile.Reader, SpillEntry) lives in new classes. Existing files only call writer.write(). No internal details leak into existing code.
 
 **采集命令**: `grep -rn "SpillFile\|SpillEntry" --include="*.java" flink-runtime/src/main/java/org/apache/flink/runtime/checkpoint/channel/ | grep -v -E "(OutputWriter|SpillFile|SpillEntry)\.java:"`
 **判定**: grep 结果应为空。若有输出，每一行必须仅为 import 语句，不允许出现方法调用、字段声明或类型引用

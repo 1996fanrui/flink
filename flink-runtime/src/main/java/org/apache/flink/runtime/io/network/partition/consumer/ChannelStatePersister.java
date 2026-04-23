@@ -39,6 +39,7 @@ import java.util.List;
 import java.util.OptionalLong;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
+import static org.apache.flink.util.Preconditions.checkState;
 
 /** Helper class for persisting channel state via {@link ChannelStateWriter}. */
 @NotThreadSafe
@@ -58,8 +59,8 @@ public final class ChannelStatePersister {
     private long lastSeenBarrier = -1L;
 
     /**
-     * Writer must be initialized before usage. {@link #startPersisting(long, List)} enforces this
-     * invariant.
+     * Writer must be initialized before usage. {@link #startPersisting(long, RecoveredBufferStore,
+     * List)} enforces this invariant.
      */
     private final ChannelStateWriter channelStateWriter;
 
@@ -68,7 +69,32 @@ public final class ChannelStatePersister {
         this.channelInfo = checkNotNull(channelInfo);
     }
 
-    protected void startPersisting(long barrierId, List<Buffer> knownBuffers)
+    /**
+     * Starts persisting channel state for the given checkpoint barrier.
+     *
+     * <p>Performs the following steps in order:
+     *
+     * <ol>
+     *   <li>Validates that this checkpoint has not been superseded (throws {@link
+     *       CheckpointException} if a newer barrier was already received).
+     *   <li>Asserts the disk-network exclusivity invariant: {@code store.isEmpty() || knownBuffers.isEmpty()}.
+     *       Guaranteed by {@code UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM=true} (upstream does not
+     *       replay output state) combined with {@link RemoteInputChannel#getNextBuffer} draining the
+     *       store before polling {@code receivedBuffers}.
+     *   <li>Delegates ready-buffer snapshot and FilteredBufferDispatcher callback to {@link
+     *       RecoveredBufferStore#checkpoint}.
+     *   <li>Writes network inflight buffers (Remote only) via {@link
+     *       ChannelStateWriter#addInputData}.
+     * </ol>
+     *
+     * @param barrierId the barrier/checkpoint ID
+     * @param store the per-channel recovered buffer store (use {@link RecoveredBufferStore#EMPTY}
+     *     when no recovery data is present)
+     * @param knownBuffers network inflight buffers to persist (empty for LocalInputChannel)
+     * @throws CheckpointException if checkpointing fails or the checkpoint has been superseded
+     */
+    protected void startPersisting(
+            long barrierId, RecoveredBufferStore store, List<Buffer> knownBuffers)
             throws CheckpointException {
         logEvent("startPersisting", barrierId);
         if (checkpointStatus == CheckpointStatus.BARRIER_RECEIVED && lastSeenBarrier > barrierId) {
@@ -90,7 +116,32 @@ public final class ChannelStatePersister {
             checkpointStatus = CheckpointStatus.BARRIER_PENDING;
             lastSeenBarrier = barrierId;
         }
-        if (knownBuffers.size() > 0) {
+
+        // Defensive invariant check: store non-empty and knownBuffers non-empty must not coexist.
+        // Guaranteed by UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM=true (upstream has no output state
+        // to replay, so receivedBuffers stays empty of DATA_BUFFER while the recovered store is
+        // draining) together with RemoteInputChannel#getNextBuffer draining the store first.
+        // Violations here indicate one of those assumptions broke and must fail-fast rather than
+        // silently produce corrupt channel state.
+        checkState(
+                store.isEmpty() || knownBuffers.isEmpty(),
+                "Invariant violated: store has data (size=%s) AND knownBuffers non-empty (size=%s) at barrier %s. "
+                        + "Requires UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM=true so upstream does not "
+                        + "replay output state into receivedBuffers while the recovered store is still draining.",
+                store.size(),
+                knownBuffers.size(),
+                barrierId);
+
+        if (!store.isEmpty()) {
+            try {
+                store.checkpoint(channelStateWriter, barrierId);
+            } catch (IOException e) {
+                throw new CheckpointException(
+                        "Failed to checkpoint recovered store",
+                        CheckpointFailureReason.IO_EXCEPTION,
+                        e);
+            }
+        } else if (!knownBuffers.isEmpty()) {
             channelStateWriter.addInputData(
                     barrierId,
                     channelInfo,
