@@ -51,7 +51,7 @@ Dispatcher 维护一个 **wait-set**：
 
 - **初始**：扫所有 reader，拿到"此刻还有磁盘数据的 channel 集合"
 - **每次 `store.checkpoint()` 完成回调**：把该 channel 从 wait-set 移除
-- **wait-set 空**：所有该等的 channel 都已写完自己的 ready buffers，dispatcher 开始**一次顺序读整个磁盘文件**把 entries drain 到 checkpoint
+- **wait-set 空**：所有该等的 channel 都已写完自己的 ready buffers，dispatcher 开始**一次顺序读整个磁盘文件**把 entries 复制到 checkpoint（通过对每个 reader 的 `snapshot()` 独立读，**不影响原 reader**，不影响 replay 链路继续消费）
 
 没有磁盘数据的 channel 不需要等（初始就不在 set 里）。
 
