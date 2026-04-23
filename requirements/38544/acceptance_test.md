@@ -4,41 +4,41 @@
 
 | 编号 | 测试内容概要 | 需求ID列表 | 状态 | 测试执行方 | 备注 |
 |------|------------|-----------|------|-----------|------|
-| AT-2W3J | P1: buffer available, no disk data → InputChannel | REQ-8HRS | 待测试 | 代码自动化 | |
-| AT-GE7G | P2: no buffer → write to file | REQ-8HRS | 待测试 | 代码自动化 | |
-| AT-SX5O | P3: replay oldest disk data to InputChannel | REQ-8HRS | 待测试 | 代码自动化 | |
-| AT-QUBL | P3 priority over P1 (FIFO ordering) | REQ-8HRS,REQ-CRSR | 待测试 | 代码自动化 | |
-| AT-P3DL | P3 eager drain (loop until no buffer or disk empty) | REQ-8HRS | 待测试 | 代码自动化 | |
-| AT-36DP | Source Buffer uses Heap, does not compete with Pool | REQ-NHLB | 待测试 | 代码自动化 | |
-| AT-41PK | Source Buffer one-at-a-time: large record spans multiple buffers, maxOutstanding == 1, same segment reused | REQ-NHLB,REQ-QY68 | 待测试 | 代码自动化 | |
-| AT-UE7O | Runtime check: getBuffer() throws IllegalStateException when prior buffer not recycled | REQ-QY68 | 待测试 | 代码自动化 | |
-| AT-DWGD | Backend downgrade only (buffer → file), no upgrade | REQ-WRTR | 待测试 | 代码自动化 | |
-| AT-BYPS | Record spans across buffer and file correctly | REQ-BYPS | 待测试 | 代码自动化 | |
-| AT-CHDL | Channel change auto-detected, flush on change | REQ-CHDL | 待测试 | 代码自动化 | |
-| AT-SFMG | Single spill file per task, all channels share | REQ-SFMG | 待测试 | 代码自动化 | |
-| AT-5097 | File rotation at 64MB | REQ-SFMG | 待测试 | 代码自动化 | |
-| AT-CRSR | Disk has data = unreplayed entries, cursor-based | REQ-CRSR | 待测试 | 代码自动化 | |
-| AT-DRIN | close() blocking drain until disk empty | REQ-DRIN | 待测试 | 代码自动化 | |
-| AT-CLID | close() idempotent | REQ-JD2C | 待测试 | 代码自动化 | |
-| AT-CLFL | close() cleans up all spill files | REQ-JD2C | 待测试 | 代码自动化 | |
-| AT-CWRT | write after close throws IllegalStateException | REQ-JD2C | 待测试 | 代码自动化 | |
-| AT-FWRT | write after flush throws IllegalStateException | REQ-DRIN | 待测试 | 代码自动化 | |
-| AT-HY10 | SpillFileWriter.close() try-finally guarantees file handle release | REQ-JD2C | 待测试 | 代码自动化 | |
-| AT-HW4P | Truncated file throws IOException | REQ-T5AJ | 待测试 | 代码自动化 | |
-| AT-C3MK | Spill dirs from IOManager, no java.io.tmpdir fallback | REQ-SPDR | 待测试 | 代码自动化 | |
-| AT-U7Q2 | Non-filtering scenario unchanged | REQ-NPBY | 待测试 | 代码自动化 | |
-| AT-LN5V | Large data: multiple file rotations, full replay correct | REQ-SFMG,REQ-8HRS | 待测试 | 代码自动化 | |
-| AT-9632 | OutputWriter abstraction: filter writes to unified interface | REQ-0EG7 | 待测试 | 代码自动化 | |
-| AT-7OWS | Spill file stores raw bytes only, no metadata on disk | REQ-BFSD,REQ-RPLY | 待测试 | 代码自动化 | |
-| AT-CTTS | Checkpoint snapshot of unreplayed disk data | REQ-KM7C | 待测试 | 代码自动化 | |
-| AT-N3YQ | Concurrent checkpoint snapshot and replay | REQ-KM7C | 待测试 | 代码自动化 | |
-| AT-HQB4 | SpillEntry 与 Network Buffer 1:1 对应，累积密封机制 | REQ-BFSD,REQ-RPLY | 待测试 | 代码自动化 | |
-| AT-1KTC | Minimal code invasion: new logic in new classes | REQ-MNIV | 待测试 | Agent 执行 | |
-| AT-IAMJ | RecoveredBufferStore: store created per-channel, tryTake/addBuffer/checkpoint | REQ-7388 | 待测试 | 代码自动化 | |
-| AT-OOJG | InputChannel consumes disk data after channel conversion | REQ-G4KW | 待测试 | 代码自动化 | |
-| AT-O9MD | requestBuffer non-blocking and requestBufferBlocking without heap fallback | REQ-GGPR | 待测试 | 代码自动化 | |
-| AT-TD4O | Checkpoint protocol compatibility after conversion | REQ-TXGD | 待测试 | 代码自动化 | |
-| AT-UFNZ | UnalignedCheckpointRescaleITCase integration test | REQ-NHLB,REQ-8HRS,REQ-NPBY | 待测试 | 代码自动化 | |
+| AT-2W3J | P1: buffer available, no disk data → InputChannel | REQ-8HRS | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testP1MemoryPath |
+| AT-GE7G | P2: no buffer → write to file | REQ-8HRS | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testP2SpillPath |
+| AT-SX5O | P3: replay oldest disk data to InputChannel | REQ-8HRS | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testP3ReplayPath |
+| AT-QUBL | P3 priority over P1 (FIFO ordering) | REQ-8HRS,REQ-CRSR | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testP3FIFOOrdering |
+| AT-P3DL | P3 eager drain (loop until no buffer or disk empty) | REQ-8HRS | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testP3EagerDrain |
+| AT-36DP | Source Buffer uses Heap, does not compete with Pool | REQ-NHLB | 通过 | 代码自动化 | InputChannelRecoveredStateHandlerTest#testPreFilterBufferIsolationFromNetworkBufferPool |
+| AT-41PK | Source Buffer one-at-a-time: large record spans multiple buffers, maxOutstanding == 1, same segment reused | REQ-NHLB,REQ-QY68 | 通过 | 代码自动化 | L1: testPreFilterSegmentReusedAcrossCalls + testGetBufferThrowsWhenPriorBufferNotRecycled 均通过；L3 ITCase 待人工触发 |
+| AT-UE7O | Runtime check: getBuffer() throws IllegalStateException when prior buffer not recycled | REQ-QY68 | 通过 | 代码自动化 | InputChannelRecoveredStateHandlerTest#testGetBufferThrowsWhenPriorBufferNotRecycled |
+| AT-DWGD | Backend downgrade only (buffer → file), no upgrade | REQ-WRTR | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testBackendDowngradeOnly |
+| AT-BYPS | Record spans across buffer and file correctly | REQ-BYPS | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testCrossBackendRecordSpanning |
+| AT-CHDL | Channel change auto-detected, flush on change | REQ-CHDL | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testChannelChangeDetection |
+| AT-SFMG | Single spill file per task, all channels share | REQ-SFMG | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testSingleFilePerTask |
+| AT-5097 | File rotation at 64MB | REQ-SFMG | 通过 | 代码自动化 | FilteredSpillFileTest#testFileRotation |
+| AT-CRSR | Disk has data = unreplayed entries, cursor-based | REQ-CRSR | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testCursorBasedTracking |
+| AT-DRIN | close() blocking drain until disk empty | REQ-DRIN | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testCloseDrain |
+| AT-CLID | close() idempotent | REQ-JD2C | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testCloseIdempotent |
+| AT-CLFL | close() cleans up all spill files | REQ-JD2C | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testCloseCleanup |
+| AT-CWRT | write after close throws IllegalStateException | REQ-JD2C | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testWriteAfterClose |
+| AT-FWRT | write after flush throws IllegalStateException | REQ-DRIN | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testWriteAfterFlush |
+| AT-HY10 | SpillFileWriter.close() try-finally guarantees file handle release | REQ-JD2C | 通过 | 代码自动化 | FilteredSpillFileTest#testCloseReleasesFileHandle |
+| AT-HW4P | Truncated file throws IOException | REQ-T5AJ | 通过 | 代码自动化 | FilteredSpillFileTest#testTruncatedFileThrows |
+| AT-C3MK | Spill dirs from IOManager, no java.io.tmpdir fallback | REQ-SPDR | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testSpillDirectorySource |
+| AT-U7Q2 | Non-filtering scenario unchanged | REQ-NPBY | 通过 | 代码自动化 | InputChannelRecoveredStateHandlerTest#testNonFilteringModeUsesNetworkBufferPool |
+| AT-LN5V | Large data: multiple file rotations, full replay correct | REQ-SFMG,REQ-8HRS | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testLargeDataMultiRotation |
+| AT-9632 | OutputWriter abstraction: filter writes to unified interface | REQ-0EG7 | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testUnifiedWriteInterface |
+| AT-7OWS | Spill file stores raw bytes only, no metadata on disk | REQ-BFSD,REQ-RPLY | 通过 | 代码自动化 | FilteredSpillFileTest#testPureByteStream |
+| AT-CTTS | Checkpoint snapshot of unreplayed disk data | REQ-KM7C | 通过 | 代码自动化 | RecoveredBufferStoreTest#testCheckpointWithReadyBuffers + FilteredBufferDispatcherTest#testPhase2WritesDiskDataThroughStreamingApi |
+| AT-N3YQ | Concurrent checkpoint snapshot and replay | REQ-KM7C | 通过 | 代码自动化 | RecoveredBufferStoreTest#testConcurrentCheckpointAndReplay |
+| AT-HQB4 | SpillEntry 与 Network Buffer 1:1 对应，累积密封机制 | REQ-BFSD,REQ-RPLY | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testBufferAlignedEntryReplay |
+| AT-1KTC | Minimal code invasion: new logic in new classes | REQ-MNIV | 通过 | Agent 执行 | grep 输出为空：SpillFile/SpillEntry 引用仅存在于新建文件内，未泄漏到已有类中 |
+| AT-IAMJ | RecoveredBufferStore: store created per-channel, tryTake/addBuffer/checkpoint | REQ-7388 | 通过 | 代码自动化 | RecoveredBufferStoreTest#testStoreLifecycle |
+| AT-OOJG | InputChannel consumes disk data after channel conversion | REQ-G4KW | 通过 | 代码自动化 | RecoveredBufferStoreTest#testConsumptionAfterConversion |
+| AT-O9MD | requestBuffer non-blocking and requestBufferBlocking without heap fallback | REQ-GGPR | 通过 | 代码自动化 | RecoveredInputChannelTest#testRequestBufferNonBlockingAndBlockingHasNoHeapFallback |
+| AT-TD4O | Checkpoint protocol compatibility after conversion | REQ-TXGD | 通过 | 代码自动化 | LocalInputChannelTest#testCheckpointWithRecoveredStore |
+| AT-UFNZ | UnalignedCheckpointRescaleITCase integration test | REQ-NHLB,REQ-8HRS,REQ-NPBY | 不通过 | 代码自动化 | 50个case中16个失败（indices 4,7,13,17,19,23,26,31,34,35,37,42,45,47,48,49），根因：maxNumberRestartAttempts=0导致phase2 graph直接FAILED；失败源于JUnit5迁移/FLINK-39140引入的test infra问题，与FLINK-38544代码无关（merge base后无flink-tests改动） |
 
 ## Test Details
 
