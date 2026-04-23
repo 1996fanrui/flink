@@ -26,7 +26,6 @@ import org.apache.flink.runtime.state.ResultSubpartitionStateHandle;
 import org.apache.flink.util.CloseableIterator;
 
 import java.io.Closeable;
-import java.io.InputStream;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
@@ -126,22 +125,16 @@ public interface ChannelStateWriter extends Closeable {
             CloseableIterator<Buffer> data);
 
     /**
-     * Add input data from an InputStream for checkpoint, used for streaming disk-backed spill data
-     * directly to checkpoint storage without consuming Network Buffer Pool or heap buffer.
+     * Add spilled input data for checkpoint by draining chunks from spill-file Readers. Used by
+     * the dispatcher after all ready buffers have been snapshotted and the checkpoint wait-set is
+     * empty. The iterator is closed by the implementation when drain is complete.
      *
      * @param checkpointId checkpoint identifier
-     * @param info input channel info
-     * @param startSeqNum start sequence number
-     * @param data InputStream containing the data to checkpoint
-     * @param dataLength exact number of bytes to read from the InputStream
+     * @param chunks iterator over {@link FilteredSpillFile.Chunk}s ordered by channel; closed by
+     *     the implementation
      */
-    void addInputData(
-            long checkpointId,
-            InputChannelInfo info,
-            int startSeqNum,
-            InputStream data,
-            int dataLength)
-            throws IllegalArgumentException;
+    void addInputDataFromSpill(
+            long checkpointId, CloseableIterator<FilteredSpillFile.Chunk> chunks);
 
     /**
      * Add in-flight buffers from the {@link
@@ -224,12 +217,13 @@ public interface ChannelStateWriter extends Closeable {
                 CloseableIterator<Buffer> data) {}
 
         @Override
-        public void addInputData(
-                long checkpointId,
-                InputChannelInfo info,
-                int startSeqNum,
-                InputStream data,
-                int dataLength) {}
+        public void addInputDataFromSpill(
+                long checkpointId, CloseableIterator<FilteredSpillFile.Chunk> chunks) {
+            try {
+                chunks.close();
+            } catch (Exception ignored) {
+            }
+        }
 
         @Override
         public void addOutputData(

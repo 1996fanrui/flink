@@ -31,7 +31,6 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
-import java.io.InputStream;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -235,22 +234,18 @@ abstract class ChannelStateWriteRequest {
                 throwable -> iterator.close());
     }
 
-    static ChannelStateWriteRequest buildStreamingWriteRequest(
+    static ChannelStateWriteRequest buildSpillWriteRequest(
             JobVertexID jobVertexID,
             int subtaskIndex,
             long checkpointId,
-            InputChannelInfo info,
-            InputStream data,
-            int dataLength) {
+            CloseableIterator<FilteredSpillFile.Chunk> chunks) {
         return new CheckpointInProgressRequest(
-                "writeInputStreaming",
+                "writeInputFromSpill",
                 jobVertexID,
                 subtaskIndex,
                 checkpointId,
-                writer ->
-                        writer.writeInputStreaming(
-                                jobVertexID, subtaskIndex, info, data, dataLength),
-                throwable -> data.close());
+                writer -> writer.writeInputFromSpill(jobVertexID, subtaskIndex, chunks),
+                throwable -> chunks.close());
     }
 
     static void checkBufferIsBuffer(Buffer buffer) {

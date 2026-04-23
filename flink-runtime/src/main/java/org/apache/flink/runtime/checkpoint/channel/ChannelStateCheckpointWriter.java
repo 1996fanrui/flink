@@ -26,6 +26,7 @@ import org.apache.flink.runtime.state.AbstractChannelStateHandle.StateContentMet
 import org.apache.flink.runtime.state.CheckpointStateOutputStream;
 import org.apache.flink.runtime.state.CheckpointStreamFactory;
 import org.apache.flink.runtime.state.StreamStateHandle;
+import org.apache.flink.util.CloseableIterator;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.function.RunnableWithException;
 
@@ -37,7 +38,6 @@ import javax.annotation.concurrent.NotThreadSafe;
 
 import java.io.DataOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -182,19 +182,21 @@ class ChannelStateCheckpointWriter {
     }
 
     /**
-     * Write input channel state from an InputStream directly to the checkpoint DataOutputStream.
-     * Format is compatible with existing read path: [4-byte length prefix][data bytes].
+     * Writes spilled input channel state chunks to the checkpoint DataOutputStream. Each chunk is
+     * written as [4-byte length prefix][data bytes], matching the format of the buffer-based path.
      *
-     * <p>Uses a small temporary byte array for streaming, no Network Buffer Pool or heap buffer
-     * allocation.
+     * <p>Iterates over all chunks from the iterator, grouping consecutive chunks of the same
+     * channel into a single offset entry. The iterator is closed when done.
      */
-    void writeInputStreaming(
+    void writeInputFromSpill(
             JobVertexID jobVertexID,
             int subtaskIndex,
-            InputChannelInfo info,
-            InputStream data,
-            int dataLength) {
+            CloseableIterator<FilteredSpillFile.Chunk> chunks) {
         if (isDone()) {
+            try {
+                chunks.close();
+            } catch (Exception ignored) {
+            }
             return;
         }
         ChannelStatePendingResult pendingResult =
@@ -202,29 +204,22 @@ class ChannelStateCheckpointWriter {
         runWithChecks(
                 () -> {
                     checkState(!pendingResult.isAllInputsReceived());
-                    long offset = checkpointStream.getPos();
-                    // Write 4-byte length prefix, identical to serializer.writeData() format
-                    dataStream.writeInt(dataLength);
-                    // Stream data using a small temporary buffer
-                    byte[] buf = new byte[8192];
-                    int remaining = dataLength;
-                    while (remaining > 0) {
-                        int toRead = Math.min(buf.length, remaining);
-                        int read = data.read(buf, 0, toRead);
-                        if (read == -1) {
-                            throw new IOException(
-                                    "Unexpected end of InputStream: expected "
-                                            + remaining
-                                            + " more bytes");
+                    try {
+                        while (chunks.hasNext()) {
+                            FilteredSpillFile.Chunk chunk = chunks.next();
+                            InputChannelInfo info = chunk.getChannelInfo();
+                            long offset = checkpointStream.getPos();
+                            dataStream.writeInt(chunk.getLength());
+                            dataStream.write(chunk.getData(), 0, chunk.getLength());
+                            long size = checkpointStream.getPos() - offset;
+                            pendingResult
+                                    .getInputChannelOffsets()
+                                    .computeIfAbsent(info, unused -> new StateContentMetaInfo())
+                                    .withDataAdded(offset, size);
                         }
-                        dataStream.write(buf, 0, read);
-                        remaining -= read;
+                    } finally {
+                        chunks.close();
                     }
-                    long size = checkpointStream.getPos() - offset;
-                    pendingResult
-                            .getInputChannelOffsets()
-                            .computeIfAbsent(info, unused -> new StateContentMetaInfo())
-                            .withDataAdded(offset, size);
                 });
     }
 

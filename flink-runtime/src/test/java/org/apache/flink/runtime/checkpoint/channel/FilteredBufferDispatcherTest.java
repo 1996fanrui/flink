@@ -23,6 +23,7 @@ import org.apache.flink.runtime.io.network.buffer.FreeingBufferRecycler;
 import org.apache.flink.runtime.io.network.buffer.NetworkBuffer;
 import org.apache.flink.runtime.io.network.partition.consumer.ChannelCheckpointStartedListener;
 import org.apache.flink.runtime.io.network.partition.consumer.RecoveredBufferStoreImpl;
+import org.apache.flink.util.CloseableIterator;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -30,7 +31,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -896,8 +896,8 @@ class FilteredBufferDispatcherTest {
     // -----------------------------------------------------------------------------------------
 
     /**
-     * A recording ChannelStateWriter that captures addInputData(InputStream) calls for assertions.
-     * Does not implement blocking I/O — records calls synchronously for test verification.
+     * A recording ChannelStateWriter that captures addInputDataFromSpill calls for assertions.
+     * Drains the chunk iterator synchronously so tests can assert on actual bytes and channel info.
      */
     private static class RecordingChannelStateWriter
             extends ChannelStateWriter.NoOpChannelStateWriter {
@@ -905,19 +905,12 @@ class FilteredBufferDispatcherTest {
         static class Call {
             final long checkpointId;
             final InputChannelInfo info;
-            final int startSeqNum;
             final int dataLength;
             final byte[] capturedBytes;
 
-            Call(
-                    long checkpointId,
-                    InputChannelInfo info,
-                    int startSeqNum,
-                    int dataLength,
-                    byte[] capturedBytes) {
+            Call(long checkpointId, InputChannelInfo info, int dataLength, byte[] capturedBytes) {
                 this.checkpointId = checkpointId;
                 this.info = info;
-                this.startSeqNum = startSeqNum;
                 this.dataLength = dataLength;
                 this.capturedBytes = capturedBytes;
             }
@@ -926,27 +919,24 @@ class FilteredBufferDispatcherTest {
         final List<Call> inputDataCalls = new ArrayList<>();
 
         @Override
-        public void addInputData(
-                long checkpointId,
-                InputChannelInfo info,
-                int startSeqNum,
-                InputStream data,
-                int dataLength) {
-            // Read the stream eagerly so we can assert on the actual bytes
-            byte[] bytes = new byte[dataLength];
+        public void addInputDataFromSpill(
+                long checkpointId, CloseableIterator<FilteredSpillFile.Chunk> chunks) {
             try {
-                int read = 0;
-                while (read < dataLength) {
-                    int n = data.read(bytes, read, dataLength - read);
-                    if (n < 0) {
-                        break;
-                    }
-                    read += n;
+                while (chunks.hasNext()) {
+                    FilteredSpillFile.Chunk chunk = chunks.next();
+                    byte[] bytes = new byte[chunk.getLength()];
+                    System.arraycopy(chunk.getData(), 0, bytes, 0, chunk.getLength());
+                    inputDataCalls.add(
+                            new Call(
+                                    checkpointId,
+                                    chunk.getChannelInfo(),
+                                    chunk.getLength(),
+                                    bytes));
                 }
-            } catch (IOException e) {
+                chunks.close();
+            } catch (Exception e) {
                 throw new RuntimeException(e);
             }
-            inputDataCalls.add(new Call(checkpointId, info, startSeqNum, dataLength, bytes));
         }
     }
 
@@ -984,14 +974,12 @@ class FilteredBufferDispatcherTest {
         RecordingChannelStateWriter.Call call0 = recordingWriter.inputDataCalls.get(0);
         assertThat(call0.checkpointId).isEqualTo(checkpointId);
         assertThat(call0.info).isEqualTo(ch0);
-        assertThat(call0.startSeqNum).isEqualTo(ChannelStateWriter.SEQUENCE_NUMBER_RESTORED);
         assertThat(call0.dataLength).isEqualTo(SEGMENT_SIZE);
         assertThat(call0.capturedBytes).isEqualTo(d0);
 
         RecordingChannelStateWriter.Call call1 = recordingWriter.inputDataCalls.get(1);
         assertThat(call1.checkpointId).isEqualTo(checkpointId);
         assertThat(call1.info).isEqualTo(ch1);
-        assertThat(call1.startSeqNum).isEqualTo(ChannelStateWriter.SEQUENCE_NUMBER_RESTORED);
         assertThat(call1.dataLength).isEqualTo(SEGMENT_SIZE);
         assertThat(call1.capturedBytes).isEqualTo(d1);
 

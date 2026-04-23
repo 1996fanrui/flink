@@ -30,6 +30,7 @@ import org.apache.flink.runtime.state.StreamStateHandle;
 import org.apache.flink.runtime.state.filesystem.FsCheckpointStreamFactory;
 import org.apache.flink.runtime.state.memory.MemCheckpointStreamFactory.MemoryCheckpointOutputStream;
 import org.apache.flink.testutils.junit.utils.TempDirUtils;
+import org.apache.flink.util.CloseableIterator;
 import org.apache.flink.util.function.RunnableWithException;
 
 import org.junit.jupiter.api.Test;
@@ -37,12 +38,10 @@ import org.junit.jupiter.api.io.TempDir;
 
 import javax.annotation.Nullable;
 
-import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.file.Path;
 import java.util.Collections;
 import java.util.HashMap;
@@ -413,13 +412,12 @@ class ChannelStateCheckpointWriterTest {
     }
 
     @Test
-    void testStreamingWriteFormatCompatibility() throws Exception {
-        // Verify that data written via the streaming path produces the same byte format
-        // as data written via the existing buffer-based path: [4-byte length][data bytes].
+    void testSpillWriteFormatCompatibility() throws Exception {
+        // Verify that data written via writeInputFromSpill produces the same byte format
+        // as data written via the buffer-based path: [4-byte length][data bytes].
         byte[] testData = getData(100);
-        InputChannelInfo channelInfo = new InputChannelInfo(0, 0);
 
-        // Write via buffer-based path using a ByteArrayOutputStream to capture raw bytes
+        // Build expected output via buffer-based path
         ByteArrayOutputStream bufferRawStream = new ByteArrayOutputStream();
         DataOutputStream bufferDataStream = new DataOutputStream(bufferRawStream);
         ChannelStateSerializerImpl serializer = new ChannelStateSerializerImpl();
@@ -435,23 +433,21 @@ class ChannelStateCheckpointWriterTest {
         bufferDataStream.flush();
         byte[] bufferPathOutput = bufferRawStream.toByteArray();
 
-        // Write via streaming path using the same ByteArrayOutputStream approach
-        ByteArrayOutputStream streamingRawStream = new ByteArrayOutputStream();
-        DataOutputStream streamingDataStream = new DataOutputStream(streamingRawStream);
-        serializer.writeHeader(streamingDataStream);
-        // Manually replicate what writeInputStreaming does: [4-byte length][data bytes]
-        streamingDataStream.writeInt(testData.length);
-        streamingDataStream.write(testData);
-        streamingDataStream.flush();
-        byte[] streamingPathOutput = streamingRawStream.toByteArray();
+        // Build expected output via spill path: [4-byte length][data bytes]
+        ByteArrayOutputStream spillRawStream = new ByteArrayOutputStream();
+        DataOutputStream spillDataStream = new DataOutputStream(spillRawStream);
+        serializer.writeHeader(spillDataStream);
+        spillDataStream.writeInt(testData.length);
+        spillDataStream.write(testData);
+        spillDataStream.flush();
+        byte[] spillPathOutput = spillRawStream.toByteArray();
 
-        // Both paths must produce identical byte output
-        assertThat(streamingPathOutput).isEqualTo(bufferPathOutput);
+        assertThat(spillPathOutput).isEqualTo(bufferPathOutput);
     }
 
     @Test
-    void testStreamingWriteViaWriter() throws Exception {
-        // Verify end-to-end that writeInputStreaming produces the correct state handle
+    void testSpillWriteViaWriter() throws Exception {
+        // Verify end-to-end that writeInputFromSpill produces the correct state handle
         // with proper offsets and state size.
         byte[] testData = getData(100);
         InputChannelInfo channelInfo = new InputChannelInfo(0, 0);
@@ -464,29 +460,29 @@ class ChannelStateCheckpointWriterTest {
         bufferWriter.completeInput(JOB_VERTEX_ID, SUBTASK_INDEX);
         bufferWriter.completeOutput(JOB_VERTEX_ID, SUBTASK_INDEX);
 
-        // Write via streaming path
-        ChannelStateWriteResult streamingResult = new ChannelStateWriteResult();
-        ChannelStateCheckpointWriter streamingWriter =
-                createWriter(streamingResult, new MemoryCheckpointOutputStream(4096));
-        InputStream inputStream = new ByteArrayInputStream(testData);
-        streamingWriter.writeInputStreaming(
-                JOB_VERTEX_ID, SUBTASK_INDEX, channelInfo, inputStream, testData.length);
-        streamingWriter.completeInput(JOB_VERTEX_ID, SUBTASK_INDEX);
-        streamingWriter.completeOutput(JOB_VERTEX_ID, SUBTASK_INDEX);
+        // Write via spill path using a single chunk
+        ChannelStateWriteResult spillResult = new ChannelStateWriteResult();
+        ChannelStateCheckpointWriter spillWriter =
+                createWriter(spillResult, new MemoryCheckpointOutputStream(4096));
+        FilteredSpillFile.Chunk chunk =
+                new FilteredSpillFile.Chunk(channelInfo, testData, testData.length);
+        spillWriter.writeInputFromSpill(
+                JOB_VERTEX_ID, SUBTASK_INDEX, CloseableIterator.ofElements(ignored -> {}, chunk));
+        spillWriter.completeInput(JOB_VERTEX_ID, SUBTASK_INDEX);
+        spillWriter.completeOutput(JOB_VERTEX_ID, SUBTASK_INDEX);
 
         // Compare state handles: offsets and state sizes must match
         for (InputChannelStateHandle bufferHandle : bufferResult.inputChannelStateHandles.get()) {
-            for (InputChannelStateHandle streamingHandle :
-                    streamingResult.inputChannelStateHandles.get()) {
-                assertThat(streamingHandle.getOffsets()).isEqualTo(bufferHandle.getOffsets());
-                assertThat(streamingHandle.getStateSize()).isEqualTo(bufferHandle.getStateSize());
+            for (InputChannelStateHandle spillHandle : spillResult.inputChannelStateHandles.get()) {
+                assertThat(spillHandle.getOffsets()).isEqualTo(bufferHandle.getOffsets());
+                assertThat(spillHandle.getStateSize()).isEqualTo(bufferHandle.getStateSize());
             }
         }
     }
 
     @Test
-    void testStreamingWriteRecordsOffsets() throws Exception {
-        // Verify that the streaming write correctly records offsets and state size,
+    void testSpillWriteRecordsOffsets() throws Exception {
+        // Verify that writeInputFromSpill correctly records offsets and state size,
         // consistent with the buffer-based write.
         int numBytesPerWrite = 50;
         InputChannelInfo channelInfo = new InputChannelInfo(0, 0);
@@ -496,17 +492,15 @@ class ChannelStateCheckpointWriterTest {
                 createWriter(result, new MemoryCheckpointOutputStream(4096));
 
         byte[] data = getData(numBytesPerWrite);
-        InputStream inputStream = new ByteArrayInputStream(data);
-        writer.writeInputStreaming(
-                JOB_VERTEX_ID, SUBTASK_INDEX, channelInfo, inputStream, data.length);
+        FilteredSpillFile.Chunk chunk = new FilteredSpillFile.Chunk(channelInfo, data, data.length);
+        writer.writeInputFromSpill(
+                JOB_VERTEX_ID, SUBTASK_INDEX, CloseableIterator.ofElements(ignored -> {}, chunk));
         writer.completeInput(JOB_VERTEX_ID, SUBTASK_INDEX);
         writer.completeOutput(JOB_VERTEX_ID, SUBTASK_INDEX);
 
         for (InputChannelStateHandle handle : result.inputChannelStateHandles.get()) {
             int headerSize = Integer.BYTES;
             assertThat(handle.getOffsets()).isEqualTo(singletonList((long) headerSize));
-            // For in-memory state handles, extractAndMerge re-packages the data with a
-            // new header + length prefix, so stateSize = header + lengthPrefix + data.
             int lengthSize = Integer.BYTES;
             assertThat(handle.getStateSize()).isEqualTo(headerSize + lengthSize + numBytesPerWrite);
         }
