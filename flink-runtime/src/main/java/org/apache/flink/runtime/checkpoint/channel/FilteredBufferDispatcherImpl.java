@@ -259,15 +259,18 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
                     continue;
                 }
                 snapshots.add(reader.snapshot());
-                // Decrement pending for each entry being handed off to checkpoint
-                for (InputChannelInfo ch : reader.getPendingChannels()) {
+                // Drain the original reader so close() drain sees empty entries, and decrement
+                // the pending count once per entry (mirror of incrementPending in writeToSpillFile;
+                // must be per-entry to stay symmetric — getPendingChannels() would undercount when
+                // the same channel has multiple entries in one reader).
+                while (reader.hasEntries()) {
+                    InputChannelInfo ch = reader.peekNextChannel();
+                    reader.readNext();
                     RecoveredBufferStoreImpl store =
                             Preconditions.checkNotNull(
                                     storesByChannel.get(ch), "No store for channel %s", ch);
                     store.decrementPending();
                 }
-                // Drain the original reader so close() drain sees empty entries
-                drainReaderEntries(reader);
             }
         } catch (IOException e) {
             for (FilteredSpillFile.Reader snap : snapshots) {
@@ -402,16 +405,6 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
     /** Returns true if no spill entries have been written yet (P1 is safe). */
     private boolean isSpillIdle() {
         return spillFile == null || spillFile.isIdle();
-    }
-
-    /**
-     * Drains all remaining entries from a Reader without loading them, so that the Reader reports
-     * no pending entries after phase2 snapshot.
-     */
-    private void drainReaderEntries(FilteredSpillFile.Reader reader) throws IOException {
-        while (reader.hasEntries()) {
-            reader.readNext();
-        }
     }
 
     // -------------------------------------------------------------------------
