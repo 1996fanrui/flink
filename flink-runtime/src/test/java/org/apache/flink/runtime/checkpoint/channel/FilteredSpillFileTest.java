@@ -281,26 +281,52 @@ class FilteredSpillFileTest {
     }
 
     /**
-     * isIdle() becomes true again after every entry in every Reader has been consumed via
-     * readNext(). The reader file still exists on disk, but from the dispatcher's point of view
-     * there is no data pending delivery — P1 (direct buffer) is safe.
+     * isIdle() flips dynamically with the reader entry count: empty at start, non-idle after any
+     * write, stays non-idle while entries remain even if some are partially drained, idle again
+     * only after all entries have been consumed. Must behave consistently across multiple
+     * write / drain rounds.
      */
     @Test
-    void testIsIdleAgainAfterAllEntriesDrained() throws Exception {
+    void testIsIdleFlipsAcrossWriteDrainRounds() throws Exception {
         String[] spillDirs = {temporaryFolder.toString()};
         try (FilteredSpillFile writer =
                 new FilteredSpillFile(spillDirs, MEMORY_SEGMENT_SIZE)) {
+            // Initially idle
+            assertThat(writer.isIdle()).isTrue();
+
+            // --- Round 1: write 3 entries ---
             writer.writeEntry(new byte[] {1}, 1, CHANNEL_0);
             writer.writeEntry(new byte[] {2}, 1, CHANNEL_1);
+            writer.writeEntry(new byte[] {3}, 1, CHANNEL_0);
             assertThat(writer.isIdle()).isFalse();
 
-            // Drain all entries from all readers
-            for (FilteredSpillFile.Reader reader : writer.getReaders()) {
-                while (reader.hasEntries()) {
-                    reader.readNext();
-                }
-            }
+            FilteredSpillFile.Reader reader = writer.getReaders().get(0);
 
+            // Partial consume (1 of 3) — still not idle
+            reader.readNext();
+            assertThat(writer.isIdle()).isFalse();
+
+            // Another partial consume (2 of 3) — still not idle
+            reader.readNext();
+            assertThat(writer.isIdle()).isFalse();
+
+            // Consume last one — now idle
+            reader.readNext();
+            assertThat(reader.hasEntries()).isFalse();
+            assertThat(writer.isIdle()).isTrue();
+
+            // --- Round 2: write 2 more entries ---
+            writer.writeEntry(new byte[] {4}, 1, CHANNEL_1);
+            writer.writeEntry(new byte[] {5}, 1, CHANNEL_0);
+            assertThat(writer.isIdle()).isFalse();
+
+            // Partial consume (1 of 2) — still not idle
+            reader.readNext();
+            assertThat(writer.isIdle()).isFalse();
+
+            // Consume remainder — idle again
+            reader.readNext();
+            assertThat(reader.hasEntries()).isFalse();
             assertThat(writer.isIdle()).isTrue();
         }
     }
