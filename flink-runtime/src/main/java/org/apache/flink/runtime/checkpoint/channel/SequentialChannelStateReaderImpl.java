@@ -195,7 +195,7 @@ public class SequentialChannelStateReaderImpl implements SequentialChannelStateR
     }
 
     /**
-     * Creates a {@link FilteredBufferDispatcher} from the per-channel stores. Buffer suppliers are
+     * Creates a {@link FilteredBufferDispatcher} from the per-channel stores. The requester is
      * keyed by {@link InputChannelInfo} so each channel draws from its own pool.
      */
     private FilteredBufferDispatcher createFilteredBufferDispatcher(
@@ -210,36 +210,45 @@ public class SequentialChannelStateReaderImpl implements SequentialChannelStateR
         // Use the channelStateWriter from any channel (all channels share the same writer).
         RecoveredInputChannel anyChannel = channelMap.values().iterator().next();
 
-        FilteredBufferDispatcherImpl.BlockingFunction<InputChannelInfo, Buffer>
-                blockingBufferSupplier =
-                        info -> {
-                            RecoveredInputChannel ch = channelMap.get(info);
-                            if (ch == null) {
-                                throw new IllegalArgumentException(
-                                        "No RecoveredInputChannel for channelInfo: " + info);
-                            }
-                            return ch.requestBufferBlocking();
-                        };
-
         return new FilteredBufferDispatcherImpl(
                 storesByChannel,
                 anyChannel.getChannelStateWriter(),
                 spillDirs,
                 memorySegmentSize,
-                info -> {
-                    RecoveredInputChannel ch = channelMap.get(info);
-                    if (ch == null) {
-                        throw new IllegalArgumentException(
-                                "No RecoveredInputChannel for channelInfo: " + info);
-                    }
-                    try {
-                        return ch.requestBuffer();
-                    } catch (IOException e) {
-                        throw new RuntimeException(
-                                "Failed to request buffer from RecoveredInputChannel", e);
-                    }
-                },
-                blockingBufferSupplier);
+                new RecoveredChannelBufferRequester(channelMap));
+    }
+
+    /**
+     * {@link BufferRequester} backed by a {@link RecoveredInputChannel} map, routing each channel's
+     * request to its own exclusive buffer pool.
+     */
+    private static final class RecoveredChannelBufferRequester implements BufferRequester {
+
+        private final Map<InputChannelInfo, RecoveredInputChannel> channelMap;
+
+        RecoveredChannelBufferRequester(Map<InputChannelInfo, RecoveredInputChannel> channelMap) {
+            this.channelMap = channelMap;
+        }
+
+        @Override
+        public Buffer requestBuffer(InputChannelInfo channelInfo) throws IOException {
+            return lookup(channelInfo).requestBuffer();
+        }
+
+        @Override
+        public Buffer requestBufferBlocking(InputChannelInfo channelInfo)
+                throws InterruptedException, IOException {
+            return lookup(channelInfo).requestBufferBlocking();
+        }
+
+        private RecoveredInputChannel lookup(InputChannelInfo channelInfo) {
+            RecoveredInputChannel ch = channelMap.get(channelInfo);
+            if (ch == null) {
+                throw new IllegalArgumentException(
+                        "No RecoveredInputChannel for channelInfo: " + channelInfo);
+            }
+            return ch;
+        }
     }
 
     private Map<InputChannelInfo, RecoveredInputChannel> buildChannelMap(InputGate[] inputGates) {

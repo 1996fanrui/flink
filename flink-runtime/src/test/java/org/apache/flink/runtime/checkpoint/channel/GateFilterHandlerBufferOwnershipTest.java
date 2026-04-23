@@ -173,13 +173,24 @@ class GateFilterHandlerBufferOwnershipTest {
         storesByChannel.put(TARGET_CHANNEL, store);
 
         String[] spillDirs = new String[] {temporaryFolder.toString()};
+        BufferRequester newBufferPerRequest =
+                new BufferRequester() {
+                    @Override
+                    public Buffer requestBuffer(InputChannelInfo channelInfo) {
+                        return createEmptyBuffer();
+                    }
+
+                    @Override
+                    public Buffer requestBufferBlocking(InputChannelInfo channelInfo) {
+                        return createEmptyBuffer();
+                    }
+                };
         return new FilteredBufferDispatcherImpl(
                 storesByChannel,
                 ChannelStateWriter.NO_OP,
                 spillDirs,
                 BUFFER_SIZE,
-                info -> createEmptyBuffer(),
-                info -> createEmptyBuffer());
+                newBufferPerRequest);
     }
 
     private Buffer createBufferWithRecords(Long... values) {

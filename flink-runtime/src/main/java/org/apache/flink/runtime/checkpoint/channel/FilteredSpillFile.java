@@ -129,10 +129,10 @@ public final class FilteredSpillFile {
 
         /**
          * Appends {@code len} bytes from {@code data[off..off+len)} to the current spill file,
-         * registering an entry for {@code ci} in the current Reader. Lazily opens the first file;
+         * registering an entry for {@code channelInfo} in the current Reader. Lazily opens the first file;
          * rotates when the current file exceeds {@link #FILE_ROTATION_THRESHOLD}.
          */
-        public void writeEntry(byte[] data, int off, int len, InputChannelInfo ci)
+        public void writeEntry(byte[] data, int off, int len, InputChannelInfo channelInfo)
                 throws IOException {
             checkState(!finished, "writeEntry after finish");
             if (currentChannel == null) {
@@ -143,7 +143,7 @@ public final class FilteredSpillFile {
             long entryOffset = currentFileOffset;
             FileUtils.writeCompletely(currentChannel, ByteBuffer.wrap(data, off, len));
             currentFileOffset += len;
-            currentReader().addEntry(ci, entryOffset, len);
+            currentReader().addEntry(channelInfo, entryOffset, len);
         }
 
         /** Seals the last Reader. After finish, no more writeEntry calls are accepted. */
@@ -257,10 +257,10 @@ public final class FilteredSpillFile {
 
         // ---- Write side (called by Writer) ----
 
-        /** Registers an entry at {@code offset} with {@code length} bytes for {@code ci}. */
-        void addEntry(InputChannelInfo ci, long offset, int length) {
+        /** Registers an entry at {@code offset} with {@code length} bytes for {@code channelInfo}. */
+        void addEntry(InputChannelInfo channelInfo, long offset, int length) {
             checkState(!sealed, "addEntry after seal");
-            entries.addLast(new Entry(ci, offset, length));
+            entries.addLast(new Entry(channelInfo, offset, length));
         }
 
         /** Seals this Reader; no more addEntry calls are allowed after this point. */

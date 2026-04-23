@@ -152,8 +152,7 @@ class FilteredBufferDispatcherTest {
                         ChannelStateWriter.NO_OP,
                         spillDirs,
                         SEGMENT_SIZE,
-                        info -> pool.poll(),
-                        info -> pool.poll());
+                        new TestBufferPool(pool));
 
         byte[] data = createTestData(SEGMENT_SIZE, (byte) 0xAA);
         writer.write(data, data.length, ch0);
@@ -177,8 +176,7 @@ class FilteredBufferDispatcherTest {
                         ChannelStateWriter.NO_OP,
                         spillDirs,
                         SEGMENT_SIZE,
-                        info -> null,
-                        info -> drainPool.poll());
+                        TestBufferPool.drainOnly(drainPool));
 
         byte[] data = createTestData(SEGMENT_SIZE, (byte) 0xBB);
         writer.write(data, data.length, ch0);
@@ -207,8 +205,7 @@ class FilteredBufferDispatcherTest {
                         ChannelStateWriter.NO_OP,
                         spillDirs,
                         SEGMENT_SIZE,
-                        info -> pool.poll(),
-                        info -> pool.poll());
+                        new TestBufferPool(pool));
 
         // Write exactly SEGMENT_SIZE so the spill entry is auto-sealed
         byte[] data1 = createTestData(SEGMENT_SIZE, (byte) 0x11);
@@ -243,8 +240,7 @@ class FilteredBufferDispatcherTest {
                         ChannelStateWriter.NO_OP,
                         spillDirs,
                         SEGMENT_SIZE,
-                        info -> null,
-                        info -> drainPool.poll());
+                        TestBufferPool.drainOnly(drainPool));
 
         // Write to ch0 then ch1 — both spill to disk
         byte[] d0 = createTestData(SEGMENT_SIZE, (byte) 0x10);
@@ -272,8 +268,7 @@ class FilteredBufferDispatcherTest {
                         ChannelStateWriter.NO_OP,
                         spillDirs,
                         SEGMENT_SIZE,
-                        info -> pool.poll(),
-                        info -> pool.poll());
+                        new TestBufferPool(pool));
 
         // Spill 3 entries for ch0 (each exactly SEGMENT_SIZE so they auto-seal)
         for (int i = 0; i < 3; i++) {
@@ -314,8 +309,7 @@ class FilteredBufferDispatcherTest {
                         ChannelStateWriter.NO_OP,
                         spillDirs,
                         SEGMENT_SIZE,
-                        info -> pool.poll(),
-                        info -> drainPool.poll());
+                        new TestBufferPool(pool, drainPool));
 
         // Write data larger than one buffer — first SEGMENT_SIZE goes to buffer, rest to disk
         byte[] data = createTestData(SEGMENT_SIZE * 2, (byte) 0x44);
@@ -340,8 +334,7 @@ class FilteredBufferDispatcherTest {
                         ChannelStateWriter.NO_OP,
                         spillDirs,
                         SEGMENT_SIZE,
-                        info -> pool.poll(),
-                        info -> drainPool.poll());
+                        new TestBufferPool(pool, drainPool));
 
         // Write half a buffer
         byte[] part1 = createTestData(SEGMENT_SIZE / 2, (byte) 0x55);
@@ -373,8 +366,7 @@ class FilteredBufferDispatcherTest {
                         ChannelStateWriter.NO_OP,
                         spillDirs,
                         SEGMENT_SIZE,
-                        info -> pool.poll(),
-                        info -> pool.poll());
+                        new TestBufferPool(pool));
 
         // Write partial data to ch0
         byte[] d0 = createTestData(SEGMENT_SIZE / 2, (byte) 0x77);
@@ -405,8 +397,7 @@ class FilteredBufferDispatcherTest {
                         ChannelStateWriter.NO_OP,
                         spillDirs,
                         SEGMENT_SIZE,
-                        info -> null,
-                        info -> drainPool.poll());
+                        TestBufferPool.drainOnly(drainPool));
 
         byte[] d0 = createTestData(SEGMENT_SIZE, (byte) 0x99);
         byte[] d1 = createTestData(SEGMENT_SIZE, (byte) 0xAA);
@@ -430,8 +421,7 @@ class FilteredBufferDispatcherTest {
                         ChannelStateWriter.NO_OP,
                         spillDirs,
                         SEGMENT_SIZE,
-                        info -> pool.poll(),
-                        info -> pool.poll());
+                        new TestBufferPool(pool));
 
         // Spill 2 entries to ch0 (each exactly SEGMENT_SIZE so they auto-seal)
         byte[] d1 = createTestData(SEGMENT_SIZE, (byte) 0x01);
@@ -468,8 +458,7 @@ class FilteredBufferDispatcherTest {
                         ChannelStateWriter.NO_OP,
                         spillDirs,
                         SEGMENT_SIZE,
-                        info -> null,
-                        info -> drainPool.poll());
+                        TestBufferPool.drainOnly(drainPool));
 
         // Spill multiple entries
         for (int i = 0; i < 5; i++) {
@@ -501,8 +490,7 @@ class FilteredBufferDispatcherTest {
                         ChannelStateWriter.NO_OP,
                         spillDirs,
                         SEGMENT_SIZE,
-                        info -> pool.poll(),
-                        info -> pool.poll());
+                        new TestBufferPool(pool));
 
         writer.flush();
         writer.close();
@@ -520,8 +508,7 @@ class FilteredBufferDispatcherTest {
                         ChannelStateWriter.NO_OP,
                         spillDirs,
                         SEGMENT_SIZE,
-                        info -> null,
-                        info -> drainPool.poll());
+                        TestBufferPool.drainOnly(drainPool));
 
         byte[] data = createTestData(SEGMENT_SIZE * 3, (byte) 0xCC);
         writer.write(data, data.length, ch0);
@@ -552,8 +539,7 @@ class FilteredBufferDispatcherTest {
                         ChannelStateWriter.NO_OP,
                         spillDirs,
                         SEGMENT_SIZE,
-                        info -> pool.poll(),
-                        info -> pool.poll());
+                        new TestBufferPool(pool));
 
         writer.flush();
         writer.close();
@@ -573,8 +559,7 @@ class FilteredBufferDispatcherTest {
                         ChannelStateWriter.NO_OP,
                         spillDirs,
                         SEGMENT_SIZE,
-                        info -> pool.poll(),
-                        info -> pool.poll());
+                        new TestBufferPool(pool));
 
         writer.flush();
 
@@ -593,8 +578,7 @@ class FilteredBufferDispatcherTest {
                                         ChannelStateWriter.NO_OP,
                                         new String[0],
                                         SEGMENT_SIZE,
-                                        info -> null,
-                                        info -> null))
+                                        TestBufferPool.empty()))
                 .isInstanceOf(IOException.class);
     }
 
@@ -626,8 +610,7 @@ class FilteredBufferDispatcherTest {
                         ChannelStateWriter.NO_OP,
                         dirs,
                         segmentSize,
-                        info -> null,
-                        info -> drainPool.poll());
+                        TestBufferPool.drainOnly(drainPool));
 
         byte[][] expectedData = new byte[entryCount][];
         for (int i = 0; i < entryCount; i++) {
@@ -655,8 +638,7 @@ class FilteredBufferDispatcherTest {
                         ChannelStateWriter.NO_OP,
                         spillDirs,
                         SEGMENT_SIZE,
-                        info -> pool.poll(),
-                        info -> pool.poll());
+                        new TestBufferPool(pool));
 
         // The write method accepts data, length, channelInfo — this is the unified interface
         // used by filterAndRewrite. Verify it works for multiple channels.
@@ -682,8 +664,7 @@ class FilteredBufferDispatcherTest {
                         ChannelStateWriter.NO_OP,
                         spillDirs,
                         SEGMENT_SIZE,
-                        info -> null,
-                        info -> drainPool.poll());
+                        TestBufferPool.drainOnly(drainPool));
 
         // Write exactly 3 * SEGMENT_SIZE bytes — should create exactly 3 spill entries
         for (int i = 0; i < 3; i++) {
@@ -724,8 +705,7 @@ class FilteredBufferDispatcherTest {
                 ChannelStateWriter.NO_OP,
                 spillDirs,
                 SEGMENT_SIZE,
-                info -> pool.poll(),
-                info -> pool.poll());
+                new TestBufferPool(pool));
 
         // Both stores must have had setCheckpointListener called exactly once with a non-null
         // listener.
@@ -749,8 +729,7 @@ class FilteredBufferDispatcherTest {
                         ChannelStateWriter.NO_OP,
                         spillDirs,
                         SEGMENT_SIZE,
-                        info -> null,
-                        info -> drainPool.poll());
+                        TestBufferPool.drainOnly(drainPool));
 
         byte[] d0 = createTestData(SEGMENT_SIZE, (byte) 0x10);
         byte[] d1 = createTestData(SEGMENT_SIZE, (byte) 0x20);
@@ -778,8 +757,7 @@ class FilteredBufferDispatcherTest {
                         ChannelStateWriter.NO_OP,
                         spillDirs,
                         SEGMENT_SIZE,
-                        info -> null,
-                        info -> drainPool.poll());
+                        TestBufferPool.drainOnly(drainPool));
 
         // Spill entries for both channels.
         writer.write(createTestData(SEGMENT_SIZE, (byte) 0x30), SEGMENT_SIZE, ch0);
@@ -820,8 +798,7 @@ class FilteredBufferDispatcherTest {
                         ChannelStateWriter.NO_OP,
                         spillDirs,
                         SEGMENT_SIZE,
-                        info -> null,
-                        info -> drainPool.poll());
+                        TestBufferPool.drainOnly(drainPool));
 
         // Only ch0 spills; ch1 has no entries in the queue.
         writer.write(createTestData(SEGMENT_SIZE, (byte) 0x50), SEGMENT_SIZE, ch0);
@@ -848,8 +825,7 @@ class FilteredBufferDispatcherTest {
                         ChannelStateWriter.NO_OP,
                         spillDirs,
                         SEGMENT_SIZE,
-                        info -> null,
-                        info -> drainPool.poll());
+                        TestBufferPool.drainOnly(drainPool));
 
         writer.write(createTestData(SEGMENT_SIZE, (byte) 0x70), SEGMENT_SIZE, ch0);
         writer.flush();
@@ -875,8 +851,7 @@ class FilteredBufferDispatcherTest {
                         ChannelStateWriter.NO_OP,
                         spillDirs,
                         SEGMENT_SIZE,
-                        info -> null,
-                        info -> drainPool.poll());
+                        TestBufferPool.drainOnly(drainPool));
 
         writer.write(createTestData(SEGMENT_SIZE, (byte) 0x80), SEGMENT_SIZE, ch0);
         writer.flush();
@@ -954,8 +929,7 @@ class FilteredBufferDispatcherTest {
                         recordingWriter,
                         spillDirs,
                         SEGMENT_SIZE,
-                        info -> null,
-                        info -> null);
+                        TestBufferPool.empty());
 
         byte[] d0 = createTestData(SEGMENT_SIZE, (byte) 0xA1);
         byte[] d1 = createTestData(SEGMENT_SIZE, (byte) 0xA2);
@@ -998,8 +972,7 @@ class FilteredBufferDispatcherTest {
                         ChannelStateWriter.NO_OP,
                         spillDirs,
                         SEGMENT_SIZE,
-                        info -> null,
-                        info -> null);
+                        TestBufferPool.empty());
 
         // Spill 2 entries for ch0, 1 for ch1 — each exactly SEGMENT_SIZE so they auto-seal
         writer.write(createTestData(SEGMENT_SIZE, (byte) 0xB1), SEGMENT_SIZE, ch0);
@@ -1031,18 +1004,27 @@ class FilteredBufferDispatcherTest {
      */
     @Test
     void testCloseDrainAfterPhase2IsNoOp() throws Exception {
-        // blockingBufferSupplier throws if called — proves close() drain does not run
+        // blocking request throws if called — proves close() drain does not run
+        BufferRequester throwingOnBlocking =
+                new BufferRequester() {
+                    @Override
+                    public Buffer requestBuffer(InputChannelInfo channelInfo) {
+                        return null;
+                    }
+
+                    @Override
+                    public Buffer requestBufferBlocking(InputChannelInfo channelInfo) {
+                        throw new AssertionError(
+                                "requestBufferBlocking must not be called after phase2");
+                    }
+                };
         FilteredBufferDispatcherImpl writer =
                 new FilteredBufferDispatcherImpl(
                         stores,
                         ChannelStateWriter.NO_OP,
                         spillDirs,
                         SEGMENT_SIZE,
-                        info -> null,
-                        info -> {
-                            throw new AssertionError(
-                                    "blockingBufferSupplier must not be called after phase2");
-                        });
+                        throwingOnBlocking);
 
         writer.write(createTestData(SEGMENT_SIZE, (byte) 0xC1), SEGMENT_SIZE, ch0);
         writer.flush();
@@ -1050,7 +1032,7 @@ class FilteredBufferDispatcherTest {
         // Phase2 drains the queue
         writer.onChannelCheckpointStarted(55L, ch0);
 
-        // close() must not call blockingBufferSupplier (queue is empty)
+        // close() must not call the blocking requester (queue is empty)
         writer.close();
     }
 
@@ -1074,8 +1056,7 @@ class FilteredBufferDispatcherTest {
                         recordingWriter,
                         spillDirs,
                         SEGMENT_SIZE,
-                        info -> null,
-                        info -> partialPool.poll());
+                        TestBufferPool.drainOnly(partialPool));
 
         writer.write(createTestData(SEGMENT_SIZE, (byte) 0xD1), SEGMENT_SIZE, ch0);
         writer.write(createTestData(SEGMENT_SIZE, (byte) 0xD2), SEGMENT_SIZE, ch1);
