@@ -187,10 +187,6 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
         // Drain remaining spill entries into buffers via the blocking requester
         if (spillFile != null) {
             drainSpillThroughBuffers();
-        }
-
-        // Cleanup spill infrastructure (close() also deletes all spill files)
-        if (spillFile != null) {
             spillFile.close();
         }
 
@@ -214,7 +210,13 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
      */
     public synchronized void onChannelCheckpointStarted(
             long checkpointId, InputChannelInfo channelInfo) {
-        if (checkpointId != currentCheckpointId) {
+        if (checkpointId < currentCheckpointId) {
+            // Stale callback from a superseded checkpoint: we have already moved on to a newer
+            // one. Ignoring it keeps the current wait-set intact so the in-flight checkpoint
+            // converges correctly.
+            return;
+        }
+        if (checkpointId > currentCheckpointId) {
             // New checkpoint: rebuild the wait-set from channels with pending spill entries.
             // Invariant: checkpoint only starts after recovery ends (writer.finish()); all
             // Readers must already be sealed at this point.
@@ -230,6 +232,7 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
                 }
             }
         }
+        // checkpointId == currentCheckpointId: accumulate toward the same wait-set.
         waitSet.remove(channelInfo);
         if (waitSet.isEmpty()) {
             drainSpillEntriesToCheckpoint(checkpointId);
