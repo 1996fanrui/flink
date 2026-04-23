@@ -400,11 +400,17 @@ synchronized void checkpoint(ChannelStateWriter writer, long id, InputChannelInf
 **OutputWriter 侧**：
 ```java
 synchronized void onChannelCheckpointStarted(long id, InputChannelInfo info) {
-    if (id != currentCheckpointId) {
+    if (id < currentCheckpointId) {
+        // 旧 checkpoint 的迟到 callback —— 已被新 checkpoint 顶掉，直接忽略，
+        // 不能让它改掉当前活跃 checkpoint 的 wait-set。
+        return;
+    }
+    if (id > currentCheckpointId) {
         // 新 checkpoint，重算 wait-set（单 checkpoint 语义）
         currentCheckpointId = id;
         waitSet = extractChannelsWithPending(spillEntryQueue); // 扫描一次
     }
+    // id == currentCheckpointId：继续累积同一个 wait-set。
     waitSet.remove(info);
     if (waitSet.isEmpty()) {
         drainSpillEntriesToCheckpoint(id);
@@ -427,6 +433,8 @@ private void drainSpillEntriesToCheckpoint(long id) {
 **要点**：
 - Wait-set 在首个 callback 到达时扫描 `spillEntryQueue` 一次计算；之后 O(1) 移除。
 - 没有 pending entry 的 channel 不在 wait-set 里；它的 callback 直接"空跑"，不影响流程。
+- `id < currentCheckpointId` 的迟到 callback 必须忽略；`id > currentCheckpointId` 视为新 checkpoint
+  并重算 wait-set；`id == currentCheckpointId` 继续累积。
 - Callback 全部到位后，一次 `drainSpillEntriesToCheckpoint` 做顺序 I/O。
 - `ChannelStateWriter.addInputData(InputStream)` 走流式重载，读 I/O 在 writer 的 executor 线程，**不在
   Task 线程上做磁盘读**。
