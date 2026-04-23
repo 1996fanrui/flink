@@ -43,7 +43,7 @@ import static org.apache.flink.util.IOUtils.closeQuietly;
  *   <li><b>P1 (buffer)</b>: Data is written directly to a network buffer and delivered to the
  *       target store.
  *   <li><b>P2 (spill to disk)</b>: When no buffer is available, data is written to a spill file via
- *       {@link FilteredSpillFile.Writer#writeEntry}.
+ *       {@link FilteredSpillFile#writeEntry}.
  *   <li><b>P3 (eager drain)</b>: When buffers become available later, spilled entries are eagerly
  *       replayed from disk into buffers and delivered to stores.
  * </ul>
@@ -79,7 +79,7 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
     private InputChannelInfo cacheChannel;
 
     // Spill infrastructure (P2/P3 paths)
-    private FilteredSpillFile.Writer spillFileWriter;
+    private FilteredSpillFile spillFile;
 
     // Checkpoint wait-set state machine
     private long currentCheckpointId = -1L;
@@ -163,8 +163,8 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
             return;
         }
         flushCache();
-        if (spillFileWriter != null) {
-            spillFileWriter.finish();
+        if (spillFile != null) {
+            spillFile.finish();
         }
         flushed = true;
     }
@@ -178,21 +178,20 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
 
         if (!flushed) {
             flushCache();
-            if (spillFileWriter != null) {
-                spillFileWriter.finish();
+            if (spillFile != null) {
+                spillFile.finish();
             }
             flushed = true;
         }
 
         // Drain remaining spill entries into buffers via the blocking requester
-        if (spillFileWriter != null) {
+        if (spillFile != null) {
             drainSpillThroughBuffers();
         }
 
-        // Cleanup spill infrastructure
-        if (spillFileWriter != null) {
-            spillFileWriter.close();
-            spillFileWriter.deleteAllFiles();
+        // Cleanup spill infrastructure (close() also deletes all spill files)
+        if (spillFile != null) {
+            spillFile.close();
         }
 
         // Mark all stores as complete
@@ -216,14 +215,18 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
     public synchronized void onChannelCheckpointStarted(
             long checkpointId, InputChannelInfo channelInfo) {
         if (checkpointId != currentCheckpointId) {
-            // New checkpoint: rebuild the wait-set from channels with pending spill entries
+            // New checkpoint: rebuild the wait-set from channels with pending spill entries.
+            // Invariant: checkpoint only starts after recovery ends (writer.finish()); all
+            // Readers must already be sealed at this point.
             currentCheckpointId = checkpointId;
             waitSet = new HashSet<>();
-            if (spillFileWriter != null) {
-                for (FilteredSpillFile.Reader reader : spillFileWriter.getReaders()) {
-                    if (reader.isSealed()) {
-                        waitSet.addAll(reader.getPendingChannels());
-                    }
+            if (spillFile != null) {
+                for (FilteredSpillFile.Reader reader : spillFile.getReaders()) {
+                    Preconditions.checkState(
+                            reader.isSealed(),
+                            "Reader must be sealed when checkpoint starts; writer.finish() "
+                                    + "must be called before checkpoint trigger.");
+                    waitSet.addAll(reader.getPendingChannels());
                 }
             }
         }
@@ -240,24 +243,31 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
      * ChannelStateWriter. The iterator is responsible for closing the snapshot Readers.
      */
     private void drainSpillEntriesToCheckpoint(long checkpointId) {
-        if (spillFileWriter == null) {
+        if (spillFile == null) {
             return;
         }
         List<FilteredSpillFile.Reader> snapshots = new ArrayList<>();
         try {
-            for (FilteredSpillFile.Reader reader : spillFileWriter.getReaders()) {
-                if (reader.isSealed() && reader.hasEntries()) {
-                    snapshots.add(reader.snapshot());
-                    // Decrement pending for each entry being handed off to checkpoint
-                    for (InputChannelInfo ch : reader.getPendingChannels()) {
-                        RecoveredBufferStoreImpl store =
-                                Preconditions.checkNotNull(
-                                        storesByChannel.get(ch), "No store for channel %s", ch);
-                        store.decrementPending();
-                    }
-                    // Drain the original reader so close() drain sees empty entries
-                    drainReaderEntries(reader);
+            for (FilteredSpillFile.Reader reader : spillFile.getReaders()) {
+                // Invariant: checkpoint only runs after recovery ends (writer.finish()); every
+                // Reader is sealed at this point.
+                Preconditions.checkState(
+                        reader.isSealed(),
+                        "Reader must be sealed when draining spill entries to checkpoint; "
+                                + "writer.finish() must be called before checkpoint trigger.");
+                if (!reader.hasEntries()) {
+                    continue;
                 }
+                snapshots.add(reader.snapshot());
+                // Decrement pending for each entry being handed off to checkpoint
+                for (InputChannelInfo ch : reader.getPendingChannels()) {
+                    RecoveredBufferStoreImpl store =
+                            Preconditions.checkNotNull(
+                                    storesByChannel.get(ch), "No store for channel %s", ch);
+                    store.decrementPending();
+                }
+                // Drain the original reader so close() drain sees empty entries
+                drainReaderEntries(reader);
             }
         } catch (IOException e) {
             for (FilteredSpillFile.Reader snap : snapshots) {
@@ -279,14 +289,11 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
      * Only entries that have not been consumed by phase2 (drainSpillEntriesToCheckpoint) remain.
      */
     private void drainSpillThroughBuffers() throws IOException, InterruptedException {
-        for (FilteredSpillFile.Reader reader : spillFileWriter.getReaders()) {
+        for (FilteredSpillFile.Reader reader : spillFile.getReaders()) {
             while (reader.hasEntries()) {
                 InputChannelInfo ch = reader.peekNextChannel();
                 Buffer buffer = bufferRequester.requestBufferBlocking(ch);
                 FilteredSpillFile.Chunk chunk = reader.readNext();
-                if (chunk == null) {
-                    break;
-                }
                 writeChunkToBuffer(buffer, chunk.getData(), chunk.getLength());
                 RecoveredBufferStoreImpl store =
                         Preconditions.checkNotNull(
@@ -332,7 +339,7 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
         }
 
         // P2: spill writer not idle or no buffer available — write to spill file
-        writeToSpillFile(cache, 0, bytesToFlush, channelInfo);
+        writeToSpillFile(cache, bytesToFlush, channelInfo);
     }
 
     /**
@@ -350,13 +357,12 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
     }
 
     /** Writes bytes to the spill file, creating the Writer lazily if needed. */
-    private void writeToSpillFile(
-            byte[] data, int offset, int length, InputChannelInfo channelInfo)
+    private void writeToSpillFile(byte[] data, int length, InputChannelInfo channelInfo)
             throws IOException {
-        if (spillFileWriter == null) {
-            spillFileWriter = new FilteredSpillFile.Writer(spillDirs, memorySegmentSize);
+        if (spillFile == null) {
+            spillFile = new FilteredSpillFile(spillDirs, memorySegmentSize);
         }
-        spillFileWriter.writeEntry(data, offset, length, channelInfo);
+        spillFile.writeEntry(data, length, channelInfo);
         // Increment pending count so store.isEmpty() correctly reflects outstanding data
         RecoveredBufferStoreImpl store =
                 Preconditions.checkNotNull(
@@ -368,10 +374,10 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
 
     /** Eagerly replays spill entries while non-blocking buffers are available. */
     private void eagerDrain() throws IOException {
-        if (spillFileWriter == null) {
+        if (spillFile == null) {
             return;
         }
-        for (FilteredSpillFile.Reader reader : spillFileWriter.getReaders()) {
+        for (FilteredSpillFile.Reader reader : spillFile.getReaders()) {
             while (reader.hasEntries()) {
                 InputChannelInfo ch = reader.peekNextChannel();
                 Buffer buffer = bufferRequester.requestBuffer(ch);
@@ -395,7 +401,7 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
 
     /** Returns true if no spill entries have been written yet (P1 is safe). */
     private boolean isSpillIdle() {
-        return spillFileWriter == null || spillFileWriter.isIdle();
+        return spillFile == null || spillFile.isIdle();
     }
 
     /**

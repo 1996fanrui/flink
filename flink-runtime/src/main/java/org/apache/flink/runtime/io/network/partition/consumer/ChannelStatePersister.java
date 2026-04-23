@@ -132,19 +132,16 @@ public final class ChannelStatePersister {
                 knownBuffers.size(),
                 barrierId);
 
-        // Step 1: snapshot ready buffers and fire FilteredBufferDispatcher callback via
-        // store.checkpoint().
-        try {
-            store.checkpoint(channelStateWriter, barrierId, channelInfo);
-        } catch (IOException e) {
-            throw new CheckpointException(
-                    "Failed to checkpoint recovered store",
-                    CheckpointFailureReason.IO_EXCEPTION,
-                    e);
-        }
-
-        // Step 2: persist network inflight buffers (Remote only; Local always passes emptyList).
-        if (!knownBuffers.isEmpty()) {
+        if (!store.isEmpty()) {
+            try {
+                store.checkpoint(channelStateWriter, barrierId);
+            } catch (IOException e) {
+                throw new CheckpointException(
+                        "Failed to checkpoint recovered store",
+                        CheckpointFailureReason.IO_EXCEPTION,
+                        e);
+            }
+        } else if (!knownBuffers.isEmpty()) {
             channelStateWriter.addInputData(
                     barrierId,
                     channelInfo,

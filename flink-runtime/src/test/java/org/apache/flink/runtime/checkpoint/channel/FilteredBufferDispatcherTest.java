@@ -63,8 +63,8 @@ class FilteredBufferDispatcherTest {
     void setUp() {
         ch0 = new InputChannelInfo(0, 0);
         ch1 = new InputChannelInfo(0, 1);
-        store0 = new RecoveredBufferStoreImpl();
-        store1 = new RecoveredBufferStoreImpl();
+        store0 = new RecoveredBufferStoreImpl(ch0);
+        store1 = new RecoveredBufferStoreImpl(ch1);
         stores = new HashMap<>();
         stores.put(ch0, store0);
         stores.put(ch1, store1);
@@ -83,6 +83,10 @@ class FilteredBufferDispatcherTest {
     private static class TrackingBufferStore extends RecoveredBufferStoreImpl {
         private ChannelCheckpointStartedListener registeredCallback;
         private int setCheckpointListenerCount = 0;
+
+        TrackingBufferStore(InputChannelInfo channelInfo) {
+            super(channelInfo);
+        }
 
         @Override
         public synchronized void setCheckpointListener(ChannelCheckpointStartedListener listener) {
@@ -585,11 +589,11 @@ class FilteredBufferDispatcherTest {
     /** Enough data for 3+ file rotations. All replayed correctly. */
     @Test
     void testLargeDataMultiRotation() throws Exception {
-        // SpillFileWriter rotates at 64MB. Use small segments and many writes to trigger rotation.
-        // For testing, we write enough data to cause rotation. SpillFileWriter threshold is 64MB.
+        // FilteredSpillFile rotates at 64MB. Use small segments and many writes to trigger rotation.
+        // For testing, we write enough data to cause rotation. FilteredSpillFile threshold is 64MB.
         // We use a small segment size and write enough data to exceed 64MB.
         // To avoid enormous test data, we use a smaller approach:
-        // The rotation threshold in SpillFileWriter is 64*1024*1024.
+        // The rotation threshold in FilteredSpillFile is 64*1024*1024.
         // We need to write > 192MB of data for 3+ rotations.
         // For a unit test, this is too much. Instead, we verify the mechanism works
         // by writing enough data that results in multiple spill entries and verifying correctness.
@@ -693,8 +697,8 @@ class FilteredBufferDispatcherTest {
      */
     @Test
     void testCheckpointCallbackRegisteredOnConstruction() throws Exception {
-        TrackingBufferStore trackStore0 = new TrackingBufferStore();
-        TrackingBufferStore trackStore1 = new TrackingBufferStore();
+        TrackingBufferStore trackStore0 = new TrackingBufferStore(ch0);
+        TrackingBufferStore trackStore1 = new TrackingBufferStore(ch1);
         Map<InputChannelInfo, RecoveredBufferStoreImpl> trackStores = new HashMap<>();
         trackStores.put(ch0, trackStore0);
         trackStores.put(ch1, trackStore1);
@@ -785,8 +789,8 @@ class FilteredBufferDispatcherTest {
     @Test
     void testCallbackForChannelWithNoPendingEntryIsNoOp() throws Exception {
         // Use a fresh store map to avoid interference from previous tests
-        RecoveredBufferStoreImpl freshStore0 = new RecoveredBufferStoreImpl();
-        RecoveredBufferStoreImpl freshStore1 = new RecoveredBufferStoreImpl();
+        RecoveredBufferStoreImpl freshStore0 = new RecoveredBufferStoreImpl(ch0);
+        RecoveredBufferStoreImpl freshStore1 = new RecoveredBufferStoreImpl(ch1);
         Map<InputChannelInfo, RecoveredBufferStoreImpl> freshStores = new HashMap<>();
         freshStores.put(ch0, freshStore0);
         freshStores.put(ch1, freshStore1);

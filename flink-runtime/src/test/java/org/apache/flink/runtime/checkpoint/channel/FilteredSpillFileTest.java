@@ -26,13 +26,15 @@ import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Tests for {@link FilteredSpillFile.Writer}, {@link FilteredSpillFile.Reader}, and {@link
+ * Tests for {@link FilteredSpillFile}, {@link FilteredSpillFile.Reader}, and {@link
  * FilteredSpillFile.Chunk}.
  */
 class FilteredSpillFileTest {
@@ -52,9 +54,9 @@ class FilteredSpillFileTest {
         byte[] data = new byte[1024];
         random.nextBytes(data);
 
-        try (FilteredSpillFile.Writer writer =
-                new FilteredSpillFile.Writer(spillDirs, MEMORY_SEGMENT_SIZE)) {
-            writer.writeEntry(data, 0, data.length, CHANNEL_0);
+        try (FilteredSpillFile writer =
+                new FilteredSpillFile(spillDirs, MEMORY_SEGMENT_SIZE)) {
+            writer.writeEntry(data, data.length, CHANNEL_0);
             writer.finish();
 
             FilteredSpillFile.Reader reader = writer.getReaders().get(0);
@@ -75,10 +77,10 @@ class FilteredSpillFileTest {
         byte[] d0 = new byte[] {1, 2, 3, 4};
         byte[] d1 = new byte[] {5, 6, 7, 8};
 
-        try (FilteredSpillFile.Writer writer =
-                new FilteredSpillFile.Writer(spillDirs, MEMORY_SEGMENT_SIZE)) {
-            writer.writeEntry(d0, 0, d0.length, CHANNEL_0);
-            writer.writeEntry(d1, 0, d1.length, CHANNEL_1);
+        try (FilteredSpillFile writer =
+                new FilteredSpillFile(spillDirs, MEMORY_SEGMENT_SIZE)) {
+            writer.writeEntry(d0, d0.length, CHANNEL_0);
+            writer.writeEntry(d1, d1.length, CHANNEL_1);
             writer.finish();
 
             FilteredSpillFile.Reader reader = writer.getReaders().get(0);
@@ -118,10 +120,10 @@ class FilteredSpillFileTest {
             random.nextBytes(chunk);
         }
 
-        try (FilteredSpillFile.Writer writer =
-                new FilteredSpillFile.Writer(spillDirs, MEMORY_SEGMENT_SIZE)) {
+        try (FilteredSpillFile writer =
+                new FilteredSpillFile(spillDirs, MEMORY_SEGMENT_SIZE)) {
             for (int i = 0; i < numEntries; i++) {
-                writer.writeEntry(chunks[i], 0, MEMORY_SEGMENT_SIZE, CHANNEL_0);
+                writer.writeEntry(chunks[i], MEMORY_SEGMENT_SIZE, CHANNEL_0);
             }
             writer.finish();
 
@@ -144,12 +146,12 @@ class FilteredSpillFileTest {
     @Test
     void testCloseReleasesResources() throws Exception {
         String[] spillDirs = {temporaryFolder.toString()};
-        FilteredSpillFile.Writer writer =
-                new FilteredSpillFile.Writer(spillDirs, MEMORY_SEGMENT_SIZE);
-        writer.writeEntry(new byte[] {1, 2, 3}, 0, 3, CHANNEL_0);
+        FilteredSpillFile writer =
+                new FilteredSpillFile(spillDirs, MEMORY_SEGMENT_SIZE);
+        writer.writeEntry(new byte[] {1, 2, 3}, 3, CHANNEL_0);
         writer.close();
 
-        assertThatThrownBy(() -> writer.writeEntry(new byte[] {4}, 0, 1, CHANNEL_0))
+        assertThatThrownBy(() -> writer.writeEntry(new byte[] {4}, 1, CHANNEL_0))
                 .isInstanceOf(IllegalStateException.class);
     }
 
@@ -160,9 +162,9 @@ class FilteredSpillFileTest {
         byte[] data = new byte[1024];
         new Random(42).nextBytes(data);
 
-        try (FilteredSpillFile.Writer writer =
-                new FilteredSpillFile.Writer(spillDirs, MEMORY_SEGMENT_SIZE)) {
-            writer.writeEntry(data, 0, data.length, CHANNEL_0);
+        try (FilteredSpillFile writer =
+                new FilteredSpillFile(spillDirs, MEMORY_SEGMENT_SIZE)) {
+            writer.writeEntry(data, data.length, CHANNEL_0);
             writer.finish();
 
             // Truncate the spill file to half
@@ -185,9 +187,9 @@ class FilteredSpillFileTest {
             data[i] = (byte) i;
         }
 
-        try (FilteredSpillFile.Writer writer =
-                new FilteredSpillFile.Writer(spillDirs, MEMORY_SEGMENT_SIZE)) {
-            writer.writeEntry(data, 0, data.length, CHANNEL_0);
+        try (FilteredSpillFile writer =
+                new FilteredSpillFile(spillDirs, MEMORY_SEGMENT_SIZE)) {
+            writer.writeEntry(data, data.length, CHANNEL_0);
             writer.finish();
 
             FilteredSpillFile.Reader original = writer.getReaders().get(0);
@@ -216,12 +218,12 @@ class FilteredSpillFileTest {
     @Test
     void testAddEntryAfterSealThrows() throws Exception {
         String[] spillDirs = {temporaryFolder.toString()};
-        try (FilteredSpillFile.Writer writer =
-                new FilteredSpillFile.Writer(spillDirs, MEMORY_SEGMENT_SIZE)) {
-            writer.writeEntry(new byte[] {1}, 0, 1, CHANNEL_0);
+        try (FilteredSpillFile writer =
+                new FilteredSpillFile(spillDirs, MEMORY_SEGMENT_SIZE)) {
+            writer.writeEntry(new byte[] {1}, 1, CHANNEL_0);
             writer.finish();
             // Reader is sealed by finish(); addEntry via a new writeEntry after finish should throw
-            assertThatThrownBy(() -> writer.writeEntry(new byte[] {2}, 0, 1, CHANNEL_0))
+            assertThatThrownBy(() -> writer.writeEntry(new byte[] {2}, 1, CHANNEL_0))
                     .isInstanceOf(IllegalStateException.class);
         }
     }
@@ -230,10 +232,10 @@ class FilteredSpillFileTest {
     @Test
     void testPeekNextChannel() throws Exception {
         String[] spillDirs = {temporaryFolder.toString()};
-        try (FilteredSpillFile.Writer writer =
-                new FilteredSpillFile.Writer(spillDirs, MEMORY_SEGMENT_SIZE)) {
-            writer.writeEntry(new byte[] {1, 2}, 0, 2, CHANNEL_0);
-            writer.writeEntry(new byte[] {3, 4}, 0, 2, CHANNEL_1);
+        try (FilteredSpillFile writer =
+                new FilteredSpillFile(spillDirs, MEMORY_SEGMENT_SIZE)) {
+            writer.writeEntry(new byte[] {1, 2}, 2, CHANNEL_0);
+            writer.writeEntry(new byte[] {3, 4}, 2, CHANNEL_1);
             writer.finish();
 
             FilteredSpillFile.Reader reader = writer.getReaders().get(0);
@@ -249,10 +251,10 @@ class FilteredSpillFileTest {
     @Test
     void testGetPendingChannels() throws Exception {
         String[] spillDirs = {temporaryFolder.toString()};
-        try (FilteredSpillFile.Writer writer =
-                new FilteredSpillFile.Writer(spillDirs, MEMORY_SEGMENT_SIZE)) {
-            writer.writeEntry(new byte[] {1}, 0, 1, CHANNEL_0);
-            writer.writeEntry(new byte[] {2}, 0, 1, CHANNEL_1);
+        try (FilteredSpillFile writer =
+                new FilteredSpillFile(spillDirs, MEMORY_SEGMENT_SIZE)) {
+            writer.writeEntry(new byte[] {1}, 1, CHANNEL_0);
+            writer.writeEntry(new byte[] {2}, 1, CHANNEL_1);
             writer.finish();
 
             FilteredSpillFile.Reader reader = writer.getReaders().get(0);
@@ -270,36 +272,34 @@ class FilteredSpillFileTest {
     @Test
     void testIsIdle() throws Exception {
         String[] spillDirs = {temporaryFolder.toString()};
-        try (FilteredSpillFile.Writer writer =
-                new FilteredSpillFile.Writer(spillDirs, MEMORY_SEGMENT_SIZE)) {
+        try (FilteredSpillFile writer =
+                new FilteredSpillFile(spillDirs, MEMORY_SEGMENT_SIZE)) {
             assertThat(writer.isIdle()).isTrue();
-            writer.writeEntry(new byte[] {1}, 0, 1, CHANNEL_0);
+            writer.writeEntry(new byte[] {1}, 1, CHANNEL_0);
             assertThat(writer.isIdle()).isFalse();
         }
     }
 
-    /** deleteAllFiles removes all spill files. */
+    /** close() deletes all spill files on disk. */
     @Test
-    void testDeleteAllFiles() throws Exception {
+    void testCloseDeletesAllFiles() throws Exception {
         String[] spillDirs = {temporaryFolder.toString()};
-        FilteredSpillFile.Writer writer =
-                new FilteredSpillFile.Writer(spillDirs, MEMORY_SEGMENT_SIZE);
-        writer.writeEntry(new byte[64], 0, 64, CHANNEL_0);
+        FilteredSpillFile writer =
+                new FilteredSpillFile(spillDirs, MEMORY_SEGMENT_SIZE);
+        writer.writeEntry(new byte[64], 64, CHANNEL_0);
+        List<Path> filePaths = new ArrayList<>();
+        for (FilteredSpillFile.Reader r : writer.getReaders()) {
+            filePaths.add(r.filePath);
+        }
+        for (Path p : filePaths) {
+            assertThat(Files.exists(p)).isTrue();
+        }
+
         writer.close();
 
-        for (FilteredSpillFile.Reader r : writer.getReaders()) {
-            assertThat(Files.exists(r.filePath)).isTrue();
-        }
-        writer.deleteAllFiles();
-        for (FilteredSpillFile.Reader r : writer.getReaders()) {
-            assertThat(Files.exists(r.filePath)).isFalse();
+        for (Path p : filePaths) {
+            assertThat(Files.exists(p)).isFalse();
         }
     }
 
-    /** Constructor throws on empty spillDirs. */
-    @Test
-    void testEmptySpillDirsThrows() {
-        assertThatThrownBy(() -> new FilteredSpillFile.Writer(new String[0], MEMORY_SEGMENT_SIZE))
-                .isInstanceOf(IOException.class);
-    }
 }

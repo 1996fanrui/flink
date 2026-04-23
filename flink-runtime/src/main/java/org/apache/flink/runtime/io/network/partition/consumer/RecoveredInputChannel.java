@@ -52,7 +52,7 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
 
     private static final Logger LOG = LoggerFactory.getLogger(RecoveredInputChannel.class);
 
-    private final RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+    private final RecoveredBufferStoreImpl store;
     private final CompletableFuture<?> stateConsumedFuture = new CompletableFuture<>();
     protected final BufferManager bufferManager;
 
@@ -100,7 +100,8 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
 
         bufferManager = new BufferManager(inputGate.getMemorySegmentProvider(), this, 0);
         this.networkBuffersPerChannel = networkBuffersPerChannel;
-        store.setNotificationCallback(this::notifyChannelNonEmpty);
+        this.store = new RecoveredBufferStoreImpl(getChannelInfo());
+        store.setDataAvailableCallback(this::notifyChannelNonEmpty);
     }
 
     /**

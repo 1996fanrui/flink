@@ -62,7 +62,7 @@ class GateFilterHandlerTest {
         ChannelStateFilteringHandler.GateFilterHandler<Long> handler =
                 createHandler(RecordFilter.acceptAll());
 
-        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(TARGET_CHANNEL);
         FilteredBufferDispatcher outputWriter = createTestOutputWriter(store);
 
         Buffer sourceBuffer = createBufferWithRecords(1L, 2L, 3L);
@@ -79,7 +79,7 @@ class GateFilterHandlerTest {
         RecordFilter<Long> rejectAll = record -> false;
         ChannelStateFilteringHandler.GateFilterHandler<Long> handler = createHandler(rejectAll);
 
-        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(TARGET_CHANNEL);
         FilteredBufferDispatcher outputWriter = createTestOutputWriter(store);
 
         Buffer sourceBuffer = createBufferWithRecords(1L, 2L, 3L);
@@ -96,7 +96,7 @@ class GateFilterHandlerTest {
         RecordFilter<Long> keepEven = record -> record.getValue() % 2 == 0;
         ChannelStateFilteringHandler.GateFilterHandler<Long> handler = createHandler(keepEven);
 
-        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(TARGET_CHANNEL);
         FilteredBufferDispatcher outputWriter = createTestOutputWriter(store);
 
         Buffer sourceBuffer = createBufferWithRecords(1L, 2L, 3L, 4L, 5L);
@@ -113,7 +113,7 @@ class GateFilterHandlerTest {
         ChannelStateFilteringHandler.GateFilterHandler<Long> handler =
                 createHandler(RecordFilter.acceptAll());
 
-        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(TARGET_CHANNEL);
         FilteredBufferDispatcher outputWriter = createTestOutputWriter(store);
 
         Buffer emptyBuffer = createEmptyBuffer();

@@ -170,7 +170,7 @@ public class RemoteInputChannel extends InputChannel {
         // would discard the store reference while FilteredBufferDispatcher still has pending
         // writes.
         this.recoveredStore = checkNotNull(recoveredStore);
-        this.recoveredStore.setNotificationCallback(this::notifyChannelNonEmpty);
+        this.recoveredStore.setDataAvailableCallback(this::notifyChannelNonEmpty);
     }
 
     @VisibleForTesting

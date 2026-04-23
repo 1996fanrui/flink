@@ -31,6 +31,8 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 
+import static org.apache.flink.util.Preconditions.checkNotNull;
+
 /**
  * Thread-safe implementation of {@link RecoveredBufferStore} that manages per-channel recovered
  * buffers. Buffers are either ready (in-memory, available for consumption) or pending (on disk,
@@ -47,6 +49,8 @@ import java.util.List;
 @Internal
 public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
 
+    private final InputChannelInfo channelInfo;
+
     @GuardedBy("this")
     private final ArrayDeque<Buffer> readyBuffers = new ArrayDeque<>();
 
@@ -57,10 +61,23 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
     private volatile boolean released = false;
 
     @GuardedBy("this")
-    private Runnable notificationCallback;
+    private Runnable dataAvailableCallback;
 
     @GuardedBy("this")
     private ChannelCheckpointStartedListener checkpointListener;
+
+    /**
+     * Creates a store bound to a single input channel. The bound {@link InputChannelInfo} is used
+     * when persisting ready buffers during checkpoint and when notifying the checkpoint listener.
+     */
+    public RecoveredBufferStoreImpl(InputChannelInfo channelInfo) {
+        this.channelInfo = checkNotNull(channelInfo);
+    }
+
+    /** Returns the input channel this store is bound to. */
+    public InputChannelInfo getChannelInfo() {
+        return channelInfo;
+    }
 
     // ---------------------------------------------------------------------------
     // Public interface methods (Task thread)
@@ -109,9 +126,7 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
      * spill entries and file readers, triggered via the ChannelCheckpointStartedListener.
      */
     @Override
-    public void checkpoint(
-            ChannelStateWriter writer, long checkpointId, InputChannelInfo channelInfo)
-            throws IOException {
+    public void checkpoint(ChannelStateWriter writer, long checkpointId) throws IOException {
         // Step 1: snapshot ready buffers under lock; capture callback reference.
         ChannelCheckpointStartedListener cb;
         synchronized (this) {
@@ -162,8 +177,8 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
      * waking up the Task thread waiting for data.
      */
     @Override
-    public synchronized void setNotificationCallback(Runnable callback) {
-        this.notificationCallback = callback;
+    public synchronized void setDataAvailableCallback(Runnable callback) {
+        this.dataAvailableCallback = callback;
     }
 
     // ---------------------------------------------------------------------------
@@ -181,8 +196,8 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
         }
         boolean wasEmpty = readyBuffers.isEmpty();
         readyBuffers.add(buffer);
-        if (wasEmpty && notificationCallback != null) {
-            notificationCallback.run();
+        if (wasEmpty && dataAvailableCallback != null) {
+            dataAvailableCallback.run();
         }
     }
 

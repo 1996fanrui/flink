@@ -2114,7 +2114,7 @@ class RemoteInputChannelTest {
         // given: RemoteInputChannel with recovered buffers in a store
         SingleInputGate inputGate = createSingleInputGate(1);
 
-        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(new InputChannelInfo(0, 0));
         store.addBuffer(TestBufferFactory.createBuffer(10));
         store.addBuffer(TestBufferFactory.createBuffer(20));
 
