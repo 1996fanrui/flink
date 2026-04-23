@@ -258,19 +258,13 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
                 if (!reader.hasEntries()) {
                     continue;
                 }
+                // Snapshot only: phase 2 backs up the entries to the new checkpoint via an
+                // independent FileChannel in the snapshot reader. The original reader and the
+                // store's pendingCount are left untouched so close()'s drain loop still delivers
+                // every entry to the task via network buffers — checkpoint snapshot and task
+                // delivery are two independent consumers of the same underlying bytes (page-cache
+                // shared on Linux).
                 snapshots.add(reader.snapshot());
-                // Drain the original reader so close() drain sees empty entries, and decrement
-                // the pending count once per entry (mirror of incrementPending in writeToSpillFile;
-                // must be per-entry to stay symmetric — getPendingChannels() would undercount when
-                // the same channel has multiple entries in one reader).
-                while (reader.hasEntries()) {
-                    InputChannelInfo ch = reader.peekNextChannel();
-                    reader.readNext();
-                    RecoveredBufferStoreImpl store =
-                            Preconditions.checkNotNull(
-                                    storesByChannel.get(ch), "No store for channel %s", ch);
-                    store.decrementPending();
-                }
             }
         } catch (IOException e) {
             for (FilteredSpillFile.Reader snap : snapshots) {

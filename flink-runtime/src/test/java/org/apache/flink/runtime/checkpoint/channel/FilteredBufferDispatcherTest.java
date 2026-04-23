@@ -842,12 +842,13 @@ class FilteredBufferDispatcherTest {
     }
 
     /**
-     * wait-set reaching empty triggers phase2 drainSpillEntriesToCheckpoint; the spill queue is
-     * drained and close() drain is a no-op. Data is streamed to ChannelStateWriter, not delivered
-     * to the store via addBuffer.
+     * wait-set reaching empty triggers phase2 {@code drainSpillEntriesToCheckpoint}: the sealed
+     * readers are snapshotted and streamed to the ChannelStateWriter, but the original readers and
+     * store state are left intact. close()'s drain loop then still delivers every entry to the
+     * store via network buffers.
      */
     @Test
-    void testWaitSetEmptyTriggersPhase2DrainAndQueueBecomesEmpty() throws Exception {
+    void testWaitSetEmptyTriggersPhase2SnapshotThenCloseDrainDeliversBuffers() throws Exception {
         Queue<Buffer> drainPool = createBufferPool(5);
         FilteredBufferDispatcherImpl writer =
                 new FilteredBufferDispatcherImpl(
@@ -857,17 +858,23 @@ class FilteredBufferDispatcherTest {
                         SEGMENT_SIZE,
                         TestBufferPool.drainOnly(drainPool));
 
-        writer.write(createTestData(SEGMENT_SIZE, (byte) 0x80), SEGMENT_SIZE, ch0);
+        byte[] payload = createTestData(SEGMENT_SIZE, (byte) 0x80);
+        writer.write(payload, SEGMENT_SIZE, ch0);
         writer.flush();
 
-        // phase2: drains the spill queue and streams entry to ChannelStateWriter (NO_OP here)
+        // phase2: snapshots sealed readers into the ChannelStateWriter (NO_OP here); the original
+        // reader and store state are untouched.
         writer.onChannelCheckpointStarted(99L, ch0);
 
-        // close() drain is a no-op: queue is already empty after phase2
+        // close() drain still consumes the original reader and delivers buffers to the store.
         writer.close();
 
-        // Data was written to ChannelStateWriter (NO_OP), not to the store — store is empty
-        assertThat(store0.tryTake()).isNull();
+        Buffer delivered = store0.tryTake();
+        assertThat(delivered).isNotNull();
+        byte[] actual = new byte[delivered.getSize()];
+        delivered.getMemorySegment().get(0, actual, 0, delivered.getSize());
+        delivered.recycleBuffer();
+        assertThat(actual).isEqualTo(payload);
     }
 
     // -----------------------------------------------------------------------------------------
@@ -927,13 +934,17 @@ class FilteredBufferDispatcherTest {
     void testPhase2WritesDiskDataThroughStreamingApi() throws Exception {
         RecordingChannelStateWriter recordingWriter = new RecordingChannelStateWriter();
 
+        // drainOnly: no buffers for the write path (forces everything to spill), but the blocking
+        // drain path gets buffers so close()'s drain loop can still deliver the snapshotted entries
+        // to the stores. phase 2 is a backup — close() drain is the task-facing delivery path.
+        Queue<Buffer> drainPool = createBufferPool(5);
         FilteredBufferDispatcherImpl writer =
                 new FilteredBufferDispatcherImpl(
                         stores,
                         recordingWriter,
                         spillDirs,
                         SEGMENT_SIZE,
-                        TestBufferPool.empty());
+                        TestBufferPool.drainOnly(drainPool));
 
         byte[] d0 = createTestData(SEGMENT_SIZE, (byte) 0xA1);
         byte[] d1 = createTestData(SEGMENT_SIZE, (byte) 0xA2);
@@ -965,120 +976,126 @@ class FilteredBufferDispatcherTest {
     }
 
     /**
-     * phase2 decrements the store's pending count so that store.isEmpty() becomes true, allowing
-     * credit release.
+     * phase 2 is a snapshot-only backup: it must NOT decrement {@code store.pendingCount}. The
+     * original reader and the store state are left untouched so close()'s drain loop still has
+     * these entries to deliver to the task via network buffers.
      */
     @Test
-    void testPhase2DecrementsStorePendingCount() throws Exception {
+    void testPhase2DoesNotTouchStorePendingCount() throws Exception {
+        Queue<Buffer> drainPool = createBufferPool(3);
         FilteredBufferDispatcherImpl writer =
                 new FilteredBufferDispatcherImpl(
                         stores,
                         ChannelStateWriter.NO_OP,
                         spillDirs,
                         SEGMENT_SIZE,
-                        TestBufferPool.empty());
+                        TestBufferPool.drainOnly(drainPool));
 
         // Spill 2 entries for ch0, 1 for ch1 — each exactly SEGMENT_SIZE so they auto-seal
         writer.write(createTestData(SEGMENT_SIZE, (byte) 0xB1), SEGMENT_SIZE, ch0);
-        // Trigger channel change to seal ch0's first entry and start ch1
         writer.write(createTestData(SEGMENT_SIZE, (byte) 0xB2), SEGMENT_SIZE, ch1);
-        // Back to ch0 for second entry
         writer.write(createTestData(SEGMENT_SIZE, (byte) 0xB3), SEGMENT_SIZE, ch0);
         writer.flush();
 
-        // Before phase2: store0 has 2 pending, store1 has 1 pending
+        // Before phase 2: both stores non-empty
         assertThat(store0.isEmpty()).isFalse();
         assertThat(store1.isEmpty()).isFalse();
 
-        // Phase2: all callbacks arrive
+        // Phase 2: all callbacks arrive — entries are copied to checkpoint, but pendingCount stays
         long checkpointId = 7L;
         writer.onChannelCheckpointStarted(checkpointId, ch0);
         writer.onChannelCheckpointStarted(checkpointId, ch1);
 
-        // After phase2: pending counts decremented — stores report empty
+        // pendingCount untouched — stores still report non-empty
+        assertThat(store0.isEmpty()).isFalse();
+        assertThat(store1.isEmpty()).isFalse();
+
+        // close() drain delivers all entries to stores; only then do the counts go to zero
+        writer.close();
+        // Drain the ready buffers so isEmpty() reflects pendingCount only
+        while (store0.tryTake() != null) {}
+        while (store1.tryTake() != null) {}
         assertThat(store0.isEmpty()).isTrue();
         assertThat(store1.isEmpty()).isTrue();
-
-        writer.close();
     }
 
     /**
-     * after phase2, close() drain encounters an empty queue and exits immediately (no double-write,
-     * no blocking buffer acquisition).
+     * After phase 2 snapshots entries into the checkpoint, close() drain must still deliver every
+     * entry to the stores (phase 2 is a backup, not an ownership transfer).
      */
     @Test
-    void testCloseDrainAfterPhase2IsNoOp() throws Exception {
-        // blocking request throws if called — proves close() drain does not run
-        BufferRequester throwingOnBlocking =
-                new BufferRequester() {
-                    @Override
-                    public Buffer requestBuffer(InputChannelInfo channelInfo) {
-                        return null;
-                    }
-
-                    @Override
-                    public Buffer requestBufferBlocking(InputChannelInfo channelInfo) {
-                        throw new AssertionError(
-                                "requestBufferBlocking must not be called after phase2");
-                    }
-                };
+    void testCloseDrainStillDeliversEntriesAfterPhase2() throws Exception {
+        Queue<Buffer> drainPool = createBufferPool(1);
         FilteredBufferDispatcherImpl writer =
                 new FilteredBufferDispatcherImpl(
                         stores,
                         ChannelStateWriter.NO_OP,
                         spillDirs,
                         SEGMENT_SIZE,
-                        throwingOnBlocking);
+                        TestBufferPool.drainOnly(drainPool));
 
-        writer.write(createTestData(SEGMENT_SIZE, (byte) 0xC1), SEGMENT_SIZE, ch0);
+        byte[] payload = createTestData(SEGMENT_SIZE, (byte) 0xC1);
+        writer.write(payload, SEGMENT_SIZE, ch0);
         writer.flush();
 
-        // Phase2 drains the queue
         writer.onChannelCheckpointStarted(55L, ch0);
 
-        // close() must not call the blocking requester (queue is empty)
+        // close() drain consumes the still-pending entry and delivers it to the store
         writer.close();
+
+        Buffer delivered = store0.tryTake();
+        assertThat(delivered).isNotNull();
+        byte[] actual = new byte[delivered.getSize()];
+        delivered.getMemorySegment().get(0, actual, 0, delivered.getSize());
+        delivered.recycleBuffer();
+        assertThat(actual).isEqualTo(payload);
     }
 
     /**
-     * if close() drain partially runs before phase2 (some entries already loaded into store),
-     * phase2 only snapshots the remaining entries in the queue. No double-write occurs.
+     * Two independent consumers: phase 2 writes every entry into the checkpoint via
+     * ChannelStateWriter, and close() drain additionally delivers every entry to the stores.
+     * Both streams see the full data — the on-disk bytes are read twice via independent
+     * FileChannels.
      */
     @Test
-    void testPhase2SnapshotsRemainingQueueAfterPartialCloseDrain() throws Exception {
-        // Provide a drain pool with only 1 buffer — close() will partially drain, then block
-        // We simulate partial drain by controlling the blocking supplier
-        Queue<Buffer> partialPool = new LinkedList<>();
-        partialPool.add(createBuffer()); // enough for 1 entry
-
+    void testPhase2AndCloseDrainBothReceiveAllEntries() throws Exception {
+        Queue<Buffer> drainPool = createBufferPool(2);
         RecordingChannelStateWriter recordingWriter = new RecordingChannelStateWriter();
 
-        // Two spill entries (ch0, ch1)
         FilteredBufferDispatcherImpl writer =
                 new FilteredBufferDispatcherImpl(
                         stores,
                         recordingWriter,
                         spillDirs,
                         SEGMENT_SIZE,
-                        TestBufferPool.drainOnly(partialPool));
+                        TestBufferPool.drainOnly(drainPool));
 
-        writer.write(createTestData(SEGMENT_SIZE, (byte) 0xD1), SEGMENT_SIZE, ch0);
-        writer.write(createTestData(SEGMENT_SIZE, (byte) 0xD2), SEGMENT_SIZE, ch1);
+        byte[] payload0 = createTestData(SEGMENT_SIZE, (byte) 0xD1);
+        byte[] payload1 = createTestData(SEGMENT_SIZE, (byte) 0xD2);
+        writer.write(payload0, SEGMENT_SIZE, ch0);
+        writer.write(payload1, SEGMENT_SIZE, ch1);
         writer.flush();
 
-        // Phase2 arrives before close() drain — drains both entries via ChannelStateWriter
+        // Phase 2: both entries captured into ChannelStateWriter (checkpoint backup)
         long checkpointId = 100L;
         writer.onChannelCheckpointStarted(checkpointId, ch0);
         writer.onChannelCheckpointStarted(checkpointId, ch1);
-
-        // Both entries written to ChannelStateWriter; queue is now empty
         assertThat(recordingWriter.inputDataCalls).hasSize(2);
 
-        // close() drain: queue is empty, the 1 buffer in partialPool is never consumed
+        // close() drain: both entries additionally delivered to the stores (task-facing pipeline)
         writer.close();
 
-        // Stores have 0 ready buffers (data was streamed via phase2, not added to store)
-        assertThat(store0.tryTake()).isNull();
-        assertThat(store1.tryTake()).isNull();
+        Buffer buf0 = store0.tryTake();
+        Buffer buf1 = store1.tryTake();
+        assertThat(buf0).isNotNull();
+        assertThat(buf1).isNotNull();
+        byte[] got0 = new byte[buf0.getSize()];
+        byte[] got1 = new byte[buf1.getSize()];
+        buf0.getMemorySegment().get(0, got0, 0, buf0.getSize());
+        buf1.getMemorySegment().get(0, got1, 0, buf1.getSize());
+        buf0.recycleBuffer();
+        buf1.recycleBuffer();
+        assertThat(got0).isEqualTo(payload0);
+        assertThat(got1).isEqualTo(payload1);
     }
 }
