@@ -145,8 +145,10 @@ flowchart TD
 ```
 
 P2 两条触发路径：
-1. **writer 已不 idle**：磁盘上还有 pending，走 P2 保 FIFO（downgrade-only）
-2. **没拿到 buffer**：pool 耗尽
+1. **writer 已不 idle**：当前磁盘上还有未消费的 entry（任一 reader 的 entries 非空），走 P2 保 FIFO——新数据必须排在磁盘 entry 之后，不能跳过它们直投 buffer。
+2. **没拿到 buffer**：pool 耗尽，只能落盘。
+
+**P1 / P2 可反复切换**：`spillFile.isIdle()` 实时反映"当前是否还有 pending entry"。先 spill 再被 eagerDrain 完全搬回内存后，`isIdle()` 会重新变 true，后续 flush 可再次走 P1 直投 buffer。也就是说 isIdle 不是单向门（"一旦 spill 就永远非 idle"是错的），而是跟随 reader 的 entries 数量动态变化。
 
 ### 场景 3：`close()` 的 blocking drain
 
@@ -187,8 +189,8 @@ flowchart TD
 2. **dispatcher 可随意在 buffer 和文件间切换** — 一条 record 的前半段可在 Network Buffer、后半段可在 File。Task thread 的 SpanningWrapper 透明重组跨 buffer record。
 3. **每条 entry 最大 memorySegmentSize** — 和 Network Buffer 1:1 对齐。回放时一条 entry 正好填一个 buffer。
 4. **eager drain on each write** — 每次 write 前尽可能多拉磁盘数据回 buffer（loop until no buffer available or disk empty），最大化 buffer 腾空后的吞吐。
-5. **backend 动态切换** — 同一次 recovery 内，早期 write 可能落盘（memory pressure），后期 write 可能直投 buffer（压力消散）；downgrade-only 规则由 `spillFile.isIdle()` 管控。
-6. **"磁盘有数据"的判定** — 看 `spillFile.isIdle()`，本质是 cache 为空 AND 所有 Reader 的 entries 为空。不看物理文件是否存在。
+5. **backend 动态切换** — 同一次 recovery 内，早期 write 可能落盘（memory pressure），后期 write 可能直投 buffer（压力消散）；P1 ↔ P2 可以反复切换，由 `spillFile.isIdle()` 实时判定。
+6. **"磁盘有数据"的判定** — 看 `spillFile.isIdle()`，本质是"所有 Reader 的 entries 都为空"（遍历每个 reader 检查 `hasEntries()`），而不是"有没有开过物理文件"。spill 过但 eagerDrain 已全部搬回的状态下 `isIdle()` 重新为 true，flushCache 会再次走 P1。
 7. **Spill 目录来自 IOManager** — `IOManager.getSpillingDirectoriesPaths()`，不回退到 `java.io.tmpdir`；目录无效直接抛 IOException。
 8. **dispatcher 和 FilteredSpillFile 都是 per-task** — 一个 task 一个 dispatcher、一个 FilteredSpillFile；所有 gate/channel 共用。channel 身份通过 `write(bytes, length, channelInfo)` 传入。
 9. **Checkpoint 只允许发生在 recovery 结束后** — `spillFile.finish()` 已调用、所有 Reader 已 sealed 才允许 snapshot。两层 `checkState` 防御：dispatcher 在 drain 入口检查 `spillFile.isFinished()`；`Reader.snapshot()` 内部检查 `isSealed()`。违反 → `IllegalStateException`。
