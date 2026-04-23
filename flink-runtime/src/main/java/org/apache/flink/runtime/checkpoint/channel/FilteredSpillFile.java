@@ -22,21 +22,29 @@ import org.apache.flink.util.FileUtils;
 
 import java.io.Closeable;
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Deque;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
+
+import static org.apache.flink.util.Preconditions.checkState;
 
 /**
  * Spill file I/O for the {@code filterAndRewrite} recovery path. Groups the writer, reader, and
- * per-entry metadata as nested static classes so their tight coupling is visible at a glance.
+ * chunk type as nested static classes so their tight coupling is visible at a glance.
+ *
+ * <p>Writer appends raw bytes; each logical entry is tracked in the corresponding Reader's entry
+ * deque. Readers support both replay (readNext) and checkpoint snapshot (snapshot).
  */
 @Internal
 public final class FilteredSpillFile {
@@ -44,23 +52,22 @@ public final class FilteredSpillFile {
     private FilteredSpillFile() {}
 
     // -------------------------------------------------------------------------
-    // Entry
+    // Chunk — the payload unit returned by Reader.readNext()
     // -------------------------------------------------------------------------
 
     /**
-     * Immutable metadata for a single spilled buffer entry. References a byte range within a spill
-     * file that contains the raw data for one buffer destined for a specific input channel
-     * (post-rescaling).
+     * A single spilled-data chunk returned by {@link Reader#readNext()}. The {@code data} array is
+     * reused between calls on the same Reader; callers must consume bytes before the next readNext.
      */
-    public static final class Entry {
+    public static final class Chunk {
 
         private final InputChannelInfo channelInfo;
-        private final long offset;
+        private final byte[] data;
         private final int length;
 
-        public Entry(InputChannelInfo channelInfo, long offset, int length) {
+        public Chunk(InputChannelInfo channelInfo, byte[] data, int length) {
             this.channelInfo = channelInfo;
-            this.offset = offset;
+            this.data = data;
             this.length = length;
         }
 
@@ -68,230 +75,269 @@ public final class FilteredSpillFile {
             return channelInfo;
         }
 
-        public long getOffset() {
-            return offset;
+        /** Returns the internal data buffer; valid bytes are {@code [0, length)}. */
+        public byte[] getData() {
+            return data;
         }
 
+        /** Number of valid bytes at the start of {@link #getData()}. */
         public int getLength() {
             return length;
         }
     }
 
     // -------------------------------------------------------------------------
-    // Writer
+    // Writer — pure disk appender; no cache, no emit callback
     // -------------------------------------------------------------------------
 
     /**
-     * Appends raw bytes to spill files via {@link FileChannel}. Supports file rotation at a
-     * configurable threshold (64 MB) and round-robin directory selection across multiple spill
-     * directories.
+     * Appends raw bytes to spill files. Rotates to a new file when the current one exceeds 64 MB;
+     * each rotation seals the outgoing Reader and opens a new one. All Readers are sealed on
+     * {@link #finish()}.
      *
-     * <p>The writer does NOT call fsync/force, trading durability for throughput. Data is pure
-     * bytes with no metadata headers. Files are created lazily on the first write.
+     * <p>Files are created lazily on the first {@link #writeEntry} call.
      */
     public static class Writer implements Closeable {
 
-        private static final int FILE_ROTATION_THRESHOLD = 64 * 1024 * 1024; // 64MB
+        private static final long FILE_ROTATION_THRESHOLD = 64L * 1024 * 1024; // 64 MB
 
         private final String[] spillDirs;
         private int currentDirIndex;
         private FileChannel currentChannel;
         private Path currentFilePath;
         private long currentFileOffset;
-        private final List<Path> allFiles;
-        private boolean closed;
+        private final List<Reader> readers;
+        private boolean finished;
 
         /**
          * Creates a new Writer.
          *
-         * @param spillDirs directories for writing spill files, obtained from
-         *     IOManager.getSpillingDirectoriesPaths()
+         * @param spillDirs directories for writing spill files
+         * @param memorySegmentSize max bytes per entry; retained for documentation / caller use
          * @throws IOException if spillDirs is empty
          */
-        public Writer(String[] spillDirs) throws IOException {
+        public Writer(String[] spillDirs, int memorySegmentSize) throws IOException {
             if (spillDirs.length == 0) {
                 throw new IOException("Spill directories must not be empty");
             }
             this.spillDirs = spillDirs;
             this.currentDirIndex = 0;
             this.currentFileOffset = 0;
-            this.allFiles = new ArrayList<>();
-            this.closed = false;
+            this.readers = new ArrayList<>();
+            this.finished = false;
         }
 
         /**
-         * Writes raw bytes to the current spill file.
-         *
-         * @param data the byte array containing data to write
-         * @param offset the start offset in the data array
-         * @param length the number of bytes to write
-         * @return the file offset where the data was written
-         * @throws IOException if writing fails or the writer is closed
+         * Appends {@code len} bytes from {@code data[off..off+len)} to the current spill file,
+         * registering an entry for {@code ci} in the current Reader. Lazily opens the first file;
+         * rotates when the current file exceeds {@link #FILE_ROTATION_THRESHOLD}.
          */
-        public long write(byte[] data, int offset, int length) throws IOException {
-            if (closed) {
-                throw new IllegalStateException("FilteredSpillFile.Writer is already closed");
-            }
-
-            // Lazy file creation or rotation when threshold is exceeded
+        public void writeEntry(byte[] data, int off, int len, InputChannelInfo ci)
+                throws IOException {
+            checkState(!finished, "writeEntry after finish");
             if (currentChannel == null) {
                 openNewFile();
             } else if (currentFileOffset > FILE_ROTATION_THRESHOLD) {
                 rotateFile();
             }
-
-            long writeOffset = currentFileOffset;
-
-            FileUtils.writeCompletely(currentChannel, ByteBuffer.wrap(data, offset, length));
-
-            currentFileOffset += length;
-            return writeOffset;
+            long entryOffset = currentFileOffset;
+            FileUtils.writeCompletely(currentChannel, ByteBuffer.wrap(data, off, len));
+            currentFileOffset += len;
+            currentReader().addEntry(ci, entryOffset, len);
         }
 
-        /**
-         * Returns a reader for the current spill file. The caller is responsible for closing the
-         * returned reader.
-         *
-         * @return a Reader for the current file
-         * @throws IOException if no file has been created yet or reader creation fails
-         */
-        public Reader getCurrentFileReader() throws IOException {
-            if (currentFilePath == null) {
-                throw new IOException("No spill file has been created yet");
+        /** Seals the last Reader. After finish, no more writeEntry calls are accepted. */
+        public void finish() {
+            if (!finished) {
+                finished = true;
+                if (!readers.isEmpty()) {
+                    readers.get(readers.size() - 1).seal();
+                }
             }
-            return new Reader(currentFilePath);
         }
 
         /**
-         * Returns an unmodifiable list of all spill file paths created by this writer. Useful for
-         * cleanup and verification.
+         * Finishes (if not already done), closes the write channel, and chain-closes all Readers.
          */
-        public List<Path> getAllFiles() {
-            return Collections.unmodifiableList(allFiles);
-        }
-
         @Override
         public void close() throws IOException {
-            closed = true;
+            finish();
             try {
                 if (currentChannel != null) {
                     currentChannel.close();
+                    currentChannel = null;
                 }
             } finally {
-                currentChannel = null;
+                for (Reader r : readers) {
+                    r.close();
+                }
             }
         }
 
-        /** Deletes all spill files created by this writer. Called after drain is complete. */
+        /** Returns true after {@link #finish()} has been called. */
+        public boolean isFinished() {
+            return finished;
+        }
+
+        /**
+         * Returns true if no entries have been written yet. When idle, the dispatcher prefers P1
+         * (direct buffer) over P2 (spill) to maintain ordering guarantees.
+         */
+        public boolean isIdle() {
+            return readers.isEmpty();
+        }
+
+        /** Returns an unmodifiable view of all Readers created so far. */
+        public List<Reader> getReaders() {
+            return Collections.unmodifiableList(readers);
+        }
+
+        /** Deletes all spill files. Called after all data has been drained. */
         public void deleteAllFiles() {
-            for (Path file : allFiles) {
+            for (Reader r : readers) {
                 try {
-                    Files.deleteIfExists(file);
+                    Files.deleteIfExists(r.filePath);
                 } catch (IOException ignored) {
-                    // Best effort cleanup
+                    // best-effort cleanup
                 }
             }
+        }
+
+        private Reader currentReader() {
+            return readers.get(readers.size() - 1);
         }
 
         private void openNewFile() throws IOException {
             String dir = spillDirs[currentDirIndex];
             currentDirIndex = (currentDirIndex + 1) % spillDirs.length;
-
             Path dirPath = Paths.get(dir);
             Files.createDirectories(dirPath);
-
             currentFilePath = dirPath.resolve("spill-" + UUID.randomUUID() + ".bin");
             currentChannel =
                     FileChannel.open(
                             currentFilePath,
                             StandardOpenOption.CREATE_NEW,
-                            StandardOpenOption.WRITE,
-                            StandardOpenOption.READ);
+                            StandardOpenOption.WRITE);
             currentFileOffset = 0;
-            allFiles.add(currentFilePath);
+            readers.add(new Reader(currentFilePath));
         }
 
         private void rotateFile() throws IOException {
-            if (currentChannel != null) {
-                currentChannel.close();
-            }
+            // Seal the current Reader before opening a new file.
+            currentReader().seal();
+            currentChannel.close();
+            currentChannel = null;
             openNewFile();
         }
     }
 
     // -------------------------------------------------------------------------
-    // Reader
+    // Reader — per-physical-file reader with entry deque and sealed state
     // -------------------------------------------------------------------------
 
     /**
-     * Reads from a spill file via {@link FileChannel} positional reads. Supports both direct byte
-     * array reads and bounded {@link InputStream} creation for checkpoint streaming.
+     * Reads entries from a single spill file. Each instance is owned by exactly one consumer
+     * thread: the original Reader by the replay path, a snapshot Reader by a checkpoint drain.
      *
-     * <p>The reader owns the FileChannel lifecycle; callers must close this reader when done.
+     * <p>The internal buffer is reused across {@link #readNext()} calls; callers must consume each
+     * Chunk before calling readNext again.
      */
     public static class Reader implements Closeable {
 
         private final FileChannel channel;
-        private final Path filePath;
+        final Path filePath; // accessed by Writer.deleteAllFiles
+        private final Deque<Entry> entries = new ArrayDeque<>();
+        private volatile boolean sealed = false;
+        private byte[] buf;
 
-        /**
-         * Opens a FileChannel for reading the specified spill file.
-         *
-         * @param filePath path to the spill file
-         * @throws IOException if the file cannot be opened
-         */
-        public Reader(Path filePath) throws IOException {
+        Reader(Path filePath) throws IOException {
             this.filePath = filePath;
             this.channel = FileChannel.open(filePath, StandardOpenOption.READ);
         }
 
-        /**
-         * Performs a positional read from the spill file.
-         *
-         * @param offset byte offset in the file to start reading from
-         * @param buffer destination byte array
-         * @param length number of bytes to read
-         * @throws IOException if a partial read is detected or an I/O error occurs
-         */
-        public void read(long offset, byte[] buffer, int length) throws IOException {
-            ByteBuffer bb = ByteBuffer.wrap(buffer, 0, length);
-            int totalRead = 0;
-            long position = offset;
+        // ---- Write side (called by Writer) ----
 
-            while (bb.hasRemaining()) {
-                int bytesRead = channel.read(bb, position);
-                if (bytesRead < 0) {
-                    throw new IOException(
-                            "Truncated spill file: expected "
-                                    + length
-                                    + " bytes at offset "
-                                    + offset
-                                    + " but only read "
-                                    + totalRead
-                                    + " bytes from "
-                                    + filePath);
-                }
-                totalRead += bytesRead;
-                position += bytesRead;
-            }
+        /** Registers an entry at {@code offset} with {@code length} bytes for {@code ci}. */
+        void addEntry(InputChannelInfo ci, long offset, int length) {
+            checkState(!sealed, "addEntry after seal");
+            entries.addLast(new Entry(ci, offset, length));
+        }
+
+        /** Seals this Reader; no more addEntry calls are allowed after this point. */
+        void seal() {
+            sealed = true;
+        }
+
+        public boolean isSealed() {
+            return sealed;
+        }
+
+        // ---- Consume side (replay or checkpoint drain) ----
+
+        /** Returns true if there are pending entries to consume. */
+        public boolean hasEntries() {
+            return !entries.isEmpty();
         }
 
         /**
-         * Returns an InputStream that reads sequentially from {@code startOffset} to end-of-file.
-         * The stream does NOT close the underlying FileChannel when it is closed — the Reader owns
-         * the channel lifecycle.
-         *
-         * <p>Used for checkpoint streaming: the caller opens one stream per physical file and
-         * passes it sequentially to each {@link ChannelStateWriter#addInputData} call for that
-         * file. Each call reads exactly the number of bytes it is given ({@code dataLength}),
-         * advancing the stream position automatically so subsequent calls continue from the correct
-         * offset.
-         *
-         * @param startOffset byte offset in the file at which reading begins
-         * @return a sequential InputStream backed by positional FileChannel reads
+         * Returns the channel of the next pending entry without consuming it, or null if empty.
          */
-        public InputStream openSequentialStream(long startOffset) {
-            return new SequentialFileChannelInputStream(channel, startOffset);
+        public InputChannelInfo peekNextChannel() {
+            Entry e = entries.peekFirst();
+            return e != null ? e.channelInfo : null;
+        }
+
+        /**
+         * Reads and returns the next pending entry as a {@link Chunk}. The Chunk's data array is
+         * the Reader's internal buffer; it is overwritten by the next readNext call. Returns null
+         * when there are no more entries.
+         */
+        public Chunk readNext() throws IOException {
+            Entry entry = entries.pollFirst();
+            if (entry == null) {
+                return null;
+            }
+            if (buf == null || buf.length < entry.length) {
+                buf = new byte[entry.length];
+            }
+            ByteBuffer bb = ByteBuffer.wrap(buf, 0, entry.length);
+            long position = entry.offset;
+            while (bb.hasRemaining()) {
+                int n = channel.read(bb, position);
+                if (n < 0) {
+                    throw new IOException(
+                            "Truncated spill file: "
+                                    + entry.length
+                                    + " bytes @"
+                                    + entry.offset
+                                    + " in "
+                                    + filePath);
+                }
+                position += n;
+            }
+            return new Chunk(entry.channelInfo, buf, entry.length);
+        }
+
+        /**
+         * Returns an independent Reader over the same file with a shallow copy of the current
+         * entries. The snapshot is pre-sealed. Must be called only after this Reader is sealed.
+         * The caller owns and must close the returned Reader.
+         */
+        public Reader snapshot() throws IOException {
+            checkState(sealed, "snapshot requires sealed Reader");
+            Reader snap = new Reader(filePath);
+            snap.entries.addAll(this.entries);
+            snap.sealed = true;
+            return snap;
+        }
+
+        /** Returns the set of channels that still have pending entries. */
+        public Set<InputChannelInfo> getPendingChannels() {
+            Set<InputChannelInfo> channels = new HashSet<>();
+            for (Entry e : entries) {
+                channels.add(e.channelInfo);
+            }
+            return channels;
         }
 
         @Override
@@ -299,48 +345,17 @@ public final class FilteredSpillFile {
             channel.close();
         }
 
-        /**
-         * An InputStream backed by positional reads on a FileChannel. Tracks the current file
-         * position internally, advancing it with each read. Does NOT close the underlying
-         * FileChannel on close — the Reader owns the channel lifecycle.
-         */
-        private static class SequentialFileChannelInputStream extends InputStream {
+        // ---- Private entry metadata ----
 
-            private final FileChannel channel;
-            private long currentPosition;
+        private static final class Entry {
+            final InputChannelInfo channelInfo;
+            final long offset;
+            final int length;
 
-            SequentialFileChannelInputStream(FileChannel channel, long startOffset) {
-                this.channel = channel;
-                this.currentPosition = startOffset;
-            }
-
-            @Override
-            public int read() throws IOException {
-                byte[] single = new byte[1];
-                int result = read(single, 0, 1);
-                if (result == -1) {
-                    return -1;
-                }
-                return single[0] & 0xFF;
-            }
-
-            @Override
-            public int read(byte[] b, int off, int len) throws IOException {
-                if (len == 0) {
-                    return 0;
-                }
-                ByteBuffer bb = ByteBuffer.wrap(b, off, len);
-                int bytesRead = channel.read(bb, currentPosition);
-                if (bytesRead < 0) {
-                    return -1;
-                }
-                currentPosition += bytesRead;
-                return bytesRead;
-            }
-
-            @Override
-            public void close() {
-                // Do NOT close the FileChannel — Reader owns the channel lifecycle
+            Entry(InputChannelInfo channelInfo, long offset, int length) {
+                this.channelInfo = channelInfo;
+                this.offset = offset;
+                this.length = length;
             }
         }
     }

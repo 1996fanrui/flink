@@ -34,14 +34,13 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.concurrent.ThreadSafe;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import static org.apache.flink.runtime.checkpoint.channel.ChannelStateWriteRequest.buildStreamingWriteRequest;
+import static org.apache.flink.runtime.checkpoint.channel.ChannelStateWriteRequest.buildSpillWriteRequest;
 import static org.apache.flink.runtime.checkpoint.channel.ChannelStateWriteRequest.completeInput;
 import static org.apache.flink.runtime.checkpoint.channel.ChannelStateWriteRequest.completeOutput;
 import static org.apache.flink.runtime.checkpoint.channel.ChannelStateWriteRequest.write;
@@ -197,23 +196,13 @@ public class ChannelStateWriterImpl implements ChannelStateWriter {
     }
 
     @Override
-    public void addInputData(
-            long checkpointId,
-            InputChannelInfo info,
-            int startSeqNum,
-            InputStream data,
-            int dataLength) {
+    public void addInputDataFromSpill(
+            long checkpointId, CloseableIterator<FilteredSpillFile.Chunk> chunks) {
         LOG.trace(
-                "{} adding streaming input data, checkpoint {}, channel: {}, startSeqNum: {}, dataLength: {}",
+                "{} adding spill input data, checkpoint {}",
                 taskName,
-                checkpointId,
-                info,
-                startSeqNum,
-                dataLength);
-        enqueue(
-                buildStreamingWriteRequest(
-                        jobVertexID, subtaskIndex, checkpointId, info, data, dataLength),
-                false);
+                checkpointId);
+        enqueue(buildSpillWriteRequest(jobVertexID, subtaskIndex, checkpointId, chunks), false);
     }
 
     @Override
