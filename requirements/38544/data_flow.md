@@ -2,67 +2,82 @@
 
 ## Core Architecture
 
-OutputWriter and RecoveredBufferStore are the core components. They decouple filtering from InputChannel:
+四个协作者，职责分明：
 
-- **filterAndRewrite** writes bytes to `OutputWriter.write(data, length, channelInfo)`. It does not care about buffer allocation, disk spilling, or delivery to InputChannel.
-- **OutputWriter** manages buffer allocation and disk spilling internally. It delivers ready buffers to the target channel's RecoveredBufferStore.
-- **RecoveredBufferStore** provides ready buffers to InputChannel via `tryTake()` and supports checkpoint via `checkpoint()`. It does not know about OutputWriter or disk files.
+- **filterAndRewrite** — recovery thread 上运行；产出字节，调 `dispatcher.write(bytes, length, channelInfo)`
+- **FilteredBufferDispatcher**（dispatcher） — 持有一块 `memorySegmentSize` 的**内存 cache**；cache 满或 channel 切换时做 P1/P2 决策；lazy 创建 `FilteredSpillFile.Writer` 做 P2 落盘
+- **FilteredSpillFile.Writer** — 纯落盘：收到 `writeEntry(bytes, ci)` 就追加到当前文件 + 在对应 Reader 上登记一条 entry；文件超过 64 MB 时内部 rotate 开新文件 + 新 Reader
+- **FilteredSpillFile.Reader** — 每物理文件一个；持 entries deque；`readNext()` 出 `Chunk` 给回放链路；`snapshot()` 出独立 Reader 给 checkpoint 链路
+- **RecoveredBufferStore**（每 channel 一个） — 持有 ready buffers；`tryTake()` 给 InputChannel 消费；`checkpoint()` 把自己的 ready buffers 入 checkpoint
 
-## Non-Filtering Mode (channel-state-unspilling thread)
+dispatcher 持有 Writer；Writer 持有 `List<Reader>`；Reader 的消费者有 replay（原 Reader）+ checkpoint（snapshot Reader）。关闭连锁：`dispatcher.close()` → `writer.close()` → 所有 Reader.close()。
+
+---
+
+## Non-Filtering Mode
 
 ```mermaid
 flowchart LR
     S3["S3"] -- "Network Buffer (blocking)" --> IC["InputChannel"]
 ```
 
+---
+
 ## Filtering Mode
 
-### Data Flow
-
-Source Buffer uses Heap memory, isolated from Network Buffer Pool.
-Filter writes to a unified `OutputWriter` interface — it does not know whether the backend is a Network Buffer or a File.
-OutputWriter delivers buffers to per-channel `RecoveredBufferStore`. InputChannel consumes from the store.
+### 静态架构图（谁连到谁）
 
 ```mermaid
 graph TD
     S3[(S3)]
     SB["Source Buffer<br/>(Heap, 1 per task, reused)"]
     Filter["filterAndRewrite"]
-    OW["OutputWriter<br/>(per-task)"]
+    DP["dispatcher<br/>(memory cache)"]
     Pool["Network Buffer Pool"]
-    Disk[(Disk)]
+    Writer["FilteredSpillFile.Writer<br/>(disk appender)"]
+    Disk[(Spill file<br/>single reused)]
+    Readers["List of Reader<br/>(1 per physical file)"]
     Store["RecoveredBufferStore<br/>(per-channel)"]
     IC["InputChannel"]
+    CSW["ChannelStateWriter"]
 
     S3 -->|"Heap alloc"| SB
-    SB --> Filter -->|"write bytes"| OW
-    Pool --> OW
-    OW -->|"P1: buffer"| Store
-    OW -->|"P2: spill"| Disk
-    Disk -->|"P3/drain: load"| Store
+    SB --> Filter -->|"write bytes"| DP
+    Pool --> DP
+    DP -->|"P1 flush"| Store
+    DP -->|"P2 flush"| Writer
+    DP -->|"eagerDrain / close drain"| Readers
+    Writer --> Disk
+    Writer -->|"addEntry"| Readers
+    Readers -->|"readNext → Chunk"| Store
+    Readers -.->|"snapshot → checkpoint drain"| CSW
     Store -->|"tryTake()"| IC
 
     style SB fill:#fff9c4
-    style OW fill:#e8f5e9
+    style DP fill:#e8f5e9
     style Pool fill:#e8f5e9
+    style Writer fill:#fce4ec
     style Disk fill:#fce4ec
+    style Readers fill:#fff3e0
     style Store fill:#bbdefb
     style IC fill:#c8e6c9
 ```
 
-### Control Loop (recovery thread)
+（只画"谁可能发生往谁的动作"，不体现时序。下面三张图分别画三个独立场景的时序。）
+
+### 控制循环（recovery thread）
 
 ```mermaid
 flowchart TD
     Start(("Start")) --> S3Check{"S3 has data?"}
 
     S3Check -- Yes --> Read["Read S3 → Heap Buffer"]
-    Read --> Filter["filterAndRewrite:<br/>write to OutputWriter"]
+    Read --> Filter["filterAndRewrite:<br/>dispatcher.write(bytes, ci)"]
     Filter --> S3Check
 
-    S3Check -- No --> Flush["outputWriter.flush():<br/>flush active buffer → Store"]
+    S3Check -- No --> Flush["dispatcher.flush():<br/>flush cache + writer.finish()"]
     Flush --> Finish["finishReadRecoveredState():<br/>complete future → trigger channel conversion"]
-    Finish --> Drain["outputWriter.close():<br/>drain loop + cleanup"]
+    Finish --> Drain["dispatcher.close():<br/>blocking drain + cleanup"]
     Drain --> End(("End"))
 
     style Read fill:#2196F3,color:#fff
@@ -72,125 +87,142 @@ flowchart TD
     style Drain fill:#4CAF50,color:#fff
 ```
 
-Time sequence:
-1. **outputWriter.flush()** — flush active buffer's partial data to target Store. No more writes after this.
-2. **finishReadRecoveredState()** — complete `bufferFilteringCompleteFuture` per channel. Task thread detects this and triggers `convertRecoveredInputChannels()` (Store reference transfers from RecoveredInputChannel to LocalInputChannel/RemoteInputChannel).
-3. **outputWriter.close()** — blocking drain loop: `while (queue non-empty) → dequeue SpillEntry → requestBufferBlocking() → load entry to one buffer (1:1) → dispatch to target Store → cleanup spill files`. Runs concurrently with Task thread consumption and checkpoint on converted InputChannels.
+时序：
+1. **dispatcher.flush()** — flush cache 的残留数据到 P1 或 P2；`writer.finish()` seal 最后一个 Reader。此后不再接受 write。
+2. **finishReadRecoveredState()** — 完成 per-channel `bufferFilteringCompleteFuture`；Task thread 感知后触发 `convertRecoveredInputChannels()`（Store 引用从 RecoveredInputChannel 移交到 LocalInputChannel/RemoteInputChannel）。
+3. **dispatcher.close()** — 阻塞 drain（下方单独画），把 Reader 里剩下的每条 entry 都投到 Store，然后清理 spill 文件。
 
-### OutputWriter Internal Logic
+---
 
-#### Diagram Convention
+## 三个独立场景
 
-When a branch is `if (condition) execute action` with no else (both paths converge to the same next step), it is drawn as a single inline annotation on the edge, not as two separate branches.
+> **统一不变式**：cache capacity = Writer 产生的 entry 最大长度 = network buffer 容量 = `memorySegmentSize`。
+> 所有 "payload → network buffer" 的写入点都有 `Preconditions.checkState(buffer.getMaxCapacity() >= payload.length)`，违反即 `IllegalStateException`（假设成立，fail fast）。
+> 下面的流程图不再画这个分支。
 
-#### Design Principles
+### 场景 1：`write()` 里的 eagerDrain（P3：disk → buffer → store）
 
-1. **Disk stores raw bytes only** — no metadata (record boundaries, channel context, etc.) in spill files. All metadata lives in in-memory objects. Spill files are pure byte streams, replayed as memory-segment-sized chunks.
-2. **OutputWriter can switch between buffer and file at any byte position** — a record's first half can be in a Network Buffer, second half in a File. Task Thread's SpanningWrapper handles cross-buffer record reassembly transparently.
-3. **SpillEntry 与 Network Buffer 1:1 对应** — 每个 SpillEntry 最大 memorySegmentSize（`taskmanager.memory.segment-size`，默认 32KB），多次 write() 累积到同一个 SpillEntry 直到满或 channel 变更。重放时一个 SpillEntry = 一次磁盘读 = 一个 Network Buffer。无需知道 record 边界，SpanningWrapper 在消费端重组跨 buffer record。
-4. **P3 replay drains eagerly** — on each write, replay as many disk entries as possible (loop until no buffer available or disk empty), not just one. This maximizes throughput when buffers become available after a period of memory pressure.
-5. **Backend can change dynamically** — early writes may go to file (memory pressure), later writes may go to Network Buffer (pressure relieved). OutputWriter adapts per flush cycle, not per filterAndRewrite call.
-6. **"Disk has data" means unreplayed data** — tracked by a cursor, not by physical file existence. If all disk data has been replayed, "disk has data" is false even if spill files still exist on disk. Once the cursor reaches the end, subsequent writes can go to Network Buffer (pure memory path).
-7. **Spill directory from IOManager** — spill files are written to directories from `IOManager.getSpillingDirectoriesPaths()` (same as SpanningWrapper). No fallback to `java.io.tmpdir`. Invalid directories throw IOException directly.
-8. **OutputWriter is per-task** — one OutputWriter per task, all gates and channels within the task write to the same OutputWriter. The filtering thread is per-task, so one thread maps to one OutputWriter. Channel identity is passed via `write(data, length, channelInfo)`.
-
-#### Spill File Management
-
-All channels across all gates within a task share a single spill file. Data is appended sequentially (FIFO), and an in-memory queue tracks each entry's metadata.
-
-```
-File: [gate0_chA 32KB][gate0_chA 32KB][gate1_chC 30KB][gate0_chB 32KB]...
-       ^                                                             ^
-       read cursor                                                   write cursor
-```
-
-**In-memory queue:**
-```
-Queue<SpillEntry>:
-  {channelInfo, offset, length}
-  {channelInfo, offset, length}
-  ...
-```
-
-每个 SpillEntry 最大 memorySegmentSize（默认 32KB），与 Network Buffer 1:1 对应。多次 write() 的数据累积到同一个 SpillEntry，直到累积满或 channel 变更时密封。重放时一个 SpillEntry 直接加载到一个 Network Buffer。
-
-- **Write**: append bytes to file tail, enqueue entry (channelInfo + offset + length)
-- **Replay**: dequeue head entry, read from file at offset/length, deliver to the entry's channel's RecoveredBufferStore
-- **"Disk has data"**: queue is non-empty
-- **File rotation**: when file exceeds 64MB, create a new file. Old file is deleted after all its entries are replayed.
-- Both read cursor and write cursor are monotonically increasing — no random access needed.
-
-#### RecoveredBufferStore (per-channel)
-
-Each channel has its own RecoveredBufferStore. OutputWriter holds references to all stores and dispatches buffers to the correct store based on channelInfo.
-
-The store provides:
-- **tryTake()** — non-blocking consume of a ready buffer
-- **checkpoint()** — snapshot ready buffers for this channel. Disk data checkpoint is handled by OutputWriter (batch all channels, one sequential pass)
-- **isEmpty()** / **isComplete()** — state queries. isEmpty uses a pending count (not SpillEntry list) to track disk data existence
-
-The store is created in RecoveredInputChannel, then transferred to LocalInputChannel/RemoteInputChannel on channel conversion. InputChannel consumes via `store.tryTake()` in `getNextBuffer()`.
-
-#### write(data, length, channelInfo)
-
-Channel change is detected automatically: if `channelInfo` differs from the previous call, flush current backend before writing.
+dispatcher 每次 `write(bytes, ci)` **第一步**就是 eagerDrain — 尽可能把现存磁盘数据拉回 buffer 投给 Store，**然后才处理新字节**。非阻塞：拿不到 buffer 立刻停。
 
 ```mermaid
 flowchart TD
-    W(("write()")) -->|"if channel changed:<br/>flush current backend"| P3
+    Start(("write() 进入")) --> Iter{"下一个 Reader<br/>还有 entries?"}
+    Iter -- No --> Done(("→ 进入 cache 写入阶段"))
+    Iter -- Yes --> PeekCi["ci = reader.peekNextChannel()"]
+    PeekCi --> ReqBuf{"bufferSupplier(ci)<br/>(non-blocking)"}
+    ReqBuf -- null --> Stop(("buffer 不够，<br/>停止 drain"))
+    ReqBuf -- got buffer --> Consume["chunk = reader.readNext()<br/>memcpy → MemorySegment<br/>store.addBuffer + decrementPending"]
+    Consume --> Iter
 
-    P3{"Disk has data?"}
-    P3 -- Yes --> ReqP3{"Non-blocking<br/>request Buffer"}
-    ReqP3 -- Success --> Replay["Replay disk data<br/>→ target Store"]
-    Replay --> P3
-    ReqP3 -- Failure --> WTB
-    P3 -- No --> WTB["writeToBackend(bytes)"]
-    WTB --> Done(("return"))
-
-    style Replay fill:#4CAF50,color:#fff
+    style Consume fill:#4CAF50,color:#fff
+    style Stop fill:#9E9E9E,color:#fff
 ```
 
-#### writeToBackend(bytes)
+FIFO 靠遍历顺序保证（readers 按创建顺序；reader 内 entries 按插入顺序）。
 
-Pure write loop. If there is an active buffer with space, write directly. Otherwise check disk state to decide direction. Can only downgrade (buffer → file), never upgrade — because downgrading to file creates disk data, and disk data at entry forces file path.
+### 场景 2：`flushCache()` — P1 or P2 决策
 
-When a buffer is full, it is flushed to the target channel's RecoveredBufferStore.
+cache 满 / channel 切换 / `finish()` 时触发。
 
 ```mermaid
 flowchart TD
-    WTB(("writeToBackend()")) --> Active{"Has active buffer<br/>with space?"}
-    Active -- Yes --> WriteBuf["Write to buffer"]
-    WriteBuf --> Remain{"Remaining data?"}
-    Remain -- No --> Done(("return"))
-    Remain -- Yes --> WTB
+    F(("flushCache()")) --> Empty{"cachePosition > 0?"}
+    Empty -- No --> Nop(("no-op"))
+    Empty -- Yes --> IsIdle{"writer.isIdle()?"}
 
-    Active -- "No (if full buffer:<br/>flush → target Store)" --> DiskCheck
+    IsIdle -- No --> P2
+    IsIdle -- Yes --> ReqBuf{"bufferSupplier(ci)"}
+    ReqBuf -- null --> P2
+    ReqBuf -- got buffer --> P1["memcpy cache → MemorySegment<br/>store.addBuffer"]
 
-    DiskCheck{"Disk has data?"}
-    DiskCheck -- Yes --> WriteFile["Append to active SpillEntry<br/>(if full: seal → enqueue)"]
-    DiskCheck -- No --> ReqBuf{"Non-blocking<br/>request Buffer"}
-    ReqBuf -- Success --> WriteBuf
-    ReqBuf -- Failure --> WriteFile
+    P2["writer.writeEntry(cache, ci)<br/>store.incrementPending()"]
 
-    WriteFile --> Remain
+    P1 --> Reset(("cache 清空"))
+    P2 --> Reset
 
-    style WriteBuf fill:#2196F3,color:#fff
-    style WriteFile fill:#FF9800,color:#fff
+    style P1 fill:#2196F3,color:#fff
+    style P2 fill:#FF9800,color:#fff
 ```
 
-#### close()
+P2 两条触发路径：
+1. **writer 已不 idle**：磁盘上还有 pending，走 P2 保 FIFO（downgrade-only）
+2. **没拿到 buffer**：pool 耗尽
 
-OutputWriter.close() runs the blocking drain loop to load all remaining disk data into target stores, then cleans up spill files. Active buffer must already be flushed before close() (done by `outputWriter.flush()` prior to `finishReadRecoveredState()`).
+### 场景 3：`close()` 的 blocking drain
+
+recovery 结束后把所有剩余磁盘数据 drain 回 Store。和 eagerDrain 同结构，只是 **bufferSupplier 换成 blocking 版本**（会阻塞直到拿到 buffer）：
 
 ```mermaid
 flowchart TD
-    C(("close()")) --> Check{"Disk has data?"}
-    Check -- Yes --> Block["requestBufferBlocking()"]
-    Block --> Load["Dequeue SpillEntry →<br/>load to one buffer →<br/>target channel's Store"]
-    Load --> Check
-    Check -- No --> Cleanup["Cleanup spill files"]
-    Cleanup --> End(("return"))
+    C(("close() drain")) --> Iter{"下一个 Reader<br/>还有 entries?"}
+    Iter -- No --> Cleanup["writer.close() + deleteAllFiles"]
+    Iter -- Yes --> PeekCi["ci = reader.peekNextChannel()"]
+    PeekCi --> BlockBuf["blockingBufferSupplier(ci)<br/>(可能阻塞)"]
+    BlockBuf --> Consume["chunk = reader.readNext()<br/>memcpy → MemorySegment<br/>store.addBuffer + decrementPending"]
+    Consume --> Iter
+    Cleanup --> Done(("close 完成"))
 
-    style Load fill:#4CAF50,color:#fff
-    style Cleanup fill:#F44336,color:#fff
+    style Consume fill:#4CAF50,color:#fff
+    style Cleanup fill:#9C27B0,color:#fff
 ```
+
+---
+
+## Writer 内部（纯落盘）
+
+无 cache、无回调。`writeEntry(bytes, off, len, ci)` 流程：
+
+- 第一次调用：lazy `openNewFile()`，顺便创建对应 Reader 加入 `readers` list
+- 当前文件 > 64 MB：`rotateFile()` — seal 旧 Reader + 关旧 channel + 开新文件 + 新 Reader
+- 追加 bytes 到当前文件
+- 在当前 Reader 上 `addEntry(ci, fileOffset, length)`
+
+`finish()` 只 seal 最后一个 Reader；`close()` 在 `finish()` 基础上关写 channel + 连锁关所有 Reader。
+
+---
+
+## 设计不变式
+
+1. **磁盘只存字节**，无 metadata（record 边界、channel 信息都在内存 Entry 里）。spill 文件是纯 byte stream，回放时以 memorySegment 大小的 chunk 为单位。
+2. **dispatcher 可随意在 buffer 和文件间切换** — 一条 record 的前半段可在 Network Buffer、后半段可在 File。Task thread 的 SpanningWrapper 透明重组跨 buffer record。
+3. **每条 entry 最大 memorySegmentSize** — 和 Network Buffer 1:1 对齐。回放时一条 entry 正好填一个 buffer。
+4. **eager drain on each write** — 每次 write 前尽可能多拉磁盘数据回 buffer（loop until no buffer available or disk empty），最大化 buffer 腾空后的吞吐。
+5. **backend 动态切换** — 同一次 recovery 内，早期 write 可能落盘（memory pressure），后期 write 可能直投 buffer（压力消散）；downgrade-only 规则由 `writer.isIdle()` 管控。
+6. **"磁盘有数据"的判定** — 看 `writer.isIdle()`，本质是 cache 为空 AND 所有 Reader 的 entries 为空。不看物理文件是否存在。
+7. **Spill 目录来自 IOManager** — `IOManager.getSpillingDirectoriesPaths()`，不回退到 `java.io.tmpdir`；目录无效直接抛 IOException。
+8. **dispatcher 和 Writer 都是 per-task** — 一个 task 一个 dispatcher、一个 Writer；所有 gate/channel 共用。channel 身份通过 `write(bytes, length, channelInfo)` 传入。
+9. **Checkpoint 只允许发生在 recovery 结束后** — writer 已 `finish()`、所有 Reader 已 sealed 才允许 snapshot。两层 `checkState` 防御：dispatcher 在 drain 入口检查 `writer.isFinished()`；`Reader.snapshot()` 内部检查 `isSealed()`。违反 → `IllegalStateException`。
+
+## 生命周期 Assertions
+
+设计上的状态机约束，违反即 `IllegalStateException`（fail fast）。
+
+| 调用点 | 检查 |
+|---|---|
+| `dispatcher.write()` | `!flushed && !closed` |
+| `Writer.writeEntry()` | `!finished` |
+| `Reader.addEntry()` | `!sealed` |
+| `dispatcher.drainSpillEntriesToCheckpoint()` | `writer.isFinished()` |
+| `Reader.snapshot()` | `sealed` |
+
+Buffer size check（`buffer.getMaxCapacity() >= payload.length`）在所有"payload → network buffer"写入点也以 `checkState` 形式存在，但属于纯代码层面的防御性断言，不在这里重复；开头的 preamble 已声明。
+
+---
+
+## Checkpoint 数据流
+
+```mermaid
+flowchart LR
+    CP["checkpoint 触发"] --> Store1["每 store.checkpoint()<br/>ready buffers → ChannelStateWriter"]
+    Store1 --> CB["回调<br/>dispatcher.onChannelCheckpointStarted"]
+    CB --> Wait{"waitSet 空?"}
+    Wait -- No --> CB
+    Wait -- Yes --> Snap["对每个 Reader 调 snapshot()"]
+    Snap --> Iter["DrainChunkIterator"]
+    Iter --> CSW["ChannelStateWriter.addInputDataFromSpill<br/>(异步 executor 顺序读)"]
+```
+
+要点：
+- 每个 channel 的 ready buffers 先写入 checkpoint（各自 `store.checkpoint()`）
+- wait-set 收敛后，dispatcher 对 readers 调 `snapshot()`，拿独立 Reader 给 checkpoint executor 异步 `readNext` 消费 — 不影响 replay 链路
+- 详细的 wait 机制和 snapshot 并发语义分别见 `architecture_overview.md` 的"Checkpoint 的 wait 机制"小节 和 `spill_reader_drain_concurrency.md`。

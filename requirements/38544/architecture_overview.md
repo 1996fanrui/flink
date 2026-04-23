@@ -10,17 +10,28 @@ Recovery 期间，filterAndRewrite 产出的字节要交付给 input channel 继
 
 ```mermaid
 flowchart LR
-    IN[filterAndRewrite bytes] --> W(Writer<br/>memory cache)
-    W -- flush --> D[(Spill file<br/>single reused)]
+    IN[filterAndRewrite bytes] --> W(dispatcher<br/>memory cache)
+    W -- P1: got buffer --> NB[Network buffer<br/>→ InputChannel]
+    W -- P2: no buffer --> D[(Spill file<br/>single reused)]
     D --> R1[Replay 路径<br/>task thread]
     D --> R2[Checkpoint 路径<br/>snapshot]
-    R1 --> NB[Network buffer<br/>→ InputChannel]
+    R1 --> NB
     R2 --> CP[Checkpoint 输出流]
 ```
 
+## 组件关系
+
+- **dispatcher** 持有一个 Writer（lazy 创建于第一次 P2 downgrade）
+- **Writer** 持有 `List<Reader>`，每个物理文件一个 Reader；rotation 时追加新 Reader
+- **Reader** 被两种消费者使用：
+  - 原 Reader — dispatcher 在 recovery thread 上消费（replay 链路）
+  - snapshot Reader — `reader.snapshot()` 产出的独立对象，由 ChannelStateWriter 的 executor 消费（checkpoint 链路）
+
+close 连锁：`dispatcher.close()` → `writer.close()` → 所有 Reader.close()。
+
 ## 为什么这样设计
 
-**Cache 聚合写入**。Recovery 中字节到达节奏碎、量小，直写磁盘会制造大量小 I/O。Writer 内部留一块 `memorySegmentSize` 大小的 cache，攒够了才 flush 成一条 entry。**三个 flush 触发点**：cache 满、channel 切换、recovery 结束。
+**Cache 聚合写入**。字节到达碎、量小；dispatcher 内部留一块 `memorySegmentSize` 的 cache，攒够了才 flush。**三个 flush 触发点**：cache 满 / channel 切换 / recovery 结束。**flush 决策**：network buffer 够用 → P1（直投给 InputChannel）；不够 → P2（落盘）。
 
 **单文件复用，超阈值才 rotate**。每条 entry 都开新文件会造成大量小文件，metadata 和句柄开销重。做法是所有 flush 都追加到**同一个文件**；只有文件超过 64 MB 才 rotate 到下一个文件。
 
