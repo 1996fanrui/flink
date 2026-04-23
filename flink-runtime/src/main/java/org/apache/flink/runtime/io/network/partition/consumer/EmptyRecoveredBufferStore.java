@@ -63,8 +63,5 @@ class EmptyRecoveredBufferStore implements RecoveredBufferStore {
     public void setCheckpointListener(ChannelCheckpointStartedListener listener) {}
 
     @Override
-    public void setOnBecameEmptyCallback(Runnable callback) {}
-
-    @Override
     public void setNotificationCallback(Runnable callback) {}
 }

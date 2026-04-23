@@ -132,9 +132,10 @@ class ChannelStatePersisterTest {
 
     @Test
     void testStartPersistingRejectsNonEmptyStoreAndNonEmptyKnownBuffers() throws Exception {
-        // The credit=0 invariant: store non-empty and knownBuffers non-empty must not coexist.
-        // When RemoteInputChannel credit-gates correctly, by the time a barrier arrives the store
-        // is already drained or knownBuffers is empty. Violating this means a credit gating bug.
+        // Invariant: store non-empty and knownBuffers non-empty must not coexist. This is
+        // guaranteed by UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM=true (upstream does not replay
+        // output state) combined with RemoteInputChannel#getNextBuffer draining the store before
+        // polling receivedBuffers. Violating this means one of those assumptions broke.
         RecordingChannelStateWriter channelStateWriter = new RecordingChannelStateWriter();
         InputChannelInfo channelInfo = new InputChannelInfo(0, 0);
         ChannelStatePersister persister =

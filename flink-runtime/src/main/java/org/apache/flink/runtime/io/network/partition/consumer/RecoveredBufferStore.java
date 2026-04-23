@@ -100,16 +100,6 @@ public interface RecoveredBufferStore {
     void setCheckpointListener(ChannelCheckpointStartedListener listener);
 
     /**
-     * Registers a callback that is invoked once when the store transitions from non-empty to empty
-     * (i.e., {@link #isEmpty()} first becomes {@code true}). Used by {@code RemoteInputChannel} to
-     * release held credit back to the upstream partition when recovery data has been fully
-     * consumed.
-     *
-     * @param callback the callback to invoke; replaces any previously registered callback
-     */
-    void setOnBecameEmptyCallback(Runnable callback);
-
-    /**
      * Registers a callback that is invoked when a buffer is added to a previously empty ready
      * queue. Used to notify the InputChannel that data is available for consumption.
      *
