@@ -129,13 +129,6 @@ public class RemoteInputChannel extends InputChannel {
      */
     private final RecoveredBufferStore recoveredStore;
 
-    /**
-     * Guards against redundant credit releases. Set to true the first time {@link
-     * #releaseHeldCredit()} fires so that the callback is idempotent even if the onBecameEmpty
-     * trigger fires more than once.
-     */
-    private volatile boolean creditReleased = false;
-
     private long totalQueueSizeInBytes;
 
     public RemoteInputChannel(
@@ -178,11 +171,6 @@ public class RemoteInputChannel extends InputChannel {
         // writes.
         this.recoveredStore = checkNotNull(recoveredStore);
         this.recoveredStore.setNotificationCallback(this::notifyChannelNonEmpty);
-
-        // Gate credit until the recovered store is drained. The callback fires when isEmpty()
-        // first becomes true (either via tryTake or markComplete), at which point the held
-        // initialCredit is released to the upstream partition.
-        this.recoveredStore.setOnBecameEmptyCallback(this::releaseHeldCredit);
     }
 
     @VisibleForTesting
@@ -466,52 +454,11 @@ public class RemoteInputChannel extends InputChannel {
     /**
      * The unannounced credit is increased by the given amount and might notify increased credit to
      * the producer.
-     *
-     * <p>While the recovered store is non-empty (i.e., {@code readyBuffers} is non-empty OR {@code
-     * pendingCount > 0}), credit announcements are suppressed so the upstream producer cannot send
-     * new network data into {@code receivedBuffers} and interleave with recovered data. Credit is
-     * released the moment the store becomes empty, via {@link #releaseHeldCredit()}.
      */
     @Override
     public void notifyBufferAvailable(int numAvailableBuffers) throws IOException {
-        if (!recoveredStore.isEmpty()) {
-            // Credit gated: store still has data; do not announce credit to upstream.
-            return;
-        }
         if (numAvailableBuffers > 0 && unannouncedCredit.getAndAdd(numAvailableBuffers) == 0) {
             notifyCreditAvailable();
-        }
-    }
-
-    /**
-     * Releases the held initial credit to the upstream partition. Called once when the recovered
-     * store transitions from non-empty to empty (via {@link
-     * RecoveredBufferStore#setOnBecameEmptyCallback}). After this point the channel operates
-     * normally and credit flows through {@link #notifyBufferAvailable}.
-     *
-     * <p>Idempotent: subsequent invocations are no-ops guarded by {@link #creditReleased}.
-     */
-    private void releaseHeldCredit() {
-        if (creditReleased) {
-            return;
-        }
-        creditReleased = true;
-        // If requestSubpartitions() has not been called yet, skip: the correct initialCredit will
-        // be included in the PartitionRequest message when requestSubpartitions() is called,
-        // because getInitialCredit() returns initialCredit once the store is empty.
-        if (partitionRequestClient == null) {
-            return;
-        }
-        // Announce the initial credit that was gated during recovery. This triggers the upstream
-        // to start sending network data to this channel.
-        try {
-            if (initialCredit > 0 && unannouncedCredit.getAndAdd(initialCredit) == 0) {
-                notifyCreditAvailable();
-            }
-        } catch (IOException e) {
-            // Propagate as a channel error so the task fails cleanly rather than silently
-            // dropping the credit and hanging indefinitely.
-            onError(e);
         }
     }
 
@@ -609,14 +556,8 @@ public class RemoteInputChannel extends InputChannel {
         return id;
     }
 
-    /**
-     * Returns the credit to advertise in the initial partition request. When the recovered store is
-     * non-empty (readyBuffers non-empty OR pendingCount &gt; 0), credit is gated to 0 to prevent
-     * the upstream from sending network data before recovery completes. Credit is released by
-     * {@link #releaseHeldCredit()} once the store drains.
-     */
     public int getInitialCredit() {
-        return recoveredStore.isEmpty() ? initialCredit : 0;
+        return initialCredit;
     }
 
     public BufferProvider getBufferProvider() throws IOException {

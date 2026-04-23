@@ -62,42 +62,14 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
     @GuardedBy("this")
     private ChannelCheckpointStartedListener checkpointListener;
 
-    @GuardedBy("this")
-    private Runnable onBecameEmptyCallback;
-
-    /**
-     * Tracks whether the onBecameEmpty callback has already fired for the current empty state.
-     * Reset to false each time a buffer is added (store becomes non-empty again), so subsequent
-     * transitions from non-empty to empty fire the callback again.
-     */
-    @GuardedBy("this")
-    private boolean becameEmptyCallbackFired = false;
-
     // ---------------------------------------------------------------------------
     // Public interface methods (Task thread)
     // ---------------------------------------------------------------------------
 
     @Nullable
     @Override
-    public Buffer tryTake() {
-        // Capture the buffer and whether the store just became empty under the lock.
-        // Then fire the onBecameEmpty callback outside the lock to avoid deadlock.
-        Buffer buffer;
-        Runnable cb = null;
-        synchronized (this) {
-            buffer = readyBuffers.poll();
-            if (buffer != null
-                    && readyBuffers.isEmpty()
-                    && pendingCount == 0
-                    && !becameEmptyCallbackFired) {
-                becameEmptyCallbackFired = true;
-                cb = onBecameEmptyCallback;
-            }
-        }
-        if (cb != null) {
-            cb.run();
-        }
-        return buffer;
+    public synchronized Buffer tryTake() {
+        return readyBuffers.poll();
     }
 
     @Override
@@ -183,11 +155,6 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
         this.checkpointListener = listener;
     }
 
-    @Override
-    public synchronized void setOnBecameEmptyCallback(Runnable callback) {
-        this.onBecameEmptyCallback = callback;
-    }
-
     /**
      * {@inheritDoc}
      *
@@ -205,8 +172,7 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
 
     /**
      * Adds a recovered buffer to the ready queue. If the queue was previously empty, the
-     * notification callback is invoked to wake up the Task thread. The becameEmpty flag is also
-     * reset so a subsequent drain-to-empty transition fires the onBecameEmpty callback again.
+     * notification callback is invoked to wake up the Task thread.
      */
     public synchronized void addBuffer(Buffer buffer) {
         if (released) {
@@ -215,73 +181,29 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
         }
         boolean wasEmpty = readyBuffers.isEmpty();
         readyBuffers.add(buffer);
-        if (wasEmpty) {
-            // Reset the flag: now that the store is non-empty again, the next time it
-            // transitions to empty the callback should fire.
-            becameEmptyCallbackFired = false;
-            if (notificationCallback != null) {
-                notificationCallback.run();
-            }
+        if (wasEmpty && notificationCallback != null) {
+            notificationCallback.run();
         }
     }
 
-    /**
-     * Marks this store as complete — no more buffers will be added by the recovery thread. If the
-     * store is already empty when markComplete is called and the onBecameEmpty callback has not yet
-     * fired for this empty state, it is fired outside any lock.
-     */
-    public void markComplete() {
-        Runnable cb = null;
-        synchronized (this) {
-            complete = true;
-            // If already empty at the moment of completion and callback hasn't fired yet,
-            // fire it now to ensure the empty transition is always signalled.
-            if (readyBuffers.isEmpty() && pendingCount == 0 && !becameEmptyCallbackFired) {
-                becameEmptyCallbackFired = true;
-                cb = onBecameEmptyCallback;
-            }
-        }
-        if (cb != null) {
-            cb.run();
-        }
+    /** Marks this store as complete — no more buffers will be added by the recovery thread. */
+    public synchronized void markComplete() {
+        complete = true;
     }
 
     /**
      * Increments the pending spill entry count. Called when FilteredBufferDispatcher spills data to
      * disk.
-     *
-     * <p>If the store was logically empty before this call (readyBuffers empty AND pendingCount was
-     * zero), reset the {@code becameEmptyCallbackFired} flag so that the next empty transition will
-     * fire the onBecameEmpty callback again.
      */
     public synchronized void incrementPending() {
-        if (readyBuffers.isEmpty() && pendingCount == 0) {
-            // Store is transitioning from empty to non-empty; reset the flag so the callback
-            // fires again when the store next becomes empty.
-            becameEmptyCallbackFired = false;
-        }
         pendingCount++;
     }
 
     /**
      * Decrements the pending spill entry count. Called when FilteredBufferDispatcher drains a spill
      * entry (into a buffer via P3/close path, or directly to checkpoint storage via phase-2 path).
-     *
-     * <p>If this decrement causes the store to become empty (readyBuffers empty AND pendingCount
-     * reaches zero) and the onBecameEmpty callback has not yet fired for this empty state, the
-     * callback is fired outside the lock to prevent deadlocks.
      */
-    public void decrementPending() {
-        Runnable cb = null;
-        synchronized (this) {
-            pendingCount--;
-            if (readyBuffers.isEmpty() && pendingCount == 0 && !becameEmptyCallbackFired) {
-                becameEmptyCallbackFired = true;
-                cb = onBecameEmptyCallback;
-            }
-        }
-        if (cb != null) {
-            cb.run();
-        }
+    public synchronized void decrementPending() {
+        pendingCount--;
     }
 }

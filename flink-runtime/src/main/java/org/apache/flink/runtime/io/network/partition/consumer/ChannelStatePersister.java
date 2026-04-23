@@ -77,8 +77,10 @@ public final class ChannelStatePersister {
      * <ol>
      *   <li>Validates that this checkpoint has not been superseded (throws {@link
      *       CheckpointException} if a newer barrier was already received).
-     *   <li>Asserts the credit=0 invariant: {@code store.isEmpty() XOR knownBuffers.isEmpty()}. If
-     *       both are non-empty the upstream credit gating in {@link RemoteInputChannel} has failed.
+     *   <li>Asserts the disk-network exclusivity invariant: {@code store.isEmpty() || knownBuffers.isEmpty()}.
+     *       Guaranteed by {@code UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM=true} (upstream does not
+     *       replay output state) combined with {@link RemoteInputChannel#getNextBuffer} draining the
+     *       store before polling {@code receivedBuffers}.
      *   <li>Delegates ready-buffer snapshot and FilteredBufferDispatcher callback to {@link
      *       RecoveredBufferStore#checkpoint}.
      *   <li>Writes network inflight buffers (Remote only) via {@link
@@ -116,14 +118,16 @@ public final class ChannelStatePersister {
         }
 
         // Defensive invariant check: store non-empty and knownBuffers non-empty must not coexist.
-        // The credit=0 gating in RemoteInputChannel ensures that when recovered data is still
-        // present (store non-empty), no new network data enters receivedBuffers. Violations here
-        // indicate a credit gating bug and must fail-fast rather than silently produce corrupt
-        // channel state.
+        // Guaranteed by UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM=true (upstream has no output state
+        // to replay, so receivedBuffers stays empty of DATA_BUFFER while the recovered store is
+        // draining) together with RemoteInputChannel#getNextBuffer draining the store first.
+        // Violations here indicate one of those assumptions broke and must fail-fast rather than
+        // silently produce corrupt channel state.
         checkState(
                 store.isEmpty() || knownBuffers.isEmpty(),
                 "Invariant violated: store has data (size=%s) AND knownBuffers non-empty (size=%s) at barrier %s. "
-                        + "This means credit=0 gating in RemoteInputChannel failed.",
+                        + "Requires UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM=true so upstream does not "
+                        + "replay output state into receivedBuffers while the recovered store is still draining.",
                 store.size(),
                 knownBuffers.size(),
                 barrierId);
