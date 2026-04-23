@@ -77,7 +77,7 @@ RecoveredBufferStore 被两个线程并发访问，需要线程安全保证。Sp
 - 活跃 buffer（当前正在写入的 Network Buffer）
 - 活跃 SpillEntry 累积状态（起始 offset、已累积长度、当前 channelInfo）。与活跃 buffer 对称：活跃 buffer 累积内存数据，活跃 SpillEntry 累积磁盘数据
 - 当前 channelInfo（检测 channel 变更）
-- SpillFileWriter（管理磁盘写入和文件轮转）
+- FilteredSpillFile（管理磁盘写入和文件轮转）
 - 全局 FIFO SpillEntry 队列（已密封 entry 的重放顺序）
 - flushed 标志（flush 后拒绝 write）
 - closed 标志（幂等 close）
@@ -106,7 +106,7 @@ RecoveredBufferStore 被两个线程并发访问，需要线程安全保证。Sp
 
 - `addBuffer(Buffer)` — 添加就绪 buffer。如果队列从空变非空，触发通知回调唤醒 InputChannel
 - `markComplete()` — 标记 store 完成。close() drain 结束后调用
-- `setNotificationCallback(Runnable)` — 设置通知回调（synchronized，保证 channel conversion 时与 addBuffer 的可见性）。channel conversion 时需要更新回调指向新的 InputChannel
+- `setDataAvailableCallback(Runnable)` — 设置数据可用回调（synchronized，保证 channel conversion 时与 addBuffer 的可见性）。channel conversion 时需要更新回调指向新的 InputChannel
 - `incrementPending()` — OutputWriter spill 数据时调用（P2 路径），递增 pending 计数
 - `decrementPending()` — OutputWriter 重放磁盘数据时调用（P3/drain 路径），递减 pending 计数
 
@@ -151,7 +151,7 @@ OutputWriter 等待所有 channel 都触发 checkpoint 后，**一次性顺序�
 
 **包**：`org.apache.flink.runtime.checkpoint.channel`
 
-#### SpillFileWriter
+#### FilteredSpillFile
 
 **职责**：追加原始字节到 spill 文件。管理文件轮转。
 
@@ -164,7 +164,7 @@ OutputWriter 等待所有 channel 都触发 checkpoint 后，**一次性顺序�
 - close 后 write 抛 IllegalStateException（REQ-JD2C）
 - close() 使用 try-finally 保证文件句柄释放（REQ-JD2C）
 
-#### SpillFileReader
+#### FilteredSpillFile.Reader
 
 **职责**：从 spill 文件顺序读取数据。
 
@@ -191,7 +191,7 @@ OutputWriter 等待所有 channel 都触发 checkpoint 后，**一次性顺序�
 
 OutputWriter 内部追踪当前累积状态（起始 offset、已累积长度、当前 channelInfo），仅在密封时创建不可变的 SpillEntry 对象并加入 FIFO 队列。
 
-**SpillEntry 不持有文件引用**：SpillEntry 是纯元数据，不持有 SpillFileReader、文件路径或任何 I/O 资源引用。文件定位由 OutputWriter 负责：OutputWriter 内部维护 `allSpillFileReaders` 列表和 `lastKnownFileCount` 计数器，文件轮转时检测到新文件创建则生成新 reader（同一文件共享同一 reader 实例，避免重复打开 FileChannel）。密封 SpillEntry 时，OutputWriter 记录当前 reader 的关联（entries 在 FIFO 队列中按文件顺序排列，drain 时按队列顺序遍历，天然切换 reader）。全局 FIFO 队列保证重放顺序，文件按创建顺序依次读取和删除。
+**SpillEntry 不持有文件引用**：SpillEntry 是纯元数据，不持有 FilteredSpillFile.Reader、文件路径或任何 I/O 资源引用。文件定位由 OutputWriter 负责：OutputWriter 内部维护 `allFilteredSpillFile.Readers` 列表和 `lastKnownFileCount` 计数器，文件轮转时检测到新文件创建则生成新 reader（同一文件共享同一 reader 实例，避免重复打开 FileChannel）。密封 SpillEntry 时，OutputWriter 记录当前 reader 的关联（entries 在 FIFO 队列中按文件顺序排列，drain 时按队列顺序遍历，天然切换 reader）。全局 FIFO 队列保证重放顺序，文件按创建顺序依次读取和删除。
 
 ### Spill 文件管理（REQ-SFMG, REQ-CRSR）
 
@@ -348,7 +348,7 @@ OutputWriter 通过构造器接收这两个方法的函数式接口引用，解�
 安全保证：
 
 - write/close on closed OutputWriter 抛 IllegalStateException
-- SpillFileWriter.close() 使用 try-finally 保证文件句柄释放
+- FilteredSpillFile.close() 使用 try-finally 保证文件句柄释放
 - OutputWriter.close() 幂等：重复调用不抛异常
 - Spill 文件使用 IOManager 提供的目录（REQ-SPDR），无 java.io.tmpdir 回退
 

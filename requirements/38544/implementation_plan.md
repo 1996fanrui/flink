@@ -5,7 +5,7 @@
 | JIRA | Summary | Type | Key Files |
 |------|---------|------|-----------|
 | FLINK-39519 | Source Buffer Heap allocation (single reusable segment per task, with invariant check) + non-blocking `requestBuffer()` and removal of `requestBufferBlocking()` heap fallback | Modify | `RecoveredChannelStateHandler`, `RecoveredInputChannel` |
-| FLINK-39520 | SpillFile I/O + RecoveredBufferStore | New | `SpillFileWriter`, `SpillFileReader`, `SpillEntry`, `RecoveredBufferStore`, `RecoveredBufferStoreImpl` |
+| FLINK-39520 | SpillFile I/O + RecoveredBufferStore | New | `FilteredSpillFile`, `FilteredSpillFile.Reader`, `SpillEntry`, `RecoveredBufferStore`, `RecoveredBufferStoreImpl` |
 | FLINK-39521 | OutputWriter (write + P3 drain + flush + close) | New | `OutputWriter`, `OutputWriterImpl` |
 | FLINK-39522 | InputChannel consumes from RecoveredBufferStore | Modify | `RecoveredInputChannel`, `LocalInputChannel`, `RemoteInputChannel`, `*RecoveredInputChannel` |
 | FLINK-39523 | ChannelStateWriter streaming overload for checkpoint | Modify | `ChannelStateWriter`, `ChannelStateWriterImpl`, `ChannelStateWriteRequest`, `ChannelStateCheckpointWriter` |
@@ -46,13 +46,13 @@ Two new components with no dependency on each other, grouped because both are pr
 **New files:**
 
 SpillFile I/O (REQ-BFSD, REQ-SFMG, REQ-SPDR, REQ-T5AJ):
-- `SpillFileWriter.java` — append raw bytes via FileChannel + `FileUtils.writeCompletely()`. Constructor takes `String[] spillDirs` only (no memorySegmentSize). Throws IllegalStateException on write after close. No fsync.
-- `SpillFileReader.java` — sequential read via FileChannel positional read. `read(offset, buffer, length)` for drain loading. `openInputStream(offset, length)` returns bounded InputStream for checkpoint streaming (via ChannelStateWriter streaming overload, no Network Buffer Pool or heap buffer allocation).
+- `FilteredSpillFile.java` — append raw bytes via FileChannel + `FileUtils.writeCompletely()`. Constructor takes `String[] spillDirs` only (no memorySegmentSize). Throws IllegalStateException on write after close. No fsync.
+- `FilteredSpillFile.Reader.java` — sequential read via FileChannel positional read. `read(offset, buffer, length)` for drain loading. `openInputStream(offset, length)` returns bounded InputStream for checkpoint streaming (via ChannelStateWriter streaming overload, no Network Buffer Pool or heap buffer allocation).
 - `SpillEntry.java` — `{InputChannelInfo channelInfo, long offset, int length}`. Pure metadata, no file reference (file association managed by OutputWriter). 每个 entry 最大 memorySegmentSize，与 Network Buffer 1:1 对应。多次 write() 累积到同一个 entry，满或 channel 变更时密封。
 
 RecoveredBufferStore (REQ-7388):
 - `RecoveredBufferStore.java` — public interface. See `interfaces.md`.
-- `RecoveredBufferStoreImpl.java` — implementation with internal methods (addBuffer, markComplete, setNotificationCallback (synchronized), incrementPending, decrementPending). Store tracks pending disk entries by count only — SpillEntry objects are owned by OutputWriter. Checkpoint of disk data delegated to OutputWriter (batch all channels, one sequential pass).
+- `RecoveredBufferStoreImpl.java` — implementation with internal methods (addBuffer, markComplete, setDataAvailableCallback (synchronized), incrementPending, decrementPending). Store tracks pending disk entries by count only — SpillEntry objects are owned by OutputWriter. Checkpoint of disk data delegated to OutputWriter (batch all channels, one sequential pass).
 
 ---
 
@@ -81,7 +81,7 @@ OutputWriterImpl(
   - P3 eager drain: while (spillEntryQueue non-empty AND non-blocking bufferSupplier succeeds) → load from disk → `store.addBuffer()` + `store.decrementPending()`
   - writeToBackend: fill active buffer (P1), downgrade to file (P2) when no buffer. `downgradedToFile` flag resets per write() call
   - Full buffer → `store.addBuffer(buffer)`
-  - Spill → `spillFileWriter.write()` + 累积到活跃 SpillEntry，满时密封入队 + `store.incrementPending()`
+  - Spill → `spillFile.writeEntry()` + 累积到活跃 SpillEntry，满时密封入队 + `store.incrementPending()`
 
 - `flush()`: send active buffer's partial data to target store. Reject further write() calls.
 

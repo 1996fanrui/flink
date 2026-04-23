@@ -118,7 +118,7 @@ All new logic (OutputWriter, SpillFile I/O, RecoveredBufferStore, drain loop) li
 ### REQ-JD2C Resource Safety
 
 - write/close on a closed OutputWriter must throw IllegalStateException
-- SpillFileWriter.close() must use try-finally to guarantee file handle release
+- FilteredSpillFile.close() must use try-finally to guarantee file handle release
 - OutputWriter.close() is idempotent: repeated calls do not throw
 - Spill files cleaned up when all entries replayed and store released. Abnormal exit relies on TM's FileChannelManagerImpl shutdown hook
 
@@ -178,7 +178,7 @@ State:
 Checkpoint:
 - `checkpoint(ChannelStateWriter, checkpointId, channelInfo)` — snapshot all remaining data:
   1. Ready buffers: retain each buffer, pass to `ChannelStateWriter.addInputData(CloseableIterator<Buffer>)` (existing API)
-  2. Disk data: for each pending SpillEntry, open InputStream from SpillFileReader → pass to `ChannelStateWriter.addInputData(checkpointId, info, seqNum, InputStream, dataLength)` (new streaming overload). Streams from spill file directly to checkpoint DataOutputStream, without consuming Network Buffer Pool buffers. ChannelStateWriter streaming overload is a new method added as part of this design (not modifying existing addInputData behavior)
+  2. Disk data: for each pending SpillEntry, open InputStream from FilteredSpillFile.Reader → pass to `ChannelStateWriter.addInputData(checkpointId, info, seqNum, InputStream, dataLength)` (new streaming overload). Streams from spill file directly to checkpoint DataOutputStream, without consuming Network Buffer Pool buffers. ChannelStateWriter streaming overload is a new method added as part of this design (not modifying existing addInputData behavior)
 
 Resource cleanup:
 - `releaseAll()` — recycle all ready buffers, close spill files, stop drain loop
@@ -194,7 +194,7 @@ LocalInputChannel:
 - Constructor: remove `ArrayDeque<Buffer> initialRecoveredBuffers` parameter and buffer migration logic. Add `RecoveredBufferStore store` field instead.
 - `getNextBuffer()`: check `store` first (recovered data), then `toBeConsumedBuffers` (FullyFilledBuffer splits), then `subpartitionView` (normal data).
 - `getNextRecoveredBuffer()`: data source changes from `toBeConsumedBuffers` to `store.tryTake()`. Priority event handling (`hasPendingPriorityEvent`) stays in InputChannel, unchanged.
-- `checkpointStarted()`: replace `toBeConsumedBuffers` iteration with `store.checkpoint(writer, checkpointId, channelInfo)`. Store handles both ready buffers and disk data snapshot internally.
+- `checkpointStarted()`: replace `toBeConsumedBuffers` iteration with `store.checkpoint(writer, checkpointId)`. Store is constructor-bound to its `InputChannelInfo` and handles both ready buffers and disk data snapshot internally.
 - `getBuffersInUseCount()` / `unsynchronizedGetNumberOfQueuedBuffers()`: add `store.size()` to the count.
 - `releaseAllResources()`: call `store.releaseAll()`. No longer need to recycle recovered buffers from `toBeConsumedBuffers`.
 

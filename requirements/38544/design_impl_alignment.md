@@ -57,8 +57,8 @@
 | # | 设计文档描述 | 实际代码实现 | 出处 | 状态 |
 |---|-------------|-------------|------|------|
 | 1 | SpillEntry 结构为 3 字段：`{InputChannelInfo channelInfo, long offset, int length}` | ~~4 字段~~ → 3 字段 | design.md "SpillEntry 结构" 节；`SpillEntry.java` | **已修复** |
-| 2 | closed 状态下 write 抛 **IllegalStateException** | ~~IOException~~ → IllegalStateException | design.md REQ-JD2C；`SpillFileWriter.write()` | **已修复** |
-| 3 | 写入使用 **FileUtils.writeCompletely()** | ~~自行循环~~ → FileUtils.writeCompletely() | spill_io_patterns.md 决策表；`SpillFileWriter.write()` | **已修复** |
+| 2 | closed 状态下 write 抛 **IllegalStateException** | ~~IOException~~ → IllegalStateException | design.md REQ-JD2C；`FilteredSpillFile.write()` | **已修复** |
+| 3 | 写入使用 **FileUtils.writeCompletely()** | ~~自行循环~~ → FileUtils.writeCompletely() | spill_io_patterns.md 决策表；`FilteredSpillFile.write()` | **已修复** |
 
 ---
 

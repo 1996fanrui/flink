@@ -90,7 +90,7 @@
 ```
 InputChannel.checkpointStarted(barrier)
   └─ channelStatePersister.startPersisting(barrier.getId(), store, inflightBuffers)
-       ├─ store.checkpoint(channelStateWriter, id, channelInfo)
+       ├─ store.checkpoint(channelStateWriter, id)  // channelInfo 来自 store 构造器绑定
        │    ├─ snapshot ready buffers: addInputData(CloseableIterator<Buffer>)
        │    └─ 回调 OutputWriter: checkpointCallback.onChannelCheckpointStarted(id, channelInfo)
        │
@@ -172,12 +172,12 @@ spill 字节 + `ChannelStatePersister.startPersisting` 写入的 `knownBuffers` 
 ### 2.7 EMPTY 单例
 
 - `RecoveredBufferStore.EMPTY` 单例：`isEmpty()=true`, `isComplete()=true`, `tryTake()=null`, `size()=0`,
-  `peekNextDataType()=NONE`, `checkpoint()`/`releaseAll()`/`setNotificationCallback()` 全 no-op。
+  `peekNextDataType()=NONE`, `checkpoint()`/`releaseAll()`/`setDataAvailableCallback()` 全 no-op。
 - 构造器**无条件持有** store，删除 `!isEmpty()` 守卫（该守卫本身有 bug：转换瞬间 store 可能空，但后续
   OutputWriter 仍会 `addBuffer`；守卫住就会丢数据）。
 - Non-filtering 路径传 EMPTY，filtering 路径传真实 store。
 - 所有 `recoveredStore != null` 删除，只留 `!store.isEmpty()` / `!store.isComplete()`。
-- `setNotificationCallback` 提升到接口，消 `instanceof RecoveredBufferStoreImpl`。
+- `setDataAvailableCallback` 提升到接口，消 `instanceof RecoveredBufferStoreImpl`。
 - 用户的性能顾虑：真实 store 消费完 `isEmpty()=true`，热路径行为与 EMPTY 等价，无额外开销。
 
 ### 2.8 Non-filtering 模式不受影响
@@ -252,7 +252,7 @@ OutputWriter 不存在，store = EMPTY，`store.checkpoint()` 是 no-op（不回
 
 **问题**：
 1. 15 处 null 判断。
-2. `instanceof RecoveredBufferStoreImpl` 反射式强转调用 `setNotificationCallback`——接口上没这个方法。
+2. `instanceof RecoveredBufferStoreImpl` 反射式强转调用 `setDataAvailableCallback`——接口上没这个方法。
 3. 构造器里 `if (recoveredStore != null && !recoveredStore.isEmpty()) this.recoveredStore = recoveredStore`：
    转换瞬间 store 可能为空（drain 还没把 disk 数据加载回来），但随后 OutputWriter 会继续 `addBuffer`；
    以"当前为空"为由丢掉引用就会丢数据。
@@ -298,7 +298,7 @@ drain 期间 `subpartitionView` 已存在、barrier 仍可能先到，语义有�
 - `OutputWriterImpl` 没有任何 `checkpoint(...)` / `addInputData(InputStream)` / `openInputStream` 调用。
 - 没有"等所有 channel 触发完"的聚合点。
 - `ChannelStateWriter.addInputData(InputStream, dataLength)` 已存在但**无人调用**。
-- `SpillFileReader.openInputStream` 已存在但无人调用。
+- `FilteredSpillFile.Reader.openInputStream` 已存在但无人调用。
 
 **后果**：recovery 期间触发 checkpoint，spill 文件里未重放的数据会丢失。REQ-KM7C 未实现。
 
@@ -336,9 +336,9 @@ void startPersisting(long barrierId, RecoveredBufferStore store, List<Buffer> kn
                     + "output state into receivedBuffers while the recovered store is still draining.",
             store.size(), knownBuffers.size(), barrierId);
 
-    // 阶段 1-a: store ready buffers + 通知 OutputWriter
+    // 阶段 1-a: store ready buffers + 通知 OutputWriter（store 构造时已绑定 channelInfo）
     try {
-        store.checkpoint(channelStateWriter, barrierId, channelInfo);
+        store.checkpoint(channelStateWriter, barrierId);
     } catch (IOException e) {
         throw new CheckpointException(
                 "Failed to checkpoint recovered store",
@@ -414,7 +414,7 @@ synchronized void onChannelCheckpointStarted(long id, InputChannelInfo info) {
 private void drainSpillEntriesToCheckpoint(long id) {
     // 顺序遍历，逐 entry 写入（ChannelStateWriter 按 channelInfo 聚合）
     for (SpillEntry entry : spillEntryQueue) {
-        SpillFileReader reader = readerFor(entry);
+        FilteredSpillFile.Reader reader = readerFor(entry);
         InputStream is = reader.openInputStream(entry.getOffset(), entry.getLength());
         channelStateWriter.addInputData(
                 id, entry.getChannelInfo(),
@@ -460,10 +460,10 @@ private void drainSpillEntriesToCheckpoint(long id) {
 | 原始 JIRA | fix 名称 | 内容 |
 |-----------|---------|------|
 | FLINK-39519 | — | 无需修正 |
-| FLINK-39520 | **FLINK-39520 的 fix** | `CheckpointCallback` 接口 + `setCheckpointCallback` 加到接口+Impl；`setNotificationCallback` 升接口；`RecoveredBufferStoreImpl.checkpoint()` 内调用 callback（前文 J.2.a）；创建 `RecoveredBufferStore.EMPTY` 单例（所有方法 no-op） |
+| FLINK-39520 | **FLINK-39520 的 fix** | `CheckpointCallback` 接口 + `setCheckpointCallback` 加到接口+Impl；`setDataAvailableCallback` 升接口；`RecoveredBufferStoreImpl.checkpoint()` 内调用 callback（前文 J.2.a）；创建 `RecoveredBufferStore.EMPTY` 单例（所有方法 no-op） |
 | FLINK-39521 | **FLINK-39521 的 fix** | OutputWriter：持有 callback 注册、wait-set 状态机（`onChannelCheckpointStarted` 入口、首次扫 `spillEntryQueue`、后续 O(1) 移除）、`synchronized(this)` 覆盖 queue/wait-set/checkpointId（drain 循环同锁）、构造时向各 store 注册 callback。**不含** phase2 磁盘写入（依赖 FLINK-39523） |
 | FLINK-39522 | **FLINK-39522 的 fix** | §4.1 集中化（`startPersisting(barrierId, store, knownBuffers)` + `checkState(store.isEmpty() \|\| knownBuffers.isEmpty())` 作为防御性兜底）；fix A（Local 改 emptyList）；fix B（删 Remote.checkReadability）；fix D（删 RecoveredInputChannel.onRecoveredStateBuffer）；fix E（Local/Remote 无条件持有 store，默认 EMPTY，消 15 处 null 守卫 + instanceof） |
-| FLINK-39523 | **FLINK-39523 的 fix** | OutputWriter `drainSpillEntriesToCheckpoint(id)`：遍历 queue 经 `SpillFileReader.openInputStream` 调 FLINK-39523 新增的 `ChannelStateWriter.addInputData(InputStream)`；"snapshot + drain" 合并避免双写 |
+| FLINK-39523 | **FLINK-39523 的 fix** | OutputWriter `drainSpillEntriesToCheckpoint(id)`：遍历 queue 经 `FilteredSpillFile.Reader.openInputStream` 调 FLINK-39523 新增的 `ChannelStateWriter.addInputData(InputStream)`；"snapshot + drain" 合并避免双写 |
 | FLINK-39524 | — | 无需修正 |
 
 **最终 10 条变更**：
@@ -544,7 +544,7 @@ channelStatePersister.startPersisting(
 ### Q7（已定）. `ChannelStatePersister.startPersisting` 内的阶段顺序
 
 签名 `startPersisting(barrierId, store, knownBuffers)` 内两段调用：
-- `store.checkpoint(writer, id, channelInfo)`（内部 `addInputData(ready iterator)` + 回调 OutputWriter）
+- `store.checkpoint(writer, id)`（内部 `addInputData(ready iterator)` + 回调 OutputWriter；`channelInfo` 来自 store 构造器绑定）
 - `channelStateWriter.addInputData(id, channelInfo, UNKNOWN, knownBuffers iterator)`（Remote 网络 inflight）
 
 **结论**：顺序无关，两段在任何 checkpoint 时刻**恰好互斥**，由 §2.6 invariant 保证
