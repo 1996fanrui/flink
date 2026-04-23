@@ -22,6 +22,7 @@ import org.apache.flink.metrics.SimpleCounter;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
 import org.apache.flink.runtime.checkpoint.CheckpointType;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
+import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.runtime.checkpoint.channel.RecordingChannelStateWriter;
 import org.apache.flink.runtime.execution.CancelTaskException;
 import org.apache.flink.runtime.io.disk.NoOpFileChannelManager;
@@ -678,7 +679,7 @@ class LocalInputChannelTest {
         final SingleInputGate inputGate = createSingleInputGate(1);
 
         // Create 3 recovered buffers in a store
-        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(new InputChannelInfo(0, 0));
         store.addBuffer(TestBufferFactory.createBuffer(32));
         store.addBuffer(TestBufferFactory.createBuffer(32));
         store.addBuffer(TestBufferFactory.createBuffer(32));
@@ -717,7 +718,7 @@ class LocalInputChannelTest {
         // given: LocalInputChannel with recovered buffers in a store
         SingleInputGate inputGate = createSingleInputGate(1);
 
-        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(new InputChannelInfo(0, 0));
         store.addBuffer(TestBufferFactory.createBuffer(10));
         store.addBuffer(TestBufferFactory.createBuffer(20));
 
@@ -754,7 +755,7 @@ class LocalInputChannelTest {
         // given: Local input channel with recovered buffers in a store
         SingleInputGate inputGate = new SingleInputGateBuilder().build();
 
-        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(new InputChannelInfo(0, 0));
         store.addBuffer(TestBufferFactory.createBuffer(10));
         store.addBuffer(TestBufferFactory.createBuffer(20));
         store.addBuffer(TestBufferFactory.createBuffer(30));
@@ -798,7 +799,7 @@ class LocalInputChannelTest {
         // given: LocalInputChannel with a RecoveredBufferStore containing buffers
         SingleInputGate inputGate = new SingleInputGateBuilder().build();
 
-        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(new InputChannelInfo(0, 0));
         store.addBuffer(TestBufferFactory.createBuffer(10));
         store.addBuffer(TestBufferFactory.createBuffer(20));
         store.addBuffer(TestBufferFactory.createBuffer(30));
@@ -867,7 +868,7 @@ class LocalInputChannelTest {
         // given: Local input channel with recovered buffers but NO subpartition view initialized
         SingleInputGate inputGate = new SingleInputGateBuilder().build();
 
-        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(new InputChannelInfo(0, 0));
         store.addBuffer(TestBufferFactory.createBuffer(10));
 
         LocalInputChannel channel =
@@ -1073,7 +1074,7 @@ class LocalInputChannelTest {
         TestingResultPartitionManager partitionManager =
                 new TestingResultPartitionManager(subpartitionView);
 
-        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(new InputChannelInfo(0, 0));
         for (int size : recoveredBufferSizes) {
             store.addBuffer(TestBufferFactory.createBuffer(size));
         }

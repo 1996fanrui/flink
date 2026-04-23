@@ -77,13 +77,14 @@ public interface RecoveredBufferStore {
      * (if one is registered) <em>outside</em> any store-level lock to avoid deadlock with the
      * FilteredBufferDispatcher.
      *
+     * <p>The store is bound to a single {@link InputChannelInfo} at construction time; both the
+     * snapshot and the listener invocation use that bound channel info.
+     *
      * @param writer the channel state writer to checkpoint to
      * @param checkpointId the checkpoint ID
-     * @param channelInfo the input channel info for this store
      * @throws IOException if checkpointing fails
      */
-    void checkpoint(ChannelStateWriter writer, long checkpointId, InputChannelInfo channelInfo)
-            throws IOException;
+    void checkpoint(ChannelStateWriter writer, long checkpointId) throws IOException;
 
     /** Releases all buffers held in this store and clears all state. */
     void releaseAll();
@@ -105,5 +106,5 @@ public interface RecoveredBufferStore {
      *
      * @param callback the callback to invoke; replaces any previously registered callback
      */
-    void setNotificationCallback(Runnable callback);
+    void setDataAvailableCallback(Runnable callback);
 }

@@ -18,7 +18,6 @@
 package org.apache.flink.runtime.io.network.partition.consumer;
 
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
-import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 
 import javax.annotation.Nullable;
@@ -53,8 +52,7 @@ class EmptyRecoveredBufferStore implements RecoveredBufferStore {
     }
 
     @Override
-    public void checkpoint(
-            ChannelStateWriter writer, long checkpointId, InputChannelInfo channelInfo) {}
+    public void checkpoint(ChannelStateWriter writer, long checkpointId) {}
 
     @Override
     public void releaseAll() {}
@@ -63,5 +61,5 @@ class EmptyRecoveredBufferStore implements RecoveredBufferStore {
     public void setCheckpointListener(ChannelCheckpointStartedListener listener) {}
 
     @Override
-    public void setNotificationCallback(Runnable callback) {}
+    public void setDataAvailableCallback(Runnable callback) {}
 }

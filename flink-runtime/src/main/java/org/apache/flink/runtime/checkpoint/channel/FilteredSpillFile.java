@@ -37,19 +37,160 @@ import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 
+import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkState;
 
 /**
- * Spill file I/O for the {@code filterAndRewrite} recovery path. Groups the writer, reader, and
- * chunk type as nested static classes so their tight coupling is visible at a glance.
+ * Spill file for the {@code filterAndRewrite} recovery path. Appends raw bytes to one or more
+ * physical files on disk; each logical entry is tracked in the corresponding {@link Reader}'s entry
+ * deque. Readers support both replay ({@link Reader#readNext}) and checkpoint snapshot ({@link
+ * Reader#snapshot}).
  *
- * <p>Writer appends raw bytes; each logical entry is tracked in the corresponding Reader's entry
- * deque. Readers support both replay (readNext) and checkpoint snapshot (snapshot).
+ * <p>Rotates to a new file when the current one exceeds 64 MB; each rotation seals the outgoing
+ * Reader and opens a new one. All Readers are sealed on {@link #finish()}. Files are created lazily
+ * on the first {@link #writeEntry} call.
  */
 @Internal
-public final class FilteredSpillFile {
+public class FilteredSpillFile implements Closeable {
 
-    private FilteredSpillFile() {}
+    private static final long FILE_ROTATION_THRESHOLD = 64L * 1024 * 1024; // 64 MB
+
+    private final String[] spillDirs;
+    private final int memorySegmentSize;
+    private int currentDirIndex;
+    private FileChannel currentChannel;
+    private long currentFileOffset;
+    private final List<Reader> readers;
+    private boolean finished;
+
+    /**
+     * Creates a new spill file (lazy: the first physical file is opened on the first {@link
+     * #writeEntry} call). Arguments are assumed pre-validated by the caller (non-empty spillDirs,
+     * positive memorySegmentSize).
+     *
+     * @param spillDirs directories for writing spill files
+     * @param memorySegmentSize max bytes per spill entry. Each entry is 1:1 aligned with a network
+     *     buffer of this size; longer payloads must be split upstream.
+     */
+    public FilteredSpillFile(String[] spillDirs, int memorySegmentSize) {
+        this.spillDirs = spillDirs;
+        this.memorySegmentSize = memorySegmentSize;
+        this.currentDirIndex = 0;
+        this.currentFileOffset = 0;
+        this.readers = new ArrayList<>();
+        this.finished = false;
+    }
+
+    /**
+     * Appends {@code len} bytes from {@code data[0..len)} to the current spill file, registering an
+     * entry for {@code channelInfo} in the current Reader. Lazily opens the first file; rotates
+     * when the current file exceeds {@link #FILE_ROTATION_THRESHOLD}.
+     *
+     * <p>Entries must fit within {@code memorySegmentSize} bytes (1:1 alignment with network
+     * buffers on replay). Oversize entries fail fast via {@link IllegalArgumentException}.
+     */
+    public void writeEntry(byte[] data, int len, InputChannelInfo channelInfo) throws IOException {
+        checkState(!finished, "writeEntry after finish");
+        checkArgument(
+                len <= memorySegmentSize,
+                "Entry length %s exceeds memorySegmentSize %s",
+                len,
+                memorySegmentSize);
+        if (currentChannel == null) {
+            openNewFile();
+        } else if (currentFileOffset > FILE_ROTATION_THRESHOLD) {
+            rotateFile();
+        }
+        long entryOffset = currentFileOffset;
+        FileUtils.writeCompletely(currentChannel, ByteBuffer.wrap(data, 0, len));
+        currentFileOffset += len;
+        currentReader().addEntry(channelInfo, entryOffset, len);
+    }
+
+    /** Seals the last Reader. After finish, no more writeEntry calls are accepted. */
+    public void finish() {
+        if (finished) {
+            return;
+        }
+        finished = true;
+        if (!readers.isEmpty()) {
+            currentReader().seal();
+        }
+    }
+
+    /**
+     * Finishes (if not already done), closes the write channel, chain-closes all Readers, and
+     * deletes all spill files on disk. After close() returns, no physical spill files remain and
+     * this spill file cannot be reused.
+     */
+    @Override
+    public void close() throws IOException {
+        finish();
+        try {
+            if (currentChannel != null) {
+                currentChannel.close();
+                currentChannel = null;
+            }
+        } finally {
+            for (Reader r : readers) {
+                r.close();
+            }
+            // Best-effort cleanup of all spill files. Called unconditionally so callers do not
+            // need a separate delete step.
+            for (Reader r : readers) {
+                try {
+                    Files.deleteIfExists(r.filePath);
+                } catch (IOException ignored) {
+                    // best-effort cleanup
+                }
+            }
+        }
+    }
+
+    /** Returns true after {@link #finish()} has been called. */
+    public boolean isFinished() {
+        return finished;
+    }
+
+    /**
+     * Returns true if no entries have been written yet. When idle, the dispatcher prefers P1
+     * (direct buffer) over P2 (spill) to maintain ordering guarantees.
+     */
+    public boolean isIdle() {
+        return readers.isEmpty();
+    }
+
+    /** Returns an unmodifiable view of all Readers created so far. */
+    public List<Reader> getReaders() {
+        return Collections.unmodifiableList(readers);
+    }
+
+    private Reader currentReader() {
+        return readers.get(readers.size() - 1);
+    }
+
+    private void openNewFile() throws IOException {
+        String dir = spillDirs[currentDirIndex];
+        currentDirIndex = (currentDirIndex + 1) % spillDirs.length;
+        Path dirPath = Paths.get(dir);
+        Files.createDirectories(dirPath);
+        Path currentFilePath = dirPath.resolve("spill-" + UUID.randomUUID() + ".bin");
+        currentChannel =
+                FileChannel.open(
+                        currentFilePath,
+                        StandardOpenOption.CREATE_NEW,
+                        StandardOpenOption.WRITE);
+        currentFileOffset = 0;
+        readers.add(new Reader(currentFilePath, memorySegmentSize));
+    }
+
+    private void rotateFile() throws IOException {
+        // Seal the current Reader before opening a new file.
+        currentReader().seal();
+        currentChannel.close();
+        currentChannel = null;
+        openNewFile();
+    }
 
     // -------------------------------------------------------------------------
     // Chunk — the payload unit returned by Reader.readNext()
@@ -87,151 +228,6 @@ public final class FilteredSpillFile {
     }
 
     // -------------------------------------------------------------------------
-    // Writer — pure disk appender; no cache, no emit callback
-    // -------------------------------------------------------------------------
-
-    /**
-     * Appends raw bytes to spill files. Rotates to a new file when the current one exceeds 64 MB;
-     * each rotation seals the outgoing Reader and opens a new one. All Readers are sealed on
-     * {@link #finish()}.
-     *
-     * <p>Files are created lazily on the first {@link #writeEntry} call.
-     */
-    public static class Writer implements Closeable {
-
-        private static final long FILE_ROTATION_THRESHOLD = 64L * 1024 * 1024; // 64 MB
-
-        private final String[] spillDirs;
-        private int currentDirIndex;
-        private FileChannel currentChannel;
-        private Path currentFilePath;
-        private long currentFileOffset;
-        private final List<Reader> readers;
-        private boolean finished;
-
-        /**
-         * Creates a new Writer.
-         *
-         * @param spillDirs directories for writing spill files
-         * @param memorySegmentSize max bytes per entry; retained for documentation / caller use
-         * @throws IOException if spillDirs is empty
-         */
-        public Writer(String[] spillDirs, int memorySegmentSize) throws IOException {
-            if (spillDirs.length == 0) {
-                throw new IOException("Spill directories must not be empty");
-            }
-            this.spillDirs = spillDirs;
-            this.currentDirIndex = 0;
-            this.currentFileOffset = 0;
-            this.readers = new ArrayList<>();
-            this.finished = false;
-        }
-
-        /**
-         * Appends {@code len} bytes from {@code data[off..off+len)} to the current spill file,
-         * registering an entry for {@code channelInfo} in the current Reader. Lazily opens the first file;
-         * rotates when the current file exceeds {@link #FILE_ROTATION_THRESHOLD}.
-         */
-        public void writeEntry(byte[] data, int off, int len, InputChannelInfo channelInfo)
-                throws IOException {
-            checkState(!finished, "writeEntry after finish");
-            if (currentChannel == null) {
-                openNewFile();
-            } else if (currentFileOffset > FILE_ROTATION_THRESHOLD) {
-                rotateFile();
-            }
-            long entryOffset = currentFileOffset;
-            FileUtils.writeCompletely(currentChannel, ByteBuffer.wrap(data, off, len));
-            currentFileOffset += len;
-            currentReader().addEntry(channelInfo, entryOffset, len);
-        }
-
-        /** Seals the last Reader. After finish, no more writeEntry calls are accepted. */
-        public void finish() {
-            if (!finished) {
-                finished = true;
-                if (!readers.isEmpty()) {
-                    readers.get(readers.size() - 1).seal();
-                }
-            }
-        }
-
-        /**
-         * Finishes (if not already done), closes the write channel, and chain-closes all Readers.
-         */
-        @Override
-        public void close() throws IOException {
-            finish();
-            try {
-                if (currentChannel != null) {
-                    currentChannel.close();
-                    currentChannel = null;
-                }
-            } finally {
-                for (Reader r : readers) {
-                    r.close();
-                }
-            }
-        }
-
-        /** Returns true after {@link #finish()} has been called. */
-        public boolean isFinished() {
-            return finished;
-        }
-
-        /**
-         * Returns true if no entries have been written yet. When idle, the dispatcher prefers P1
-         * (direct buffer) over P2 (spill) to maintain ordering guarantees.
-         */
-        public boolean isIdle() {
-            return readers.isEmpty();
-        }
-
-        /** Returns an unmodifiable view of all Readers created so far. */
-        public List<Reader> getReaders() {
-            return Collections.unmodifiableList(readers);
-        }
-
-        /** Deletes all spill files. Called after all data has been drained. */
-        public void deleteAllFiles() {
-            for (Reader r : readers) {
-                try {
-                    Files.deleteIfExists(r.filePath);
-                } catch (IOException ignored) {
-                    // best-effort cleanup
-                }
-            }
-        }
-
-        private Reader currentReader() {
-            return readers.get(readers.size() - 1);
-        }
-
-        private void openNewFile() throws IOException {
-            String dir = spillDirs[currentDirIndex];
-            currentDirIndex = (currentDirIndex + 1) % spillDirs.length;
-            Path dirPath = Paths.get(dir);
-            Files.createDirectories(dirPath);
-            currentFilePath = dirPath.resolve("spill-" + UUID.randomUUID() + ".bin");
-            currentChannel =
-                    FileChannel.open(
-                            currentFilePath,
-                            StandardOpenOption.CREATE_NEW,
-                            StandardOpenOption.WRITE);
-            currentFileOffset = 0;
-            readers.add(new Reader(currentFilePath));
-        }
-
-        private void rotateFile() throws IOException {
-            // Seal the current Reader before opening a new file.
-            currentReader().seal();
-            currentChannel.close();
-            currentChannel = null;
-            openNewFile();
-        }
-    }
-
-    // -------------------------------------------------------------------------
     // Reader — per-physical-file reader with entry deque and sealed state
     // -------------------------------------------------------------------------
 
@@ -245,17 +241,22 @@ public final class FilteredSpillFile {
     public static class Reader implements Closeable {
 
         private final FileChannel channel;
-        final Path filePath; // accessed by Writer.deleteAllFiles
+        final Path filePath; // accessed by FilteredSpillFile.close() to delete spill files
+        private final int memorySegmentSize;
         private final Deque<Entry> entries = new ArrayDeque<>();
         private volatile boolean sealed = false;
-        private byte[] buf;
+        private final byte[] buf;
 
-        Reader(Path filePath) throws IOException {
+        Reader(Path filePath, int memorySegmentSize) throws IOException {
             this.filePath = filePath;
             this.channel = FileChannel.open(filePath, StandardOpenOption.READ);
+            this.memorySegmentSize = memorySegmentSize;
+            // Pre-allocated to memorySegmentSize; every entry is guaranteed to fit because
+            // FilteredSpillFile#writeEntry rejects oversized payloads at write time.
+            this.buf = new byte[memorySegmentSize];
         }
 
-        // ---- Write side (called by Writer) ----
+        // ---- Write side (called by FilteredSpillFile) ----
 
         /** Registers an entry at {@code offset} with {@code length} bytes for {@code channelInfo}. */
         void addEntry(InputChannelInfo channelInfo, long offset, int length) {
@@ -297,9 +298,7 @@ public final class FilteredSpillFile {
             if (entry == null) {
                 return null;
             }
-            if (buf == null || buf.length < entry.length) {
-                buf = new byte[entry.length];
-            }
+            // writeEntry enforces entry.length <= memorySegmentSize, so buf always fits.
             ByteBuffer bb = ByteBuffer.wrap(buf, 0, entry.length);
             long position = entry.offset;
             while (bb.hasRemaining()) {
@@ -325,7 +324,7 @@ public final class FilteredSpillFile {
          */
         public Reader snapshot() throws IOException {
             checkState(sealed, "snapshot requires sealed Reader");
-            Reader snap = new Reader(filePath);
+            Reader snap = new Reader(filePath, memorySegmentSize);
             snap.entries.addAll(this.entries);
             snap.sealed = true;
             return snap;

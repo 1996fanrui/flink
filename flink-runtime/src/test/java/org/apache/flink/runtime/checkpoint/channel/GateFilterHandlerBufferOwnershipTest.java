@@ -168,7 +168,7 @@ class GateFilterHandlerBufferOwnershipTest {
     }
 
     private FilteredBufferDispatcher createTestOutputWriter() throws IOException {
-        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(TARGET_CHANNEL);
         Map<InputChannelInfo, RecoveredBufferStoreImpl> storesByChannel = new HashMap<>();
         storesByChannel.put(TARGET_CHANNEL, store);
 

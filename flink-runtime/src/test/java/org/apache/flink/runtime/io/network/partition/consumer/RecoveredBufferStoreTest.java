@@ -37,13 +37,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 /** Tests for {@link RecoveredBufferStoreImpl}. */
 class RecoveredBufferStoreTest {
 
+    private static final InputChannelInfo DEFAULT_CHANNEL_INFO = new InputChannelInfo(0, 0);
+
     /**
      * Create store, addBuffer, tryTake, markComplete, isComplete. Verify the full lifecycle of the
      * store.
      */
     @Test
     void testStoreLifecycle() {
-        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(DEFAULT_CHANNEL_INFO);
 
         // Initially empty and not complete
         assertThat(store.isEmpty()).isTrue();
@@ -77,7 +79,7 @@ class RecoveredBufferStoreTest {
     /** Verify markComplete when buffers remain means isComplete is false until drained. */
     @Test
     void testCompleteWithRemainingBuffers() {
-        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(DEFAULT_CHANNEL_INFO);
 
         NetworkBuffer buffer = createBuffer(new byte[] {1, 2, 3});
         store.addBuffer(buffer);
@@ -101,8 +103,7 @@ class RecoveredBufferStoreTest {
      */
     @Test
     void testCheckpointWithReadyBuffers() throws Exception {
-        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
-        InputChannelInfo channelInfo = new InputChannelInfo(0, 0);
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(DEFAULT_CHANNEL_INFO);
 
         byte[] data = new byte[] {10, 20, 30, 40};
         NetworkBuffer buffer = createBuffer(data);
@@ -112,23 +113,23 @@ class RecoveredBufferStoreTest {
         long checkpointId = 1L;
         writer.start(checkpointId, null);
 
-        store.checkpoint(writer, checkpointId, channelInfo);
+        store.checkpoint(writer, checkpointId);
 
         // Verify the buffer was recorded by the writer
-        assertThat(writer.getAddedInput().get(channelInfo)).hasSize(1);
+        assertThat(writer.getAddedInput().get(DEFAULT_CHANNEL_INFO)).hasSize(1);
 
         // The original buffer should still be in the store (retained, not consumed)
         assertThat(store.size()).isEqualTo(1);
 
         // Clean up: recycle the buffer recorded by writer
-        writer.getAddedInput().get(channelInfo).forEach(Buffer::recycleBuffer);
+        writer.getAddedInput().get(DEFAULT_CHANNEL_INFO).forEach(Buffer::recycleBuffer);
         store.releaseAll();
     }
 
     /** Concurrent access from two threads. One thread adds buffers and the other takes them. */
     @Test
     void testConcurrentCheckpointAndReplay() throws Exception {
-        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(DEFAULT_CHANNEL_INFO);
         int numBuffers = 100;
         CyclicBarrier barrier = new CyclicBarrier(2);
         AtomicReference<Throwable> error = new AtomicReference<>();
@@ -185,7 +186,7 @@ class RecoveredBufferStoreTest {
      */
     @Test
     void testConsumptionAfterConversion() {
-        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(DEFAULT_CHANNEL_INFO);
 
         // Add buffers in "recovery" phase
         NetworkBuffer buf1 = createBuffer(new byte[] {1, 2});
@@ -218,7 +219,7 @@ class RecoveredBufferStoreTest {
     /** Verify releaseAll recycles all buffers and clears state. */
     @Test
     void testReleaseAll() {
-        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(DEFAULT_CHANNEL_INFO);
 
         NetworkBuffer buf1 = createBuffer(new byte[] {1});
         NetworkBuffer buf2 = createBuffer(new byte[] {2});
@@ -233,12 +234,12 @@ class RecoveredBufferStoreTest {
         assertThat(store.size()).isEqualTo(0);
     }
 
-    /** Verify notification callback fires when buffer is added to empty store. */
+    /** Verify data-available callback fires when buffer is added to empty store. */
     @Test
-    void testNotificationCallback() {
-        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+    void testDataAvailableCallback() {
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(DEFAULT_CHANNEL_INFO);
         int[] callbackCount = {0};
-        store.setNotificationCallback(() -> callbackCount[0]++);
+        store.setDataAvailableCallback(() -> callbackCount[0]++);
 
         // Add first buffer: should trigger callback (store was empty)
         store.addBuffer(createBuffer(new byte[] {1}));
@@ -262,7 +263,7 @@ class RecoveredBufferStoreTest {
     /** Verify pending spill entry count tracking. */
     @Test
     void testPendingCount() {
-        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(DEFAULT_CHANNEL_INFO);
 
         store.incrementPending();
 
@@ -284,8 +285,8 @@ class RecoveredBufferStoreTest {
      */
     @Test
     void testCheckpointCallbackFiredAfterSnapshot() throws Exception {
-        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
         InputChannelInfo channelInfo = new InputChannelInfo(0, 0);
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(channelInfo);
 
         List<Long> capturedIds = new ArrayList<>();
         List<InputChannelInfo> capturedInfos = new ArrayList<>();
@@ -302,7 +303,7 @@ class RecoveredBufferStoreTest {
         long checkpointId = 42L;
         writer.start(checkpointId, null);
 
-        store.checkpoint(writer, checkpointId, channelInfo);
+        store.checkpoint(writer, checkpointId);
 
         // Callback must have been fired exactly once with correct args
         assertThat(capturedIds).containsExactly(42L);
@@ -321,15 +322,15 @@ class RecoveredBufferStoreTest {
      */
     @Test
     void testCheckpointCallbackFiredEvenWhenNoReadyBuffers() throws Exception {
-        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
         InputChannelInfo channelInfo = new InputChannelInfo(1, 2);
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(channelInfo);
 
         int[] callCount = {0};
         store.setCheckpointListener((id, info) -> callCount[0]++);
 
         RecordingChannelStateWriter writer = new RecordingChannelStateWriter();
         writer.start(1L, null);
-        store.checkpoint(writer, 1L, channelInfo);
+        store.checkpoint(writer, 1L);
 
         assertThat(callCount[0]).isEqualTo(1);
     }
@@ -337,33 +338,32 @@ class RecoveredBufferStoreTest {
     /** Verify no callback is fired if setCheckpointListener was never called. */
     @Test
     void testCheckpointWithNoCallbackSetDoesNotThrow() throws Exception {
-        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl();
-        InputChannelInfo channelInfo = new InputChannelInfo(0, 0);
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(DEFAULT_CHANNEL_INFO);
         store.addBuffer(createBuffer(new byte[] {1}));
 
         RecordingChannelStateWriter writer = new RecordingChannelStateWriter();
         writer.start(1L, null);
         // Should not throw even without a callback registered
-        store.checkpoint(writer, 1L, channelInfo);
+        store.checkpoint(writer, 1L);
 
-        writer.getAddedInput().get(channelInfo).forEach(Buffer::recycleBuffer);
+        writer.getAddedInput().get(DEFAULT_CHANNEL_INFO).forEach(Buffer::recycleBuffer);
         store.releaseAll();
     }
 
     // ---------------------------------------------------------------------------
-    // Tests for setNotificationCallback via interface (Item 2)
+    // Tests for setDataAvailableCallback via interface (Item 2)
     // ---------------------------------------------------------------------------
 
     /**
-     * Verify setNotificationCallback can be called through the RecoveredBufferStore interface
+     * Verify setDataAvailableCallback can be called through the RecoveredBufferStore interface
      * without instanceof casts.
      */
     @Test
-    void testSetNotificationCallbackViaInterface() {
-        RecoveredBufferStore store = new RecoveredBufferStoreImpl();
+    void testSetDataAvailableCallbackViaInterface() {
+        RecoveredBufferStore store = new RecoveredBufferStoreImpl(DEFAULT_CHANNEL_INFO);
         int[] callCount = {0};
         // Must compile and run without instanceof check
-        store.setNotificationCallback(() -> callCount[0]++);
+        store.setDataAvailableCallback(() -> callCount[0]++);
 
         ((RecoveredBufferStoreImpl) store).addBuffer(createBuffer(new byte[] {1}));
         assertThat(callCount[0]).isEqualTo(1);
@@ -391,14 +391,13 @@ class RecoveredBufferStoreTest {
     @Test
     void testEmptySingletonCheckpointIsNoOp() throws Exception {
         RecoveredBufferStore empty = RecoveredBufferStore.EMPTY;
-        InputChannelInfo channelInfo = new InputChannelInfo(0, 0);
 
         RecordingChannelStateWriter writer = new RecordingChannelStateWriter();
         writer.start(1L, null);
-        empty.checkpoint(writer, 1L, channelInfo);
+        empty.checkpoint(writer, 1L);
 
         // No data must have been written
-        assertThat(writer.getAddedInput().containsKey(channelInfo)).isFalse();
+        assertThat(writer.getAddedInput().isEmpty()).isTrue();
     }
 
     /** Verify releaseAll() on EMPTY does not throw. */
@@ -414,7 +413,7 @@ class RecoveredBufferStoreTest {
 
         // Both setters must silently discard
         empty.setCheckpointListener((id, info) -> {});
-        empty.setNotificationCallback(() -> {});
+        empty.setDataAvailableCallback(() -> {});
         // No exception == pass
     }
 
