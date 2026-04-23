@@ -463,7 +463,7 @@ private void drainSpillEntriesToCheckpoint(long id) {
 | FLINK-39520 | **FLINK-39520 的 fix** | `CheckpointCallback` 接口 + `setCheckpointCallback` 加到接口+Impl；`setDataAvailableCallback` 升接口；`RecoveredBufferStoreImpl.checkpoint()` 内调用 callback（前文 J.2.a）；创建 `RecoveredBufferStore.EMPTY` 单例（所有方法 no-op） |
 | FLINK-39521 | **FLINK-39521 的 fix** | OutputWriter：持有 callback 注册、wait-set 状态机（`onChannelCheckpointStarted` 入口、首次扫 `spillEntryQueue`、后续 O(1) 移除）、`synchronized(this)` 覆盖 queue/wait-set/checkpointId（drain 循环同锁）、构造时向各 store 注册 callback。**不含** phase2 磁盘写入（依赖 FLINK-39523） |
 | FLINK-39522 | **FLINK-39522 的 fix** | §4.1 集中化（`startPersisting(barrierId, store, knownBuffers)` + `checkState(store.isEmpty() \|\| knownBuffers.isEmpty())` 作为防御性兜底）；fix A（Local 改 emptyList）；fix B（删 Remote.checkReadability）；fix D（删 RecoveredInputChannel.onRecoveredStateBuffer）；fix E（Local/Remote 无条件持有 store，默认 EMPTY，消 15 处 null 守卫 + instanceof） |
-| FLINK-39523 | **FLINK-39523 的 fix** | OutputWriter `drainSpillEntriesToCheckpoint(id)`：遍历 queue 经 `FilteredSpillFile.Reader.openInputStream` 调 FLINK-39523 新增的 `ChannelStateWriter.addInputData(InputStream)`；"snapshot + drain" 合并避免双写 |
+| FLINK-39523 | **FLINK-39523 的 fix** | OutputWriter `drainSpillEntriesToCheckpoint(id)`：遍历 sealed readers，对每个 reader 调 `snapshot()`（独立 FileChannel + 浅拷贝 entries）产生独立 snapshot reader，交 ChannelStateWriter executor 读出写入新 checkpoint。**只拍照、不动原 reader、不动 `store.pendingCount`**——phase 2 与 close() drain 是两条独立消费链路，task 仍需在当前 run 里消费到这些 entry |
 | FLINK-39524 | — | 无需修正 |
 
 **最终 10 条变更**：
@@ -493,24 +493,32 @@ review 通过后由人工决定是否手动 squash (原始 JIRA + 对应的 fix)
 
 #### 4.5.1 Phase 2 与 drain 的并发同步
 
-Task 线程（`onChannelCheckpointStarted` 触发的 phase 2 遍历）和 Recovery 线程（`OutputWriterImpl.close()`
-drain 循环）都访问/修改 `spillEntryQueue`。当前 `OutputWriterImpl` **完全没加同步**（`ArrayDeque` 非线程安全）。
+Task 线程（`onChannelCheckpointStarted` 触发的 phase 2）和 Recovery 线程（`FilteredBufferDispatcherImpl.close()`
+drain 循环）都访问 dispatcher 状态。当前实现用 `synchronized(this)` 串行化所有 public 入口
+（`write` / `flush` / `close` / `onChannelCheckpointStarted`）。
 
-实现要求：
-- `OutputWriterImpl` 所有对 `spillEntryQueue` / `spillEntryReaderQueue` / `currentCheckpointId` / `waitSet`
-  的访问 `synchronized(this)`。
-- `drainSpillEntriesToCheckpoint(id)` 在锁内遍历并调 `addInputData(InputStream, length)`。
-  注意：`addInputData` 本身是 enqueue 到 ChannelStateWriter 的 executor，不阻塞 I/O；在锁内调用安全。
-- `close()` 的 drain 循环每次 `poll` 前拿锁；`onChannelCheckpointStarted` 也拿锁。两者互斥。
-- 同一 SpillEntry 不会"既被 drain 消费又被 phase 2 snapshot"——锁保证原子性：
-  - 若 drain 先拿锁：entry 从队列移除，投递 buffer 到 store；phase 2 后拿锁，只看到剩余 entry，缺失
-    的那部分已在 store readyBuffers 里，由 `store.checkpoint()` 负责写出。
-  - 若 phase 2 先拿锁：entry 还在队列，被 phase 2 写出；drain 后拿锁 poll 走同一 entry，投递到 store
-    作为正常消费。此时 checkpoint 已写过，存在数据重复——需避免。
+**语义**：phase 2 与 drain 是**两条独立的消费链路**，各自消费一份磁盘字节：
+- **回放链路**（drain）：`close()` → `drainSpillThroughBuffers` 在原 reader 上逐 entry `readNext()`，
+  memcpy 到 network buffer，`store.addBuffer + decrementPending`，投递给 task。
+- **Checkpoint 链路**（phase 2）：对每个 sealed reader 调 `snapshot()` 生成独立 reader（独立 FileChannel +
+  浅拷贝 entries），交 `ChannelStateWriter` executor 异步读出写入 checkpoint 文件。
 
-**避免重复的实现**：phase 2 写出的同时立刻把 entry 从 queue 里 poll 出来（"snapshot + drain" 合并）。
-phase 2 完成后，队列为空；drain 线程后续 poll 只能拿到 phase 2 之后新加的 entry（正常路径下没有新的，
-因为 filtering 已结束）。保证 entry 只被 snapshot 一次或被 drain 一次，不会双写。
+两条链路对原 reader 和 `store.pendingCount` 的影响完全不同：
+- 回放链路消费原 reader 的 entry，会 `decrementPending`。
+- phase 2 **只拍照，不动原 reader、不动 `pendingCount`**。task 仍需要在当前 run 里消费到这些字节，
+  否则 task 状态不会推进到 new checkpoint 捕获的位置。
+
+**checkpoint 只是备份**：new checkpoint 里写入的 spill 字节是一份拷贝，不代表"所有权转移"。从 new
+checkpoint 恢复时，replay 路径会重新处理这些字节——相当于"冻结帧 + 之后的 delta"。
+
+**不存在双写风险**：同一个 checkpoint 里，`store.checkpoint()` 只 snapshot `readyBuffers`（阶段 1），
+phase 2 只 snapshot 还在磁盘的 entries（阶段 2）；两者互斥，不会把同一段字节写进同一份 checkpoint
+两次。不同 checkpoint 各自是独立的冻结帧，同一段字节跨两次 checkpoint 出现是正常的 UC 语义。
+
+**物理文件 vs FileChannel 生命周期**：原 reader 被 drain 完、最终 `spillFile.close()` 删除物理文件时，
+snapshot reader 仍持有自己的 FileChannel；Linux 语义下有 open handle 时 unlink 只移除目录项，
+inode 数据延续到所有 handle 关闭。所以即使原 reader 抢先 drain 完并触发文件删除，checkpoint 异步
+读取的 snapshot reader 仍能读到完整字节。
 
 #### 4.5.2 死代码 A 的改法与新签名一致
 
