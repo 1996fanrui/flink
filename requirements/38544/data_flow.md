@@ -5,12 +5,12 @@
 四个协作者，职责分明：
 
 - **filterAndRewrite** — recovery thread 上运行；产出字节，调 `dispatcher.write(bytes, length, channelInfo)`
-- **FilteredBufferDispatcher**（dispatcher） — 持有一块 `memorySegmentSize` 的**内存 cache**；cache 满或 channel 切换时做 P1/P2 决策；lazy 创建 `FilteredSpillFile.Writer` 做 P2 落盘
-- **FilteredSpillFile.Writer** — 纯落盘：收到 `writeEntry(bytes, ci)` 就追加到当前文件 + 在对应 Reader 上登记一条 entry；文件超过 64 MB 时内部 rotate 开新文件 + 新 Reader
+- **FilteredBufferDispatcher**（dispatcher） — 持有一块 `memorySegmentSize` 的**内存 cache**；cache 满或 channel 切换时做 P1/P2 决策；lazy 创建 `FilteredSpillFile` 做 P2 落盘
+- **FilteredSpillFile** — 纯落盘：收到 `writeEntry(bytes, ci)` 就追加到当前文件 + 在对应 Reader 上登记一条 entry；文件超过 64 MB 时内部 rotate 开新文件 + 新 Reader
 - **FilteredSpillFile.Reader** — 每物理文件一个；持 entries deque；`readNext()` 出 `Chunk` 给回放链路；`snapshot()` 出独立 Reader 给 checkpoint 链路
 - **RecoveredBufferStore**（每 channel 一个） — 持有 ready buffers；`tryTake()` 给 InputChannel 消费；`checkpoint()` 把自己的 ready buffers 入 checkpoint
 
-dispatcher 持有 Writer；Writer 持有 `List<Reader>`；Reader 的消费者有 replay（原 Reader）+ checkpoint（snapshot Reader）。关闭连锁：`dispatcher.close()` → `writer.close()` → 所有 Reader.close()。
+dispatcher 持有 `FilteredSpillFile`；`FilteredSpillFile` 持有 `List<Reader>`；Reader 的消费者有 replay（原 Reader）+ checkpoint（snapshot Reader）。关闭连锁：`dispatcher.close()` → `spillFile.close()` → 所有 Reader.close() + 删除物理文件。
 
 ---
 
@@ -34,7 +34,7 @@ graph TD
     Filter["filterAndRewrite"]
     DP["dispatcher<br/>(memory cache)"]
     Pool["Network Buffer Pool"]
-    Writer["FilteredSpillFile.Writer<br/>(disk appender)"]
+    Writer["FilteredSpillFile<br/>(disk appender)"]
     Disk[(Spill file<br/>single reused)]
     Readers["List of Reader<br/>(1 per physical file)"]
     Store["RecoveredBufferStore<br/>(per-channel)"]
@@ -75,7 +75,7 @@ flowchart TD
     Read --> Filter["filterAndRewrite:<br/>dispatcher.write(bytes, ci)"]
     Filter --> S3Check
 
-    S3Check -- No --> Flush["dispatcher.flush():<br/>flush cache + writer.finish()"]
+    S3Check -- No --> Flush["dispatcher.flush():<br/>flush cache + spillFile.finish()"]
     Flush --> Finish["finishReadRecoveredState():<br/>complete future → trigger channel conversion"]
     Finish --> Drain["dispatcher.close():<br/>blocking drain + cleanup"]
     Drain --> End(("End"))
@@ -88,7 +88,7 @@ flowchart TD
 ```
 
 时序：
-1. **dispatcher.flush()** — flush cache 的残留数据到 P1 或 P2；`writer.finish()` seal 最后一个 Reader。此后不再接受 write。
+1. **dispatcher.flush()** — flush cache 的残留数据到 P1 或 P2；`spillFile.finish()` seal 最后一个 Reader。此后不再接受 write。
 2. **finishReadRecoveredState()** — 完成 per-channel `bufferFilteringCompleteFuture`；Task thread 感知后触发 `convertRecoveredInputChannels()`（Store 引用从 RecoveredInputChannel 移交到 LocalInputChannel/RemoteInputChannel）。
 3. **dispatcher.close()** — 阻塞 drain（下方单独画），把 Reader 里剩下的每条 entry 都投到 Store，然后清理 spill 文件。
 
@@ -96,7 +96,7 @@ flowchart TD
 
 ## 三个独立场景
 
-> **统一不变式**：cache capacity = Writer 产生的 entry 最大长度 = network buffer 容量 = `memorySegmentSize`。
+> **统一不变式**：cache capacity = FilteredSpillFile 产生的 entry 最大长度 = network buffer 容量 = `memorySegmentSize`。
 > 所有 "payload → network buffer" 的写入点都有 `Preconditions.checkState(buffer.getMaxCapacity() >= payload.length)`，违反即 `IllegalStateException`（假设成立，fail fast）。
 > 下面的流程图不再画这个分支。
 
@@ -128,14 +128,14 @@ cache 满 / channel 切换 / `finish()` 时触发。
 flowchart TD
     F(("flushCache()")) --> Empty{"cachePosition > 0?"}
     Empty -- No --> Nop(("no-op"))
-    Empty -- Yes --> IsIdle{"writer.isIdle()?"}
+    Empty -- Yes --> IsIdle{"spillFile.isIdle()?"}
 
     IsIdle -- No --> P2
     IsIdle -- Yes --> ReqBuf{"bufferSupplier(ci)"}
     ReqBuf -- null --> P2
     ReqBuf -- got buffer --> P1["memcpy cache → MemorySegment<br/>store.addBuffer"]
 
-    P2["writer.writeEntry(cache, ci)<br/>store.incrementPending()"]
+    P2["spillFile.writeEntry(cache, ci)<br/>store.incrementPending()"]
 
     P1 --> Reset(("cache 清空"))
     P2 --> Reset
@@ -155,7 +155,7 @@ recovery 结束后把所有剩余磁盘数据 drain 回 Store。和 eagerDrain �
 ```mermaid
 flowchart TD
     C(("close() drain")) --> Iter{"下一个 Reader<br/>还有 entries?"}
-    Iter -- No --> Cleanup["writer.close() + deleteAllFiles"]
+    Iter -- No --> Cleanup["spillFile.close() (deletes all spill files)"]
     Iter -- Yes --> PeekCi["ci = reader.peekNextChannel()"]
     PeekCi --> BlockBuf["blockingBufferSupplier(ci)<br/>(可能阻塞)"]
     BlockBuf --> Consume["chunk = reader.readNext()<br/>memcpy → MemorySegment<br/>store.addBuffer + decrementPending"]
@@ -168,9 +168,9 @@ flowchart TD
 
 ---
 
-## Writer 内部（纯落盘）
+## FilteredSpillFile 内部（纯落盘）
 
-无 cache、无回调。`writeEntry(bytes, off, len, ci)` 流程：
+无 cache、无回调。`writeEntry(bytes, len, ci)` 流程：
 
 - 第一次调用：lazy `openNewFile()`，顺便创建对应 Reader 加入 `readers` list
 - 当前文件 > 64 MB：`rotateFile()` — seal 旧 Reader + 关旧 channel + 开新文件 + 新 Reader
@@ -187,11 +187,11 @@ flowchart TD
 2. **dispatcher 可随意在 buffer 和文件间切换** — 一条 record 的前半段可在 Network Buffer、后半段可在 File。Task thread 的 SpanningWrapper 透明重组跨 buffer record。
 3. **每条 entry 最大 memorySegmentSize** — 和 Network Buffer 1:1 对齐。回放时一条 entry 正好填一个 buffer。
 4. **eager drain on each write** — 每次 write 前尽可能多拉磁盘数据回 buffer（loop until no buffer available or disk empty），最大化 buffer 腾空后的吞吐。
-5. **backend 动态切换** — 同一次 recovery 内，早期 write 可能落盘（memory pressure），后期 write 可能直投 buffer（压力消散）；downgrade-only 规则由 `writer.isIdle()` 管控。
-6. **"磁盘有数据"的判定** — 看 `writer.isIdle()`，本质是 cache 为空 AND 所有 Reader 的 entries 为空。不看物理文件是否存在。
+5. **backend 动态切换** — 同一次 recovery 内，早期 write 可能落盘（memory pressure），后期 write 可能直投 buffer（压力消散）；downgrade-only 规则由 `spillFile.isIdle()` 管控。
+6. **"磁盘有数据"的判定** — 看 `spillFile.isIdle()`，本质是 cache 为空 AND 所有 Reader 的 entries 为空。不看物理文件是否存在。
 7. **Spill 目录来自 IOManager** — `IOManager.getSpillingDirectoriesPaths()`，不回退到 `java.io.tmpdir`；目录无效直接抛 IOException。
-8. **dispatcher 和 Writer 都是 per-task** — 一个 task 一个 dispatcher、一个 Writer；所有 gate/channel 共用。channel 身份通过 `write(bytes, length, channelInfo)` 传入。
-9. **Checkpoint 只允许发生在 recovery 结束后** — writer 已 `finish()`、所有 Reader 已 sealed 才允许 snapshot。两层 `checkState` 防御：dispatcher 在 drain 入口检查 `writer.isFinished()`；`Reader.snapshot()` 内部检查 `isSealed()`。违反 → `IllegalStateException`。
+8. **dispatcher 和 FilteredSpillFile 都是 per-task** — 一个 task 一个 dispatcher、一个 FilteredSpillFile；所有 gate/channel 共用。channel 身份通过 `write(bytes, length, channelInfo)` 传入。
+9. **Checkpoint 只允许发生在 recovery 结束后** — `spillFile.finish()` 已调用、所有 Reader 已 sealed 才允许 snapshot。两层 `checkState` 防御：dispatcher 在 drain 入口检查 `spillFile.isFinished()`；`Reader.snapshot()` 内部检查 `isSealed()`。违反 → `IllegalStateException`。
 
 ## 生命周期 Assertions
 
@@ -200,9 +200,9 @@ flowchart TD
 | 调用点 | 检查 |
 |---|---|
 | `dispatcher.write()` | `!flushed && !closed` |
-| `Writer.writeEntry()` | `!finished` |
+| `FilteredSpillFile.writeEntry()` | `!finished` |
 | `Reader.addEntry()` | `!sealed` |
-| `dispatcher.drainSpillEntriesToCheckpoint()` | `writer.isFinished()` |
+| `dispatcher.drainSpillEntriesToCheckpoint()` | `spillFile.isFinished()` |
 | `Reader.snapshot()` | `sealed` |
 
 Buffer size check（`buffer.getMaxCapacity() >= payload.length`）在所有"payload → network buffer"写入点也以 `checkState` 形式存在，但属于纯代码层面的防御性断言，不在这里重复；开头的 preamble 已声明。

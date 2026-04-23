@@ -6,7 +6,7 @@ Spill 文件里的 entries 会被**两条独立的链路**各自消费/读取，
 
 | 链路 | 触发时机 | 持有的 Reader | 消费性质 |
 |---|---|---|---|
-| **Input channel 回放链路** | 回放 buffer 腾出时 (`eagerDrain`) / dispatcher 收尾 (`close()` drain) | Writer 创建的**原 Reader**（`writer.getReaders()`） | **最终处置**：逐个 `readNext()`，每个 entry 的字节读进 network buffer 投给 `RecoveredBufferStore` |
+| **Input channel 回放链路** | 回放 buffer 腾出时 (`eagerDrain`) / dispatcher 收尾 (`close()` drain) | `FilteredSpillFile` 创建的**原 Reader**（`spillFile.getReaders()`） | **最终处置**：逐个 `readNext()`，每个 entry 的字节读进 network buffer 投给 `RecoveredBufferStore` |
 | **Checkpoint 链路** | `onChannelCheckpointStarted` 在 wait-set 收敛时触发 `addInputDataFromSpill` | 对每个原 Reader 调 `snapshot()` 生成一组**独立 Reader 对象**（新 FileChannel + 独立 entries Deque + 预 sealed），交给异步 `DrainChunkIterator` | **拍照备份**：snapshot 消费者逐个 `readNext()`，字节写入 checkpoint 输出流 |
 
 **关键：两条链路的 Reader 对象完全不共享。** 原 Reader 归回放链路独占；snapshot Reader 归 checkpoint drain 独占。两者各有自己的 `FileChannel`、各有自己的 `Deque<Entry>`、各有自己的内部 buffer。磁盘上的字节是同一份（page cache 共享），但在 Java 堆里是两套独立对象。
@@ -56,7 +56,7 @@ public static class Reader implements Closeable {
 
 | 触发点 | 调用方 | 标记哪个 Reader | 原因 |
 |---|---|---|---|
-| 文件达到 rotation 阈值 | `FilteredSpillFile.Writer.openNewFile()` 在 rotate（非首次 open）时 | 旧的 current reader（即将被新 reader 取代） | 旧 file 已不会再被写入 |
+| 文件达到 rotation 阈值 | `FilteredSpillFile#openNewFile()` 在 rotate（非首次 open）时 | 旧的 current reader（即将被新 reader 取代） | 旧 file 已不会再被写入 |
 | 所有 spill 数据写完 | `FilteredBufferDispatcherImpl.flush()`（或 dispatcher 生命周期里等价位置） | 此时的最后一个 reader | recovery 写入阶段整体结束 |
 
 合起来覆盖了**所有**"这个 Reader 不会再来新 entry"的时刻。任一 seal 发生之后，对应 Reader 的 entries 就不再增长，只会被回放链路 `pollFirst` 缩小。
@@ -162,7 +162,7 @@ public static class Reader implements Closeable {
 }
 ```
 
-**重点：`read(offset, buf, len)` 不对外暴露。** Entry 的 offset/length 是 Reader 内部实现细节 — 外部调 `readNext()` 直接拿到 Chunk。Entry 只在 Writer → Reader `addEntry(e)` 一路是外部可见的，消费侧完全看不见。
+**重点：`read(offset, buf, len)` 不对外暴露。** Entry 的 offset/length 是 Reader 内部实现细节 — 外部调 `readNext()` 直接拿到 Chunk。Entry 只在 `FilteredSpillFile` → Reader `addEntry(e)` 一路是外部可见的，消费侧完全看不见。
 
 ### 为什么是全新 Reader，不是"同一个 Reader + 独占 entries 副本"
 
@@ -173,7 +173,7 @@ public static class Reader implements Closeable {
 
 ### `close()` 生命周期
 
-- 原 Reader 由 `FilteredSpillFile.Writer` 拥有，在 `writer.close()` 时连锁关闭。
+- 原 Reader 由 `FilteredSpillFile` 拥有，在 `spillFile.close()` 时连锁关闭（并删除物理文件）。
 - Snapshot Reader 由 checkpoint drain 的 `CloseableIterator` 拥有，iterator 的 `close()` 里 close 所有 snapshot readers（无论 drain 成功还是失败）。
 
 ---
@@ -212,11 +212,11 @@ public static class Reader implements Closeable {
 ```java
 // FilteredBufferDispatcherImpl.drainSpillEntriesToCheckpoint
 synchronized (this) {
-    assert writer.getReaders().stream().allMatch(FilteredSpillFile.Reader::isSealed)
+    assert spillFile.getReaders().stream().allMatch(FilteredSpillFile.Reader::isSealed)
             : "checkpoint drain requires all readers sealed";
     List<FilteredSpillFile.Reader> snapshots = new ArrayList<>();
     try {
-        for (FilteredSpillFile.Reader r : writer.getReaders()) {
+        for (FilteredSpillFile.Reader r : spillFile.getReaders()) {
             snapshots.add(r.snapshot());   // open 新 FileChannel + copy entries
         }
     } catch (IOException e) {

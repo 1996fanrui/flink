@@ -128,14 +128,15 @@ public interface RecoveredBufferStore {
      * for all channels to trigger, then does one sequential pass through
      * the spillEntryQueue (see design.md "Checkpoint 实现").
      *
+     * <p>The store is bound to a single {@link InputChannelInfo} at construction
+     * time; both the snapshot entry and the listener use that bound channel info.
+     *
      * <p>Called by InputChannel.checkpointStarted() on the Task thread.
      *
      * @param writer       checkpoint state writer
      * @param checkpointId current checkpoint ID
-     * @param channelInfo  channel identity for the checkpoint entry
      */
-    void checkpoint(ChannelStateWriter writer, long checkpointId, InputChannelInfo channelInfo)
-            throws IOException;
+    void checkpoint(ChannelStateWriter writer, long checkpointId) throws IOException;
 
     // ---- Resource cleanup ----
 
@@ -171,7 +172,7 @@ These methods are on the RecoveredBufferStore implementation class, not on the p
  *
  * @param callback invoked when a buffer is added to an empty queue
  */
-void setNotificationCallback(Runnable callback);
+void setDataAvailableCallback(Runnable callback);
 
 /**
  * Add a ready buffer to the store. Called by OutputWriter when:
