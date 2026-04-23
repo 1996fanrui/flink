@@ -280,6 +280,31 @@ class FilteredSpillFileTest {
         }
     }
 
+    /**
+     * isIdle() becomes true again after every entry in every Reader has been consumed via
+     * readNext(). The reader file still exists on disk, but from the dispatcher's point of view
+     * there is no data pending delivery — P1 (direct buffer) is safe.
+     */
+    @Test
+    void testIsIdleAgainAfterAllEntriesDrained() throws Exception {
+        String[] spillDirs = {temporaryFolder.toString()};
+        try (FilteredSpillFile writer =
+                new FilteredSpillFile(spillDirs, MEMORY_SEGMENT_SIZE)) {
+            writer.writeEntry(new byte[] {1}, 1, CHANNEL_0);
+            writer.writeEntry(new byte[] {2}, 1, CHANNEL_1);
+            assertThat(writer.isIdle()).isFalse();
+
+            // Drain all entries from all readers
+            for (FilteredSpillFile.Reader reader : writer.getReaders()) {
+                while (reader.hasEntries()) {
+                    reader.readNext();
+                }
+            }
+
+            assertThat(writer.isIdle()).isTrue();
+        }
+    }
+
     /** close() deletes all spill files on disk. */
     @Test
     void testCloseDeletesAllFiles() throws Exception {

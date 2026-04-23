@@ -153,11 +153,18 @@ public class FilteredSpillFile implements Closeable {
     }
 
     /**
-     * Returns true if no entries have been written yet. When idle, the dispatcher prefers P1
-     * (direct buffer) over P2 (spill) to maintain ordering guarantees.
+     * Returns true when no entry is currently pending on disk — either no file was ever opened, or
+     * every entry previously written has already been consumed (via {@link Reader#readNext()}) back
+     * into memory. While idle, the dispatcher prefers P1 (direct buffer) over P2 (spill); FIFO
+     * ordering is still preserved because there are no on-disk entries to jump ahead of.
      */
     public boolean isIdle() {
-        return readers.isEmpty();
+        for (Reader r : readers) {
+            if (r.hasEntries()) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** Returns an unmodifiable view of all Readers created so far. */
