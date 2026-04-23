@@ -842,6 +842,48 @@ class FilteredBufferDispatcherTest {
     }
 
     /**
+     * A stale callback (checkpointId &lt; currentCheckpointId) must be ignored: it must not modify
+     * the current checkpoint's wait-set and must not trigger phase 2. We verify this by observing
+     * that after the stale callback arrives, the current checkpoint still converges normally when
+     * its own callbacks arrive.
+     */
+    @Test
+    void testStaleCheckpointCallbackIsIgnored() throws Exception {
+        Queue<Buffer> drainPool = createBufferPool(5);
+        RecordingChannelStateWriter recordingWriter = new RecordingChannelStateWriter();
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores,
+                        recordingWriter,
+                        spillDirs,
+                        SEGMENT_SIZE,
+                        TestBufferPool.drainOnly(drainPool));
+
+        // Two entries so both channels appear in the wait-set.
+        writer.write(createTestData(SEGMENT_SIZE, (byte) 0xA1), SEGMENT_SIZE, ch0);
+        writer.write(createTestData(SEGMENT_SIZE, (byte) 0xA2), SEGMENT_SIZE, ch1);
+        writer.flush();
+
+        // Move to a newer checkpoint (id=20) and deliver one of its two channel callbacks.
+        writer.onChannelCheckpointStarted(20L, ch0);
+        // wait-set still contains ch1; phase 2 not yet triggered.
+        assertThat(recordingWriter.inputDataCalls).isEmpty();
+
+        // A stale callback for an older checkpoint (id=10) arrives. It must be ignored — not
+        // alter the wait-set for checkpoint 20, and must not trigger phase 2.
+        writer.onChannelCheckpointStarted(10L, ch0);
+        writer.onChannelCheckpointStarted(10L, ch1);
+        assertThat(recordingWriter.inputDataCalls).isEmpty();
+
+        // Now deliver the remaining callback for checkpoint 20 — wait-set empties and phase 2
+        // snapshots the entries into the ChannelStateWriter.
+        writer.onChannelCheckpointStarted(20L, ch1);
+        assertThat(recordingWriter.inputDataCalls).hasSize(2);
+
+        writer.close();
+    }
+
+    /**
      * wait-set reaching empty triggers phase2 {@code drainSpillEntriesToCheckpoint}: the sealed
      * readers are snapshotted and streamed to the ChannelStateWriter, but the original readers and
      * store state are left intact. close()'s drain loop then still delivers every entry to the
