@@ -287,13 +287,7 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
                 if (chunk == null) {
                     break;
                 }
-                Preconditions.checkState(
-                        buffer.getMaxCapacity() >= chunk.getLength(),
-                        "Buffer capacity %s is smaller than chunk length %s",
-                        buffer.getMaxCapacity(),
-                        chunk.getLength());
-                buffer.getMemorySegment().put(0, chunk.getData(), 0, chunk.getLength());
-                buffer.setSize(chunk.getLength());
+                writeChunkToBuffer(buffer, chunk.getData(), chunk.getLength());
                 RecoveredBufferStoreImpl store =
                         Preconditions.checkNotNull(
                                 storesByChannel.get(ch), "No store for channel %s", ch);
@@ -326,13 +320,7 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
         if (isSpillIdle()) {
             Buffer buffer = bufferRequester.requestBuffer(channelInfo);
             if (buffer != null) {
-                Preconditions.checkState(
-                        buffer.getMaxCapacity() >= bytesToFlush,
-                        "Buffer capacity %s is smaller than cache size %s",
-                        buffer.getMaxCapacity(),
-                        bytesToFlush);
-                buffer.getMemorySegment().put(0, cache, 0, bytesToFlush);
-                buffer.setSize(bytesToFlush);
+                writeChunkToBuffer(buffer, cache, bytesToFlush);
                 RecoveredBufferStoreImpl store =
                         Preconditions.checkNotNull(
                                 storesByChannel.get(channelInfo),
@@ -345,6 +333,20 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
 
         // P2: spill writer not idle or no buffer available — write to spill file
         writeToSpillFile(cache, 0, bytesToFlush, channelInfo);
+    }
+
+    /**
+     * Copies {@code length} bytes from {@code data} into the given network buffer. Assumes the
+     * buffer is freshly acquired (writerIndex == 0); after this call, {@code buffer.getSize() ==
+     * length}.
+     */
+    private static void writeChunkToBuffer(Buffer buffer, byte[] data, int length) {
+        Preconditions.checkState(
+                buffer.getMaxCapacity() >= length,
+                "Buffer capacity %s is smaller than chunk length %s",
+                buffer.getMaxCapacity(),
+                length);
+        buffer.asByteBuf().writeBytes(data, 0, length);
     }
 
     /** Writes bytes to the spill file, creating the Writer lazily if needed. */
@@ -381,13 +383,7 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
                     buffer.recycleBuffer();
                     return;
                 }
-                Preconditions.checkState(
-                        buffer.getMaxCapacity() >= chunk.getLength(),
-                        "Buffer capacity %s is smaller than chunk length %s",
-                        buffer.getMaxCapacity(),
-                        chunk.getLength());
-                buffer.getMemorySegment().put(0, chunk.getData(), 0, chunk.getLength());
-                buffer.setSize(chunk.getLength());
+                writeChunkToBuffer(buffer, chunk.getData(), chunk.getLength());
                 RecoveredBufferStoreImpl store =
                         Preconditions.checkNotNull(
                                 storesByChannel.get(ch), "No store for channel %s", ch);
