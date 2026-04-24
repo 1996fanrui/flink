@@ -152,7 +152,7 @@ P2 两条触发路径：
 
 ### 场景 3：`close()` 的 blocking drain
 
-recovery 结束后把所有剩余磁盘数据 drain 回 Store。和 eagerDrain 同结构，只是 **bufferSupplier 换成 blocking 版本**（会阻塞直到拿到 buffer）：
+filter 阶段结束后、channel conversion 完成时 `close()` 被调用，把所有剩余磁盘数据 drain 回 Store。和 eagerDrain 同结构，只是 **bufferSupplier 换成 blocking 版本**（会阻塞直到拿到 buffer）：
 
 ```mermaid
 flowchart TD
@@ -193,7 +193,7 @@ flowchart TD
 6. **"磁盘有数据"的判定** — 看 `spillFile.isIdle()`，本质是"所有 Reader 的 entries 都为空"（遍历每个 reader 检查 `hasEntries()`），而不是"有没有开过物理文件"。spill 过但 eagerDrain 已全部搬回的状态下 `isIdle()` 重新为 true，flushCache 会再次走 P1。
 7. **Spill 目录来自 IOManager** — `IOManager.getSpillingDirectoriesPaths()`，不回退到 `java.io.tmpdir`；目录无效直接抛 IOException。
 8. **dispatcher 和 FilteredSpillFile 都是 per-task** — 一个 task 一个 dispatcher、一个 FilteredSpillFile；所有 gate/channel 共用。channel 身份通过 `write(bytes, length, channelInfo)` 传入。
-9. **Checkpoint 只允许发生在 recovery 结束后** — `spillFile.finish()` 已调用、所有 Reader 已 sealed 才允许 snapshot。两层 `checkState` 防御：dispatcher 在 drain 入口检查 `spillFile.isFinished()`；`Reader.snapshot()` 内部检查 `isSealed()`。违反 → `IllegalStateException`。
+9. **Checkpoint 只允许发生在 filter 阶段结束后** — 即 `filterAndRewrite` 产出的所有字节都已写入 spillFile（cache 已 flush、`spillFile.finish()` 已调用），**所有 Reader 已 sealed** 才允许 snapshot。这是 wait-set 初始化和一次顺序 drain 成立的前提（注意：此时 replay 阶段可能还在进行——blocking drain / channel conversion 尚未结束不影响 checkpoint 成立）。代码在两个入口以 `Preconditions.checkState(reader.isSealed(), ...)` 防御：`onChannelCheckpointStarted` 构建 wait-set 时（每个 reader）、`drainSpillEntriesToCheckpoint` 执行 snapshot 时（每个 reader）；`Reader.snapshot()` 内部再查一次 `isSealed()`。违反 → `IllegalStateException`。
 
 ## 生命周期 Assertions
 
@@ -204,7 +204,8 @@ flowchart TD
 | `dispatcher.write()` | `!flushed && !closed` |
 | `FilteredSpillFile.writeEntry()` | `!finished` |
 | `Reader.addEntry()` | `!sealed` |
-| `dispatcher.drainSpillEntriesToCheckpoint()` | `spillFile.isFinished()` |
+| `dispatcher.onChannelCheckpointStarted()`（构建 wait-set 时） | 每个 Reader `isSealed()` |
+| `dispatcher.drainSpillEntriesToCheckpoint()` | 每个 Reader `isSealed()` |
 | `Reader.snapshot()` | `sealed` |
 
 Buffer size check（`buffer.getMaxCapacity() >= payload.length`）在所有"payload → network buffer"写入点也以 `checkState` 形式存在，但属于纯代码层面的防御性断言，不在这里重复；开头的 preamble 已声明。

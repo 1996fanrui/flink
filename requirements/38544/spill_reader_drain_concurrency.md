@@ -17,7 +17,7 @@ Spill 文件里的 entries 会被**两条独立的链路**各自消费/读取，
 
 ## 关键前提
 
-1. **Checkpoint 触发时 `addEntry` 已经不再发生**。Recovery 阶段（`filterAndRewrite`）在 `flush()` 之前就已经把所有 spill 数据写完；`onChannelCheckpointStarted` 由各 input channel 的 `checkpoint()` 回调触发，时间上在 recovery 结束之后。所以 checkpoint 拍照时原 `Reader.entries` 内容已经定格（只会被回放链路 `pollFirst` 缩小，不会再 `addLast`）。— 这个前提由 **Reader 的 `sealed` 状态**显式保障，见下一节。
+1. **Checkpoint 触发时 `addEntry` 已经不再发生**。filter 阶段（`filterAndRewrite`）在 `flush()` 之前就已经把所有 spill 数据写完、`spillFile.finish()` 已 seal 所有 Reader；`onChannelCheckpointStarted` 由各 input channel 的 `checkpoint()` 回调触发，时间上在 **filter 阶段结束之后**（replay 阶段是否已收尾并不影响）。所以 checkpoint 拍照时原 `Reader.entries` 内容已经定格（只会被回放链路 `pollFirst` 缩小，不会再 `addLast`）。— 这个前提由 **Reader 的 `sealed` 状态**显式保障，见下一节。
 
 2. **Checkpoint 可能发生多次**。每次 checkpoint 都要对"当前还没被回放掉的 entries"独立拍一张照；下一次 checkpoint 来时，原 Reader.entries 可能已经被回放链路消费掉了一部分，新的 snapshot 里只剩余量。每次 snapshot 之间互相独立，各自是一个独立的 Reader 对象。
 
@@ -27,7 +27,7 @@ Spill 文件里的 entries 会被**两条独立的链路**各自消费/读取，
 
 ## Sealed 状态：写完的显式标志
 
-之前"Reader.entries 内容已经定格"这个前提完全依赖**时序暗示**（recovery → flush → checkpoint/close drain 的严格先后）。时序契约容易被后续改动意外破坏——比如谁在 recovery 结束后又补一笔 `addEntry` 就会静默损坏 checkpoint。
+之前"Reader.entries 内容已经定格"这个前提完全依赖**时序暗示**（filter → flush → checkpoint/close drain 的严格先后）。时序契约容易被后续改动意外破坏——比如谁在 filter 阶段结束后又补一笔 `addEntry` 就会静默损坏 checkpoint。
 
 引入 `Reader.sealed` 把这个不变式变成**代码层面的显式状态**：
 

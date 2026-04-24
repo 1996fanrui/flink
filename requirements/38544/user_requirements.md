@@ -8,6 +8,34 @@
 
 **This branch's ONLY goal**: replace heap buffer with disk when Network Buffer Pool is insufficient. Master branch uses unlimited heap buffer fallback in `requestBufferBlocking()`, risking OOM. This branch replaces that heap fallback with disk spilling to bound memory usage. **All other features — checkpoint, priority events, channel conversion, task consumption, barrier handling — must remain exactly the same.**
 
+## Goals（非 Requirement，梳理多数据源 channel 消费的目标集）
+
+> 引入 `RecoveredBufferStore` 后，Local/RemoteInputChannel 同时持有三类数据源：RecoveredBufferStore（恢复数据）、priority events、普通数据。以下条目**统一梳理**该场景下的目标语义——只梳理目标本身，不区分哪些由当前 branch 交付、哪些由其他开发线满足。
+
+### GOAL-RSCC RecoveredBufferStore 数据消费完整性
+
+Task 线程必须消费完 RecoveredBufferStore 交付的所有 buffer。特别是 OutputWriter drain 线程从磁盘 load 回来、通过 `store.addBuffer()` 塞进 ready 队列的 buffer，一条都不能漏。
+
+当前实现通过 "`peekNextDataType` 返回 NONE + `addBuffer` 触发 `notifyChannelNonEmpty`" 这条契约路径支撑该目标。当 ready 队列暂时为空而磁盘上还有 pending entries 时，NONE 是**正确契约**（不是 gap）——不能谎报非 NONE 避免 busy-spin。每次 disk load 吃一次唤醒往返是该契约的固有延迟成本。
+
+### GOAL-PEVT Priority 事件优先消费
+
+恢复期间到达的 priority 事件（典型是 unaligned checkpoint barrier）不能被 RecoveredBufferStore 数据阻塞。期望顺序：**priority → recovered store → 普通数据**。
+
+当前 `getNextBuffer()` 的实现是"store 先于 receivedBuffers"，且 store 与 `receivedBuffers` 之间没有 priority 判优——此时 receivedBuffers 中的 priority 元素会被困在 store 之后，不满足该目标。
+
+### GOAL-NBUP 上游投递路径不阻塞
+
+上游向 channel 投递事件（priority 或普通数据）的路径在任何阶段都不被阻塞。Priority 事件绕过 credit 控制，必须能随时入队；普通数据只要有 credit 也能随时入队；RecoveredBufferStore 的 `addBuffer` 路径与 network I/O 路径互不干扰。
+
+### GOAL-DLLO Disk load 延迟优化
+
+减少 "每次 disk load → `addBuffer` → `notifyChannelNonEmpty` → Task 线程唤醒往返" 的延迟。可选手段包括 store 内部预取、pipeline disk load 与消费、批量 notify 等。GOAL-RSCC 的正确性不依赖该优化，这里列出作为性能方向目标。
+
+---
+
+各目标的机制细节、需守住的不变式、已识别风险点、以及验收思路，见 [`channel_consumption_ordering.md`](./channel_consumption_ordering.md)（当前重点聚焦 GOAL-RSCC 的机制契约）。
+
 Disk data is logically equivalent to heap buffer data at the byte level: same bytes, different storage medium. Anywhere heap buffers work today, disk data must work identically after being loaded back into Network Buffers.
 
 Note on Heap Buffer: this branch **removes** the unbounded heap fallback in post-filter path (requestBufferBlocking → allocateUnpooledSegment), replacing it with disk spilling. Separately, it **introduces** a heap allocation for pre-filter source buffers (REQ-NHLB) to avoid deadlock between source and filtered buffers competing for the same Network Buffer Pool. The pre-filter heap path is intrinsically bounded to **1 buffer per task** (≈ 32KB) by the serial recovery loop and the deserializer's ownership contract — no explicit limiter is needed. These are different uses of heap at different pipeline stages — the former caused OOM and is removed, the latter is bounded-by-construction and safe.

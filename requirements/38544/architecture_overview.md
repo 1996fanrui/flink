@@ -31,7 +31,7 @@ close 连锁：`dispatcher.close()` → `writer.close()` → 所有 Reader.close
 
 ## 为什么这样设计
 
-**Cache 聚合写入**。字节到达碎、量小；dispatcher 内部留一块 `memorySegmentSize` 的 cache，攒够了才 flush。**三个 flush 触发点**：cache 满 / channel 切换 / recovery 结束。**flush 决策**：network buffer 够用 → P1（直投给 InputChannel）；不够 → P2（落盘）。
+**Cache 聚合写入**。字节到达碎、量小；dispatcher 内部留一块 `memorySegmentSize` 的 cache，攒够了才 flush。**三个 flush 触发点**：cache 满 / channel 切换 / filter 阶段结束（S3 读完，`dispatcher.flush()` 被调用）。**flush 决策**：network buffer 够用 → P1（直投给 InputChannel）；不够 → P2（落盘）。
 
 **单文件复用，超阈值才 rotate**。每条 entry 都开新文件会造成大量小文件，metadata 和句柄开销重。做法是所有 flush 都追加到**同一个文件**；只有文件超过 64 MB 才 rotate 到下一个文件。
 
@@ -42,6 +42,8 @@ close 连锁：`dispatcher.close()` → `writer.close()` → 所有 Reader.close
 
 ## Checkpoint 的 wait 机制
 
+**前提（invariant）**：checkpoint 只允许在 **filter 阶段结束之后**发生——即 `filterAndRewrite` 产出的所有字节都已经写入 `spillFile`（cache 已 flush 完、`spillFile.finish()` 已调用），因此**所有 Reader 都已 sealed**。这是 wait-set 初始化和后续一次顺序 drain 能成立的基础。代码以 `Preconditions.checkState(reader.isSealed(), ...)` 在两个入口防御：`onChannelCheckpointStarted` 构建 wait-set 时、`drainSpillEntriesToCheckpoint` 执行 snapshot 时。违反即 `IllegalStateException`。
+
 两个原因要求必须等：
 
 1. **顺序**：每个 channel 的 checkpoint 数据必须是 **ready buffers 在前、disk entries 在后** — disk 上是"更晚到达的 in-flight 数据"，顺序不能颠倒。
@@ -49,7 +51,7 @@ close 连锁：`dispatcher.close()` → `writer.close()` → 所有 Reader.close
 
 Dispatcher 维护一个 **wait-set**：
 
-- **初始**：扫所有 reader，拿到"此刻还有磁盘数据的 channel 集合"
+- **初始**：扫所有 reader（此时必须都已 sealed，见上文前提），拿到"此刻还有磁盘数据的 channel 集合"
 - **每次 `store.checkpoint()` 完成回调**：把该 channel 从 wait-set 移除
 - **wait-set 空**：所有该等的 channel 都已写完自己的 ready buffers，dispatcher 开始**一次顺序读整个磁盘文件**把 entries 复制到 checkpoint（通过对每个 reader 的 `snapshot()` 独立读，**不影响原 reader**，不影响 replay 链路继续消费）
 
