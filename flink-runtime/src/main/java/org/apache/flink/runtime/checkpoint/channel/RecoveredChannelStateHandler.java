@@ -88,6 +88,13 @@ class InputChannelRecoveredStateHandler
      */
     @Nullable private final ChannelStateFilteringHandler filteringHandler;
 
+    /**
+     * Optional dispatcher for delivering filtered data. When non-null (filtering mode), filtered
+     * records are written to the dispatcher instead of directly to InputChannel buffers. The
+     * dispatcher manages buffer allocation, disk spilling, and delivery to per-channel stores.
+     */
+    @Nullable private final FilteredBufferDispatcher dispatcher;
+
     /** Network buffer memory segment size in bytes. Used to size the reusable pre-filter buffer. */
     private final int memorySegmentSize;
 
@@ -112,13 +119,15 @@ class InputChannelRecoveredStateHandler
             InputGate[] inputGates,
             InflightDataRescalingDescriptor channelMapping,
             @Nullable ChannelStateFilteringHandler filteringHandler,
-            int memorySegmentSize) {
+            int memorySegmentSize,
+            @Nullable FilteredBufferDispatcher dispatcher) {
         this.inputGates = inputGates;
         this.channelMapping = channelMapping;
         this.filteringHandler = filteringHandler;
         checkArgument(
                 memorySegmentSize > 0, "memorySegmentSize must be positive: %s", memorySegmentSize);
         this.memorySegmentSize = memorySegmentSize;
+        this.dispatcher = dispatcher;
     }
 
     @Override
@@ -191,12 +200,14 @@ class InputChannelRecoveredStateHandler
                     recoverWithFiltering(
                             channel, channelInfo, oldSubtaskIndex, buffer.retainBuffer());
                 } else {
-                    channel.onRecoveredStateBuffer(
-                            EventSerializer.toBuffer(
-                                    new SubtaskConnectionDescriptor(
-                                            oldSubtaskIndex, channelInfo.getInputChannelIdx()),
-                                    false));
-                    channel.onRecoveredStateBuffer(buffer.retainBuffer());
+                    channel.getStore()
+                            .addBuffer(
+                                    EventSerializer.toBuffer(
+                                            new SubtaskConnectionDescriptor(
+                                                    oldSubtaskIndex,
+                                                    channelInfo.getInputChannelIdx()),
+                                            false));
+                    channel.getStore().addBuffer(buffer.retainBuffer());
                 }
             }
         } finally {
@@ -211,25 +222,15 @@ class InputChannelRecoveredStateHandler
             Buffer retainedBuffer)
             throws IOException, InterruptedException {
         checkState(filteringHandler != null, "filtering handler not set.");
-        List<Buffer> filteredBuffers =
-                filteringHandler.filterAndRewrite(
-                        channelInfo.getGateIdx(),
-                        oldSubtaskIndex,
-                        channelInfo.getInputChannelIdx(),
-                        retainedBuffer,
-                        channel::requestBufferBlocking);
-
-        int i = 0;
-        try {
-            for (; i < filteredBuffers.size(); i++) {
-                channel.onRecoveredStateBuffer(filteredBuffers.get(i));
-            }
-        } catch (Throwable t) {
-            for (int j = i; j < filteredBuffers.size(); j++) {
-                filteredBuffers.get(j).recycleBuffer();
-            }
-            throw t;
-        }
+        checkState(dispatcher != null, "dispatcher not set.");
+        InputChannelInfo targetChannelInfo = channel.getChannelInfo();
+        filteringHandler.filterAndRewrite(
+                channelInfo.getGateIdx(),
+                oldSubtaskIndex,
+                channelInfo.getInputChannelIdx(),
+                retainedBuffer,
+                dispatcher,
+                targetChannelInfo);
     }
 
     @Override

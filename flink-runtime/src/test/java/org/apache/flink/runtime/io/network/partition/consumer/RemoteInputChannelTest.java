@@ -2075,13 +2075,48 @@ class RemoteInputChannelTest {
     }
 
     @Test
-    void testGetNextBufferWithMigratedRecoveredBuffers() throws Exception {
-        // given: RemoteInputChannel with recovered buffers migrated from RecoveredInputChannel
+    void testNullRecoveredStoreDefaultsToEmpty() throws Exception {
+        // When no recovered data is passed (null), the constructor must substitute EMPTY.
+        // releaseAllResources() must not throw (EMPTY.releaseAll() is a no-op).
+        SingleInputGate inputGate = createSingleInputGate(1);
+        ConnectionID connectionId =
+                new ConnectionID(
+                        org.apache.flink.runtime.clusterframework.types.ResourceID.generate(),
+                        new java.net.InetSocketAddress("localhost", 0),
+                        0);
+        RemoteInputChannel channel =
+                new RemoteInputChannel(
+                        inputGate,
+                        0,
+                        new ResultPartitionID(),
+                        new ResultSubpartitionIndexSet(0),
+                        connectionId,
+                        InputChannelTestUtils.mockConnectionManagerWithPartitionRequestClient(
+                                mock(PartitionRequestClient.class)),
+                        0,
+                        0,
+                        0,
+                        2 /* initialCredit */,
+                        new SimpleCounter(),
+                        new SimpleCounter(),
+                        ChannelStateWriter.NO_OP,
+                        RecoveredBufferStore.EMPTY);
+
+        inputGate.setInputChannels(channel);
+
+        assertThat(channel.getInitialCredit()).isEqualTo(2);
+        // releaseAllResources() must not throw (EMPTY.releaseAll() is a no-op).
+        channel.releaseAllResources();
+    }
+
+    @Test
+    void testGetNextBufferWithRecoveredStore() throws Exception {
+        // given: RemoteInputChannel with recovered buffers in a store
         SingleInputGate inputGate = createSingleInputGate(1);
 
-        ArrayDeque<Buffer> recoveredBuffers = new ArrayDeque<>();
-        recoveredBuffers.add(TestBufferFactory.createBuffer(10));
-        recoveredBuffers.add(TestBufferFactory.createBuffer(20));
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(new InputChannelInfo(0, 0));
+        store.addBuffer(TestBufferFactory.createBuffer(10));
+        store.addBuffer(TestBufferFactory.createBuffer(20));
 
         ConnectionID connectionId =
                 new ConnectionID(
@@ -2104,7 +2139,7 @@ class RemoteInputChannelTest {
                         new SimpleCounter(),
                         new SimpleCounter(),
                         ChannelStateWriter.NO_OP,
-                        recoveredBuffers);
+                        store);
 
         inputGate.setInputChannels(channel);
 
