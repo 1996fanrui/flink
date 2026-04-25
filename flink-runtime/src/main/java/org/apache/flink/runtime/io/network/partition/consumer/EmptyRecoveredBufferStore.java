@@ -18,6 +18,7 @@
 package org.apache.flink.runtime.io.network.partition.consumer;
 
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
+import org.apache.flink.runtime.checkpoint.channel.RecoveredBufferStoreCoordinator;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 
 import javax.annotation.Nullable;
@@ -53,11 +54,8 @@ class EmptyRecoveredBufferStore implements RecoveredBufferStore {
     public void releaseAll() {}
 
     @Override
-    public void setCheckpointListener(CheckpointStartedListener listener) {}
+    public void setCoordinator(RecoveredBufferStoreCoordinator coordinator) {}
 
     @Override
     public void setDataAvailableListener(DataAvailableListener listener) {}
-
-    @Override
-    public void setReleaseListener(ReleaseListener listener) {}
 }

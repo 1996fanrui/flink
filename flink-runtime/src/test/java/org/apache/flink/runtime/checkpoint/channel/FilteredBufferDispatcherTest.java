@@ -21,7 +21,6 @@ import org.apache.flink.core.memory.MemorySegmentFactory;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.FreeingBufferRecycler;
 import org.apache.flink.runtime.io.network.buffer.NetworkBuffer;
-import org.apache.flink.runtime.io.network.partition.consumer.RecoveredBufferStore;
 import org.apache.flink.runtime.io.network.partition.consumer.RecoveredBufferStoreImpl;
 import org.apache.flink.util.CloseableIterator;
 
@@ -77,23 +76,22 @@ class FilteredBufferDispatcherTest {
     }
 
     /**
-     * Test-only subclass of RecoveredBufferStoreImpl that records whether setCheckpointListener was
-     * called and captures the registered listener, without using Mockito.
+     * Test-only subclass of RecoveredBufferStoreImpl that records whether setCoordinator was
+     * called and captures the registered coordinator, without using Mockito.
      */
     private static class TrackingBufferStore extends RecoveredBufferStoreImpl {
-        private RecoveredBufferStore.CheckpointStartedListener registeredCallback;
-        private int setCheckpointListenerCount = 0;
+        private RecoveredBufferStoreCoordinator registeredCoordinator;
+        private int setCoordinatorCount = 0;
 
         TrackingBufferStore(InputChannelInfo channelInfo) {
             super(channelInfo);
         }
 
         @Override
-        public synchronized void setCheckpointListener(
-                RecoveredBufferStore.CheckpointStartedListener listener) {
-            super.setCheckpointListener(listener);
-            this.registeredCallback = listener;
-            this.setCheckpointListenerCount++;
+        public synchronized void setCoordinator(RecoveredBufferStoreCoordinator coordinator) {
+            super.setCoordinator(coordinator);
+            this.registeredCoordinator = coordinator;
+            this.setCoordinatorCount++;
         }
     }
 
@@ -689,15 +687,15 @@ class FilteredBufferDispatcherTest {
     }
 
     // ---------------------------------------------------------------------------
-    // Tests for checkpoint callback registration and wait-set state machine
+    // Tests for dispatcher registration and wait-set state machine
     // ---------------------------------------------------------------------------
 
     /**
-     * After construction, each store's checkpointListener is registered to
-     * FilteredBufferDispatcher.onChannelCheckpointStarted.
+     * After construction, each store has its coordinator registered to the
+     * FilteredBufferDispatcherImpl instance.
      */
     @Test
-    void testCheckpointCallbackRegisteredOnConstruction() throws Exception {
+    void testCoordinatorRegisteredOnConstruction() throws Exception {
         TrackingBufferStore trackStore0 = new TrackingBufferStore(ch0);
         TrackingBufferStore trackStore1 = new TrackingBufferStore(ch1);
         Map<InputChannelInfo, RecoveredBufferStoreImpl> trackStores = new HashMap<>();
@@ -705,19 +703,19 @@ class FilteredBufferDispatcherTest {
         trackStores.put(ch1, trackStore1);
 
         Queue<Buffer> pool = createBufferPool(5);
-        new FilteredBufferDispatcherImpl(
-                trackStores,
-                ChannelStateWriter.NO_OP,
-                spillDirs,
-                SEGMENT_SIZE,
-                new TestBufferPool(pool));
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        trackStores,
+                        ChannelStateWriter.NO_OP,
+                        spillDirs,
+                        SEGMENT_SIZE,
+                        new TestBufferPool(pool));
 
-        // Both stores must have had setCheckpointListener called exactly once with a non-null
-        // listener.
-        assertThat(trackStore0.setCheckpointListenerCount).isEqualTo(1);
-        assertThat(trackStore0.registeredCallback).isNotNull();
-        assertThat(trackStore1.setCheckpointListenerCount).isEqualTo(1);
-        assertThat(trackStore1.registeredCallback).isNotNull();
+        // Both stores must have had setCoordinator called exactly once with the dispatcher.
+        assertThat(trackStore0.setCoordinatorCount).isEqualTo(1);
+        assertThat(trackStore0.registeredCoordinator).isSameAs(writer);
+        assertThat(trackStore1.setCoordinatorCount).isEqualTo(1);
+        assertThat(trackStore1.registeredCoordinator).isSameAs(writer);
     }
 
     /**

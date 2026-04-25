@@ -20,6 +20,7 @@ package org.apache.flink.runtime.io.network.partition.consumer;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
 import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
+import org.apache.flink.runtime.checkpoint.channel.RecoveredBufferStoreCoordinator;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.util.CloseableIterator;
 
@@ -40,8 +41,8 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  *
  * <p>Thread safety: all methods that access {@code readyBuffers} or {@code pendingCount} are
  * synchronized on {@code this}. The {@code released} flag is volatile since it is only written
- * once. Callbacks are invoked <em>outside</em> any store-level lock to prevent deadlocks with
- * FilteredBufferDispatcher's own synchronisation.
+ * once. Coordinator notifications and the data-available listener are invoked <em>outside</em>
+ * any store-level lock to prevent deadlocks with the coordinator's own synchronisation.
  *
  * <p>Public interface methods are called from the Task thread. Internal methods (addBuffer,
  * incrementPending, decrementPending) are called from the Recovery thread
@@ -64,10 +65,7 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
     private DataAvailableListener dataAvailableListener;
 
     @GuardedBy("this")
-    private CheckpointStartedListener checkpointListener;
-
-    @GuardedBy("this")
-    private ReleaseListener releaseListener;
+    private RecoveredBufferStoreCoordinator coordinator;
 
     /**
      * Creates a store bound to a single input channel. The bound {@link InputChannelInfo} is used
@@ -110,17 +108,18 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
 
     /**
      * Checkpoints the ready buffers to the given ChannelStateWriter. Ready buffers are retained and
-     * passed to the writer via CloseableIterator. After snapshotting, the {@link
-     * CheckpointStartedListener} is invoked <em>outside</em> the store lock so that
-     * FilteredBufferDispatcher can safely acquire its own lock without risking a deadlock.
+     * passed to the writer via CloseableIterator. After snapshotting, the registered {@link
+     * RecoveredBufferStoreCoordinator} is notified <em>outside</em> the store lock so the
+     * coordinator can safely acquire its own lock without risking a deadlock.
      *
-     * <p>Pending spill entries on disk are checkpointed by FilteredBufferDispatcher, which owns the
-     * spill entries and file readers, triggered via the CheckpointStartedListener.
+     * <p>Pending spill entries on disk are checkpointed by the coordinator, which owns the spill
+     * entries and file readers, triggered via
+     * {@link RecoveredBufferStoreCoordinator#onChannelCheckpointStarted}.
      */
     @Override
     public void checkpoint(ChannelStateWriter writer, long checkpointId) throws IOException {
-        // Step 1: snapshot ready buffers under lock; capture callback reference.
-        CheckpointStartedListener cb;
+        // Step 1: snapshot ready buffers under lock; capture coordinator reference.
+        RecoveredBufferStoreCoordinator c;
         synchronized (this) {
             if (!readyBuffers.isEmpty()) {
                 List<Buffer> retained = new ArrayList<>(readyBuffers.size());
@@ -133,21 +132,21 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
                         ChannelStateWriter.SEQUENCE_NUMBER_RESTORED,
                         CloseableIterator.fromList(retained, Buffer::recycleBuffer));
             }
-            cb = checkpointListener;
+            c = coordinator;
         }
 
-        // Step 2: fire callback outside lock to avoid deadlock with FilteredBufferDispatcher's
-        // lock.
-        if (cb != null) {
-            cb.onChannelCheckpointStarted(checkpointId, channelInfo);
+        // Step 2: notify the coordinator outside the store lock to avoid deadlock with the
+        // coordinator's own synchronisation.
+        if (c != null) {
+            c.onChannelCheckpointStarted(checkpointId, channelInfo);
         }
     }
 
     @Override
     public void releaseAll() {
-        // Step 1: flip the released flag and recycle ready buffers under lock; capture the release
-        // listener reference for invocation outside the lock.
-        ReleaseListener cb;
+        // Step 1: flip the released flag and recycle ready buffers under lock; capture the
+        // coordinator reference for invocation outside the lock.
+        RecoveredBufferStoreCoordinator c;
         synchronized (this) {
             released = true;
             for (Buffer buffer : readyBuffers) {
@@ -155,23 +154,23 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
             }
             readyBuffers.clear();
             pendingCount = 0;
-            cb = releaseListener;
+            c = coordinator;
         }
 
-        // Step 2: fire the release listener outside the store lock so the dispatcher can safely
+        // Step 2: notify the coordinator outside the store lock so the coordinator can safely
         // acquire its own lock to drop disk-resident spill entries for this channel.
-        if (cb != null) {
-            cb.onChannelReleased(channelInfo);
+        if (c != null) {
+            c.onChannelReleased(channelInfo);
         }
     }
 
     // ---------------------------------------------------------------------------
-    // Callback setters (interface methods)
+    // Setters (interface methods)
     // ---------------------------------------------------------------------------
 
     @Override
-    public synchronized void setCheckpointListener(CheckpointStartedListener listener) {
-        this.checkpointListener = listener;
+    public synchronized void setCoordinator(RecoveredBufferStoreCoordinator coordinator) {
+        this.coordinator = coordinator;
     }
 
     /**
@@ -183,11 +182,6 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
     @Override
     public synchronized void setDataAvailableListener(DataAvailableListener listener) {
         this.dataAvailableListener = listener;
-    }
-
-    @Override
-    public synchronized void setReleaseListener(ReleaseListener listener) {
-        this.releaseListener = listener;
     }
 
     // ---------------------------------------------------------------------------

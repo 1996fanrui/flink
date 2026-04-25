@@ -56,7 +56,8 @@ import static org.apache.flink.util.IOUtils.closeQuietly;
  * are marked complete.
  */
 @Internal
-public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
+public class FilteredBufferDispatcherImpl
+        implements FilteredBufferDispatcher, RecoveredBufferStoreCoordinator {
 
     /**
      * Per-channel stores used by this dispatcher. Typed as the concrete {@link
@@ -119,13 +120,12 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
         this.cache = new byte[memorySegmentSize];
         this.cachePosition = 0;
 
-        // Register this dispatcher as the checkpoint and release listener on every per-channel
-        // store. The release listener lets the dispatcher drop still-pending on-disk spill entries
-        // for a channel as soon as that channel's store is released, instead of holding the disk
-        // resources until dispatcher close().
+        // Register this dispatcher as the coordinator on every per-channel store. The store calls
+        // back into the coordinator from checkpoint() and releaseAll() so the dispatcher can
+        // maintain its wait-set and drop still-pending on-disk spill entries the moment a channel
+        // is released, instead of holding the disk resources until dispatcher close().
         for (RecoveredBufferStoreImpl store : storesByChannel.values()) {
-            store.setCheckpointListener(this::onChannelCheckpointStarted);
-            store.setReleaseListener(this::onChannelReleased);
+            store.setCoordinator(this);
         }
     }
 

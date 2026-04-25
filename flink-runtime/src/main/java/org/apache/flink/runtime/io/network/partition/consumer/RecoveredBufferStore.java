@@ -20,6 +20,7 @@ package org.apache.flink.runtime.io.network.partition.consumer;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
 import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
+import org.apache.flink.runtime.checkpoint.channel.RecoveredBufferStoreCoordinator;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 
 import javax.annotation.Nullable;
@@ -73,12 +74,12 @@ public interface RecoveredBufferStore {
 
     /**
      * Checkpoints the current store contents to the given ChannelStateWriter. Implementations
-     * should snapshot ready buffers first, then fire the {@link CheckpointStartedListener} (if one
-     * is registered) <em>outside</em> any store-level lock to avoid deadlock with the
-     * FilteredBufferDispatcher.
+     * should snapshot ready buffers first, then notify the registered {@link
+     * RecoveredBufferStoreCoordinator} (if any) <em>outside</em> any store-level lock to avoid
+     * deadlock with the coordinator's own synchronisation.
      *
      * <p>The store is bound to a single {@link InputChannelInfo} at construction time; both the
-     * snapshot and the listener invocation use that bound channel info.
+     * snapshot and the coordinator notification use that bound channel info.
      *
      * @param writer the channel state writer to checkpoint to
      * @param checkpointId the checkpoint ID
@@ -88,21 +89,20 @@ public interface RecoveredBufferStore {
 
     /**
      * Releases all buffers held in this store and clears all state. Before clearing local state,
-     * the registered {@link ReleaseListener} (if any) is fired so that the owning dispatcher can
-     * drop any still-pending spill entries for this channel from disk.
+     * the registered {@link RecoveredBufferStoreCoordinator} (if any) is notified so the
+     * coordinator can drop any still-pending spill entries for this channel from disk.
      */
     void releaseAll();
 
     /**
-     * Registers a callback that is invoked after this channel's ready buffers have been snapshotted
-     * during a checkpoint. The callback is fired outside any store-level lock.
+     * Registers the {@link RecoveredBufferStoreCoordinator} that owns cross-channel bookkeeping
+     * (such as the checkpoint wait-set and disk-resident spill entries). The store invokes the
+     * coordinator from {@link #checkpoint} and {@link #releaseAll} on lifecycle transitions. Do
+     * not call this method (or pass {@code null}) when there is no coordinator.
      *
-     * <p>The typical recipient is FilteredBufferDispatcher, which uses the callback to maintain its
-     * per-channel wait-set and flush pending spill entries once all channels have reported in.
-     *
-     * @param listener the listener to invoke; replaces any previously registered listener
+     * @param coordinator the coordinator to notify; replaces any previously registered coordinator
      */
-    void setCheckpointListener(CheckpointStartedListener listener);
+    void setCoordinator(RecoveredBufferStoreCoordinator coordinator);
 
     /**
      * Registers a callback that is invoked when a buffer is added to a previously empty ready
@@ -113,38 +113,6 @@ public interface RecoveredBufferStore {
     void setDataAvailableListener(DataAvailableListener listener);
 
     /**
-     * Registers a callback that is invoked from {@link #releaseAll()} so that the owning
-     * dispatcher can release any disk-resident spill entries still associated with this channel.
-     * The callback is fired outside any store-level lock to avoid deadlock with dispatcher
-     * synchronisation.
-     *
-     * @param listener the listener to invoke; replaces any previously registered listener
-     */
-    void setReleaseListener(ReleaseListener listener);
-
-    /**
-     * Listener invoked when a per-channel checkpoint snapshot has started. Used by
-     * {@link RecoveredBufferStoreImpl} to notify the FilteredBufferDispatcher that this channel's
-     * ready buffers have been snapshotted, so the FilteredBufferDispatcher can update its wait-set
-     * and, when all channels are accounted for, flush pending spill entries into the checkpoint.
-     *
-     * <p>The listener is always invoked outside any store-level lock to avoid deadlocks with the
-     * FilteredBufferDispatcher's own synchronisation.
-     */
-    @FunctionalInterface
-    interface CheckpointStartedListener {
-
-        /**
-         * Called after a channel's ready buffers have been snapshotted into the
-         * {@link ChannelStateWriter}.
-         *
-         * @param checkpointId the ID of the checkpoint that just started for this channel
-         * @param channelInfo the input channel that triggered the snapshot
-         */
-        void onChannelCheckpointStarted(long checkpointId, InputChannelInfo channelInfo);
-    }
-
-    /**
      * Listener invoked when a buffer has been added to a previously empty ready queue. The typical
      * recipient is the owning InputChannel, which uses it to wake up the Task thread.
      */
@@ -153,24 +121,5 @@ public interface RecoveredBufferStore {
 
         /** Called when a buffer becomes available for consumption. */
         void onDataAvailable();
-    }
-
-    /**
-     * Listener invoked during {@link RecoveredBufferStore#releaseAll()}. The typical recipient is
-     * FilteredBufferDispatcher, which drops still-pending on-disk spill entries for the released
-     * channel so the disk-side resources do not linger until dispatcher {@code close()}.
-     *
-     * <p>The listener is always invoked outside any store-level lock to avoid deadlocks with the
-     * FilteredBufferDispatcher's own synchronisation.
-     */
-    @FunctionalInterface
-    interface ReleaseListener {
-
-        /**
-         * Called when the bound channel's store is being released.
-         *
-         * @param channelInfo the input channel whose store is being released
-         */
-        void onChannelReleased(InputChannelInfo channelInfo);
     }
 }

@@ -20,6 +20,7 @@ package org.apache.flink.runtime.io.network.partition.consumer;
 import org.apache.flink.core.memory.MemorySegmentFactory;
 import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.runtime.checkpoint.channel.RecordingChannelStateWriter;
+import org.apache.flink.runtime.checkpoint.channel.RecoveredBufferStoreCoordinator;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.FreeingBufferRecycler;
 import org.apache.flink.runtime.io.network.buffer.NetworkBuffer;
@@ -202,14 +203,14 @@ class RecoveredBufferStoreTest {
         assertThat(store.size()).isEqualTo(0);
     }
 
-    /** Verify releaseAll fires the registered release listener with the bound channel info. */
+    /** Verify releaseAll notifies the registered coordinator with the bound channel info. */
     @Test
-    void testReleaseAllFiresReleaseListener() {
+    void testReleaseAllNotifiesCoordinator() {
         InputChannelInfo channelInfo = new InputChannelInfo(3, 7);
         RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(channelInfo);
 
-        List<InputChannelInfo> captured = new ArrayList<>();
-        store.setReleaseListener(captured::add);
+        RecordingCoordinator coordinator = new RecordingCoordinator();
+        store.setCoordinator(coordinator);
 
         // Add some in-memory and on-disk bookkeeping to make the release meaningful.
         store.addBuffer(createBuffer(new byte[] {1}));
@@ -217,7 +218,7 @@ class RecoveredBufferStoreTest {
 
         store.releaseAll();
 
-        assertThat(captured).containsExactly(channelInfo);
+        assertThat(coordinator.released).containsExactly(channelInfo);
         assertThat(store.isEmpty()).isTrue();
         assertThat(store.size()).isEqualTo(0);
     }
@@ -287,27 +288,21 @@ class RecoveredBufferStoreTest {
     }
 
     // ---------------------------------------------------------------------------
-    // Tests for RecoveredBufferStore.CheckpointStartedListener
+    // Tests for coordinator notification on checkpoint
     // ---------------------------------------------------------------------------
 
     /**
-     * Verify that setCheckpointListener registers a listener that is fired during checkpoint()
-     * after snapshotting ready buffers. The listener should receive the correct checkpointId and
-     * channelInfo.
+     * Verify that the coordinator registered via setCoordinator receives
+     * onChannelCheckpointStarted during checkpoint() after snapshotting ready buffers, with the
+     * correct checkpointId and channelInfo.
      */
     @Test
-    void testCheckpointCallbackFiredAfterSnapshot() throws Exception {
+    void testCheckpointNotifiesCoordinatorAfterSnapshot() throws Exception {
         InputChannelInfo channelInfo = new InputChannelInfo(0, 0);
         RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(channelInfo);
 
-        List<Long> capturedIds = new ArrayList<>();
-        List<InputChannelInfo> capturedInfos = new ArrayList<>();
-
-        store.setCheckpointListener(
-                (id, info) -> {
-                    capturedIds.add(id);
-                    capturedInfos.add(info);
-                });
+        RecordingCoordinator coordinator = new RecordingCoordinator();
+        store.setCoordinator(coordinator);
 
         store.addBuffer(createBuffer(new byte[] {1, 2}));
 
@@ -317,11 +312,11 @@ class RecoveredBufferStoreTest {
 
         store.checkpoint(writer, checkpointId);
 
-        // Callback must have been fired exactly once with correct args
-        assertThat(capturedIds).containsExactly(42L);
-        assertThat(capturedInfos).containsExactly(channelInfo);
+        // Coordinator must have been notified exactly once with correct args
+        assertThat(coordinator.checkpointIds).containsExactly(42L);
+        assertThat(coordinator.checkpointChannels).containsExactly(channelInfo);
 
-        // Writer received the ready buffer before callback fired (snapshot happened first)
+        // Writer received the ready buffer before notification fired (snapshot happened first)
         assertThat(writer.getAddedInput().get(channelInfo)).hasSize(1);
 
         writer.getAddedInput().get(channelInfo).forEach(Buffer::recycleBuffer);
@@ -329,33 +324,32 @@ class RecoveredBufferStoreTest {
     }
 
     /**
-     * Verify checkpoint() without any ready buffers still fires the
-     * CheckpointStartedListener.
+     * Verify checkpoint() without any ready buffers still notifies the coordinator.
      */
     @Test
-    void testCheckpointCallbackFiredEvenWhenNoReadyBuffers() throws Exception {
+    void testCheckpointNotifiesCoordinatorEvenWhenNoReadyBuffers() throws Exception {
         InputChannelInfo channelInfo = new InputChannelInfo(1, 2);
         RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(channelInfo);
 
-        int[] callCount = {0};
-        store.setCheckpointListener((id, info) -> callCount[0]++);
+        RecordingCoordinator coordinator = new RecordingCoordinator();
+        store.setCoordinator(coordinator);
 
         RecordingChannelStateWriter writer = new RecordingChannelStateWriter();
         writer.start(1L, null);
         store.checkpoint(writer, 1L);
 
-        assertThat(callCount[0]).isEqualTo(1);
+        assertThat(coordinator.checkpointIds).containsExactly(1L);
     }
 
-    /** Verify no callback is fired if setCheckpointListener was never called. */
+    /** Verify no notification is fired if setCoordinator was never called. */
     @Test
-    void testCheckpointWithNoCallbackSetDoesNotThrow() throws Exception {
+    void testCheckpointWithNoCoordinatorSetDoesNotThrow() throws Exception {
         RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(DEFAULT_CHANNEL_INFO);
         store.addBuffer(createBuffer(new byte[] {1}));
 
         RecordingChannelStateWriter writer = new RecordingChannelStateWriter();
         writer.start(1L, null);
-        // Should not throw even without a callback registered
+        // Should not throw even without a coordinator registered
         store.checkpoint(writer, 1L);
 
         writer.getAddedInput().get(DEFAULT_CHANNEL_INFO).forEach(Buffer::recycleBuffer);
@@ -417,15 +411,32 @@ class RecoveredBufferStoreTest {
         RecoveredBufferStore.EMPTY.releaseAll();
     }
 
-    /** Verify all setter listeners on EMPTY are no-ops (accept and discard without throwing). */
+    /** Verify all setters on EMPTY are no-ops (accept and discard without throwing). */
     @Test
     void testEmptySingletonSettersAreNoOp() {
         RecoveredBufferStore empty = RecoveredBufferStore.EMPTY;
 
-        empty.setCheckpointListener((id, info) -> {});
+        empty.setCoordinator(new RecordingCoordinator());
         empty.setDataAvailableListener(() -> {});
-        empty.setReleaseListener(info -> {});
         // No exception == pass
+    }
+
+    /** Test-only coordinator that records onChannelCheckpointStarted / onChannelReleased calls. */
+    private static class RecordingCoordinator implements RecoveredBufferStoreCoordinator {
+        final List<Long> checkpointIds = new ArrayList<>();
+        final List<InputChannelInfo> checkpointChannels = new ArrayList<>();
+        final List<InputChannelInfo> released = new ArrayList<>();
+
+        @Override
+        public void onChannelCheckpointStarted(long checkpointId, InputChannelInfo channelInfo) {
+            checkpointIds.add(checkpointId);
+            checkpointChannels.add(channelInfo);
+        }
+
+        @Override
+        public void onChannelReleased(InputChannelInfo channelInfo) {
+            released.add(channelInfo);
+        }
     }
 
     private static NetworkBuffer createBuffer(byte[] data) {
