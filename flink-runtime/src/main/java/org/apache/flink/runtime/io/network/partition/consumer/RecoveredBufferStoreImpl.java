@@ -39,12 +39,13 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  * tracked by count only — the actual spill entries are owned by FilteredBufferDispatcher).
  *
  * <p>Thread safety: all methods that access {@code readyBuffers} or {@code pendingCount} are
- * synchronized on {@code this}. The {@code complete} flag is volatile since it is only written
+ * synchronized on {@code this}. The {@code released} flag is volatile since it is only written
  * once. Callbacks are invoked <em>outside</em> any store-level lock to prevent deadlocks with
  * FilteredBufferDispatcher's own synchronisation.
  *
  * <p>Public interface methods are called from the Task thread. Internal methods (addBuffer,
- * markComplete, etc.) are called from the Recovery thread (FilteredBufferDispatcher).
+ * incrementPending, decrementPending) are called from the Recovery thread
+ * (FilteredBufferDispatcher).
  */
 @Internal
 public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
@@ -57,14 +58,16 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
     @GuardedBy("this")
     private int pendingCount = 0;
 
-    private volatile boolean complete = false;
     private volatile boolean released = false;
 
     @GuardedBy("this")
-    private Runnable dataAvailableCallback;
+    private DataAvailableListener dataAvailableListener;
 
     @GuardedBy("this")
-    private ChannelCheckpointStartedListener checkpointListener;
+    private CheckpointStartedListener checkpointListener;
+
+    @GuardedBy("this")
+    private ReleaseListener releaseListener;
 
     /**
      * Creates a store bound to a single input channel. The bound {@link InputChannelInfo} is used
@@ -101,34 +104,23 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
     }
 
     @Override
-    public boolean isComplete() {
-        // complete is volatile; check ready buffers under lock
-        if (!complete) {
-            return false;
-        }
-        synchronized (this) {
-            return readyBuffers.isEmpty();
-        }
-    }
-
-    @Override
     public synchronized int size() {
-        return readyBuffers.size();
+        return readyBuffers.size() + pendingCount;
     }
 
     /**
      * Checkpoints the ready buffers to the given ChannelStateWriter. Ready buffers are retained and
      * passed to the writer via CloseableIterator. After snapshotting, the {@link
-     * ChannelCheckpointStartedListener} is invoked <em>outside</em> the store lock so that
+     * CheckpointStartedListener} is invoked <em>outside</em> the store lock so that
      * FilteredBufferDispatcher can safely acquire its own lock without risking a deadlock.
      *
      * <p>Pending spill entries on disk are checkpointed by FilteredBufferDispatcher, which owns the
-     * spill entries and file readers, triggered via the ChannelCheckpointStartedListener.
+     * spill entries and file readers, triggered via the CheckpointStartedListener.
      */
     @Override
     public void checkpoint(ChannelStateWriter writer, long checkpointId) throws IOException {
         // Step 1: snapshot ready buffers under lock; capture callback reference.
-        ChannelCheckpointStartedListener cb;
+        CheckpointStartedListener cb;
         synchronized (this) {
             if (!readyBuffers.isEmpty()) {
                 List<Buffer> retained = new ArrayList<>(readyBuffers.size());
@@ -152,13 +144,25 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
     }
 
     @Override
-    public synchronized void releaseAll() {
-        released = true;
-        for (Buffer buffer : readyBuffers) {
-            buffer.recycleBuffer();
+    public void releaseAll() {
+        // Step 1: flip the released flag and recycle ready buffers under lock; capture the release
+        // listener reference for invocation outside the lock.
+        ReleaseListener cb;
+        synchronized (this) {
+            released = true;
+            for (Buffer buffer : readyBuffers) {
+                buffer.recycleBuffer();
+            }
+            readyBuffers.clear();
+            pendingCount = 0;
+            cb = releaseListener;
         }
-        readyBuffers.clear();
-        pendingCount = 0;
+
+        // Step 2: fire the release listener outside the store lock so the dispatcher can safely
+        // acquire its own lock to drop disk-resident spill entries for this channel.
+        if (cb != null) {
+            cb.onChannelReleased(channelInfo);
+        }
     }
 
     // ---------------------------------------------------------------------------
@@ -166,19 +170,24 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
     // ---------------------------------------------------------------------------
 
     @Override
-    public synchronized void setCheckpointListener(ChannelCheckpointStartedListener listener) {
+    public synchronized void setCheckpointListener(CheckpointStartedListener listener) {
         this.checkpointListener = listener;
     }
 
     /**
      * {@inheritDoc}
      *
-     * <p>The notification callback fires when a buffer is added to a previously empty ready queue,
+     * <p>The notification listener fires when a buffer is added to a previously empty ready queue,
      * waking up the Task thread waiting for data.
      */
     @Override
-    public synchronized void setDataAvailableCallback(Runnable callback) {
-        this.dataAvailableCallback = callback;
+    public synchronized void setDataAvailableListener(DataAvailableListener listener) {
+        this.dataAvailableListener = listener;
+    }
+
+    @Override
+    public synchronized void setReleaseListener(ReleaseListener listener) {
+        this.releaseListener = listener;
     }
 
     // ---------------------------------------------------------------------------
@@ -187,7 +196,7 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
 
     /**
      * Adds a recovered buffer to the ready queue. If the queue was previously empty, the
-     * notification callback is invoked to wake up the Task thread.
+     * notification listener is invoked to wake up the Task thread.
      */
     public synchronized void addBuffer(Buffer buffer) {
         if (released) {
@@ -196,14 +205,9 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
         }
         boolean wasEmpty = readyBuffers.isEmpty();
         readyBuffers.add(buffer);
-        if (wasEmpty && dataAvailableCallback != null) {
-            dataAvailableCallback.run();
+        if (wasEmpty && dataAvailableListener != null) {
+            dataAvailableListener.onDataAvailable();
         }
-    }
-
-    /** Marks this store as complete — no more buffers will be added by the recovery thread. */
-    public synchronized void markComplete() {
-        complete = true;
     }
 
     /**

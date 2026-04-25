@@ -101,7 +101,7 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
         bufferManager = new BufferManager(inputGate.getMemorySegmentProvider(), this, 0);
         this.networkBuffersPerChannel = networkBuffersPerChannel;
         this.store = new RecoveredBufferStoreImpl(getChannelInfo());
-        store.setDataAvailableCallback(this::notifyChannelNonEmpty);
+        store.setDataAvailableListener(this::notifyChannelNonEmpty);
     }
 
     /**

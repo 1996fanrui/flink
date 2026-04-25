@@ -62,9 +62,9 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
      * Per-channel stores used by this dispatcher. Typed as the concrete {@link
      * RecoveredBufferStoreImpl} rather than {@link
      * org.apache.flink.runtime.io.network.partition.consumer.RecoveredBufferStore} because the
-     * producer-side methods (addBuffer, markComplete, incrementPending, decrementPending) are
-     * intentionally not part of the public interface — they are only called by
-     * FilteredBufferDispatcher, which is the sole producer of buffers for the stores.
+     * producer-side methods (addBuffer, incrementPending, decrementPending) are intentionally not
+     * part of the public interface — they are only called by FilteredBufferDispatcher, which is
+     * the sole producer of buffers for the stores.
      */
     private final Map<InputChannelInfo, RecoveredBufferStoreImpl> storesByChannel;
 
@@ -119,9 +119,13 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
         this.cache = new byte[memorySegmentSize];
         this.cachePosition = 0;
 
-        // Register this dispatcher as the checkpoint listener on every per-channel store.
+        // Register this dispatcher as the checkpoint and release listener on every per-channel
+        // store. The release listener lets the dispatcher drop still-pending on-disk spill entries
+        // for a channel as soon as that channel's store is released, instead of holding the disk
+        // resources until dispatcher close().
         for (RecoveredBufferStoreImpl store : storesByChannel.values()) {
             store.setCheckpointListener(this::onChannelCheckpointStarted);
+            store.setReleaseListener(this::onChannelReleased);
         }
     }
 
@@ -189,11 +193,6 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
             drainSpillThroughBuffers();
             spillFile.close();
         }
-
-        // Mark all stores as complete
-        for (RecoveredBufferStoreImpl store : storesByChannel.values()) {
-            store.markComplete();
-        }
     }
 
     /**
@@ -240,6 +239,27 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
     }
 
     /**
+     * Called by a per-channel store from {@link RecoveredBufferStoreImpl#releaseAll()}. Drops every
+     * pending spill entry belonging to {@code channelInfo} from all Readers so the disk-side
+     * bookkeeping is freed immediately; also removes the channel from an in-flight checkpoint
+     * wait-set so the wait-set can still converge after the channel goes away.
+     *
+     * <p>Called from the Task thread; synchronized on {@code this} to be mutually exclusive with
+     * the Recovery thread's {@link #write} / {@link #flush} / {@link #close} and with {@link
+     * #onChannelCheckpointStarted}.
+     */
+    public synchronized void onChannelReleased(InputChannelInfo channelInfo) {
+        if (spillFile != null) {
+            for (FilteredSpillFile.Reader reader : spillFile.getReaders()) {
+                reader.removeEntriesForChannel(channelInfo);
+            }
+        }
+        if (waitSet != null && waitSet.remove(channelInfo) && waitSet.isEmpty()) {
+            drainSpillEntriesToCheckpoint(currentCheckpointId);
+        }
+    }
+
+    /**
      * Drains all sealed spill Readers to checkpoint storage via {@link
      * ChannelStateWriter#addInputDataFromSpill}. Creates snapshot Readers for each sealed Reader,
      * wraps them in a {@link DrainChunkIterator}, and submits the iterator to the
@@ -271,10 +291,7 @@ public class FilteredBufferDispatcherImpl implements FilteredBufferDispatcher {
             }
         } catch (IOException e) {
             for (FilteredSpillFile.Reader snap : snapshots) {
-                try {
-                    snap.close();
-                } catch (IOException ignored) {
-                }
+                closeQuietly(snap);
             }
             throw new RuntimeException("Failed to snapshot spill readers for checkpoint", e);
         }

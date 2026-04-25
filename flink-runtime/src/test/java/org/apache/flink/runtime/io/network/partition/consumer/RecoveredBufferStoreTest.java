@@ -39,17 +39,13 @@ class RecoveredBufferStoreTest {
 
     private static final InputChannelInfo DEFAULT_CHANNEL_INFO = new InputChannelInfo(0, 0);
 
-    /**
-     * Create store, addBuffer, tryTake, markComplete, isComplete. Verify the full lifecycle of the
-     * store.
-     */
+    /** Create store, addBuffer, tryTake. Verify the lifecycle of the store. */
     @Test
     void testStoreLifecycle() {
         RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(DEFAULT_CHANNEL_INFO);
 
-        // Initially empty and not complete
+        // Initially empty
         assertThat(store.isEmpty()).isTrue();
-        assertThat(store.isComplete()).isFalse();
         assertThat(store.size()).isEqualTo(0);
         assertThat(store.peekNextDataType()).isEqualTo(Buffer.DataType.NONE);
 
@@ -68,33 +64,8 @@ class RecoveredBufferStoreTest {
         assertThat(store.size()).isEqualTo(0);
         taken.recycleBuffer();
 
-        // Mark complete when empty => isComplete should be true
-        store.markComplete();
-        assertThat(store.isComplete()).isTrue();
-
         // tryTake on empty returns null
         assertThat(store.tryTake()).isNull();
-    }
-
-    /** Verify markComplete when buffers remain means isComplete is false until drained. */
-    @Test
-    void testCompleteWithRemainingBuffers() {
-        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(DEFAULT_CHANNEL_INFO);
-
-        NetworkBuffer buffer = createBuffer(new byte[] {1, 2, 3});
-        store.addBuffer(buffer);
-        store.markComplete();
-
-        // Not complete because there are still buffered entries
-        assertThat(store.isComplete()).isFalse();
-
-        // Drain the buffer
-        Buffer taken = store.tryTake();
-        assertThat(taken).isNotNull();
-        taken.recycleBuffer();
-
-        // Now complete
-        assertThat(store.isComplete()).isTrue();
     }
 
     /**
@@ -144,7 +115,6 @@ class RecoveredBufferStoreTest {
                                     NetworkBuffer buf = createBuffer(new byte[] {(byte) i});
                                     store.addBuffer(buf);
                                 }
-                                store.markComplete();
                             } catch (Throwable t) {
                                 error.set(t);
                             }
@@ -177,7 +147,7 @@ class RecoveredBufferStoreTest {
         consumer.join(10_000);
 
         assertThat(error.get()).isNull();
-        assertThat(store.isComplete()).isTrue();
+        assertThat(store.isEmpty()).isTrue();
     }
 
     /**
@@ -195,7 +165,6 @@ class RecoveredBufferStoreTest {
         store.addBuffer(buf1);
         store.addBuffer(buf2);
         store.addBuffer(buf3);
-        store.markComplete();
 
         // Simulate partial consumption before conversion
         Buffer taken1 = store.tryTake();
@@ -212,7 +181,6 @@ class RecoveredBufferStoreTest {
         taken3.recycleBuffer();
 
         assertThat(store.isEmpty()).isTrue();
-        assertThat(store.isComplete()).isTrue();
         assertThat(store.tryTake()).isNull();
     }
 
@@ -234,18 +202,38 @@ class RecoveredBufferStoreTest {
         assertThat(store.size()).isEqualTo(0);
     }
 
-    /** Verify data-available callback fires when buffer is added to empty store. */
+    /** Verify releaseAll fires the registered release listener with the bound channel info. */
     @Test
-    void testDataAvailableCallback() {
+    void testReleaseAllFiresReleaseListener() {
+        InputChannelInfo channelInfo = new InputChannelInfo(3, 7);
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(channelInfo);
+
+        List<InputChannelInfo> captured = new ArrayList<>();
+        store.setReleaseListener(captured::add);
+
+        // Add some in-memory and on-disk bookkeeping to make the release meaningful.
+        store.addBuffer(createBuffer(new byte[] {1}));
+        store.incrementPending();
+
+        store.releaseAll();
+
+        assertThat(captured).containsExactly(channelInfo);
+        assertThat(store.isEmpty()).isTrue();
+        assertThat(store.size()).isEqualTo(0);
+    }
+
+    /** Verify data-available listener fires when buffer is added to empty store. */
+    @Test
+    void testDataAvailableListener() {
         RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(DEFAULT_CHANNEL_INFO);
         int[] callbackCount = {0};
-        store.setDataAvailableCallback(() -> callbackCount[0]++);
+        store.setDataAvailableListener(() -> callbackCount[0]++);
 
-        // Add first buffer: should trigger callback (store was empty)
+        // Add first buffer: should trigger listener (store was empty)
         store.addBuffer(createBuffer(new byte[] {1}));
         assertThat(callbackCount[0]).isEqualTo(1);
 
-        // Add second buffer: should NOT trigger callback (store was not empty)
+        // Add second buffer: should NOT trigger listener (store was not empty)
         store.addBuffer(createBuffer(new byte[] {2}));
         assertThat(callbackCount[0]).isEqualTo(1);
 
@@ -253,7 +241,7 @@ class RecoveredBufferStoreTest {
         store.tryTake().recycleBuffer();
         store.tryTake().recycleBuffer();
 
-        // Add buffer again to empty store: should trigger callback
+        // Add buffer again to empty store: should trigger listener
         store.addBuffer(createBuffer(new byte[] {3}));
         assertThat(callbackCount[0]).isEqualTo(2);
 
@@ -269,13 +257,37 @@ class RecoveredBufferStoreTest {
 
         // Store not empty when pending entries exist
         assertThat(store.isEmpty()).isFalse();
+        // size() reports ready + pending so the channel-level backlog reflects on-disk data too
+        assertThat(store.size()).isEqualTo(1);
 
         store.decrementPending();
         assertThat(store.isEmpty()).isTrue();
+        assertThat(store.size()).isEqualTo(0);
+    }
+
+    /** Verify size() aggregates ready buffers and pending on-disk entries. */
+    @Test
+    void testSizeAggregatesReadyAndPending() {
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(DEFAULT_CHANNEL_INFO);
+
+        store.addBuffer(createBuffer(new byte[] {1}));
+        store.incrementPending();
+        store.incrementPending();
+
+        assertThat(store.size()).isEqualTo(3);
+
+        store.tryTake().recycleBuffer();
+        assertThat(store.size()).isEqualTo(2);
+
+        store.decrementPending();
+        store.decrementPending();
+        assertThat(store.size()).isEqualTo(0);
+
+        store.releaseAll();
     }
 
     // ---------------------------------------------------------------------------
-    // Tests for ChannelCheckpointStartedListener
+    // Tests for RecoveredBufferStore.CheckpointStartedListener
     // ---------------------------------------------------------------------------
 
     /**
@@ -318,7 +330,7 @@ class RecoveredBufferStoreTest {
 
     /**
      * Verify checkpoint() without any ready buffers still fires the
-     * ChannelCheckpointStartedListener.
+     * CheckpointStartedListener.
      */
     @Test
     void testCheckpointCallbackFiredEvenWhenNoReadyBuffers() throws Exception {
@@ -351,19 +363,19 @@ class RecoveredBufferStoreTest {
     }
 
     // ---------------------------------------------------------------------------
-    // Tests for setDataAvailableCallback via interface (Item 2)
+    // Tests for setDataAvailableListener via interface
     // ---------------------------------------------------------------------------
 
     /**
-     * Verify setDataAvailableCallback can be called through the RecoveredBufferStore interface
+     * Verify setDataAvailableListener can be called through the RecoveredBufferStore interface
      * without instanceof casts.
      */
     @Test
-    void testSetDataAvailableCallbackViaInterface() {
+    void testSetDataAvailableListenerViaInterface() {
         RecoveredBufferStore store = new RecoveredBufferStoreImpl(DEFAULT_CHANNEL_INFO);
         int[] callCount = {0};
         // Must compile and run without instanceof check
-        store.setDataAvailableCallback(() -> callCount[0]++);
+        store.setDataAvailableListener(() -> callCount[0]++);
 
         ((RecoveredBufferStoreImpl) store).addBuffer(createBuffer(new byte[] {1}));
         assertThat(callCount[0]).isEqualTo(1);
@@ -372,7 +384,7 @@ class RecoveredBufferStoreTest {
     }
 
     // ---------------------------------------------------------------------------
-    // Tests for RecoveredBufferStore.EMPTY singleton (Item 5)
+    // Tests for RecoveredBufferStore.EMPTY singleton
     // ---------------------------------------------------------------------------
 
     /** Verify all methods of EMPTY return expected no-op / sentinel values. */
@@ -383,7 +395,6 @@ class RecoveredBufferStoreTest {
         assertThat(empty.tryTake()).isNull();
         assertThat(empty.peekNextDataType()).isEqualTo(Buffer.DataType.NONE);
         assertThat(empty.isEmpty()).isTrue();
-        assertThat(empty.isComplete()).isTrue();
         assertThat(empty.size()).isEqualTo(0);
     }
 
@@ -406,14 +417,14 @@ class RecoveredBufferStoreTest {
         RecoveredBufferStore.EMPTY.releaseAll();
     }
 
-    /** Verify all setter callbacks on EMPTY are no-ops (accept and discard without throwing). */
+    /** Verify all setter listeners on EMPTY are no-ops (accept and discard without throwing). */
     @Test
     void testEmptySingletonSettersAreNoOp() {
         RecoveredBufferStore empty = RecoveredBufferStore.EMPTY;
 
-        // Both setters must silently discard
         empty.setCheckpointListener((id, info) -> {});
-        empty.setDataAvailableCallback(() -> {});
+        empty.setDataAvailableListener(() -> {});
+        empty.setReleaseListener(info -> {});
         // No exception == pass
     }
 

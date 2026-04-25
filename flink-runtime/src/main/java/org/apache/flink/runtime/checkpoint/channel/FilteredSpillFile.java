@@ -33,6 +33,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -344,6 +345,24 @@ public class FilteredSpillFile implements Closeable {
                 channels.add(e.channelInfo);
             }
             return channels;
+        }
+
+        /**
+         * Removes all pending entries belonging to {@code channelInfo} and returns how many were
+         * dropped. Used when a per-channel store is released so that the dispatcher can free the
+         * channel's disk-side bookkeeping eagerly instead of leaving it to {@link
+         * FilteredSpillFile#close()}.
+         */
+        public int removeEntriesForChannel(InputChannelInfo channelInfo) {
+            int removed = 0;
+            Iterator<Entry> it = entries.iterator();
+            while (it.hasNext()) {
+                if (it.next().channelInfo.equals(channelInfo)) {
+                    it.remove();
+                    removed++;
+                }
+            }
+            return removed;
         }
 
         @Override

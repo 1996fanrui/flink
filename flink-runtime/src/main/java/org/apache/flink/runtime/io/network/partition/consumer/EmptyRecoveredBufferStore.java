@@ -42,11 +42,6 @@ class EmptyRecoveredBufferStore implements RecoveredBufferStore {
     }
 
     @Override
-    public boolean isComplete() {
-        return true;
-    }
-
-    @Override
     public int size() {
         return 0;
     }
@@ -58,8 +53,11 @@ class EmptyRecoveredBufferStore implements RecoveredBufferStore {
     public void releaseAll() {}
 
     @Override
-    public void setCheckpointListener(ChannelCheckpointStartedListener listener) {}
+    public void setCheckpointListener(CheckpointStartedListener listener) {}
 
     @Override
-    public void setDataAvailableCallback(Runnable callback) {}
+    public void setDataAvailableListener(DataAvailableListener listener) {}
+
+    @Override
+    public void setReleaseListener(ReleaseListener listener) {}
 }

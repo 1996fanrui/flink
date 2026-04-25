@@ -27,6 +27,7 @@ import org.apache.flink.runtime.state.CheckpointStateOutputStream;
 import org.apache.flink.runtime.state.CheckpointStreamFactory;
 import org.apache.flink.runtime.state.StreamStateHandle;
 import org.apache.flink.util.CloseableIterator;
+import org.apache.flink.util.IOUtils;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.function.RunnableWithException;
 
@@ -193,10 +194,7 @@ class ChannelStateCheckpointWriter {
             int subtaskIndex,
             CloseableIterator<FilteredSpillFile.Chunk> chunks) {
         if (isDone()) {
-            try {
-                chunks.close();
-            } catch (Exception ignored) {
-            }
+            IOUtils.closeQuietly(chunks);
             return;
         }
         ChannelStatePendingResult pendingResult =

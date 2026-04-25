@@ -126,7 +126,7 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
         // would discard the store reference while FilteredBufferDispatcher still has pending
         // writes.
         this.recoveredStore = checkNotNull(recoveredStore);
-        this.recoveredStore.setDataAvailableCallback(this::notifyChannelNonEmpty);
+        this.recoveredStore.setDataAvailableListener(this::notifyChannelNonEmpty);
     }
 
     // ------------------------------------------------------------------------

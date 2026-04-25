@@ -21,7 +21,7 @@ import org.apache.flink.core.memory.MemorySegmentFactory;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.FreeingBufferRecycler;
 import org.apache.flink.runtime.io.network.buffer.NetworkBuffer;
-import org.apache.flink.runtime.io.network.partition.consumer.ChannelCheckpointStartedListener;
+import org.apache.flink.runtime.io.network.partition.consumer.RecoveredBufferStore;
 import org.apache.flink.runtime.io.network.partition.consumer.RecoveredBufferStoreImpl;
 import org.apache.flink.util.CloseableIterator;
 
@@ -81,7 +81,7 @@ class FilteredBufferDispatcherTest {
      * called and captures the registered listener, without using Mockito.
      */
     private static class TrackingBufferStore extends RecoveredBufferStoreImpl {
-        private ChannelCheckpointStartedListener registeredCallback;
+        private RecoveredBufferStore.CheckpointStartedListener registeredCallback;
         private int setCheckpointListenerCount = 0;
 
         TrackingBufferStore(InputChannelInfo channelInfo) {
@@ -89,7 +89,8 @@ class FilteredBufferDispatcherTest {
         }
 
         @Override
-        public synchronized void setCheckpointListener(ChannelCheckpointStartedListener listener) {
+        public synchronized void setCheckpointListener(
+                RecoveredBufferStore.CheckpointStartedListener listener) {
             super.setCheckpointListener(listener);
             this.registeredCallback = listener;
             this.setCheckpointListenerCount++;
@@ -166,7 +167,7 @@ class FilteredBufferDispatcherTest {
         List<byte[]> buffers = drainStore(store0);
         byte[] actual = concat(buffers);
         assertThat(actual).isEqualTo(data);
-        assertThat(store0.isComplete()).isTrue();
+        assertThat(store0.isEmpty()).isTrue();
     }
 
     /** Buffer supplier always returns null. Data goes to disk, replayed on close. */
@@ -195,7 +196,7 @@ class FilteredBufferDispatcherTest {
         List<byte[]> buffers = drainStore(store0);
         byte[] actual = concat(buffers);
         assertThat(actual).isEqualTo(data);
-        assertThat(store0.isComplete()).isTrue();
+        assertThat(store0.isEmpty()).isTrue();
     }
 
     /** First write spills, then buffer becomes available. P3 replays from disk. */
@@ -1139,5 +1140,78 @@ class FilteredBufferDispatcherTest {
         buf1.recycleBuffer();
         assertThat(got0).isEqualTo(payload0);
         assertThat(got1).isEqualTo(payload1);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Release listener tests: releaseAll() on a store must also drop the channel's disk entries.
+    // -----------------------------------------------------------------------------------------
+
+    /**
+     * After a store is released, its pending disk entries must be dropped from every Reader so the
+     * dispatcher's subsequent close() drain does not try to deliver bytes for the gone channel.
+     */
+    @Test
+    void testReleaseAllRemovesChannelDiskEntriesEagerly() throws Exception {
+        Queue<Buffer> drainPool = createBufferPool(5);
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores,
+                        ChannelStateWriter.NO_OP,
+                        spillDirs,
+                        SEGMENT_SIZE,
+                        TestBufferPool.drainOnly(drainPool));
+
+        byte[] d0 = createTestData(SEGMENT_SIZE, (byte) 0x51);
+        byte[] d1 = createTestData(SEGMENT_SIZE, (byte) 0x52);
+        writer.write(d0, d0.length, ch0);
+        writer.write(d1, d1.length, ch1);
+        writer.flush();
+
+        // Release store0 before draining — this should propagate to the dispatcher, which drops
+        // all ch0 entries from the Readers.
+        store0.releaseAll();
+
+        writer.close();
+
+        // store1 still receives its data; store0 must stay empty since ch0 entries were dropped.
+        assertThat(store0.tryTake()).isNull();
+        assertThat(concat(drainStore(store1))).isEqualTo(d1);
+    }
+
+    /**
+     * When a channel is released while an in-flight checkpoint wait-set still contains it, the
+     * dispatcher must remove it from the wait-set so the wait-set can still converge to empty and
+     * phase-2 drain is not blocked.
+     */
+    @Test
+    void testReleaseAllConvergesInFlightCheckpointWaitSet() throws Exception {
+        Queue<Buffer> drainPool = createBufferPool(5);
+        RecordingChannelStateWriter recordingWriter = new RecordingChannelStateWriter();
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores,
+                        recordingWriter,
+                        spillDirs,
+                        SEGMENT_SIZE,
+                        TestBufferPool.drainOnly(drainPool));
+
+        writer.write(createTestData(SEGMENT_SIZE, (byte) 0x61), SEGMENT_SIZE, ch0);
+        writer.write(createTestData(SEGMENT_SIZE, (byte) 0x62), SEGMENT_SIZE, ch1);
+        writer.flush();
+
+        // ch0 reports in. Wait-set still contains ch1 so phase 2 must not have fired yet.
+        writer.onChannelCheckpointStarted(30L, ch0);
+        assertThat(recordingWriter.inputDataCalls).isEmpty();
+
+        // ch1 is released before its checkpoint callback ever arrives. The dispatcher removes it
+        // from the wait-set, which now empties and triggers phase 2.
+        store1.releaseAll();
+
+        // Only ch0's entry made it into the checkpoint backup; ch1's entries were dropped on
+        // release.
+        assertThat(recordingWriter.inputDataCalls).hasSize(1);
+        assertThat(recordingWriter.inputDataCalls.get(0).info).isEqualTo(ch0);
+
+        writer.close();
     }
 }

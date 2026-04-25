@@ -64,17 +64,17 @@ public interface RecoveredBufferStore {
     boolean isEmpty();
 
     /**
-     * Returns true if the store has been marked complete AND all ready buffers have been consumed.
+     * Returns the total number of buffers held by this store for the bound channel: ready buffers
+     * already in memory plus pending entries currently spilled to disk. Callers use this for
+     * in-use / backlog accounting, which should reflect every buffer the recovery pipeline still
+     * owes the channel regardless of where it is physically stored.
      */
-    boolean isComplete();
-
-    /** Returns the number of ready buffers currently in the store. */
     int size();
 
     /**
      * Checkpoints the current store contents to the given ChannelStateWriter. Implementations
-     * should snapshot ready buffers first, then fire the {@link ChannelCheckpointStartedListener}
-     * (if one is registered) <em>outside</em> any store-level lock to avoid deadlock with the
+     * should snapshot ready buffers first, then fire the {@link CheckpointStartedListener} (if one
+     * is registered) <em>outside</em> any store-level lock to avoid deadlock with the
      * FilteredBufferDispatcher.
      *
      * <p>The store is bound to a single {@link InputChannelInfo} at construction time; both the
@@ -86,7 +86,11 @@ public interface RecoveredBufferStore {
      */
     void checkpoint(ChannelStateWriter writer, long checkpointId) throws IOException;
 
-    /** Releases all buffers held in this store and clears all state. */
+    /**
+     * Releases all buffers held in this store and clears all state. Before clearing local state,
+     * the registered {@link ReleaseListener} (if any) is fired so that the owning dispatcher can
+     * drop any still-pending spill entries for this channel from disk.
+     */
     void releaseAll();
 
     /**
@@ -98,13 +102,75 @@ public interface RecoveredBufferStore {
      *
      * @param listener the listener to invoke; replaces any previously registered listener
      */
-    void setCheckpointListener(ChannelCheckpointStartedListener listener);
+    void setCheckpointListener(CheckpointStartedListener listener);
 
     /**
      * Registers a callback that is invoked when a buffer is added to a previously empty ready
      * queue. Used to notify the InputChannel that data is available for consumption.
      *
-     * @param callback the callback to invoke; replaces any previously registered callback
+     * @param listener the listener to invoke; replaces any previously registered listener
      */
-    void setDataAvailableCallback(Runnable callback);
+    void setDataAvailableListener(DataAvailableListener listener);
+
+    /**
+     * Registers a callback that is invoked from {@link #releaseAll()} so that the owning
+     * dispatcher can release any disk-resident spill entries still associated with this channel.
+     * The callback is fired outside any store-level lock to avoid deadlock with dispatcher
+     * synchronisation.
+     *
+     * @param listener the listener to invoke; replaces any previously registered listener
+     */
+    void setReleaseListener(ReleaseListener listener);
+
+    /**
+     * Listener invoked when a per-channel checkpoint snapshot has started. Used by
+     * {@link RecoveredBufferStoreImpl} to notify the FilteredBufferDispatcher that this channel's
+     * ready buffers have been snapshotted, so the FilteredBufferDispatcher can update its wait-set
+     * and, when all channels are accounted for, flush pending spill entries into the checkpoint.
+     *
+     * <p>The listener is always invoked outside any store-level lock to avoid deadlocks with the
+     * FilteredBufferDispatcher's own synchronisation.
+     */
+    @FunctionalInterface
+    interface CheckpointStartedListener {
+
+        /**
+         * Called after a channel's ready buffers have been snapshotted into the
+         * {@link ChannelStateWriter}.
+         *
+         * @param checkpointId the ID of the checkpoint that just started for this channel
+         * @param channelInfo the input channel that triggered the snapshot
+         */
+        void onChannelCheckpointStarted(long checkpointId, InputChannelInfo channelInfo);
+    }
+
+    /**
+     * Listener invoked when a buffer has been added to a previously empty ready queue. The typical
+     * recipient is the owning InputChannel, which uses it to wake up the Task thread.
+     */
+    @FunctionalInterface
+    interface DataAvailableListener {
+
+        /** Called when a buffer becomes available for consumption. */
+        void onDataAvailable();
+    }
+
+    /**
+     * Listener invoked during {@link RecoveredBufferStore#releaseAll()}. The typical recipient is
+     * FilteredBufferDispatcher, which drops still-pending on-disk spill entries for the released
+     * channel so the disk-side resources do not linger until dispatcher {@code close()}.
+     *
+     * <p>The listener is always invoked outside any store-level lock to avoid deadlocks with the
+     * FilteredBufferDispatcher's own synchronisation.
+     */
+    @FunctionalInterface
+    interface ReleaseListener {
+
+        /**
+         * Called when the bound channel's store is being released.
+         *
+         * @param channelInfo the input channel whose store is being released
+         */
+        void onChannelReleased(InputChannelInfo channelInfo);
+    }
 }

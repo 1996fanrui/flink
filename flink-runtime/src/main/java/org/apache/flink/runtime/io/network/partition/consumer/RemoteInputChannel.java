@@ -129,6 +129,15 @@ public class RemoteInputChannel extends InputChannel {
      */
     private final RecoveredBufferStore recoveredStore;
 
+    /**
+     * Flag indicating whether a priority event (e.g., an unaligned checkpoint barrier) is sitting
+     * at the head of {@link #receivedBuffers} and should be consumed before the recovered store.
+     * Mirrors the Local-channel fast path so an UC barrier arriving over the network during
+     * recovery is not delayed behind pending recovered buffers. Set by {@link #onBuffer} and
+     * {@link #convertToPriorityEvent} and checked in {@link #getNextBuffer()}.
+     */
+    private volatile boolean hasPendingPriorityEvent = false;
+
     private long totalQueueSizeInBytes;
 
     public RemoteInputChannel(
@@ -170,7 +179,7 @@ public class RemoteInputChannel extends InputChannel {
         // would discard the store reference while FilteredBufferDispatcher still has pending
         // writes.
         this.recoveredStore = checkNotNull(recoveredStore);
-        this.recoveredStore.setDataAvailableCallback(this::notifyChannelNonEmpty);
+        this.recoveredStore.setDataAvailableListener(this::notifyChannelNonEmpty);
     }
 
     @VisibleForTesting
@@ -268,6 +277,14 @@ public class RemoteInputChannel extends InputChannel {
 
     @Override
     public Optional<BufferAndAvailability> getNextBuffer() throws IOException {
+        // Priority events (e.g., unaligned checkpoint barriers) arriving over the network during
+        // recovery must bypass the recovered store so the UC response is not delayed. When the
+        // flag is set, pull the priority element from the head of receivedBuffers first; the
+        // recovered store is drained again once the priority drain completes.
+        if (hasPendingPriorityEvent) {
+            return Optional.of(pollPendingPriorityEvent());
+        }
+
         // Check recovered store first (recovery path). EMPTY.tryTake() always returns null so this
         // is a no-op on the normal (non-recovery) path.
         if (!recoveredStore.isEmpty()) {
@@ -317,6 +334,52 @@ public class RemoteInputChannel extends InputChannel {
         numBuffersIn.inc();
         return Optional.of(
                 new BufferAndAvailability(next.buffer, nextDataType, 0, next.sequenceNumber));
+    }
+
+    /**
+     * Pulls the priority element sitting at the head of {@link #receivedBuffers} while skipping the
+     * recovered store. After draining, clears {@link #hasPendingPriorityEvent} if no more priority
+     * elements remain and corrects {@code nextDataType} back to the recovered store so the
+     * availability signal reflects what the consumer will observe next.
+     */
+    private BufferAndAvailability pollPendingPriorityEvent() throws IOException {
+        final SequenceBuffer next;
+        DataType nextDataType;
+        synchronized (receivedBuffers) {
+            checkPartitionRequestQueueInitialized();
+
+            next = receivedBuffers.poll();
+            checkState(
+                    next != null && next.buffer.getDataType().hasPriority(),
+                    "Expected priority event, but got %s",
+                    next);
+            totalQueueSizeInBytes -= next.buffer.getSize();
+
+            if (receivedBuffers.getNumPriorityElements() == 0) {
+                hasPendingPriorityEvent = false;
+            }
+            SequenceBuffer peeked = receivedBuffers.peek();
+            nextDataType =
+                    peeked != null ? peeked.buffer.getDataType() : DataType.NONE;
+        }
+
+        // After the priority drain, the true next element is whatever the consumer sees first.
+        // If the recovered store still has data, that takes precedence over the non-priority head
+        // of receivedBuffers, since recovered data is always consumed before normal network data.
+        if (!hasPendingPriorityEvent && !recoveredStore.isEmpty()) {
+            nextDataType = recoveredStore.peekNextDataType();
+        }
+
+        NetworkActionsLogger.traceInput(
+                "RemoteInputChannel#getNextBuffer",
+                next.buffer,
+                inputGate.getOwningTaskName(),
+                channelInfo,
+                channelStatePersister,
+                next.sequenceNumber);
+        numBytesIn.inc(next.buffer.getSize());
+        numBuffersIn.inc();
+        return new BufferAndAvailability(next.buffer, nextDataType, 0, next.sequenceNumber);
     }
 
     // ------------------------------------------------------------------------
@@ -663,6 +726,9 @@ public class RemoteInputChannel extends InputChannel {
             }
 
             if (firstPriorityEvent) {
+                // Mark before notifying so getNextBuffer() fetched by the consumer thread
+                // observes the priority fast path even if the notification races the consumer.
+                hasPendingPriorityEvent = true;
                 notifyPriorityEvent(sequenceNumber);
             }
             if (wasEmpty) {
@@ -803,6 +869,9 @@ public class RemoteInputChannel extends InputChannel {
             // converting the event itself would require switching the controller sooner
         }
         if (firstPriorityEvent) {
+            // Mark before notifying so getNextBuffer() takes the priority fast path even if the
+            // notification races the consumer thread.
+            hasPendingPriorityEvent = true;
             notifyPriorityEventForce(); // forcibly notify about the priority event
             // instead of passing barrier SQN to be checked
             // because this SQN might have be seen by the input gate during the announcement

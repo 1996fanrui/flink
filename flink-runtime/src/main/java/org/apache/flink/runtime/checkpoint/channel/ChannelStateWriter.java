@@ -24,6 +24,7 @@ import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.state.InputChannelStateHandle;
 import org.apache.flink.runtime.state.ResultSubpartitionStateHandle;
 import org.apache.flink.util.CloseableIterator;
+import org.apache.flink.util.IOUtils;
 
 import java.io.Closeable;
 import java.util.Collection;
@@ -219,10 +220,7 @@ public interface ChannelStateWriter extends Closeable {
         @Override
         public void addInputDataFromSpill(
                 long checkpointId, CloseableIterator<FilteredSpillFile.Chunk> chunks) {
-            try {
-                chunks.close();
-            } catch (Exception ignored) {
-            }
+            IOUtils.closeQuietly(chunks);
         }
 
         @Override
