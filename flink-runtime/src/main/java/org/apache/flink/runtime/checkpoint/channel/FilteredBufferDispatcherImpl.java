@@ -181,7 +181,19 @@ public class FilteredBufferDispatcherImpl
             return; // already cleaned up; nothing to drain
         }
         if (spillFile != null) {
-            drainSpillThroughBuffers();
+            for (FilteredSpillFile.Reader reader : spillFile.getReaders()) {
+                while (reader.hasEntries()) {
+                    InputChannelInfo ch = reader.peekNextChannel();
+                    Buffer buffer = bufferRequester.requestBufferBlocking(ch);
+                    FilteredSpillFile.Chunk chunk = reader.readNext();
+                    writeChunkToBuffer(buffer, chunk.getData(), chunk.getLength());
+                    RecoveredBufferStoreImpl store =
+                            Preconditions.checkNotNull(
+                                    storesByChannel.get(ch), "No store for channel %s", ch);
+                    store.addBuffer(buffer);
+                    store.decrementPending();
+                }
+            }
         }
     }
 
@@ -340,26 +352,6 @@ public class FilteredBufferDispatcherImpl
         if (!snapshots.isEmpty()) {
             channelStateWriter.addInputDataFromSpill(
                     checkpointId, new DrainChunkIterator(snapshots));
-        }
-    }
-
-    /**
-     * Drains all remaining spill entries into network buffers using the blocking buffer requester.
-     * Only entries that have not been consumed by phase2 (drainSpillEntriesToCheckpoint) remain.
-     */
-    private void drainSpillThroughBuffers() throws IOException, InterruptedException {
-        for (FilteredSpillFile.Reader reader : spillFile.getReaders()) {
-            while (reader.hasEntries()) {
-                InputChannelInfo ch = reader.peekNextChannel();
-                Buffer buffer = bufferRequester.requestBufferBlocking(ch);
-                FilteredSpillFile.Chunk chunk = reader.readNext();
-                writeChunkToBuffer(buffer, chunk.getData(), chunk.getLength());
-                RecoveredBufferStoreImpl store =
-                        Preconditions.checkNotNull(
-                                storesByChannel.get(ch), "No store for channel %s", ch);
-                store.addBuffer(buffer);
-                store.decrementPending();
-            }
         }
     }
 
