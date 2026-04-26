@@ -224,6 +224,125 @@ class RecoveredBufferStoreTest {
         assertThat(store.size()).isEqualTo(0);
     }
 
+    /**
+     * Verify the data-available listener is invoked OUTSIDE the store monitor.
+     *
+     * <p>If the listener fires while the store monitor is held, the listener's downstream lock
+     * acquisition (e.g. {@code SingleInputGate.queueChannel} taking the gate's
+     * {@code inputChannelsWithData} monitor) can deadlock against a task thread that already holds
+     * that monitor and is trying to acquire the store monitor (via {@code peekNextDataType}). This
+     * is the AB-BA deadlock pattern observed in JVM-level deadlock reports. The contract aligns
+     * with {@link RecoveredBufferStoreImpl#checkpoint} / {@link RecoveredBufferStoreImpl#releaseAll}
+     * / {@link RecoveredBufferStoreImpl#notifyCheckpointStopped}, all of which fire callbacks
+     * outside the store lock.
+     */
+    @Test
+    void testDataAvailableListenerFiresOutsideStoreMonitor() {
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(DEFAULT_CHANNEL_INFO);
+        boolean[] storeMonitorHeldDuringCallback = {false};
+        store.setDataAvailableListener(
+                () -> storeMonitorHeldDuringCallback[0] = Thread.holdsLock(store));
+
+        store.addBuffer(createBuffer(new byte[] {1}));
+
+        assertThat(storeMonitorHeldDuringCallback[0])
+                .as("dataAvailableListener must be invoked outside the store monitor")
+                .isFalse();
+
+        store.releaseAll();
+    }
+
+    /**
+     * Reproduces the AB-BA deadlock pattern between {@link RecoveredBufferStoreImpl#addBuffer} and
+     * a task thread that holds a downstream gate-side lock while reaching into the store.
+     *
+     * <p>Thread A (task): holds {@code gateLock}, then tries to acquire the store monitor via a
+     * synchronized store method (mirrors {@link RecoveredBufferStoreImpl#peekNextDataType}). Thread
+     * B (recovery): calls {@code addBuffer}, which under the broken contract fires the listener
+     * while holding the store monitor; the listener tries to acquire {@code gateLock}, mirroring
+     * {@code SingleInputGate.queueChannel}.
+     *
+     * <p>If {@code addBuffer} invokes the listener inside the synchronized block, this test
+     * deadlocks. The fixed contract fires the listener outside the lock, so the test completes
+     * within the timeout.
+     */
+    @Test
+    void testAddBufferDoesNotDeadlockWithGateSideLock() throws Exception {
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(DEFAULT_CHANNEL_INFO);
+        Object gateLock = new Object();
+        CountDownLatch taskHoldsGateLock = new CountDownLatch(1);
+        CountDownLatch recoveryStartedAddBuffer = new CountDownLatch(1);
+        AtomicReference<Throwable> error = new AtomicReference<>();
+
+        // Listener mirrors SingleInputGate.queueChannel: must take gateLock to enqueue.
+        store.setDataAvailableListener(
+                () -> {
+                    synchronized (gateLock) {
+                        // touch shared state under the gate lock to mirror real notify path
+                    }
+                });
+
+        // Thread A (task): take gateLock first, then call into the store. This emulates
+        // SingleInputGate holding inputChannelsWithData while reading peekNextDataType.
+        Thread taskThread =
+                new Thread(
+                        () -> {
+                            try {
+                                synchronized (gateLock) {
+                                    taskHoldsGateLock.countDown();
+                                    // Wait until the recovery thread has entered addBuffer and (in
+                                    // the broken contract) is holding the store monitor while
+                                    // trying to grab gateLock.
+                                    recoveryStartedAddBuffer.await();
+                                    // Sleep a touch so the recovery thread is parked on gateLock
+                                    // before we go grab the store monitor; without this, the test
+                                    // could pass even with the broken contract because both
+                                    // threads might serialise.
+                                    Thread.sleep(50);
+                                    // Now reach into the store under gateLock — this mirrors
+                                    // peekNextDataType / size and would block on the store monitor
+                                    // if addBuffer is still inside synchronized.
+                                    store.peekNextDataType();
+                                }
+                            } catch (Throwable t) {
+                                error.set(t);
+                            }
+                        },
+                        "test-task-thread");
+
+        // Thread B (recovery): wait until the task thread holds gateLock, then call addBuffer,
+        // which will trigger the listener that wants gateLock.
+        Thread recoveryThread =
+                new Thread(
+                        () -> {
+                            try {
+                                taskHoldsGateLock.await();
+                                recoveryStartedAddBuffer.countDown();
+                                store.addBuffer(createBuffer(new byte[] {1}));
+                            } catch (Throwable t) {
+                                error.set(t);
+                            }
+                        },
+                        "test-recovery-thread");
+
+        taskThread.start();
+        recoveryThread.start();
+
+        // Generous timeout: deadlock would otherwise hang the test forever.
+        taskThread.join(10_000);
+        recoveryThread.join(10_000);
+
+        assertThat(taskThread.isAlive())
+                .as("task thread is still alive — likely deadlocked on store monitor")
+                .isFalse();
+        assertThat(recoveryThread.isAlive())
+                .as("recovery thread is still alive — likely deadlocked on gate lock")
+                .isFalse();
+        assertThat(error.get()).isNull();
+
+        store.releaseAll();
+    }
+
     /** Verify data-available listener fires when buffer is added to empty store. */
     @Test
     void testDataAvailableListener() {

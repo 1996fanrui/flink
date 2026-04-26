@@ -214,16 +214,28 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
     /**
      * Adds a recovered buffer to the ready queue. If the queue was previously empty, the
      * notification listener is invoked to wake up the Task thread.
+     *
+     * <p>The listener is invoked <em>outside</em> the store monitor: the listener path goes through
+     * {@code SingleInputGate.queueChannel}, which acquires the gate's {@code inputChannelsWithData}
+     * monitor. A task thread holding that monitor while peeking the store would otherwise form an
+     * AB-BA deadlock with this method. Lock-order matches the two-phase pattern used by
+     * {@link #checkpoint}, {@link #releaseAll} and {@link #notifyCheckpointStopped}.
      */
-    public synchronized void addBuffer(Buffer buffer) {
-        if (released) {
-            buffer.recycleBuffer();
-            return;
+    public void addBuffer(Buffer buffer) {
+        DataAvailableListener listenerToFire = null;
+        synchronized (this) {
+            if (released) {
+                buffer.recycleBuffer();
+                return;
+            }
+            boolean wasEmpty = readyBuffers.isEmpty();
+            readyBuffers.add(buffer);
+            if (wasEmpty) {
+                listenerToFire = dataAvailableListener;
+            }
         }
-        boolean wasEmpty = readyBuffers.isEmpty();
-        readyBuffers.add(buffer);
-        if (wasEmpty && dataAvailableListener != null) {
-            dataAvailableListener.onDataAvailable();
+        if (listenerToFire != null) {
+            listenerToFire.onDataAvailable();
         }
     }
 
