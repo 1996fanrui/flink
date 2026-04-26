@@ -18,9 +18,13 @@
 | AT-SFMG | Single spill file per task, all channels share | REQ-SFMG | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testSingleFilePerTask |
 | AT-5097 | File rotation at 64MB | REQ-SFMG | 通过 | 代码自动化 | FilteredSpillFileTest#testFileRotation |
 | AT-CRSR | Disk has data = unreplayed entries, cursor-based | REQ-CRSR | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testCursorBasedTracking |
-| AT-DRIN | close() blocking drain until disk empty | REQ-DRIN | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testCloseDrain |
-| AT-CLID | close() idempotent | REQ-JD2C | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testCloseIdempotent |
+| AT-DRIN | drainPendingSpill() blocking drain until disk empty | REQ-DRIN | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testDrainPendingSpillUntilEmpty |
+| AT-CLID | close() idempotent (resource release only) | REQ-JD2C | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testCloseIdempotent |
 | AT-CLFL | close() cleans up all spill files | REQ-JD2C | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testCloseCleanup |
+| AT-CABT | abort path: skip drainPendingSpill, close releases resources without blocking | REQ-JD2C | 待开发 | 代码自动化 | FilteredBufferDispatcherTest#testCloseWithoutDrainReleasesResources |
+| AT-INTR | drainPendingSpill() interruptible: thread.interrupt() unblocks drain, close still cleans up | REQ-DRIN | 待开发 | 代码自动化 | FilteredBufferDispatcherTest#testDrainPendingSpillInterruptible |
+| AT-LOCK | drainPendingSpill() does not hold dispatcher monitor: concurrent onChannelCheckpointStopped does not deadlock (FLINK-39519 regression) | REQ-DRIN | 待开发 | 代码自动化 | FilteredBufferDispatcherTest#testDrainPendingSpillReleasesMonitorForCheckpointStopped |
+| AT-FRCV | stateHandler.finishRecovery() triggers channel conversion explicitly; close releases resources only | REQ-7388 | 待开发 | 代码自动化 | InputChannelRecoveredStateHandlerTest#testFinishRecoveryTriggersConversion + ResultSubpartitionRecoveredStateHandlerTest#testFinishRecoveryTriggersFinishReadRecoveredState |
 | AT-CWRT | write after close throws IllegalStateException | REQ-JD2C | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testWriteAfterClose |
 | AT-FWRT | write after flush throws IllegalStateException | REQ-DRIN | 通过 | 代码自动化 | FilteredBufferDispatcherTest#testWriteAfterFlush |
 | AT-HY10 | FilteredSpillFile.close() try-finally guarantees file handle release | REQ-JD2C | 通过 | 代码自动化 | FilteredSpillFileTest#testCloseReleasesFileHandle |
@@ -147,16 +151,16 @@ Spill data, replay partially. hasDiskData() returns true. Replay all remaining. 
 **命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredBufferDispatcherTest#testCursorBasedTracking -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
-### [L1-测试] AT-DRIN Close Drain
+### [L1-测试] AT-DRIN drainPendingSpill Drain
 
-After all S3 data consumed, call close(). All remaining disk data drained to InputChannel via blocking buffer requests. Disk empty after close.
+After all S3 data consumed and `flush()` is called, the caller invokes `drainPendingSpill()` (separate from `close()`). All remaining disk data is drained to InputChannel via blocking buffer requests. Disk is empty after drain. `drainPendingSpill()` does not hold the dispatcher monitor while blocking.
 
-**命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredBufferDispatcherTest#testCloseDrain -P java11-target -P java11`
+**命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredBufferDispatcherTest#testDrainPendingSpillUntilEmpty -P java11-target -P java11`
 **断言**: test pass, exit code 0
 
 ### [L1-测试] AT-CLID Close Idempotent
 
-Calling close() twice does not throw.
+Calling close() twice does not throw. close() is pure resource release: short-locked, non-blocking.
 
 **命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredBufferDispatcherTest#testCloseIdempotent -P java11-target -P java11`
 **断言**: test pass, exit code 0
@@ -167,6 +171,35 @@ After close(), all spill files deleted from disk.
 
 **命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredBufferDispatcherTest#testCloseCleanup -P java11-target -P java11`
 **断言**: test pass, exit code 0
+
+### [L1-测试] AT-CABT Abort Path Skips Drain
+
+Simulate the abort path: after `flush()`, skip `drainPendingSpill()` entirely and call `close()` directly. close() must return promptly (no blocking on buffer waits) and must still delete the spill file. Pending spill entries are dropped together with the deleted backing file.
+
+**命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredBufferDispatcherTest#testCloseWithoutDrainReleasesResources -P java11-target -P java11`
+**断言**: test pass, exit code 0
+
+### [L1-测试] AT-INTR drainPendingSpill Interruptible
+
+Spill data exists; the drain thread blocks because no buffer is available. Call `Thread.interrupt()` on the drain thread. `drainPendingSpill()` must throw `InterruptedException`. A subsequent `close()` must still release all resources (delete spill file, clear references).
+
+**命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredBufferDispatcherTest#testDrainPendingSpillInterruptible -P java11-target -P java11`
+**断言**: test pass, exit code 0
+
+### [L1-测试] AT-LOCK drainPendingSpill Releases Monitor (FLINK-39519 regression)
+
+While `drainPendingSpill()` is blocked on `requestBufferBlocking`, another thread invokes `onChannelCheckpointStopped` on the same dispatcher. The callback must complete promptly (it acquires the dispatcher monitor and returns), proving that `drainPendingSpill` does not hold the monitor. This is the regression case for the FLINK-39519 deadlock; before the split, the callback would deadlock waiting for the monitor held by drain.
+
+**命令**: `./mvnw test -pl flink-runtime -Dtest=FilteredBufferDispatcherTest#testDrainPendingSpillReleasesMonitorForCheckpointStopped -P java11-target -P java11`
+**断言**: test pass, exit code 0
+
+### [L1-测试] AT-FRCV stateHandler.finishRecovery Triggers Conversion
+
+`InputChannelRecoveredStateHandler.finishRecovery()` invokes `inputGate.finishReadRecoveredState()` on every gate; `close()` no longer invokes it. Symmetric for `ResultSubpartitionRecoveredStateHandler.finishRecovery()` — invokes `finishReadRecoveredState(notifyAndBlockOnCompletion)` on every checkpointable partition; `close()` becomes a no-op (or only frees resident resources).
+
+**命令 (input)**: `./mvnw test -pl flink-runtime -Dtest=InputChannelRecoveredStateHandlerTest#testFinishRecoveryTriggersConversion -P java11-target -P java11`
+**命令 (output)**: `./mvnw test -pl flink-runtime -Dtest=ResultSubpartitionRecoveredStateHandlerTest#testFinishRecoveryTriggersFinishReadRecoveredState -P java11-target -P java11`
+**断言**: both tests pass, exit code 0
 
 ### [L1-测试] AT-CWRT Write After Close
 

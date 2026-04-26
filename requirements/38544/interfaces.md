@@ -32,7 +32,7 @@ public interface OutputWriter extends AutoCloseable {
      * Flush the active buffer's partial data to the target channel's
      * RecoveredBufferStore.
      *
-     * <p>Called before finishReadRecoveredState(). After flush(), no more
+     * <p>Called before stateHandler.finishRecovery(). After flush(), no more
      * write() calls are allowed.
      *
      * <p>Why needed: OutputWriter accumulates data in an active buffer. When
@@ -43,16 +43,41 @@ public interface OutputWriter extends AutoCloseable {
     void flush() throws IOException;
 
     /**
-     * Blocking drain: load all remaining disk data into target stores,
-     * then cleanup spill files and mark all stores as complete.
+     * Blocking drain of all remaining disk data into target stores. Producer-
+     * consumer semantics: blocks waiting for network buffers; the calling
+     * thread is unblocked by Thread.interrupt() when the task is failing.
      *
-     * <p>Call sequence: flush() → finishReadRecoveredState() → close().
-     * close() runs concurrently with Task thread consumption and checkpoint
-     * on converted InputChannels.
+     * <p>Call sequence: {@link #flush()} → stateHandler.finishRecovery() →
+     * {@link #drainPendingSpill()} → {@link #close()}. Runs concurrently with
+     * Task thread consumption and checkpoint on converted InputChannels.
      *
-     * <p>Idempotent: second call is no-op.
+     * <p>Contract (see close_drain_separation.md):
+     * <ul>
+     *   <li>Must be called after {@link #flush()} so all Readers are sealed.
+     *   <li>Does NOT hold the dispatcher monitor while blocking — keeps
+     *       {@code onChannelCheckpoint*} and other coordinator callbacks
+     *       free from being blocked behind a buffer wait.
+     *   <li>Skipped on the abort path: when the task is being cancelled or
+     *       disposed, callers go straight to {@link #close()} without draining.
+     * </ul>
      */
-    void close() throws IOException, InterruptedException;
+    void drainPendingSpill() throws IOException, InterruptedException;
+
+    /**
+     * Release resources only: close the spill file (deleting backing files)
+     * and clear internal references.
+     *
+     * <p>Contract (see close_drain_separation.md):
+     * <ul>
+     *   <li>Pure resource release: short-locked, non-blocking, idempotent,
+     *       does not throw business exceptions.
+     *   <li>Does NOT drain remaining spill — that is {@link #drainPendingSpill()}'s
+     *       job and must be invoked explicitly before close on the success path.
+     *   <li>Safe to call from try-with-resources on any path; abort paths
+     *       drop pending spill entries together with the deleted files.
+     * </ul>
+     */
+    void close() throws IOException;
 }
 ```
 
@@ -186,8 +211,9 @@ void setDataAvailableCallback(Runnable callback);
 void addBuffer(Buffer buffer);
 
 /**
- * Mark the store as complete. Called by OutputWriter.close() after
- * the drain loop finishes. No more addBuffer() calls after this.
+ * Mark the store as complete. Called by OutputWriter at the end of
+ * {@link OutputWriter#drainPendingSpill()} after the drain loop finishes.
+ * No more addBuffer() calls after this.
  */
 void markComplete();
 
@@ -205,7 +231,8 @@ void incrementPending();
 /**
  * Decrement the pending spill entry count.
  * Called by OutputWriter when a disk entry is replayed
- * (P3 drain or close() drain) into a buffer.
+ * (P3 eagerDrain inside write(), or {@link OutputWriter#drainPendingSpill()})
+ * into a buffer.
  */
 void decrementPending();
 ```

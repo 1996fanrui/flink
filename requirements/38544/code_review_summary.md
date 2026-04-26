@@ -1,5 +1,7 @@
 # FLINK-38544 代码实现 vs 设计文档 Review 总结
 
+> **历史快照**：本文记录 review 当时的对比结论。其后引入的 `close_drain_separation.md` 拆分了 `OutputWriter.close()`（drain 移到独立 `drainPendingSpill()`），下表中带 "close() drain" 字样的条目应理解为旧设计下的状态；新设计请以 `design.md` / `close_drain_separation.md` 为准。
+
 ## 总览
 
 | 阶段 | 内容 | JIRA | 一致性评分 |
