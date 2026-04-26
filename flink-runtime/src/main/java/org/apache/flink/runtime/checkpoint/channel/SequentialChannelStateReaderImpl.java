@@ -113,14 +113,18 @@ public class SequentialChannelStateReaderImpl implements SequentialChannelStateR
 
             if (d != null) {
                 d.flush();
-                // Trigger channel conversion explicitly before draining so the drain runs
-                // against converted (Local/Remote)InputChannels and never holds the dispatcher
-                // monitor (avoids the FLINK-39519 reverse-lock deadlock).
-                stateHandler.close();
+                // Explicit call sequence (see requirements/38544/close_drain_separation.md):
+                //   flush()              -> seal Readers
+                //   finishRecovery()     -> trigger channel conversion
+                //   drainPendingSpill()  -> blocking drain (no monitor held)
+                // try-with-resources still owns the final close() pass for resource release.
+                stateHandler.finishRecovery();
                 d.drainPendingSpill();
+            } else {
+                stateHandler.finishRecovery();
             }
             // try-with-resources auto-close is a pure resource release pass:
-            //   stateHandler.close() -> no-op (idempotent guard)
+            //   stateHandler.close() -> releases preFilterSegment if allocated
             //   d.close()            -> deletes spill files / closes file channel
             //   filteringHandler.close()
         }
@@ -139,6 +143,7 @@ public class SequentialChannelStateReaderImpl implements SequentialChannelStateR
                     groupByDelegate(
                             streamSubtaskStates(),
                             ChannelStateHelper::extractUnmergedOutputHandles));
+            stateHandler.finishRecovery();
         }
     }
 

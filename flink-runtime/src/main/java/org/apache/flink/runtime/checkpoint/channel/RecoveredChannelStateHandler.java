@@ -71,6 +71,21 @@ interface RecoveredChannelStateHandler<Info, Context> extends AutoCloseable {
      */
     void recover(Info info, int oldSubtaskIndex, BufferWithContext<Context> bufferWithContext)
             throws IOException, InterruptedException;
+
+    /**
+     * Trigger the post-recovery business actions for this handler. For input channels this
+     * completes the per-channel buffer-filtering future and surfaces an
+     * EndOfInputChannelStateEvent via the store; for output partitions this calls
+     * finishReadRecoveredState on every checkpointable partition.
+     *
+     * <p>Must be invoked explicitly between {@code dispatcher.flush()} and
+     * {@code dispatcher.drainPendingSpill()}; see requirements/38544/close_drain_separation.md.
+     *
+     * <p>This method is idempotent: callers that hold the handler in a try-with-resources block
+     * may invoke {@code finishRecovery()} explicitly without affecting the subsequent
+     * {@link #close()} call which only releases resources.
+     */
+    void finishRecovery() throws IOException;
 }
 
 class InputChannelRecoveredStateHandler
@@ -115,12 +130,8 @@ class InputChannelRecoveredStateHandler
      */
     private boolean preFilterBufferInUse;
 
-    /**
-     * Idempotency guard for {@link #close()}. In the explicit-drain flow,
-     * {@link SequentialChannelStateReaderImpl} calls close() once to trigger channel conversion
-     * before drainPendingSpill(), and the try-with-resources block calls it again on exit.
-     */
-    private boolean closed;
+    /** Idempotency guard for {@link #finishRecovery()}. */
+    private boolean recoveryFinished;
 
     InputChannelRecoveredStateHandler(
             InputGate[] inputGates,
@@ -241,15 +252,19 @@ class InputChannelRecoveredStateHandler
     }
 
     @Override
-    public void close() throws IOException {
-        if (closed) {
+    public void finishRecovery() throws IOException {
+        if (recoveryFinished) {
             return;
         }
-        closed = true;
+        recoveryFinished = true;
         // note that we need to finish all RecoveredInputChannels, not just those with state
         for (final InputGate inputGate : inputGates) {
             inputGate.finishReadRecoveredState();
         }
+    }
+
+    @Override
+    public void close() throws IOException {
         if (preFilterSegment != null) {
             preFilterSegment.free();
             preFilterSegment = null;
@@ -290,6 +305,9 @@ class ResultSubpartitionRecoveredStateHandler
     private final ResultPartitionWriter[] writers;
     private final boolean notifyAndBlockOnCompletion;
     private final ResultSubpartitionDistributor resultSubpartitionDistributor;
+
+    /** Idempotency guard for {@link #finishRecovery()}. */
+    private boolean recoveryFinished;
 
     ResultSubpartitionRecoveredStateHandler(
             ResultPartitionWriter[] writers,
@@ -364,12 +382,21 @@ class ResultSubpartitionRecoveredStateHandler
     }
 
     @Override
-    public void close() throws IOException {
+    public void finishRecovery() throws IOException {
+        if (recoveryFinished) {
+            return;
+        }
+        recoveryFinished = true;
         for (ResultPartitionWriter writer : writers) {
             if (writer instanceof CheckpointedResultPartition) {
                 ((CheckpointedResultPartition) writer)
                         .finishReadRecoveredState(notifyAndBlockOnCompletion);
             }
         }
+    }
+
+    @Override
+    public void close() throws IOException {
+        // No resources to release; finishReadRecoveredState moved to finishRecovery().
     }
 }
