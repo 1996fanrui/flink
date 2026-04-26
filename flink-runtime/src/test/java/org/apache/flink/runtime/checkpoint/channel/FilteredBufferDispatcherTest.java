@@ -1212,4 +1212,114 @@ class FilteredBufferDispatcherTest {
 
         writer.close();
     }
+
+    // -----------------------------------------------------------------------------------------
+    // onChannelCheckpointStopped tests
+    // -----------------------------------------------------------------------------------------
+
+    /**
+     * After a checkpoint is aborted (i.e. all stores called notifyCheckpointStopped), a
+     * subsequent channel release must NOT trigger a phase-2 drain into the stopped checkpoint —
+     * the writer for that id is gone and any drain would either be wasted work or rely on the
+     * writer's isDone() guard to silently swallow the data.
+     */
+    @Test
+    void testReleaseAfterStoppedCheckpointDoesNotDrainStoppedCheckpoint() throws Exception {
+        Queue<Buffer> drainPool = createBufferPool(5);
+        RecordingChannelStateWriter recordingWriter = new RecordingChannelStateWriter();
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores,
+                        recordingWriter,
+                        spillDirs,
+                        SEGMENT_SIZE,
+                        TestBufferPool.drainOnly(drainPool));
+
+        writer.write(createTestData(SEGMENT_SIZE, (byte) 0x71), SEGMENT_SIZE, ch0);
+        writer.write(createTestData(SEGMENT_SIZE, (byte) 0x72), SEGMENT_SIZE, ch1);
+        writer.flush();
+
+        // Checkpoint 50 starts on ch0; wait-set still contains ch1.
+        writer.onChannelCheckpointStarted(50L, ch0);
+        assertThat(recordingWriter.inputDataCalls).isEmpty();
+
+        // The task aborts checkpoint 50 — every channel's persister fires notifyCheckpointStopped.
+        store0.notifyCheckpointStopped(50L);
+        store1.notifyCheckpointStopped(50L);
+
+        // Now ch1 is released. Without the stopped-checkpoint short-circuit, the wait-set would
+        // empty and the dispatcher would drain to checkpoint 50; with the fix, no drain fires.
+        store1.releaseAll();
+
+        assertThat(recordingWriter.inputDataCalls).isEmpty();
+
+        writer.close();
+    }
+
+    /**
+     * A late {@code onChannelCheckpointStarted} for a checkpoint that has already been stopped
+     * must be ignored as stale, even if a new checkpoint has not yet started.
+     */
+    @Test
+    void testLateCheckpointStartedAfterStoppedIsIgnored() throws Exception {
+        Queue<Buffer> drainPool = createBufferPool(5);
+        RecordingChannelStateWriter recordingWriter = new RecordingChannelStateWriter();
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores,
+                        recordingWriter,
+                        spillDirs,
+                        SEGMENT_SIZE,
+                        TestBufferPool.drainOnly(drainPool));
+
+        writer.write(createTestData(SEGMENT_SIZE, (byte) 0x81), SEGMENT_SIZE, ch0);
+        writer.flush();
+
+        // Stop checkpoint 60 before anyone reports in.
+        store0.notifyCheckpointStopped(60L);
+        store1.notifyCheckpointStopped(60L);
+
+        // A late onChannelCheckpointStarted(60, ...) shows up. It must be short-circuited.
+        writer.onChannelCheckpointStarted(60L, ch0);
+        writer.onChannelCheckpointStarted(60L, ch1);
+
+        assertThat(recordingWriter.inputDataCalls).isEmpty();
+
+        writer.close();
+    }
+
+    /**
+     * A new checkpoint started AFTER a stop notification must still progress normally — the
+     * stopped-id short-circuit only skips the exact stopped id, not all subsequent checkpoints.
+     */
+    @Test
+    void testCheckpointAfterStoppedStillProgresses() throws Exception {
+        Queue<Buffer> drainPool = createBufferPool(5);
+        RecordingChannelStateWriter recordingWriter = new RecordingChannelStateWriter();
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores,
+                        recordingWriter,
+                        spillDirs,
+                        SEGMENT_SIZE,
+                        TestBufferPool.drainOnly(drainPool));
+
+        writer.write(createTestData(SEGMENT_SIZE, (byte) 0x91), SEGMENT_SIZE, ch0);
+        writer.write(createTestData(SEGMENT_SIZE, (byte) 0x92), SEGMENT_SIZE, ch1);
+        writer.flush();
+
+        // Abort checkpoint 70.
+        store0.notifyCheckpointStopped(70L);
+        store1.notifyCheckpointStopped(70L);
+
+        // Checkpoint 71 begins; both channels report in and phase-2 fires for 71.
+        writer.onChannelCheckpointStarted(71L, ch0);
+        writer.onChannelCheckpointStarted(71L, ch1);
+
+        assertThat(recordingWriter.inputDataCalls).hasSize(2);
+        assertThat(recordingWriter.inputDataCalls.get(0).checkpointId).isEqualTo(71L);
+        assertThat(recordingWriter.inputDataCalls.get(1).checkpointId).isEqualTo(71L);
+
+        writer.close();
+    }
 }

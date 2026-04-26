@@ -356,6 +356,33 @@ class RecoveredBufferStoreTest {
         store.releaseAll();
     }
 
+    /**
+     * Verify notifyCheckpointStopped forwards the call to the registered coordinator with the
+     * bound channel info.
+     */
+    @Test
+    void testNotifyCheckpointStoppedNotifiesCoordinator() {
+        InputChannelInfo channelInfo = new InputChannelInfo(2, 5);
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(channelInfo);
+
+        RecordingCoordinator coordinator = new RecordingCoordinator();
+        store.setCoordinator(coordinator);
+
+        store.notifyCheckpointStopped(11L);
+        store.notifyCheckpointStopped(12L);
+
+        assertThat(coordinator.stoppedCheckpointIds).containsExactly(11L, 12L);
+        assertThat(coordinator.stoppedChannels).containsExactly(channelInfo, channelInfo);
+    }
+
+    /** Verify notifyCheckpointStopped is a safe no-op when no coordinator is registered. */
+    @Test
+    void testNotifyCheckpointStoppedWithoutCoordinatorIsNoOp() {
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(DEFAULT_CHANNEL_INFO);
+        // Should not throw without a coordinator registered
+        store.notifyCheckpointStopped(7L);
+    }
+
     // ---------------------------------------------------------------------------
     // Tests for setDataAvailableListener via interface
     // ---------------------------------------------------------------------------
@@ -411,6 +438,12 @@ class RecoveredBufferStoreTest {
         RecoveredBufferStore.EMPTY.releaseAll();
     }
 
+    /** Verify notifyCheckpointStopped() on EMPTY does not throw. */
+    @Test
+    void testEmptySingletonNotifyCheckpointStoppedIsNoOp() {
+        RecoveredBufferStore.EMPTY.notifyCheckpointStopped(99L);
+    }
+
     /** Verify all setters on EMPTY are no-ops (accept and discard without throwing). */
     @Test
     void testEmptySingletonSettersAreNoOp() {
@@ -421,16 +454,27 @@ class RecoveredBufferStoreTest {
         // No exception == pass
     }
 
-    /** Test-only coordinator that records onChannelCheckpointStarted / onChannelReleased calls. */
+    /**
+     * Test-only coordinator that records all coordinator notifications: started, stopped, and
+     * released.
+     */
     private static class RecordingCoordinator implements RecoveredBufferStoreCoordinator {
         final List<Long> checkpointIds = new ArrayList<>();
         final List<InputChannelInfo> checkpointChannels = new ArrayList<>();
+        final List<Long> stoppedCheckpointIds = new ArrayList<>();
+        final List<InputChannelInfo> stoppedChannels = new ArrayList<>();
         final List<InputChannelInfo> released = new ArrayList<>();
 
         @Override
         public void onChannelCheckpointStarted(long checkpointId, InputChannelInfo channelInfo) {
             checkpointIds.add(checkpointId);
             checkpointChannels.add(channelInfo);
+        }
+
+        @Override
+        public void onChannelCheckpointStopped(long checkpointId, InputChannelInfo channelInfo) {
+            stoppedCheckpointIds.add(checkpointId);
+            stoppedChannels.add(channelInfo);
         }
 
         @Override

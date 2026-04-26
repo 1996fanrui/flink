@@ -84,6 +84,7 @@ public class FilteredBufferDispatcherImpl
 
     // Checkpoint wait-set state machine
     private long currentCheckpointId = -1L;
+    private long lastStoppedCheckpointId = -1L;
     private Set<InputChannelInfo> waitSet;
 
     // Lifecycle flags
@@ -215,6 +216,12 @@ public class FilteredBufferDispatcherImpl
             // converges correctly.
             return;
         }
+        if (checkpointId <= lastStoppedCheckpointId) {
+            // Stale callback for a checkpoint the task has already stopped (finished or aborted).
+            // The ChannelStateWriter for this id is gone; phase-2 drain into it would be wasted
+            // work and would require relying on writer.isDone() to silently swallow the data.
+            return;
+        }
         if (checkpointId > currentCheckpointId) {
             // New checkpoint: rebuild the wait-set from channels with pending spill entries.
             // Invariant: checkpoint only starts after recovery ends (writer.finish()); all
@@ -235,6 +242,29 @@ public class FilteredBufferDispatcherImpl
         waitSet.remove(channelInfo);
         if (waitSet.isEmpty()) {
             drainSpillEntriesToCheckpoint(checkpointId);
+        }
+    }
+
+    /**
+     * Called by a per-channel store from {@link RecoveredBufferStore#notifyCheckpointStopped} when
+     * the owning channel has finished or aborted the given checkpoint. Drops the wait-set tied to
+     * that checkpoint so a later {@link #onChannelReleased} cannot drain spill entries into a
+     * checkpoint the task has already concluded; also bumps {@code lastStoppedCheckpointId} so a
+     * late {@link #onChannelCheckpointStarted} for the same id is short-circuited as stale.
+     *
+     * <p>Called from the Task thread; synchronized on {@code this} to be mutually exclusive with
+     * other coordinator callbacks and the Recovery thread's
+     * {@link #write} / {@link #flush} / {@link #close}.
+     */
+    public synchronized void onChannelCheckpointStopped(
+            long checkpointId, InputChannelInfo channelInfo) {
+        if (checkpointId > lastStoppedCheckpointId) {
+            lastStoppedCheckpointId = checkpointId;
+        }
+        if (waitSet != null && currentCheckpointId == checkpointId) {
+            // The wait-set we were collecting belongs to the now-stopped checkpoint; releasing
+            // any remaining channel must not retroactively trigger phase-2 drain into it.
+            waitSet = null;
         }
     }
 

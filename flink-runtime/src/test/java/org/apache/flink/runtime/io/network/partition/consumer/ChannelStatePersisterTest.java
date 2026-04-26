@@ -64,7 +64,7 @@ class ChannelStatePersisterTest {
         // now task thread is picking up the barrier and aborts the 1st:
         persister.checkForBarrier(barrier(checkpointId + 1));
         persister.maybePersist(buildSomeBuffer());
-        persister.stopPersisting(checkpointId);
+        persister.stopPersisting(checkpointId, RecoveredBufferStore.EMPTY);
         persister.maybePersist(buildSomeBuffer());
         assertThat(channelStateWriter.getAddedInput().get(channelInfo)).hasSize(1);
 
@@ -115,7 +115,7 @@ class ChannelStatePersisterTest {
                     lateCheckpointId, RecoveredBufferStore.EMPTY, Collections.emptyList());
         }
         if (cancelCheckpointBeforeLateBarrier) {
-            persister.stopPersisting(lateCheckpointId);
+            persister.stopPersisting(lateCheckpointId, RecoveredBufferStore.EMPTY);
         }
         persister.checkForBarrier(barrier(lateCheckpointId));
         channelStateWriter.start(

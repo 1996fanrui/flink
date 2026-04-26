@@ -150,12 +150,28 @@ public final class ChannelStatePersister {
         }
     }
 
-    protected void stopPersisting(long id) {
+    /**
+     * Marks the given checkpoint as concluded for this channel and notifies the store so that the
+     * coordinator can drop any wait-set still tied to {@code id}.
+     *
+     * <p>Called from {@code InputChannel#checkpointStopped}, which itself fires for both
+     * checkpoint completion (all barriers received) and checkpoint abort. Without notifying the
+     * store, the coordinator's wait-set for an aborted checkpoint would linger and a later
+     * release/late callback could trigger a phase-2 drain into a checkpoint the task has already
+     * given up on.
+     *
+     * @param id the checkpoint that is now stopped on this channel
+     * @param store the per-channel recovered buffer store (use {@link RecoveredBufferStore#EMPTY}
+     *     when no recovery data is present); must be the same instance the channel passes to
+     *     {@link #startPersisting}
+     */
+    protected void stopPersisting(long id, RecoveredBufferStore store) {
         logEvent("stopPersisting", id);
         if (id >= lastSeenBarrier) {
             checkpointStatus = CheckpointStatus.COMPLETED;
             lastSeenBarrier = id;
         }
+        store.notifyCheckpointStopped(id);
     }
 
     protected void maybePersist(Buffer buffer) {

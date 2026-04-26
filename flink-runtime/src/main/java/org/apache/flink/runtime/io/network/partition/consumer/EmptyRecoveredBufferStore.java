@@ -54,6 +54,9 @@ class EmptyRecoveredBufferStore implements RecoveredBufferStore {
     public void releaseAll() {}
 
     @Override
+    public void notifyCheckpointStopped(long checkpointId) {}
+
+    @Override
     public void setCoordinator(RecoveredBufferStoreCoordinator coordinator) {}
 
     @Override

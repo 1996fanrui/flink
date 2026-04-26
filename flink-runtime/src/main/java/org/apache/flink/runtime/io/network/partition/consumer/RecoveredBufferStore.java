@@ -95,10 +95,25 @@ public interface RecoveredBufferStore {
     void releaseAll();
 
     /**
+     * Notifies the registered {@link RecoveredBufferStoreCoordinator} (if any) that the owning
+     * channel has finished or aborted the given checkpoint. The notification fires <em>outside</em>
+     * any store-level lock so the coordinator can safely acquire its own lock without deadlock.
+     *
+     * <p>Called from {@code ChannelStatePersister#stopPersisting}, which itself is invoked once on
+     * every channel both on checkpoint completion (all barriers received) and on checkpoint abort.
+     * The store does not maintain per-checkpoint state; the call is a pure passthrough so that
+     * cross-channel bookkeeping (such as a checkpoint wait-set) lives in the coordinator.
+     *
+     * @param checkpointId the ID of the checkpoint that just stopped for this channel
+     */
+    void notifyCheckpointStopped(long checkpointId);
+
+    /**
      * Registers the {@link RecoveredBufferStoreCoordinator} that owns cross-channel bookkeeping
      * (such as the checkpoint wait-set and disk-resident spill entries). The store invokes the
-     * coordinator from {@link #checkpoint} and {@link #releaseAll} on lifecycle transitions. Do
-     * not call this method (or pass {@code null}) when there is no coordinator.
+     * coordinator from {@link #checkpoint}, {@link #notifyCheckpointStopped} and
+     * {@link #releaseAll} on lifecycle transitions. Do not call this method (or pass {@code null})
+     * when there is no coordinator.
      *
      * @param coordinator the coordinator to notify; replaces any previously registered coordinator
      */

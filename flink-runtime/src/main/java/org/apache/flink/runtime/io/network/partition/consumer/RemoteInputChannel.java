@@ -840,7 +840,7 @@ public class RemoteInputChannel extends InputChannel {
 
     public void checkpointStopped(long checkpointId) {
         synchronized (receivedBuffers) {
-            channelStatePersister.stopPersisting(checkpointId);
+            channelStatePersister.stopPersisting(checkpointId, recoveredStore);
             if (lastBarrierId == checkpointId) {
                 resetLastBarrier();
             }

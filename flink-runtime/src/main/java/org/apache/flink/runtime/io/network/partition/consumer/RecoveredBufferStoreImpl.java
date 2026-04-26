@@ -164,6 +164,19 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
         }
     }
 
+    @Override
+    public void notifyCheckpointStopped(long checkpointId) {
+        // Capture the coordinator reference under lock; fire the notification outside so the
+        // coordinator can safely acquire its own synchronisation without risking deadlock.
+        RecoveredBufferStoreCoordinator c;
+        synchronized (this) {
+            c = coordinator;
+        }
+        if (c != null) {
+            c.onChannelCheckpointStopped(checkpointId, channelInfo);
+        }
+    }
+
     // ---------------------------------------------------------------------------
     // Setters (interface methods)
     // ---------------------------------------------------------------------------

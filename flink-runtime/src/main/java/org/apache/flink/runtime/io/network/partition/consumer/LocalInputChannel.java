@@ -145,7 +145,7 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
     }
 
     public void checkpointStopped(long checkpointId) {
-        channelStatePersister.stopPersisting(checkpointId);
+        channelStatePersister.stopPersisting(checkpointId, recoveredStore);
     }
 
     @Override

@@ -39,6 +39,15 @@ public interface RecoveredBufferStoreCoordinator {
     void onChannelCheckpointStarted(long checkpointId, InputChannelInfo channelInfo);
 
     /**
+     * Invoked from inside {@code RecoveredBufferStore#notifyCheckpointStopped} when the owning
+     * channel has finished or aborted a checkpoint. Implementations use this to drop any wait-set
+     * still tied to the stopped checkpoint so a later {@link #onChannelReleased} or a late
+     * {@link #onChannelCheckpointStarted} cannot trigger a phase-2 drain to a checkpoint that has
+     * already been concluded by the task.
+     */
+    void onChannelCheckpointStopped(long checkpointId, InputChannelInfo channelInfo);
+
+    /**
      * Invoked from inside {@code RecoveredBufferStore#releaseAll} so the coordinator can drop
      * disk-resident spill entries still associated with the released channel.
      */
