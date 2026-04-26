@@ -32,6 +32,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -39,10 +40,19 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 /** Tests for {@link FilteredBufferDispatcherImpl}. */
 class FilteredBufferDispatcherTest {
@@ -1352,6 +1362,208 @@ class FilteredBufferDispatcherTest {
         assertThat(recordingWriter.inputDataCalls.get(1).checkpointId).isEqualTo(71L);
 
         writer.drainPendingSpill();
+        writer.close();
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // AT-CABT / AT-INTR / AT-LOCK: close/drain contract regression tests
+    // -----------------------------------------------------------------------------------------
+
+    /**
+     * A BufferRequester whose blocking path parks indefinitely until interrupted. Used to verify
+     * that callers that should NOT invoke requestBufferBlocking (e.g. close()) are not blocked.
+     */
+    private static final class BlockingForeverBufferRequester implements BufferRequester {
+
+        /** Signals that a blocking request is in flight. */
+        final CountDownLatch blockingStarted = new CountDownLatch(1);
+
+        /** Unblocks the blocking requester when a real buffer should be delivered. */
+        final SynchronousQueue<Buffer> releaseQueue = new SynchronousQueue<>();
+
+        @Override
+        public Buffer requestBuffer(InputChannelInfo channelInfo) {
+            return null; // write path always spills
+        }
+
+        @Override
+        public Buffer requestBufferBlocking(InputChannelInfo channelInfo)
+                throws InterruptedException {
+            blockingStarted.countDown();
+            // Park until a buffer arrives through releaseQueue or the thread is interrupted.
+            return releaseQueue.take();
+        }
+    }
+
+    /**
+     * AT-CABT: abort path — skip drainPendingSpill, call close() directly. close() must return
+     * promptly (it must not invoke requestBufferBlocking) and delete all spill files.
+     */
+    @Test
+    void testCloseWithoutDrainReleasesResources() throws Exception {
+        // requestBufferBlocking parks indefinitely — if close() mistakenly calls it the test hangs.
+        BlockingForeverBufferRequester requester = new BlockingForeverBufferRequester();
+
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores,
+                        ChannelStateWriter.NO_OP,
+                        spillDirs,
+                        SEGMENT_SIZE,
+                        requester);
+
+        byte[] data = createTestData(SEGMENT_SIZE, (byte) 0xAB);
+        writer.write(data, data.length, ch0);
+        writer.flush();
+
+        // Verify spill file exists before close.
+        try (Stream<Path> files =
+                Files.list(tempDir).filter(p -> p.getFileName().toString().startsWith("spill-"))) {
+            assertThat(files.count()).isGreaterThan(0);
+        }
+
+        // close() skips drainPendingSpill entirely: must complete within 5 s (not block on buffer).
+        assertTimeoutPreemptively(
+                Duration.ofSeconds(5),
+                () -> assertDoesNotThrow(writer::close),
+                "close() blocked — it incorrectly called requestBufferBlocking");
+
+        // Spill files must be deleted on close.
+        try (Stream<Path> files =
+                Files.list(tempDir).filter(p -> p.getFileName().toString().startsWith("spill-"))) {
+            assertThat(files.count()).isEqualTo(0);
+        }
+
+        // The written bytes were intentionally dropped (abort semantics). Store must remain empty.
+        assertThat(store0.tryTake()).isNull();
+    }
+
+    /**
+     * AT-INTR: drainPendingSpill() is interruptible. When the drain thread blocks on
+     * requestBufferBlocking and the thread is interrupted, drainPendingSpill() must propagate
+     * InterruptedException. A subsequent close() must still release resources.
+     */
+    @Test
+    void testDrainPendingSpillInterruptible() throws Exception {
+        BlockingForeverBufferRequester requester = new BlockingForeverBufferRequester();
+
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores,
+                        ChannelStateWriter.NO_OP,
+                        spillDirs,
+                        SEGMENT_SIZE,
+                        requester);
+
+        byte[] data = createTestData(SEGMENT_SIZE, (byte) 0xBC);
+        writer.write(data, data.length, ch0);
+        writer.flush();
+
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        Future<Exception> drainFuture =
+                executor.submit(
+                        () -> {
+                            try {
+                                writer.drainPendingSpill();
+                                return null; // unexpected: should have thrown
+                            } catch (InterruptedException e) {
+                                // restore flag for good measure
+                                Thread.currentThread().interrupt();
+                                return e;
+                            } catch (Exception e) {
+                                return e;
+                            }
+                        });
+
+        // Wait until drainPendingSpill() is actually blocked.
+        assertThat(requester.blockingStarted.await(5, TimeUnit.SECONDS))
+                .as("drain thread did not enter blocking state in time")
+                .isTrue();
+
+        // Interrupt the drain thread.
+        executor.shutdownNow();
+
+        Exception thrown = drainFuture.get(5, TimeUnit.SECONDS);
+        assertThat(thrown)
+                .as("drainPendingSpill() must throw InterruptedException on interrupt")
+                .isInstanceOf(InterruptedException.class);
+
+        // Even after an interrupted drain, close() must release resources without throwing.
+        assertTimeoutPreemptively(
+                Duration.ofSeconds(5),
+                () -> assertDoesNotThrow(writer::close),
+                "close() blocked after interrupted drain");
+
+        // Spill files must be cleaned up.
+        try (Stream<Path> files =
+                Files.list(tempDir).filter(p -> p.getFileName().toString().startsWith("spill-"))) {
+            assertThat(files.count()).isEqualTo(0);
+        }
+    }
+
+    /**
+     * AT-LOCK: FLINK-39519 deadlock regression. drainPendingSpill() must NOT hold the dispatcher
+     * monitor while blocking on requestBufferBlocking. Concurrent onChannelCheckpointStopped (which
+     * acquires the dispatcher monitor) must complete promptly while drain is blocked.
+     *
+     * <p>Before the close/drain split, drainSpillThroughBuffers() ran inside a synchronized block,
+     * so onChannelCheckpointStopped would deadlock waiting for the monitor held by drain. This test
+     * reproduces that scenario and asserts the callback completes in time.
+     */
+    @Test
+    void testDrainPendingSpillReleasesMonitorForCheckpointStopped() throws Exception {
+        BlockingForeverBufferRequester requester = new BlockingForeverBufferRequester();
+
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores,
+                        ChannelStateWriter.NO_OP,
+                        spillDirs,
+                        SEGMENT_SIZE,
+                        requester);
+
+        // Set up checkpoint wait-set state so onChannelCheckpointStopped follows the full path.
+        // notifyCheckpointStopped on the stores will call writer.onChannelCheckpointStopped.
+        long checkpointId = 42L;
+
+        byte[] data = createTestData(SEGMENT_SIZE, (byte) 0xCD);
+        writer.write(data, data.length, ch0);
+        writer.flush();
+
+        // Build the wait-set for checkpoint 42 by having ch0 report in.
+        writer.onChannelCheckpointStarted(checkpointId, ch0);
+
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        Future<?> drainFuture =
+                executor.submit(
+                        () -> {
+                            try {
+                                writer.drainPendingSpill();
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                            } catch (Exception ignored) {
+                            }
+                        });
+
+        // Wait until drainPendingSpill() is blocked inside requestBufferBlocking.
+        assertThat(requester.blockingStarted.await(5, TimeUnit.SECONDS))
+                .as("drain thread did not enter blocking state in time")
+                .isTrue();
+
+        // onChannelCheckpointStopped acquires the dispatcher monitor. If drain held the monitor
+        // this call would deadlock; it must return within 1 s.
+        assertTimeoutPreemptively(
+                Duration.ofSeconds(1),
+                () -> {
+                    store0.notifyCheckpointStopped(checkpointId);
+                    store1.notifyCheckpointStopped(checkpointId);
+                },
+                "onChannelCheckpointStopped deadlocked — drainPendingSpill held the dispatcher monitor");
+
+        // Interrupt the drain thread so the test exits cleanly.
+        executor.shutdownNow();
+        drainFuture.get(5, TimeUnit.SECONDS);
+
         writer.close();
     }
 }
