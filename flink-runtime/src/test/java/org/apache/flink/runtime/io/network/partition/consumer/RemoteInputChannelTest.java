@@ -163,6 +163,95 @@ class RemoteInputChannelTest {
     }
 
     @Test
+    void testPriorityFlagSetUnderLockOnPriorityEnqueue() throws Exception {
+        // Producer-side invariant: when onBuffer enqueues a priority element under the
+        // receivedBuffers lock, hasPendingPriorityEvent is also set true *inside* that same
+        // synchronized block. Externally observable consequence: the flag is already true the
+        // moment onBuffer returns to its caller (network thread), with no window in which the
+        // priority element is queued but the flag is still false.
+        SingleInputGate inputGate = createSingleInputGate(1);
+        RemoteInputChannel inputChannel = createRemoteInputChannel(inputGate);
+        inputGate.setInputChannels(inputChannel);
+        inputChannel.requestSubpartitions();
+
+        Buffer priority =
+                toBuffer(
+                        new CheckpointBarrier(
+                                CHECKPOINT_ID,
+                                System.currentTimeMillis(),
+                                CheckpointOptions.unaligned(CHECKPOINT, getDefault())),
+                        true);
+        inputChannel.onBuffer(priority, 0, -1, 0);
+
+        assertThat(getHasPendingPriorityEvent(inputChannel)).isTrue();
+
+        inputChannel.releaseAllResources();
+    }
+
+    @Test
+    void testNormalPathPollClearsPriorityFlagInvariant() throws Exception {
+        // Consumer-side invariant: if a normal-path getNextBuffer drains the last priority
+        // element via PrioritizedDeque.poll() (which can happen when a stale `false` read of
+        // the flag routes the consumer through the normal path), the same synchronized block
+        // resets the flag so a subsequent producer flag write cannot leave the channel in a
+        // `flag=true && numPriorityElements==0` state.
+        //
+        // We simulate the "stale read sent the consumer down the normal path" outcome by
+        // manually clearing the flag (post-onBuffer) before calling getNextBuffer, so the
+        // consumer's `if (hasPendingPriorityEvent)` check sees false and falls through to the
+        // normal poll. The point under test is what getNextBuffer does under its receivedBuffers
+        // lock, not the upstream stale-read window itself.
+        SingleInputGate inputGate = createSingleInputGate(1);
+        RemoteInputChannel inputChannel = createRemoteInputChannel(inputGate);
+        inputGate.setInputChannels(inputChannel);
+        inputChannel.requestSubpartitions();
+
+        Buffer priority =
+                toBuffer(
+                        new CheckpointBarrier(
+                                CHECKPOINT_ID,
+                                System.currentTimeMillis(),
+                                CheckpointOptions.unaligned(CHECKPOINT, getDefault())),
+                        true);
+        inputChannel.onBuffer(priority, 0, -1, 0);
+        // Force the consumer into the normal path even though a priority element is queued.
+        setHasPendingPriorityEvent(inputChannel, false);
+
+        Optional<BufferAndAvailability> first = inputChannel.getNextBuffer();
+        assertThat(first).isPresent();
+        assertThat(first.get().buffer().getDataType().hasPriority()).isTrue();
+        assertThat(getHasPendingPriorityEvent(inputChannel)).isFalse();
+
+        // Subsequent DATA must not trip the priority invariant: with the flag correctly cleared
+        // by the previous normal-path poll, the consumer takes the normal path again.
+        Buffer dataBuffer = createBuffer(TestBufferFactory.BUFFER_SIZE);
+        inputChannel.onBuffer(dataBuffer, 1, -1, 0);
+
+        Optional<BufferAndAvailability> second = inputChannel.getNextBuffer();
+        assertThat(second).isPresent();
+        assertThat(second.get().buffer().getDataType()).isEqualTo(DataType.DATA_BUFFER);
+        assertThat(getHasPendingPriorityEvent(inputChannel)).isFalse();
+
+        inputChannel.releaseAllResources();
+    }
+
+    private static void setHasPendingPriorityEvent(RemoteInputChannel channel, boolean value)
+            throws ReflectiveOperationException {
+        java.lang.reflect.Field f =
+                RemoteInputChannel.class.getDeclaredField("hasPendingPriorityEvent");
+        f.setAccessible(true);
+        f.setBoolean(channel, value);
+    }
+
+    private static boolean getHasPendingPriorityEvent(RemoteInputChannel channel)
+            throws ReflectiveOperationException {
+        java.lang.reflect.Field f =
+                RemoteInputChannel.class.getDeclaredField("hasPendingPriorityEvent");
+        f.setAccessible(true);
+        return f.getBoolean(channel);
+    }
+
+    @Test
     void testExceptionOnReordering() throws Exception {
         // Setup
         final SingleInputGate inputGate = createSingleInputGate(1);

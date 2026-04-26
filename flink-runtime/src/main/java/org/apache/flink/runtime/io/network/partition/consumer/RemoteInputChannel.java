@@ -130,13 +130,12 @@ public class RemoteInputChannel extends InputChannel {
     private final RecoveredBufferStore recoveredStore;
 
     /**
-     * Flag indicating whether a priority event (e.g., an unaligned checkpoint barrier) is sitting
-     * at the head of {@link #receivedBuffers} and should be consumed before the recovered store.
-     * Mirrors the Local-channel fast path so an UC barrier arriving over the network during
-     * recovery is not delayed behind pending recovered buffers. Set by {@link #onBuffer} and
-     * {@link #convertToPriorityEvent} and checked in {@link #getNextBuffer()}.
+     * True iff a priority element sits at the head of {@link #receivedBuffers} and should be
+     * consumed before the recovered store. Invariant maintained under the lock:
+     * {@code hasPendingPriorityEvent <=> receivedBuffers.getNumPriorityElements() > 0}.
      */
-    private volatile boolean hasPendingPriorityEvent = false;
+    @GuardedBy("receivedBuffers")
+    private boolean hasPendingPriorityEvent = false;
 
     private long totalQueueSizeInBytes;
 
@@ -277,27 +276,27 @@ public class RemoteInputChannel extends InputChannel {
 
     @Override
     public Optional<BufferAndAvailability> getNextBuffer() throws IOException {
-        // Priority events (e.g., unaligned checkpoint barriers) arriving over the network during
-        // recovery must bypass the recovered store so the UC response is not delayed. When the
-        // flag is set, pull the priority element from the head of receivedBuffers first; the
-        // recovered store is drained again once the priority drain completes.
-        if (hasPendingPriorityEvent) {
-            return pollPendingPriorityEvent();
-        }
-
-        // Check recovered store first (recovery path). EMPTY.tryTake() always returns null so this
-        // is a no-op on the normal (non-recovery) path.
+        // Recovery path: priority events bypass recoveredStore; otherwise drain recoveredStore.
         if (!recoveredStore.isEmpty()) {
-            Buffer next = recoveredStore.tryTake();
-            if (next != null) {
+            Optional<BufferAndAvailability> priority = pollPendingPriorityEvent();
+            if (priority.isPresent()) {
+                return priority;
+            }
+            Buffer recovered = recoveredStore.tryTake();
+            if (recovered != null) {
                 DataType nextDataType = recoveredStore.peekNextDataType();
-                numBytesIn.inc(next.getSize());
+                numBytesIn.inc(recovered.getSize());
                 numBuffersIn.inc();
                 return Optional.of(
-                        new BufferAndAvailability(next, nextDataType, 0, Integer.MIN_VALUE));
+                        new BufferAndAvailability(recovered, nextDataType, 0, Integer.MIN_VALUE));
             }
+            // recoveredStore still has on-disk pending entries that have not been loaded yet.
+            return Optional.empty();
         }
 
+        // Post-recovery: PrioritizedDeque returns priority elements first, so the flag is no
+        // longer needed for routing. Maintain the invariant by clearing the flag if the polled
+        // element was the last priority.
         final SequenceBuffer next;
         final DataType nextDataType;
 
@@ -308,6 +307,9 @@ public class RemoteInputChannel extends InputChannel {
 
             if (next != null) {
                 totalQueueSizeInBytes -= next.buffer.getSize();
+                if (receivedBuffers.getNumPriorityElements() == 0) {
+                    hasPendingPriorityEvent = false;
+                }
             }
             nextDataType =
                     receivedBuffers.peek() != null
@@ -337,37 +339,25 @@ public class RemoteInputChannel extends InputChannel {
     }
 
     /**
-     * Pulls the priority element sitting at the head of {@link #receivedBuffers} while skipping the
-     * recovered store. After draining, clears {@link #hasPendingPriorityEvent} if no more priority
-     * elements remain and corrects {@code nextDataType} back to the recovered store so the
-     * availability signal reflects what the consumer will observe next.
-     *
-     * <p>The flag-set and the actual poll race against {@link #releaseAllResources()} (also under
-     * the {@code receivedBuffers} lock). If close wins, the queue is empty by the time we poll —
-     * surface that as {@link CancelTaskException} the same way the normal path does, instead of
-     * tripping the priority invariant.
+     * Pulls the priority element at the head of {@link #receivedBuffers} (skipping
+     * {@link #recoveredStore}). Returns {@link Optional#empty()} if no priority element is
+     * pending. Reading {@link #hasPendingPriorityEvent} under the lock keeps the flag and the
+     * queue state consistent with each other.
      */
     private Optional<BufferAndAvailability> pollPendingPriorityEvent() throws IOException {
         final SequenceBuffer next;
         DataType nextDataType;
         synchronized (receivedBuffers) {
+            if (!hasPendingPriorityEvent) {
+                return Optional.empty();
+            }
             checkPartitionRequestQueueInitialized();
 
             next = receivedBuffers.poll();
-            if (next == null) {
-                // Channel was released between the priority notification and this poll; align
-                // with the normal getNextBuffer() path so the consumer sees a CancelTaskException
-                // rather than an invariant violation.
-                if (isReleased.get()) {
-                    throw new CancelTaskException(
-                            "Queried for a buffer after channel has been released.");
-                }
-                return Optional.empty();
-            }
             checkState(
-                    next.buffer.getDataType().hasPriority(),
+                    next != null && next.buffer.getDataType().hasPriority(),
                     "Expected priority event, but got %s",
-                    next.buffer.getDataType());
+                    next == null ? "null" : next.buffer.getDataType());
             totalQueueSizeInBytes -= next.buffer.getSize();
 
             if (receivedBuffers.getNumPriorityElements() == 0) {
@@ -431,8 +421,6 @@ public class RemoteInputChannel extends InputChannel {
 
             final ArrayDeque<Buffer> releasedBuffers;
             synchronized (receivedBuffers) {
-                // Clear the priority fast-path flag too, since receivedBuffers is about to be
-                // emptied and any remaining priority element is gone with it.
                 hasPendingPriorityEvent = false;
                 releasedBuffers =
                         receivedBuffers.stream()
@@ -730,6 +718,9 @@ public class RemoteInputChannel extends InputChannel {
                         firstPriorityEvent = addPriorityBuffer(announce(sequenceBuffer));
                     }
                 }
+                if (firstPriorityEvent) {
+                    hasPendingPriorityEvent = true;
+                }
                 totalQueueSizeInBytes += buffer.getSize();
                 final OptionalLong barrierId =
                         channelStatePersister.checkForBarrier(sequenceBuffer.buffer);
@@ -745,9 +736,6 @@ public class RemoteInputChannel extends InputChannel {
             }
 
             if (firstPriorityEvent) {
-                // Mark before notifying so getNextBuffer() fetched by the consumer thread
-                // observes the priority fast path even if the notification races the consumer.
-                hasPendingPriorityEvent = true;
                 notifyPriorityEvent(sequenceNumber);
             }
             if (wasEmpty) {
@@ -886,11 +874,11 @@ public class RemoteInputChannel extends InputChannel {
                     addPriorityBuffer(
                             toPrioritize); // note that only position of the element is changed
             // converting the event itself would require switching the controller sooner
+            if (firstPriorityEvent) {
+                hasPendingPriorityEvent = true;
+            }
         }
         if (firstPriorityEvent) {
-            // Mark before notifying so getNextBuffer() takes the priority fast path even if the
-            // notification races the consumer thread.
-            hasPendingPriorityEvent = true;
             notifyPriorityEventForce(); // forcibly notify about the priority event
             // instead of passing barrier SQN to be checked
             // because this SQN might have be seen by the input gate during the announcement
