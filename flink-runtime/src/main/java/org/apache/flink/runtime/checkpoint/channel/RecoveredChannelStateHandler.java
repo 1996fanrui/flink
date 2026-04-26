@@ -115,6 +115,13 @@ class InputChannelRecoveredStateHandler
      */
     private boolean preFilterBufferInUse;
 
+    /**
+     * Idempotency guard for {@link #close()}. In the explicit-drain flow,
+     * {@link SequentialChannelStateReaderImpl} calls close() once to trigger channel conversion
+     * before drainPendingSpill(), and the try-with-resources block calls it again on exit.
+     */
+    private boolean closed;
+
     InputChannelRecoveredStateHandler(
             InputGate[] inputGates,
             InflightDataRescalingDescriptor channelMapping,
@@ -235,6 +242,10 @@ class InputChannelRecoveredStateHandler
 
     @Override
     public void close() throws IOException {
+        if (closed) {
+            return;
+        }
+        closed = true;
         // note that we need to finish all RecoveredInputChannels, not just those with state
         for (final InputGate inputGate : inputGates) {
             inputGate.finishReadRecoveredState();

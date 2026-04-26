@@ -85,9 +85,6 @@ public class SequentialChannelStateReaderImpl implements SequentialChannelStateR
             }
         }
 
-        // Declaration order determines close order (reverse): stateHandler -> dispatcher ->
-        // filteringHandler. This gives: finishReadRecoveredState (channel conversion) -> blocking
-        // drain -> filter cleanup.
         try (ChannelStateFilteringHandler ignored = filteringHandler;
                 FilteredBufferDispatcher d = dispatcher;
                 InputChannelRecoveredStateHandler stateHandler =
@@ -116,11 +113,16 @@ public class SequentialChannelStateReaderImpl implements SequentialChannelStateR
 
             if (d != null) {
                 d.flush();
+                // Trigger channel conversion explicitly before draining so the drain runs
+                // against converted (Local/Remote)InputChannels and never holds the dispatcher
+                // monitor (avoids the FLINK-39519 reverse-lock deadlock).
+                stateHandler.close();
+                d.drainPendingSpill();
             }
-            // try-with-resources closes in reverse declaration order:
-            // 1. stateHandler.close() -> finishReadRecoveredState() -> channel conversion
-            // 2. d.close() -> blocking drain + cleanup
-            // 3. filteringHandler.close()
+            // try-with-resources auto-close is a pure resource release pass:
+            //   stateHandler.close() -> no-op (idempotent guard)
+            //   d.close()            -> deletes spill files / closes file channel
+            //   filteringHandler.close()
         }
     }
 

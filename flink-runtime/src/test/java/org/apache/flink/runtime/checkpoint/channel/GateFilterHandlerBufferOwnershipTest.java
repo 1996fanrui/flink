@@ -244,6 +244,9 @@ class GateFilterHandlerBufferOwnershipTest {
         public void flush() {}
 
         @Override
+        public void drainPendingSpill() {}
+
+        @Override
         public void close() {}
     }
 }

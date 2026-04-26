@@ -51,12 +51,37 @@ public interface FilteredBufferDispatcher extends AutoCloseable {
     void flush() throws IOException;
 
     /**
-     * Drains all spilled data to buffers, cleans up spill files, and marks all stores as complete.
-     * Idempotent: calling close() multiple times has no additional effect.
+     * Blocking drain of all remaining disk data into target stores. Producer-consumer semantics:
+     * blocks waiting for network buffers; Thread.interrupt() unblocks the wait.
+     *
+     * <p>Call sequence: {@link #flush()} -> stateHandler.finishRecovery() ->
+     * {@link #drainPendingSpill()} -> {@link #close()}. Runs concurrently with Task thread
+     * consumption and checkpoint on converted InputChannels.
+     *
+     * <p>Contract:
+     * - Must be called after {@link #flush()} so all Readers are sealed.
+     * - Does NOT hold the dispatcher monitor while blocking; coordinator callbacks
+     *   (e.g. onChannelCheckpointStopped) remain free to acquire the monitor.
+     * - Skipped on the abort path: callers that are cancelling go straight to close().
      *
      * @throws IOException if an I/O error occurs
      * @throws InterruptedException if the thread is interrupted during the blocking drain
      */
+    void drainPendingSpill() throws IOException, InterruptedException;
+
+    /**
+     * Releases resources held by this dispatcher (spill file channel, internal state fields).
+     * Idempotent: calling close() multiple times is safe.
+     *
+     * <p>Contract:
+     * - Pure resource release: does NOT drain remaining disk data. Call {@link #drainPendingSpill()}
+     *   first on the normal path.
+     * - Short lock: may hold the dispatcher monitor briefly to protect state fields, but never
+     *   blocks on I/O or buffer allocation inside the lock.
+     * - Does not throw business exceptions.
+     *
+     * @throws IOException if closing the spill file channel fails
+     */
     @Override
-    void close() throws IOException, InterruptedException;
+    void close() throws IOException;
 }

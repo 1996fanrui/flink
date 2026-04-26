@@ -51,9 +51,9 @@ import static org.apache.flink.util.IOUtils.closeQuietly;
  * <p>A byte[] memory cache accumulates payload bytes for the active channel. On channel change or
  * cache full, {@link #flushCache()} is invoked: if the spill writer is idle and a buffer is
  * available the cached bytes go directly to a network buffer (P1); otherwise they are written to
- * the spill file (P2). On {@link #close()}, all remaining spill entries are drained via {@link
- * BufferRequester#requestBufferBlocking(InputChannelInfo)}, spill files are deleted, and all stores
- * are marked complete.
+ * the spill file (P2). After {@link #flush()} seals all Readers, {@link #drainPendingSpill()}
+ * drains any remaining spill entries via {@link BufferRequester#requestBufferBlocking(InputChannelInfo)}.
+ * {@link #close()} then releases spill file resources without performing any drain.
  */
 @Internal
 public class FilteredBufferDispatcherImpl
@@ -100,7 +100,7 @@ public class FilteredBufferDispatcherImpl
      * @param spillDirs directories for spill files
      * @param memorySegmentSize the size of a memory segment / network buffer
      * @param bufferRequester per-channel buffer source. The non-blocking variant is used for the
-     *     fast path (P1) and eager replay (P3); the blocking variant is used for the close() drain
+     *     fast path (P1) and eager replay (P3); the blocking variant is used by drainPendingSpill()
      * @throws IOException if spillDirs is empty
      */
     public FilteredBufferDispatcherImpl(
@@ -175,12 +175,24 @@ public class FilteredBufferDispatcherImpl
     }
 
     @Override
-    public synchronized void close() throws IOException, InterruptedException {
+    public void drainPendingSpill() throws IOException, InterruptedException {
+        Preconditions.checkState(flushed, "drainPendingSpill requires flush() to be called first");
+        if (closed) {
+            return; // already cleaned up; nothing to drain
+        }
+        if (spillFile != null) {
+            drainSpillThroughBuffers();
+        }
+    }
+
+    @Override
+    public synchronized void close() throws IOException {
         if (closed) {
             return;
         }
         closed = true;
-
+        // Defensive: caller should have called flush() before close(); honour the historical
+        // fallback to seal lingering data so spillFile.close() can clean up consistently.
         if (!flushed) {
             flushCache();
             if (spillFile != null) {
@@ -188,11 +200,11 @@ public class FilteredBufferDispatcherImpl
             }
             flushed = true;
         }
-
-        // Drain remaining spill entries into buffers via the blocking requester
+        // Resource release only. drainSpillThroughBuffers is the responsibility of
+        // drainPendingSpill().
         if (spillFile != null) {
-            drainSpillThroughBuffers();
             spillFile.close();
+            spillFile = null;
         }
     }
 

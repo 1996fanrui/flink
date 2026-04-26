@@ -185,12 +185,13 @@ class FilteredBufferDispatcherTest {
         writer.write(data, data.length, ch0);
         writer.flush();
 
-        // Before close, store should have no ready buffers (data is on disk as pending)
+        // Before drain, store should have no ready buffers (data is on disk as pending)
         assertThat(store0.tryTake()).isNull();
 
+        writer.drainPendingSpill();
         writer.close();
 
-        // After close drain, data should be in store
+        // After drain, data should be in store
         List<byte[]> buffers = drainStore(store0);
         byte[] actual = concat(buffers);
         assertThat(actual).isEqualTo(data);
@@ -221,6 +222,7 @@ class FilteredBufferDispatcherTest {
         byte[] data2 = createTestData(SEGMENT_SIZE, (byte) 0x22);
         writer.write(data2, data2.length, ch1);
         writer.flush();
+        writer.drainPendingSpill();
         writer.close();
 
         // ch0's data should be replayed from disk via P3
@@ -251,6 +253,7 @@ class FilteredBufferDispatcherTest {
         writer.write(d0, d0.length, ch0);
         writer.write(d1, d1.length, ch1);
         writer.flush();
+        writer.drainPendingSpill();
         writer.close();
 
         // Both stores should have data after drain
@@ -285,6 +288,7 @@ class FilteredBufferDispatcherTest {
         byte[] d3 = createTestData(SEGMENT_SIZE, (byte) 0x40);
         writer.write(d3, d3.length, ch1);
         writer.flush();
+        writer.drainPendingSpill();
         writer.close();
 
         // Verify all 3 entries were drained to store0
@@ -318,6 +322,7 @@ class FilteredBufferDispatcherTest {
         byte[] data = createTestData(SEGMENT_SIZE * 2, (byte) 0x44);
         writer.write(data, data.length, ch0);
         writer.flush();
+        writer.drainPendingSpill();
         writer.close();
 
         // All data should be recovered
@@ -348,6 +353,7 @@ class FilteredBufferDispatcherTest {
         writer.write(part2, part2.length, ch0);
 
         writer.flush();
+        writer.drainPendingSpill();
         writer.close();
 
         // All data should be present
@@ -407,6 +413,7 @@ class FilteredBufferDispatcherTest {
         writer.write(d0, d0.length, ch0);
         writer.write(d1, d1.length, ch1);
         writer.flush();
+        writer.drainPendingSpill();
         writer.close();
 
         // Both channels' data should be correct after drain
@@ -439,9 +446,10 @@ class FilteredBufferDispatcherTest {
         byte[] d3 = createTestData(SEGMENT_SIZE, (byte) 0x03);
         writer.write(d3, d3.length, ch1);
 
-        // Provide remaining buffers for close drain
+        // Provide remaining buffers for drain
         pool.addAll(createBufferPool(5));
         writer.flush();
+        writer.drainPendingSpill();
         writer.close();
 
         // All data should be correct
@@ -451,9 +459,9 @@ class FilteredBufferDispatcherTest {
         assertThat(results0.get(1)).isEqualTo(d2);
     }
 
-    /** close() drains all disk data. */
+    /** drainPendingSpill() drains all disk data; close() is then a no-op resource release. */
     @Test
-    void testCloseDrain() throws Exception {
+    void testDrainPendingSpillUntilEmpty() throws Exception {
         Queue<Buffer> drainPool = createBufferPool(10);
         FilteredBufferDispatcherImpl writer =
                 new FilteredBufferDispatcherImpl(
@@ -470,20 +478,24 @@ class FilteredBufferDispatcherTest {
         }
         writer.flush();
 
-        // Before close, no ready buffers
+        // Before drain, no ready buffers
         assertThat(store0.tryTake()).isNull();
 
-        writer.close();
+        writer.drainPendingSpill();
 
-        // After close, all 5 entries should be drained
+        // After drain, all 5 entries should be delivered to the store
         List<byte[]> results = drainStore(store0);
         assertThat(results).hasSize(5);
         for (int i = 0; i < 5; i++) {
             assertThat(results.get(i)).isEqualTo(createTestData(SEGMENT_SIZE, (byte) i));
         }
+
+        // close() is pure resource release — no additional drain
+        writer.close();
+        assertThat(store0.tryTake()).isNull();
     }
 
-    /** close() twice doesn't throw. */
+    /** close() twice doesn't throw; drainPendingSpill() after close() is a no-op. */
     @Test
     void testCloseIdempotent() throws Exception {
         Queue<Buffer> pool = createBufferPool(5);
@@ -496,6 +508,7 @@ class FilteredBufferDispatcherTest {
                         new TestBufferPool(pool));
 
         writer.flush();
+        writer.drainPendingSpill();
         writer.close();
         // Second close should not throw
         writer.close();
@@ -523,6 +536,7 @@ class FilteredBufferDispatcherTest {
             assertThat(files.count()).isGreaterThan(0);
         }
 
+        writer.drainPendingSpill();
         writer.close();
 
         // After close, spill files should be deleted
@@ -545,6 +559,7 @@ class FilteredBufferDispatcherTest {
                         new TestBufferPool(pool));
 
         writer.flush();
+        writer.drainPendingSpill();
         writer.close();
 
         byte[] data = createTestData(10, (byte) 0xDD);
@@ -622,6 +637,7 @@ class FilteredBufferDispatcherTest {
             writer.write(expectedData[i], expectedData[i].length, ch0);
         }
         writer.flush();
+        writer.drainPendingSpill();
         writer.close();
 
         List<byte[]> results = drainStore(store0);
@@ -675,6 +691,7 @@ class FilteredBufferDispatcherTest {
             writer.write(data, data.length, ch0);
         }
         writer.flush();
+        writer.drainPendingSpill();
         writer.close();
 
         // Each spill entry maps 1:1 to a buffer
@@ -747,6 +764,7 @@ class FilteredBufferDispatcherTest {
         writer.onChannelCheckpointStarted(1L, ch1);
         // No exception; wait-set reached empty — state machine operated correctly.
 
+        writer.drainPendingSpill();
         writer.close();
     }
 
@@ -778,6 +796,7 @@ class FilteredBufferDispatcherTest {
         writer.onChannelCheckpointStarted(2L, ch1);
         // No exception; both rebuilt and removed successfully.
 
+        writer.drainPendingSpill();
         writer.close();
     }
 
@@ -812,6 +831,7 @@ class FilteredBufferDispatcherTest {
         // ch0 callback: removed from wait-set → empty.
         writer.onChannelCheckpointStarted(42L, ch0);
 
+        writer.drainPendingSpill();
         writer.close();
     }
 
@@ -837,6 +857,7 @@ class FilteredBufferDispatcherTest {
         writer.onChannelCheckpointStarted(10L, ch0);
         writer.onChannelCheckpointStarted(10L, ch0); // idempotent — no exception
 
+        writer.drainPendingSpill();
         writer.close();
     }
 
@@ -879,17 +900,18 @@ class FilteredBufferDispatcherTest {
         writer.onChannelCheckpointStarted(20L, ch1);
         assertThat(recordingWriter.inputDataCalls).hasSize(2);
 
+        writer.drainPendingSpill();
         writer.close();
     }
 
     /**
      * wait-set reaching empty triggers phase2 {@code drainSpillEntriesToCheckpoint}: the sealed
      * readers are snapshotted and streamed to the ChannelStateWriter, but the original readers and
-     * store state are left intact. close()'s drain loop then still delivers every entry to the
+     * store state are left intact. drainPendingSpill() then still delivers every entry to the
      * store via network buffers.
      */
     @Test
-    void testWaitSetEmptyTriggersPhase2SnapshotThenCloseDrainDeliversBuffers() throws Exception {
+    void testWaitSetEmptyTriggersPhase2SnapshotThenDrainDeliversBuffers() throws Exception {
         Queue<Buffer> drainPool = createBufferPool(5);
         FilteredBufferDispatcherImpl writer =
                 new FilteredBufferDispatcherImpl(
@@ -907,7 +929,8 @@ class FilteredBufferDispatcherTest {
         // reader and store state are untouched.
         writer.onChannelCheckpointStarted(99L, ch0);
 
-        // close() drain still consumes the original reader and delivers buffers to the store.
+        // drainPendingSpill() consumes the original reader and delivers buffers to the store.
+        writer.drainPendingSpill();
         writer.close();
 
         Buffer delivered = store0.tryTake();
@@ -1013,6 +1036,7 @@ class FilteredBufferDispatcherTest {
         assertThat(call1.dataLength).isEqualTo(SEGMENT_SIZE);
         assertThat(call1.capturedBytes).isEqualTo(d1);
 
+        writer.drainPendingSpill();
         writer.close();
     }
 
@@ -1051,7 +1075,8 @@ class FilteredBufferDispatcherTest {
         assertThat(store0.isEmpty()).isFalse();
         assertThat(store1.isEmpty()).isFalse();
 
-        // close() drain delivers all entries to stores; only then do the counts go to zero
+        // drainPendingSpill() delivers all entries to stores; only then do the counts go to zero
+        writer.drainPendingSpill();
         writer.close();
         // Drain the ready buffers so isEmpty() reflects pendingCount only
         while (store0.tryTake() != null) {}
@@ -1061,11 +1086,11 @@ class FilteredBufferDispatcherTest {
     }
 
     /**
-     * After phase 2 snapshots entries into the checkpoint, close() drain must still deliver every
-     * entry to the stores (phase 2 is a backup, not an ownership transfer).
+     * After phase 2 snapshots entries into the checkpoint, drainPendingSpill() must still deliver
+     * every entry to the stores (phase 2 is a backup, not an ownership transfer).
      */
     @Test
-    void testCloseDrainStillDeliversEntriesAfterPhase2() throws Exception {
+    void testDrainStillDeliversEntriesAfterPhase2() throws Exception {
         Queue<Buffer> drainPool = createBufferPool(1);
         FilteredBufferDispatcherImpl writer =
                 new FilteredBufferDispatcherImpl(
@@ -1081,7 +1106,8 @@ class FilteredBufferDispatcherTest {
 
         writer.onChannelCheckpointStarted(55L, ch0);
 
-        // close() drain consumes the still-pending entry and delivers it to the store
+        // drainPendingSpill() consumes the still-pending entry and delivers it to the store
+        writer.drainPendingSpill();
         writer.close();
 
         Buffer delivered = store0.tryTake();
@@ -1094,12 +1120,12 @@ class FilteredBufferDispatcherTest {
 
     /**
      * Two independent consumers: phase 2 writes every entry into the checkpoint via
-     * ChannelStateWriter, and close() drain additionally delivers every entry to the stores.
+     * ChannelStateWriter, and drainPendingSpill() additionally delivers every entry to the stores.
      * Both streams see the full data — the on-disk bytes are read twice via independent
      * FileChannels.
      */
     @Test
-    void testPhase2AndCloseDrainBothReceiveAllEntries() throws Exception {
+    void testPhase2AndDrainBothReceiveAllEntries() throws Exception {
         Queue<Buffer> drainPool = createBufferPool(2);
         RecordingChannelStateWriter recordingWriter = new RecordingChannelStateWriter();
 
@@ -1123,7 +1149,8 @@ class FilteredBufferDispatcherTest {
         writer.onChannelCheckpointStarted(checkpointId, ch1);
         assertThat(recordingWriter.inputDataCalls).hasSize(2);
 
-        // close() drain: both entries additionally delivered to the stores (task-facing pipeline)
+        // drainPendingSpill(): both entries additionally delivered to the stores (task-facing pipeline)
+        writer.drainPendingSpill();
         writer.close();
 
         Buffer buf0 = store0.tryTake();
@@ -1169,6 +1196,7 @@ class FilteredBufferDispatcherTest {
         // all ch0 entries from the Readers.
         store0.releaseAll();
 
+        writer.drainPendingSpill();
         writer.close();
 
         // store1 still receives its data; store0 must stay empty since ch0 entries were dropped.
@@ -1210,6 +1238,7 @@ class FilteredBufferDispatcherTest {
         assertThat(recordingWriter.inputDataCalls).hasSize(1);
         assertThat(recordingWriter.inputDataCalls.get(0).info).isEqualTo(ch0);
 
+        writer.drainPendingSpill();
         writer.close();
     }
 
@@ -1253,6 +1282,7 @@ class FilteredBufferDispatcherTest {
 
         assertThat(recordingWriter.inputDataCalls).isEmpty();
 
+        writer.drainPendingSpill();
         writer.close();
     }
 
@@ -1285,6 +1315,7 @@ class FilteredBufferDispatcherTest {
 
         assertThat(recordingWriter.inputDataCalls).isEmpty();
 
+        writer.drainPendingSpill();
         writer.close();
     }
 
@@ -1320,6 +1351,7 @@ class FilteredBufferDispatcherTest {
         assertThat(recordingWriter.inputDataCalls.get(0).checkpointId).isEqualTo(71L);
         assertThat(recordingWriter.inputDataCalls.get(1).checkpointId).isEqualTo(71L);
 
+        writer.drainPendingSpill();
         writer.close();
     }
 }
