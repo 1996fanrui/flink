@@ -457,17 +457,16 @@ public class FilteredBufferDispatcherImpl
     }
 
     /**
-     * Returns the position of the next pending entry across all sealed Readers starting at index
-     * {@code fromFileIndex}, or {@link EntryPosition#END} when no entry remains. Used as the
-     * authoritative "next-to-pop" snapshot for the {@code drainHead} field after each commit and
-     * as the initial value at {@link #flush()} time.
+     * Next-to-pop {@link EntryPosition}, scanning readers from list position {@code fromListIndex}.
+     * {@code fromListIndex} is a list cursor, distinct from {@link
+     * FilteredSpillFile.Reader#getFileIndex()} which is the globally monotonic file-id.
      */
-    private EntryPosition computeDrainHeadFrom(int fromFileIndex) {
+    private EntryPosition computeDrainHeadFrom(int fromListIndex) {
         if (spillFile == null) {
             return EntryPosition.END;
         }
         List<FilteredSpillFile.Reader> readers = spillFile.getReaders();
-        for (int i = fromFileIndex; i < readers.size(); i++) {
+        for (int i = fromListIndex; i < readers.size(); i++) {
             FilteredSpillFile.Reader r = readers.get(i);
             FilteredSpillFile.Reader.Entry next = r.peekNextEntry();
             if (next != null) {

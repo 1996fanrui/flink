@@ -62,6 +62,8 @@ public class FilteredSpillFile implements Closeable {
     private FileChannel currentChannel;
     private long currentFileOffset;
     private final List<Reader> readers;
+    /** Monotonic file-id counter; never reused even if a finished Reader is removed from the list. */
+    private int nextFileIndex;
     private boolean finished;
 
     /**
@@ -79,6 +81,7 @@ public class FilteredSpillFile implements Closeable {
         this.currentDirIndex = 0;
         this.currentFileOffset = 0;
         this.readers = new ArrayList<>();
+        this.nextFileIndex = 0;
         this.finished = false;
     }
 
@@ -189,7 +192,7 @@ public class FilteredSpillFile implements Closeable {
                         StandardOpenOption.CREATE_NEW,
                         StandardOpenOption.WRITE);
         currentFileOffset = 0;
-        readers.add(new Reader(currentFilePath, memorySegmentSize, readers.size()));
+        readers.add(new Reader(currentFilePath, memorySegmentSize, nextFileIndex++));
     }
 
     private void rotateFile() throws IOException {
