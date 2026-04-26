@@ -45,7 +45,7 @@ P3 贪心重放：循环直到无 buffer 可用或磁盘为空。
 
 ### 线程模型
 
-- **Recovery 线程**（channel-state-unspilling 线程）：执行过滤循环、调用 OutputWriter.write()、flush()、close()。调用 finishReadRecoveredState()
+- **Recovery 线程**（channel-state-unspilling 线程）：执行过滤循环、依次显式调用 `OutputWriter.write()` → `flush()` → `stateHandler.finishRecovery()` → `OutputWriter.drainPendingSpill()` → `OutputWriter.close()`。调用顺序契约见 `close_drain_separation.md`。
 - **Task 线程**：从 InputChannel 消费。调用 store.tryTake()、store.checkpoint()、store.releaseAll()
 
 RecoveredBufferStore 被两个线程并发访问，需要线程安全保证。Spill 文件的 checkpoint 读取和 drain 读取使用独立的 Reader 实例，通过 FileChannel positional read 支持并发。
@@ -62,7 +62,8 @@ RecoveredBufferStore 被两个线程并发访问，需要线程安全保证。Sp
 
 - `write(byte[] data, int length, InputChannelInfo channelInfo)` — 写入过滤后的字节到目标 channel。内部处理：channel 变更检测（flush 当前 buffer）、P3 贪心重放、writeToBackend（P1 或 P2）
 - `flush()` — 将活跃 buffer 的部分数据 flush 到目标 Store。flush 后不允许再调用 write()
-- `close()` — 阻塞 drain：逐个从 FIFO 队列取 SpillEntry，每个 entry requestBufferBlocking() 获取一个 buffer → 一次磁盘读（entry.length ≤ memorySegmentSize）→ 投递到目标 Store，直到队列为空。SpillEntry 与 buffer 1:1，无需内循环分块。清理 spill 文件。标记所有 store 为 complete。幂等
+- `drainPendingSpill()` — 阻塞 drain：逐个从 FIFO 队列取 SpillEntry，每个 entry `requestBufferBlocking()` 获取一个 buffer → 一次磁盘读（`entry.length ≤ memorySegmentSize`）→ 投递到目标 Store，直到队列为空。drain 结束后调用 `markComplete()` 标记每个 Store 完成。**不持 dispatcher monitor**；可被 `Thread.interrupt()` 打断。生产者-消费者语义：拿不到 buffer 就阻塞（详见 `close_drain_separation.md`）
+- `close()` — 仅资源释放：清理 spill 文件、关闭 file channel、清字段。短锁、不阻塞、幂等、不抛业务异常。abort 路径直接调用 close 跳过 drain，残留 entries 与文件一并丢弃
 
 **构造参数**：
 
@@ -70,7 +71,7 @@ RecoveredBufferStore 被两个线程并发访问，需要线程安全保证。Sp
 - `String[] spillDirs` — 来自 IOManager.getSpillingDirectoriesPaths()（REQ-SPDR）
 - `int memorySegmentSize` — buffer 大小，用于磁盘重放时的分块粒度
 - `Supplier<Buffer> bufferSupplier` — 非阻塞 buffer 请求（P1、P3 路径）
-- `BlockingSupplier<Buffer> blockingBufferSupplier` — 阻塞 buffer 请求（close drain 路径）
+- `BlockingSupplier<Buffer> blockingBufferSupplier` — 阻塞 buffer 请求（`drainPendingSpill` 路径）
 
 **内部状态**：
 
@@ -99,16 +100,16 @@ RecoveredBufferStore 被两个线程并发访问，需要线程安全保证。Sp
 - `isEmpty()` — 无就绪 buffer 且 pending 计数为 0
 - `isComplete()` — 所有数据已消费且 drain 已完成（OutputWriter 调用了 markComplete）
 - `size()` — 就绪 buffer 数量
-- `checkpoint(ChannelStateWriter, checkpointId, channelInfo)` — snapshot 就绪 buffer（REQ-KM7C）。磁盘数据的 checkpoint 由 OutputWriter 统一处理（见下方 Checkpoint 实现）
+- `checkpoint(ChannelStateWriter writer, long checkpointId)` — snapshot 就绪 buffer（REQ-KM7C）。store 在构造时已绑定一个 `InputChannelInfo`，无需额外传入。磁盘数据的 checkpoint 由 OutputWriter 统一处理（见下方 Checkpoint 实现）
 - `releaseAll()` — 回收所有就绪 buffer，清理资源
 
 **内部方法**（供 OutputWriter 调用，Recovery 线程）：
 
 - `addBuffer(Buffer)` — 添加就绪 buffer。如果队列从空变非空，触发通知回调唤醒 InputChannel
-- `markComplete()` — 标记 store 完成。close() drain 结束后调用
+- `markComplete()` — 标记 store 完成。`drainPendingSpill()` 末尾调用
 - `setDataAvailableCallback(Runnable)` — 设置数据可用回调（synchronized，保证 channel conversion 时与 addBuffer 的可见性）。channel conversion 时需要更新回调指向新的 InputChannel
 - `incrementPending()` — OutputWriter spill 数据时调用（P2 路径），递增 pending 计数
-- `decrementPending()` — OutputWriter 重放磁盘数据时调用（P3/drain 路径），递减 pending 计数
+- `decrementPending()` — OutputWriter 重放磁盘数据时调用（P3 eagerDrain 或 `drainPendingSpill` 路径），递减 pending 计数
 
 **为什么 Store 不持有 SpillEntry**：OutputWriter 的 spillEntryQueue 是全局 FIFO（per-task），其中不同 channel 的 entries 是交错的（因为 `extractOffsetsSorted` 按文件 offset 排序，不按 channel 分组）。如果 Store 持有 SpillEntry 对象，会产生两个问题：(1) 双重记账——同一个 SpillEntry 同时在 OutputWriter 队列和 Store 列表中维护，add/remove 需要同步；(2) Store 持有 SpillEntry 意味着 Store 需要 file reader 才能读取数据，但 reader 由 OutputWriter 管理。用 pending 计数替代 SpillEntry 列表，Store 只需知道"是否还有磁盘数据"，不需要知道"磁盘数据在哪里"。
 
@@ -211,7 +212,7 @@ OutputWriter 内部追踪当前累积状态（起始 offset、已累积长度、
 
 - **新增 RecoveredBufferStore 字段**：替代 receivedBuffers (ArrayDeque\<Buffer\>)
 - **新增 requestBuffer()**：非阻塞 buffer 请求，包装 bufferManager.requestBuffer()。供 OutputWriter P1/P3 路径使用（REQ-GGPR）
-- **修改 requestBufferBlocking()**：filtering 模式下移除 Heap Buffer 回退（`MemorySegmentFactory.allocateUnpooledSegment` 调用删除），改为纯阻塞等待 Network Buffer。仅 OutputWriter.close() drain 和 non-filtering 模式使用。non-filtering 模式不变（REQ-GGPR, REQ-NPBY）
+- **修改 requestBufferBlocking()**：filtering 模式下移除 Heap Buffer 回退（`MemorySegmentFactory.allocateUnpooledSegment` 调用删除），改为纯阻塞等待 Network Buffer。仅 `OutputWriter.drainPendingSpill()` 和 non-filtering 模式使用。non-filtering 模式不变（REQ-GGPR, REQ-NPBY）
 - **修改 getNextBuffer()**：从 store.tryTake() 获取
 - **删除 onRecoveredStateBuffer()**：OutputWriter 通过 store.addBuffer() 直接投递
 - **修改 toInputChannel()**：传递 store 引用给新的物理 channel，不再提取 remainingBuffers
@@ -287,12 +288,11 @@ OutputWriter 内部追踪当前累积状态（起始 offset、已累积长度、
   1. 创建 RecoveredBufferStore（per-channel），与 RecoveredInputChannel 关联
   2. 创建 OutputWriter（per-task），引用所有 channel 的 store
   3. 将 OutputWriter 传递给 InputChannelRecoveredStateHandler
-  4. OutputWriter 纳入 try-with-resources 管理生命周期，保证异常时资源清理：
-     - try-with-resources 声明 OutputWriter、FilteringHandler、StateHandler
-     - try block 内：`read()` 两次 → `outputWriter.flush()`
-     - StateHandler.close() 由 try-with-resources 自动调用（finishReadRecoveredState → channel conversion）
-     - OutputWriter.close() 由 try-with-resources 自动调用（阻塞 drain + 清理 spill 文件）
-     - close 顺序由 try-with-resources 反向保证：先 StateHandler，再 OutputWriter
+  4. OutputWriter / StateHandler / FilteringHandler 仍纳入 try-with-resources 管理资源释放，但**业务步骤显式调用**，不再依赖 reverse close 顺序（详见 `close_drain_separation.md`）：
+     - try-with-resources 声明 FilteringHandler、OutputWriter、StateHandler
+     - try block 内显式按序调用：`read()` 两次 → `outputWriter.flush()` → `stateHandler.finishRecovery()` → `outputWriter.drainPendingSpill()`
+     - try-with-resources 退出时反向自动调用三者的 `close()`，三者的 `close()` 都只做资源释放（短锁、非阻塞、幂等）
+     - 异常路径（read / flush / finishRecovery / drainPendingSpill 抛异常）：try-with-resources 仍然保证三者 close 被调用，资源被释放，且不会因为残留 spill 阻塞
 
 ### Checkpoint 写入管线扩展
 
@@ -307,10 +307,11 @@ OutputWriter 内部追踪当前累积状态（起始 offset、已累积长度、
 
 1. **创建**：readInputData() 创建 Store（per-channel）和 OutputWriter（per-task）
 2. **过滤**：readChunk 循环 → getBuffer (Heap) → recover → filterAndRewrite → OutputWriter.write() → P1/P2/P3
-3. **Flush**：过滤完成 → outputWriter.flush()，部分数据进入 Store
-4. **Channel conversion**：finishReadRecoveredState() → bufferFilteringCompleteFuture complete → Task 线程触发 convertRecoveredInputChannels()。Store 引用从 RecoveredInputChannel 转移到 Local/RemoteInputChannel。Store 的通知回调更新为新 InputChannel
-5. **阻塞 drain**：outputWriter.close() 启动 drain 循环，与 Task 线程消费和 checkpoint 并发运行
-6. **完成**：drain 结束 → store.markComplete() → InputChannel 检测 isComplete() 后丢弃 store
+3. **Flush**：过滤完成 → `outputWriter.flush()`，部分数据进入 Store；所有 Reader 进入 sealed 状态
+4. **Channel conversion**：显式调用 `stateHandler.finishRecovery()` → `inputGate.finishReadRecoveredState()` → bufferFilteringCompleteFuture complete → Task 线程触发 `convertRecoveredInputChannels()`。Store 引用从 RecoveredInputChannel 转移到 Local/RemoteInputChannel。Store 的通知回调更新为新 InputChannel
+5. **阻塞 drain**：显式调用 `outputWriter.drainPendingSpill()` 启动 drain 循环，与 Task 线程消费、checkpoint、`onChannelCheckpoint*` 并发运行（**不持 dispatcher monitor**）
+6. **完成**：drain 结束 → `store.markComplete()` → InputChannel 检测 `isComplete()` 后丢弃 store
+7. **资源释放**：try-with-resources 反向调用 `stateHandler.close()`、`outputWriter.close()`、`filteringHandler.close()`，分别只做各自的资源释放
 
 ## Source Buffer 内存隔离（REQ-NHLB, REQ-QY68）
 
@@ -333,7 +334,7 @@ pre-filter source buffer 使用 Heap 内存，与 Network Buffer Pool 完全隔�
 RecoveredInputChannel 提供两种 buffer 请求方法：
 
 - `requestBuffer()` — 非阻塞，pool 用尽时返回 null。OutputWriter P1/P3 路径使用
-- `requestBufferBlocking()` — 阻塞，等待 buffer 可用。非 filtering 模式和 OutputWriter drain 使用。**filtering 模式下移除 Heap Buffer 回退**
+- `requestBufferBlocking()` — 阻塞，等待 buffer 可用。非 filtering 模式和 `OutputWriter.drainPendingSpill()` 使用。**filtering 模式下移除 Heap Buffer 回退**
 
 OutputWriter 通过构造器接收这两个方法的函数式接口引用，解耦于 RecoveredInputChannel。
 

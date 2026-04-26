@@ -3,6 +3,8 @@
 > 本文档仅记录设计文档与实际代码之间的**不一致项**。设计文档说 X，代码做了 Y，则记录。
 > 不评价实现是否合理，不提供改进建议。
 
+> **In-flight design change — close/drain separation**：`close_drain_separation.md` 引入了三组接口拆分（`OutputWriter` 拆出 `drainPendingSpill`；`InputChannelRecoveredStateHandler` / `ResultSubpartitionRecoveredStateHandler` 拆出 `finishRecovery`），目的是把业务收尾与资源释放分开（修复 FLINK-39519 dispatcher monitor 反向锁死锁）。设计文档（`design.md`、`data_flow.md`、`spill_reader_drain_concurrency.md`、`interfaces.md`、`architecture_overview.md`、`acceptance_test.md`）已同步该变更；代码实施由后续 commit 跟进。在代码合入前，C4 / C5 / C7 各节的对齐结论暂以本说明为准——拆分相关条目跟进完毕后再更新本表。
+
 
 ## 实现计划 vs 实际提交
 

@@ -1,5 +1,7 @@
 # FLINK-38544 Stale Migration Code & RecoveredStore Refactor 讨论
 
+> **历史快照**：本文记录讨论时的状态。其后引入的 `close_drain_separation.md` 拆分了 dispatcher 的 `close()`（drain 移到独立的 `drainPendingSpill()`，close 仅做资源释放），并把 `stateHandler.close()` 中的业务步骤抽到 `finishRecovery()`。本文里出现的 `close() drain`、`drainSpillThroughBuffers` 在 close 内部、`synchronized(this)` 串行所有 public 入口等描述属于旧设计。当前设计请以 `design.md` / `close_drain_separation.md` 为准。
+
 本文档汇总三条互相关联的议题：
 
 1. 由 FLINK-39018 引入、但在当前 store 架构下已经失效的逻辑（死代码清理）。

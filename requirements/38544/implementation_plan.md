@@ -85,7 +85,9 @@ OutputWriterImpl(
 
 - `flush()`: send active buffer's partial data to target store. Reject further write() calls.
 
-- `close()`: blocking drain loop → `blockingBufferSupplier.get()` → load from disk → dispatch to store. Cleanup spill files. `store.markComplete()` for all stores. Idempotent.
+- `drainPendingSpill()`: blocking drain loop → `blockingBufferSupplier.get()` → load from disk → dispatch to store. Calls `store.markComplete()` for all stores at end. Does NOT hold the dispatcher monitor (so it never blocks `onChannelCheckpoint*` callbacks). Interruptible — `Thread.interrupt()` aborts the buffer wait.
+
+- `close()`: resource release only — close spill file (delete backing files) and clear references. Short-locked, non-blocking, idempotent. Pending spill entries on the abort path are dropped together with the deleted files. See `close_drain_separation.md` for the full contract.
 
 - `checkpointPendingEntries(writer, checkpointId)`: 等所有 channel 触发 checkpoint 后，一次性顺序遍历 spillEntryQueue，对每个 entry 流式写入 checkpoint（顺序 I/O，一次读取覆盖全部 entries）。
 
@@ -173,7 +175,7 @@ Wire OutputWriter into the filtering flow. The heap-fallback removal on `request
 `SequentialChannelStateReaderImpl.java`:
 - `readInputData()`: create OutputWriter (per-task) + RecoveredBufferStores (per-channel)
 - Pass OutputWriter through stateHandler
-- After both `read()` calls: `outputWriter.flush()` → `stateHandler.close()` (finishReadRecoveredState) → `outputWriter.close()` (blocking drain)
+- After both `read()` calls, in this explicit order: `outputWriter.flush()` → `stateHandler.finishRecovery()` (triggers `finishReadRecoveredState`) → `outputWriter.drainPendingSpill()` (blocking drain, no monitor held). The try-with-resources block then auto-closes `stateHandler` / `outputWriter` / `filteringHandler` for resource release only. See `close_drain_separation.md`.
 
 ---
 
