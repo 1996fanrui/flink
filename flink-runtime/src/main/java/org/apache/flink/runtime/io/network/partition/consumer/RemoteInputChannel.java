@@ -282,7 +282,7 @@ public class RemoteInputChannel extends InputChannel {
         // flag is set, pull the priority element from the head of receivedBuffers first; the
         // recovered store is drained again once the priority drain completes.
         if (hasPendingPriorityEvent) {
-            return Optional.of(pollPendingPriorityEvent());
+            return pollPendingPriorityEvent();
         }
 
         // Check recovered store first (recovery path). EMPTY.tryTake() always returns null so this
@@ -341,18 +341,33 @@ public class RemoteInputChannel extends InputChannel {
      * recovered store. After draining, clears {@link #hasPendingPriorityEvent} if no more priority
      * elements remain and corrects {@code nextDataType} back to the recovered store so the
      * availability signal reflects what the consumer will observe next.
+     *
+     * <p>The flag-set and the actual poll race against {@link #releaseAllResources()} (also under
+     * the {@code receivedBuffers} lock). If close wins, the queue is empty by the time we poll —
+     * surface that as {@link CancelTaskException} the same way the normal path does, instead of
+     * tripping the priority invariant.
      */
-    private BufferAndAvailability pollPendingPriorityEvent() throws IOException {
+    private Optional<BufferAndAvailability> pollPendingPriorityEvent() throws IOException {
         final SequenceBuffer next;
         DataType nextDataType;
         synchronized (receivedBuffers) {
             checkPartitionRequestQueueInitialized();
 
             next = receivedBuffers.poll();
+            if (next == null) {
+                // Channel was released between the priority notification and this poll; align
+                // with the normal getNextBuffer() path so the consumer sees a CancelTaskException
+                // rather than an invariant violation.
+                if (isReleased.get()) {
+                    throw new CancelTaskException(
+                            "Queried for a buffer after channel has been released.");
+                }
+                return Optional.empty();
+            }
             checkState(
-                    next != null && next.buffer.getDataType().hasPriority(),
+                    next.buffer.getDataType().hasPriority(),
                     "Expected priority event, but got %s",
-                    next);
+                    next.buffer.getDataType());
             totalQueueSizeInBytes -= next.buffer.getSize();
 
             if (receivedBuffers.getNumPriorityElements() == 0) {
@@ -379,7 +394,8 @@ public class RemoteInputChannel extends InputChannel {
                 next.sequenceNumber);
         numBytesIn.inc(next.buffer.getSize());
         numBuffersIn.inc();
-        return new BufferAndAvailability(next.buffer, nextDataType, 0, next.sequenceNumber);
+        return Optional.of(
+                new BufferAndAvailability(next.buffer, nextDataType, 0, next.sequenceNumber));
     }
 
     // ------------------------------------------------------------------------
@@ -415,6 +431,9 @@ public class RemoteInputChannel extends InputChannel {
 
             final ArrayDeque<Buffer> releasedBuffers;
             synchronized (receivedBuffers) {
+                // Clear the priority fast-path flag too, since receivedBuffers is about to be
+                // emptied and any remaining priority element is gone with it.
+                hasPendingPriorityEvent = false;
                 releasedBuffers =
                         receivedBuffers.stream()
                                 .map(sb -> sb.buffer)
