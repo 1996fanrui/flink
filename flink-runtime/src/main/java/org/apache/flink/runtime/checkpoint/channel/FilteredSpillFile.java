@@ -189,7 +189,7 @@ public class FilteredSpillFile implements Closeable {
                         StandardOpenOption.CREATE_NEW,
                         StandardOpenOption.WRITE);
         currentFileOffset = 0;
-        readers.add(new Reader(currentFilePath, memorySegmentSize));
+        readers.add(new Reader(currentFilePath, memorySegmentSize, readers.size()));
     }
 
     private void rotateFile() throws IOException {
@@ -251,17 +251,24 @@ public class FilteredSpillFile implements Closeable {
         private final FileChannel channel;
         final Path filePath; // accessed by FilteredSpillFile.close() to delete spill files
         private final int memorySegmentSize;
+        private final int fileIndex;
         private final Deque<Entry> entries = new ArrayDeque<>();
         private volatile boolean sealed = false;
         private final byte[] buf;
 
-        Reader(Path filePath, int memorySegmentSize) throws IOException {
+        Reader(Path filePath, int memorySegmentSize, int fileIndex) throws IOException {
             this.filePath = filePath;
             this.channel = FileChannel.open(filePath, StandardOpenOption.READ);
             this.memorySegmentSize = memorySegmentSize;
+            this.fileIndex = fileIndex;
             // Pre-allocated to memorySegmentSize; every entry is guaranteed to fit because
             // FilteredSpillFile#writeEntry rejects oversized payloads at write time.
             this.buf = new byte[memorySegmentSize];
+        }
+
+        /** Index of this Reader's file in the spill file's {@code readers} list (0-based). */
+        public int getFileIndex() {
+            return fileIndex;
         }
 
         // ---- Write side (called by FilteredSpillFile) ----
@@ -270,6 +277,48 @@ public class FilteredSpillFile implements Closeable {
         void addEntry(InputChannelInfo channelInfo, long offset, int length) {
             checkState(!sealed, "addEntry after seal");
             entries.addLast(new Entry(channelInfo, offset, length));
+        }
+
+        /** Returns the head pending entry without consuming it, or null if empty. */
+        public Entry peekNextEntry() {
+            return entries.peekFirst();
+        }
+
+        /**
+         * Removes the head pending entry without performing any disk I/O. Returns the dropped entry
+         * for callers that still need its metadata, or null if the deque was already empty. Use this
+         * when the caller has already read the entry's bytes via {@link #readBytesAt} or has chosen
+         * to discard it (e.g. phase-2 filter skipping an entry whose channel has already snapshotted
+         * it via Step 1).
+         */
+        public Entry skipNextEntry() {
+            return entries.pollFirst();
+        }
+
+        /**
+         * Reads {@code length} bytes starting at absolute {@code offset} from this file into
+         * {@code dest} starting at {@code destOffset}. Throws {@link IOException} on truncation or
+         * an underlying read failure. Unlike {@link #readNext()} this method does <em>not</em>
+         * mutate the entry deque, so callers can safely perform the disk I/O outside any lock that
+         * also protects the deque.
+         */
+        public void readBytesAt(long offset, int length, byte[] dest, int destOffset)
+                throws IOException {
+            ByteBuffer bb = ByteBuffer.wrap(dest, destOffset, length);
+            long position = offset;
+            while (bb.hasRemaining()) {
+                int n = channel.read(bb, position);
+                if (n < 0) {
+                    throw new IOException(
+                            "Truncated spill file: "
+                                    + length
+                                    + " bytes @"
+                                    + offset
+                                    + " in "
+                                    + filePath);
+                }
+                position += n;
+            }
         }
 
         /** Seals this Reader; no more addEntry calls are allowed after this point. */
@@ -332,7 +381,7 @@ public class FilteredSpillFile implements Closeable {
          */
         public Reader snapshot() throws IOException {
             checkState(sealed, "snapshot requires sealed Reader");
-            Reader snap = new Reader(filePath, memorySegmentSize);
+            Reader snap = new Reader(filePath, memorySegmentSize, fileIndex);
             snap.entries.addAll(this.entries);
             snap.sealed = true;
             return snap;
@@ -370,17 +419,35 @@ public class FilteredSpillFile implements Closeable {
             channel.close();
         }
 
-        // ---- Private entry metadata ----
+        // ---- Entry metadata ----
 
-        private static final class Entry {
-            final InputChannelInfo channelInfo;
-            final long offset;
-            final int length;
+        /**
+         * Immutable metadata for a single spilled entry: the target channel, the byte offset in
+         * the owning file, and the payload length. Exposed publicly so the dispatcher can inspect
+         * the next entry (channel + offset + length) and perform disk I/O outside the deque-mutating
+         * commit section without re-implementing the metadata accessor surface.
+         */
+        public static final class Entry {
+            private final InputChannelInfo channelInfo;
+            private final long offset;
+            private final int length;
 
             Entry(InputChannelInfo channelInfo, long offset, int length) {
                 this.channelInfo = channelInfo;
                 this.offset = offset;
                 this.length = length;
+            }
+
+            public InputChannelInfo getChannelInfo() {
+                return channelInfo;
+            }
+
+            public long getOffset() {
+                return offset;
+            }
+
+            public int getLength() {
+                return length;
             }
         }
     }

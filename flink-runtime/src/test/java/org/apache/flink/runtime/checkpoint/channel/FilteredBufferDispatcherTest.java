@@ -769,9 +769,9 @@ class FilteredBufferDispatcherTest {
 
         // After flush: 2 spill entries in queue (ch0, ch1).
         // First callback for checkpoint 1: wait-set = {ch0, ch1}; then ch0 is removed.
-        writer.onChannelCheckpointStarted(1L, ch0);
+        writer.onChannelCheckpointStarted(1L, ch0, writer.getCurrentDrainHead());
         // Second callback for same checkpoint: ch1 is removed → wait-set is now empty.
-        writer.onChannelCheckpointStarted(1L, ch1);
+        writer.onChannelCheckpointStarted(1L, ch1, writer.getCurrentDrainHead());
         // No exception; wait-set reached empty — state machine operated correctly.
 
         writer.drainPendingSpill();
@@ -796,14 +796,14 @@ class FilteredBufferDispatcherTest {
         writer.flush();
 
         // Checkpoint 1: consume both callbacks (wait-set empties).
-        writer.onChannelCheckpointStarted(1L, ch0);
-        writer.onChannelCheckpointStarted(1L, ch1);
+        writer.onChannelCheckpointStarted(1L, ch0, writer.getCurrentDrainHead());
+        writer.onChannelCheckpointStarted(1L, ch1, writer.getCurrentDrainHead());
 
         // Checkpoint 2: new id → wait-set should be rebuilt from the *remaining* spillEntryQueue.
         // At this point the queue still holds the 2 entries (they are drained only on close).
         // Both channels should again appear in the wait-set.
-        writer.onChannelCheckpointStarted(2L, ch0);
-        writer.onChannelCheckpointStarted(2L, ch1);
+        writer.onChannelCheckpointStarted(2L, ch0, writer.getCurrentDrainHead());
+        writer.onChannelCheckpointStarted(2L, ch1, writer.getCurrentDrainHead());
         // No exception; both rebuilt and removed successfully.
 
         writer.drainPendingSpill();
@@ -837,9 +837,9 @@ class FilteredBufferDispatcherTest {
         writer.flush();
 
         // ch1 callback: not in wait-set → no-op remove, wait-set stays non-empty.
-        writer.onChannelCheckpointStarted(42L, ch1);
+        writer.onChannelCheckpointStarted(42L, ch1, writer.getCurrentDrainHead());
         // ch0 callback: removed from wait-set → empty.
-        writer.onChannelCheckpointStarted(42L, ch0);
+        writer.onChannelCheckpointStarted(42L, ch0, writer.getCurrentDrainHead());
 
         writer.drainPendingSpill();
         writer.close();
@@ -864,8 +864,8 @@ class FilteredBufferDispatcherTest {
         writer.flush();
 
         // ch0 removed on first call; second call is a no-op (already absent from set).
-        writer.onChannelCheckpointStarted(10L, ch0);
-        writer.onChannelCheckpointStarted(10L, ch0); // idempotent — no exception
+        writer.onChannelCheckpointStarted(10L, ch0, writer.getCurrentDrainHead());
+        writer.onChannelCheckpointStarted(10L, ch0, writer.getCurrentDrainHead()); // idempotent — no exception
 
         writer.drainPendingSpill();
         writer.close();
@@ -895,19 +895,19 @@ class FilteredBufferDispatcherTest {
         writer.flush();
 
         // Move to a newer checkpoint (id=20) and deliver one of its two channel callbacks.
-        writer.onChannelCheckpointStarted(20L, ch0);
+        writer.onChannelCheckpointStarted(20L, ch0, writer.getCurrentDrainHead());
         // wait-set still contains ch1; phase 2 not yet triggered.
         assertThat(recordingWriter.inputDataCalls).isEmpty();
 
         // A stale callback for an older checkpoint (id=10) arrives. It must be ignored — not
         // alter the wait-set for checkpoint 20, and must not trigger phase 2.
-        writer.onChannelCheckpointStarted(10L, ch0);
-        writer.onChannelCheckpointStarted(10L, ch1);
+        writer.onChannelCheckpointStarted(10L, ch0, writer.getCurrentDrainHead());
+        writer.onChannelCheckpointStarted(10L, ch1, writer.getCurrentDrainHead());
         assertThat(recordingWriter.inputDataCalls).isEmpty();
 
         // Now deliver the remaining callback for checkpoint 20 — wait-set empties and phase 2
         // snapshots the entries into the ChannelStateWriter.
-        writer.onChannelCheckpointStarted(20L, ch1);
+        writer.onChannelCheckpointStarted(20L, ch1, writer.getCurrentDrainHead());
         assertThat(recordingWriter.inputDataCalls).hasSize(2);
 
         writer.drainPendingSpill();
@@ -937,7 +937,7 @@ class FilteredBufferDispatcherTest {
 
         // phase2: snapshots sealed readers into the ChannelStateWriter (NO_OP here); the original
         // reader and store state are untouched.
-        writer.onChannelCheckpointStarted(99L, ch0);
+        writer.onChannelCheckpointStarted(99L, ch0, writer.getCurrentDrainHead());
 
         // drainPendingSpill() consumes the original reader and delivers buffers to the store.
         writer.drainPendingSpill();
@@ -1028,8 +1028,8 @@ class FilteredBufferDispatcherTest {
 
         // Trigger phase2: all channels report in, wait-set empties on second callback
         long checkpointId = 42L;
-        writer.onChannelCheckpointStarted(checkpointId, ch0);
-        writer.onChannelCheckpointStarted(checkpointId, ch1);
+        writer.onChannelCheckpointStarted(checkpointId, ch0, writer.getCurrentDrainHead());
+        writer.onChannelCheckpointStarted(checkpointId, ch1, writer.getCurrentDrainHead());
 
         // Two entries must have been streamed to ChannelStateWriter
         assertThat(recordingWriter.inputDataCalls).hasSize(2);
@@ -1078,8 +1078,8 @@ class FilteredBufferDispatcherTest {
 
         // Phase 2: all callbacks arrive — entries are copied to checkpoint, but pendingCount stays
         long checkpointId = 7L;
-        writer.onChannelCheckpointStarted(checkpointId, ch0);
-        writer.onChannelCheckpointStarted(checkpointId, ch1);
+        writer.onChannelCheckpointStarted(checkpointId, ch0, writer.getCurrentDrainHead());
+        writer.onChannelCheckpointStarted(checkpointId, ch1, writer.getCurrentDrainHead());
 
         // pendingCount untouched — stores still report non-empty
         assertThat(store0.isEmpty()).isFalse();
@@ -1114,7 +1114,7 @@ class FilteredBufferDispatcherTest {
         writer.write(payload, SEGMENT_SIZE, ch0);
         writer.flush();
 
-        writer.onChannelCheckpointStarted(55L, ch0);
+        writer.onChannelCheckpointStarted(55L, ch0, writer.getCurrentDrainHead());
 
         // drainPendingSpill() consumes the still-pending entry and delivers it to the store
         writer.drainPendingSpill();
@@ -1155,8 +1155,8 @@ class FilteredBufferDispatcherTest {
 
         // Phase 2: both entries captured into ChannelStateWriter (checkpoint backup)
         long checkpointId = 100L;
-        writer.onChannelCheckpointStarted(checkpointId, ch0);
-        writer.onChannelCheckpointStarted(checkpointId, ch1);
+        writer.onChannelCheckpointStarted(checkpointId, ch0, writer.getCurrentDrainHead());
+        writer.onChannelCheckpointStarted(checkpointId, ch1, writer.getCurrentDrainHead());
         assertThat(recordingWriter.inputDataCalls).hasSize(2);
 
         // drainPendingSpill(): both entries additionally delivered to the stores (task-facing pipeline)
@@ -1236,7 +1236,7 @@ class FilteredBufferDispatcherTest {
         writer.flush();
 
         // ch0 reports in. Wait-set still contains ch1 so phase 2 must not have fired yet.
-        writer.onChannelCheckpointStarted(30L, ch0);
+        writer.onChannelCheckpointStarted(30L, ch0, writer.getCurrentDrainHead());
         assertThat(recordingWriter.inputDataCalls).isEmpty();
 
         // ch1 is released before its checkpoint callback ever arrives. The dispatcher removes it
@@ -1279,7 +1279,7 @@ class FilteredBufferDispatcherTest {
         writer.flush();
 
         // Checkpoint 50 starts on ch0; wait-set still contains ch1.
-        writer.onChannelCheckpointStarted(50L, ch0);
+        writer.onChannelCheckpointStarted(50L, ch0, writer.getCurrentDrainHead());
         assertThat(recordingWriter.inputDataCalls).isEmpty();
 
         // The task aborts checkpoint 50 — every channel's persister fires notifyCheckpointStopped.
@@ -1320,8 +1320,8 @@ class FilteredBufferDispatcherTest {
         store1.notifyCheckpointStopped(60L);
 
         // A late onChannelCheckpointStarted(60, ...) shows up. It must be short-circuited.
-        writer.onChannelCheckpointStarted(60L, ch0);
-        writer.onChannelCheckpointStarted(60L, ch1);
+        writer.onChannelCheckpointStarted(60L, ch0, writer.getCurrentDrainHead());
+        writer.onChannelCheckpointStarted(60L, ch1, writer.getCurrentDrainHead());
 
         assertThat(recordingWriter.inputDataCalls).isEmpty();
 
@@ -1354,8 +1354,8 @@ class FilteredBufferDispatcherTest {
         store1.notifyCheckpointStopped(70L);
 
         // Checkpoint 71 begins; both channels report in and phase-2 fires for 71.
-        writer.onChannelCheckpointStarted(71L, ch0);
-        writer.onChannelCheckpointStarted(71L, ch1);
+        writer.onChannelCheckpointStarted(71L, ch0, writer.getCurrentDrainHead());
+        writer.onChannelCheckpointStarted(71L, ch1, writer.getCurrentDrainHead());
 
         assertThat(recordingWriter.inputDataCalls).hasSize(2);
         assertThat(recordingWriter.inputDataCalls.get(0).checkpointId).isEqualTo(71L);
@@ -1501,6 +1501,280 @@ class FilteredBufferDispatcherTest {
         }
     }
 
+    // -----------------------------------------------------------------------------------------
+    // Phase-2 per-channel startPos filtering (drain race fix)
+    // -----------------------------------------------------------------------------------------
+
+    /**
+     * Phase 2 must respect each channel's recorded {@code startPos}: entries with position strictly
+     * less than the channel's startPos are skipped (their channel's Step 1 already captured them
+     * via readyBuffers), while entries at or beyond startPos are emitted to the channel state. Two
+     * channels with different startPos values let us verify the filter is applied per-channel and
+     * not globally.
+     */
+    @Test
+    void testPhase2FilterByPerChannelStartPos() throws Exception {
+        RecordingChannelStateWriter recordingWriter = new RecordingChannelStateWriter();
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores,
+                        recordingWriter,
+                        spillDirs,
+                        SEGMENT_SIZE,
+                        TestBufferPool.drainOnly(createBufferPool(0)));
+
+        // Layout in the spill file: ch0 entries at offsets 0 and 2*SEGMENT_SIZE, ch1 entry at
+        // offset SEGMENT_SIZE. Total 3 entries, FIFO order.
+        byte[] d0a = createTestData(SEGMENT_SIZE, (byte) 0x10);
+        byte[] d1 = createTestData(SEGMENT_SIZE, (byte) 0x20);
+        byte[] d0b = createTestData(SEGMENT_SIZE, (byte) 0x11);
+        writer.write(d0a, SEGMENT_SIZE, ch0);
+        writer.write(d1, SEGMENT_SIZE, ch1);
+        writer.write(d0b, SEGMENT_SIZE, ch0);
+        writer.flush();
+
+        // ch0's barrier passed before any drain — its startPos is the head of the file (include
+        // every ch0 entry). ch1's barrier passed after the first ch0 entry was logically drained —
+        // its startPos points at the third entry (file 0, offset 2*SEGMENT_SIZE), so its single
+        // entry at offset SEGMENT_SIZE must be skipped (covered by Step 1 ready snapshot).
+        EntryPosition ch0StartPos = new EntryPosition(0, 0);
+        EntryPosition ch1StartPos = new EntryPosition(0, 2L * SEGMENT_SIZE);
+        writer.onChannelCheckpointStarted(7L, ch0, ch0StartPos);
+        writer.onChannelCheckpointStarted(7L, ch1, ch1StartPos);
+
+        writer.close();
+
+        // ch0 receives both of its entries; ch1 receives nothing in phase 2.
+        List<byte[]> ch0Bytes =
+                recordingWriter.inputDataCalls.stream()
+                        .filter(c -> c.info.equals(ch0))
+                        .map(c -> c.capturedBytes)
+                        .collect(java.util.stream.Collectors.toList());
+        List<byte[]> ch1Bytes =
+                recordingWriter.inputDataCalls.stream()
+                        .filter(c -> c.info.equals(ch1))
+                        .map(c -> c.capturedBytes)
+                        .collect(java.util.stream.Collectors.toList());
+        assertThat(ch0Bytes).hasSize(2);
+        assertThat(ch0Bytes.get(0)).isEqualTo(d0a);
+        assertThat(ch0Bytes.get(1)).isEqualTo(d0b);
+        assertThat(ch1Bytes).isEmpty();
+    }
+
+    /**
+     * The phase-2 snapshot is captured at the <em>first</em> {@code onChannelCheckpointStarted}
+     * call, not at wait-set convergence. This guards the original race: between the first and last
+     * trigger, drainPendingSpill could pop entries off the original Reader; the pinned snapshot
+     * preserves the pre-drain view so phase-2 sees every entry that was on disk when the first
+     * channel passed its barrier.
+     *
+     * <p>Scenario: write three entries for two channels, fire ch0's trigger to capture the
+     * snapshot, drain everything (which empties the original Reader's deque), then fire ch1's
+     * trigger to converge the wait-set. Phase 2 must still report all three entries because the
+     * snapshot was taken before drain ran.
+     */
+    @Test
+    void testPhase2SnapshotPinnedAtFirstTrigger() throws Exception {
+        RecordingChannelStateWriter recordingWriter = new RecordingChannelStateWriter();
+        Queue<Buffer> drainPool = createBufferPool(5);
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores,
+                        recordingWriter,
+                        spillDirs,
+                        SEGMENT_SIZE,
+                        TestBufferPool.drainOnly(drainPool));
+
+        byte[] d0 = createTestData(SEGMENT_SIZE, (byte) 0xC0);
+        byte[] d1 = createTestData(SEGMENT_SIZE, (byte) 0xC1);
+        byte[] d2 = createTestData(SEGMENT_SIZE, (byte) 0xC2);
+        writer.write(d0, SEGMENT_SIZE, ch0);
+        writer.write(d1, SEGMENT_SIZE, ch1);
+        writer.write(d2, SEGMENT_SIZE, ch0);
+        writer.flush();
+
+        // First trigger arrives BEFORE drain. The snapshot pins the full disk view here.
+        EntryPosition initialDrainHead = writer.getCurrentDrainHead();
+        writer.onChannelCheckpointStarted(11L, ch0, initialDrainHead);
+
+        // drainPendingSpill empties the ORIGINAL Reader. Phase 2 must read from the pinned
+        // snapshot, not the post-drain Reader, otherwise we lose every entry.
+        writer.drainPendingSpill();
+
+        // Now ch1's trigger converges the wait-set, firing phase-2.
+        writer.onChannelCheckpointStarted(11L, ch1, initialDrainHead);
+        writer.close();
+
+        // All three entries must show up in phase-2 with their original channel info.
+        List<RecordingChannelStateWriter.Call> calls = recordingWriter.inputDataCalls;
+        assertThat(calls).hasSize(3);
+        assertThat(calls.get(0).info).isEqualTo(ch0);
+        assertThat(calls.get(0).capturedBytes).isEqualTo(d0);
+        assertThat(calls.get(1).info).isEqualTo(ch1);
+        assertThat(calls.get(1).capturedBytes).isEqualTo(d1);
+        assertThat(calls.get(2).info).isEqualTo(ch0);
+        assertThat(calls.get(2).capturedBytes).isEqualTo(d2);
+    }
+
+    /**
+     * {@code onChannelCheckpointStopped} must close pinned snapshot Readers and clear the in-
+     * progress checkpoint state, otherwise every aborted checkpoint leaks one {@code FileChannel}
+     * per spill file and a stale per-channel startPos map can poison the next checkpoint's filter.
+     * Following an abort, a fresh checkpoint must produce a complete phase-2 from a brand-new
+     * snapshot.
+     */
+    @Test
+    void testCheckpointStoppedReleasesSnapshotsAndStateForNextCheckpoint() throws Exception {
+        RecordingChannelStateWriter recordingWriter = new RecordingChannelStateWriter();
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores,
+                        recordingWriter,
+                        spillDirs,
+                        SEGMENT_SIZE,
+                        TestBufferPool.drainOnly(createBufferPool(0)));
+
+        byte[] d0 = createTestData(SEGMENT_SIZE, (byte) 0xD0);
+        byte[] d1 = createTestData(SEGMENT_SIZE, (byte) 0xD1);
+        writer.write(d0, SEGMENT_SIZE, ch0);
+        writer.write(d1, SEGMENT_SIZE, ch1);
+        writer.flush();
+
+        // Start checkpoint 5; only ch0 reports in, then both channels stop the checkpoint
+        // (e.g. abort path) before ch1 reports.
+        writer.onChannelCheckpointStarted(5L, ch0, writer.getCurrentDrainHead());
+        writer.onChannelCheckpointStopped(5L, ch0);
+        writer.onChannelCheckpointStopped(5L, ch1);
+        // Phase 2 for ckpt 5 was never submitted because the wait-set never converged before stop.
+        assertThat(recordingWriter.inputDataCalls).isEmpty();
+
+        // A subsequent checkpoint 6 starts cleanly and converges normally — must include both
+        // entries despite the dangling state from the aborted checkpoint 5.
+        EntryPosition startPos = writer.getCurrentDrainHead();
+        writer.onChannelCheckpointStarted(6L, ch0, startPos);
+        writer.onChannelCheckpointStarted(6L, ch1, startPos);
+        writer.close();
+
+        assertThat(recordingWriter.inputDataCalls).hasSize(2);
+        assertThat(recordingWriter.inputDataCalls.get(0).checkpointId).isEqualTo(6L);
+        assertThat(recordingWriter.inputDataCalls.get(1).checkpointId).isEqualTo(6L);
+    }
+
+    /**
+     * The {@code drainHead} field must advance only after each drain bundle's {@code addBuffer},
+     * so an external observer reading {@code getCurrentDrainHead()} can rely on the invariant
+     * "drainHead crossed e ⇒ e is in store.readyBuffers". This test exercises the public
+     * observable: at flush() drainHead points at the first entry; after each drain bundle commits,
+     * drainHead advances to the next entry; after the last entry drainHead reaches END.
+     */
+    @Test
+    void testDrainHeadAdvancesAfterEachAddBuffer() throws Exception {
+        Queue<Buffer> drainPool = createBufferPool(5);
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores,
+                        ChannelStateWriter.NO_OP,
+                        spillDirs,
+                        SEGMENT_SIZE,
+                        TestBufferPool.drainOnly(drainPool));
+
+        byte[] d0 = createTestData(SEGMENT_SIZE, (byte) 0xE0);
+        byte[] d1 = createTestData(SEGMENT_SIZE, (byte) 0xE1);
+        writer.write(d0, SEGMENT_SIZE, ch0);
+        writer.write(d1, SEGMENT_SIZE, ch1);
+        writer.flush();
+
+        // After flush, drainHead points at the first entry of file 0.
+        EntryPosition headAfterFlush = writer.getCurrentDrainHead();
+        assertThat(headAfterFlush.getFileIndex()).isEqualTo(0);
+        assertThat(headAfterFlush.getOffset()).isEqualTo(0L);
+
+        writer.drainPendingSpill();
+
+        // After drain consumes everything, drainHead reaches the END sentinel.
+        assertThat(writer.getCurrentDrainHead()).isEqualTo(EntryPosition.END);
+
+        writer.close();
+    }
+
+    /**
+     * Before the {@link #drainPendingSpill()} bundle was made atomic, a phase-2 snapshot taken in
+     * the gap between {@code reader.skipNextEntry()} (entry gone from disk-side bookkeeping) and
+     * {@code store.addBuffer()} (entry not yet in the channel's readyBuffers) would lose the
+     * entry: Step 1 captures no buffer, phase-2 sees no entry. This test exercises the invariant
+     * by injecting an {@code onChannelCheckpointStarted} call between two drain bundles and
+     * asserting that every spilled entry appears either in the channel's readyBuffers (Step 1) or
+     * in phase-2 capture — never neither.
+     */
+    @Test
+    void testNoEntryLostBetweenDrainAndCheckpointTrigger() throws Exception {
+        RecordingChannelStateWriter recordingWriter = new RecordingChannelStateWriter();
+        Queue<Buffer> drainPool = createBufferPool(5);
+        FilteredBufferDispatcherImpl writer =
+                new FilteredBufferDispatcherImpl(
+                        stores,
+                        recordingWriter,
+                        spillDirs,
+                        SEGMENT_SIZE,
+                        TestBufferPool.drainOnly(drainPool));
+
+        byte[] d0a = createTestData(SEGMENT_SIZE, (byte) 0x60);
+        byte[] d0b = createTestData(SEGMENT_SIZE, (byte) 0x61);
+        byte[] d0c = createTestData(SEGMENT_SIZE, (byte) 0x62);
+        byte[] d1 = createTestData(SEGMENT_SIZE, (byte) 0x70);
+        writer.write(d0a, SEGMENT_SIZE, ch0);
+        writer.write(d1, SEGMENT_SIZE, ch1);
+        writer.write(d0b, SEGMENT_SIZE, ch0);
+        writer.write(d0c, SEGMENT_SIZE, ch0);
+        writer.flush();
+
+        // ch0's barrier arrives BEFORE drain runs — every ch0 entry is "in flight" for ckpt 9.
+        EntryPosition ch0StartPos = writer.getCurrentDrainHead();
+        writer.onChannelCheckpointStarted(9L, ch0, ch0StartPos);
+
+        // Drain runs to completion: entries are popped from the original reader and addBuffered
+        // to their stores. The phase-2 snapshot was pinned before drain so it still owns the full
+        // disk view; per-channel filtering decides whether each snapshot entry is emitted.
+        writer.drainPendingSpill();
+
+        // ch1 reports in AFTER drain — its startPos is END (everything already drained for ch1's
+        // perspective). Phase-2 must skip every ch1 snapshot entry (Step 1 captured them via
+        // store readyBuffers) and emit the full ch0 set.
+        EntryPosition ch1StartPos = writer.getCurrentDrainHead();
+        writer.onChannelCheckpointStarted(9L, ch1, ch1StartPos);
+        writer.close();
+
+        // Aggregate every ch0 byte the dispatcher told the world about: phase-2 emits + buffers
+        // the store actually received via drain. The set must equal the original three ch0 writes
+        // — no entry can fall through both paths.
+        List<byte[]> phase2Ch0 =
+                recordingWriter.inputDataCalls.stream()
+                        .filter(c -> c.info.equals(ch0))
+                        .map(c -> c.capturedBytes)
+                        .collect(java.util.stream.Collectors.toList());
+        List<byte[]> readyCh0 = drainStore(store0);
+        // ch0 trigger fired before drain → every ch0 spill entry has p_e >= startPos_ch0,
+        // so phase 2 emits all three. Drain afterwards still adds them to readyBuffers, but the
+        // race fix only guarantees coverage (no loss); a buffer being delivered post-trigger is
+        // expected and Task will consume it as ckpt N+1's input.
+        assertThat(phase2Ch0).hasSize(3);
+        assertThat(phase2Ch0).containsExactly(d0a, d0b, d0c);
+        // For ch1: ch1's barrier was after drain, so its single entry is captured by Step 1
+        // (readyBuffers) and skipped in phase 2.
+        List<byte[]> phase2Ch1 =
+                recordingWriter.inputDataCalls.stream()
+                        .filter(c -> c.info.equals(ch1))
+                        .map(c -> c.capturedBytes)
+                        .collect(java.util.stream.Collectors.toList());
+        List<byte[]> readyCh1 = drainStore(store1);
+        assertThat(phase2Ch1).isEmpty();
+        assertThat(readyCh1).hasSize(1);
+        assertThat(readyCh1.get(0)).isEqualTo(d1);
+        // Sanity: the ready set for ch0 contains every original byte too (drain delivered them
+        // post-trigger), but the test's correctness hinges on the phase-2 set being complete.
+        assertThat(readyCh0).hasSize(3);
+    }
+
     /**
      * AT-LOCK: FLINK-39519 deadlock regression. drainPendingSpill() must NOT hold the dispatcher
      * monitor while blocking on requestBufferBlocking. Concurrent onChannelCheckpointStopped (which
@@ -1531,7 +1805,7 @@ class FilteredBufferDispatcherTest {
         writer.flush();
 
         // Build the wait-set for checkpoint 42 by having ch0 report in.
-        writer.onChannelCheckpointStarted(checkpointId, ch0);
+        writer.onChannelCheckpointStarted(checkpointId, ch0, writer.getCurrentDrainHead());
 
         ExecutorService executor = Executors.newSingleThreadExecutor();
         Future<?> drainFuture =

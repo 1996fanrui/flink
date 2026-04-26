@@ -19,6 +19,7 @@ package org.apache.flink.runtime.io.network.partition.consumer;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
+import org.apache.flink.runtime.checkpoint.channel.EntryPosition;
 import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.runtime.checkpoint.channel.RecoveredBufferStoreCoordinator;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
@@ -118,9 +119,18 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
      */
     @Override
     public void checkpoint(ChannelStateWriter writer, long checkpointId) throws IOException {
-        // Step 1: snapshot ready buffers under lock; capture coordinator reference.
+        // Step 1: snapshot ready buffers AND read the coordinator's current drain head atomically
+        // under the store lock. Both reads must be a single consistent observation: the per-channel
+        // phase-2 filter compares each spill entry's position against the captured drain head, so
+        // any entry the drain bundle adds to readyBuffers after this point must also have advanced
+        // the drain head past its position before this snapshot was taken (drain bundle commits
+        // addBuffer + drainHead update atomically under the same store lock for the entry's
+        // channel; cross-channel visibility is provided by the volatile drain head).
         RecoveredBufferStoreCoordinator c;
+        EntryPosition startPos;
         synchronized (this) {
+            c = coordinator;
+            startPos = c != null ? c.getCurrentDrainHead() : EntryPosition.END;
             if (!readyBuffers.isEmpty()) {
                 List<Buffer> retained = new ArrayList<>(readyBuffers.size());
                 for (Buffer buffer : readyBuffers) {
@@ -132,13 +142,13 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
                         ChannelStateWriter.SEQUENCE_NUMBER_RESTORED,
                         CloseableIterator.fromList(retained, Buffer::recycleBuffer));
             }
-            c = coordinator;
         }
 
         // Step 2: notify the coordinator outside the store lock to avoid deadlock with the
-        // coordinator's own synchronisation.
+        // coordinator's own synchronisation. The captured startPos is forwarded so the coordinator
+        // can record the per-channel cutoff for phase-2 filtering.
         if (c != null) {
-            c.onChannelCheckpointStarted(checkpointId, channelInfo);
+            c.onChannelCheckpointStarted(checkpointId, channelInfo, startPos);
         }
     }
 

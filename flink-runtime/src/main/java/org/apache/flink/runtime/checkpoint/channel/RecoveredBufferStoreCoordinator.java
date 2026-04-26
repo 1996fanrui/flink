@@ -25,18 +25,43 @@ import org.apache.flink.annotation.Internal;
  * lifecycle events. Implementations centralise bookkeeping that spans multiple channels (such as
  * checkpoint wait-sets or shared on-disk spill state) and react to per-channel transitions.
  *
- * <p>All methods are invoked from the Task thread, <em>outside</em> the calling store's lock, so
- * implementations may freely acquire their own synchronisation without deadlock risk.
+ * <p>{@link #onChannelCheckpointStarted}, {@link #onChannelCheckpointStopped} and
+ * {@link #onChannelReleased} are invoked from the Task thread, <em>outside</em> the calling store's
+ * lock, so implementations may freely acquire their own synchronisation without deadlock risk.
+ *
+ * <p>{@link #getCurrentDrainHead()} is invoked <em>inside</em> the calling store's lock so the
+ * store can capture a consistent (readyBuffers, drainHead) pair atomically. Implementations must
+ * therefore avoid blocking and must not acquire any lock that participates in the store-lock cycle
+ * — a plain {@code volatile} read of a field maintained by the drain bundle is the intended
+ * implementation.
  */
 @Internal
 public interface RecoveredBufferStoreCoordinator {
 
     /**
+     * Returns the current drain head — the position of the next entry the dispatcher's drain bundle
+     * will pop from the global FIFO queue. Used by {@code RecoveredBufferStore#checkpoint} to
+     * record a per-channel checkpoint cutoff (startPos) atomically with the channel's ready-buffer
+     * snapshot. Returns {@link EntryPosition#END} when the queue is empty (no more disk entries
+     * pending).
+     *
+     * <p>Reads must be cheap and lock-free; do not block, do not allocate, do not acquire any
+     * lock that the calling store holds (or that the dispatcher holds during drain).
+     */
+    EntryPosition getCurrentDrainHead();
+
+    /**
      * Invoked from inside {@code RecoveredBufferStore#checkpoint} after the store has snapshotted
      * its ready buffers. Implementations use this to maintain a wait-set across channels and, when
      * all channels have reported in, drain pending spill entries into the checkpoint.
+     *
+     * <p>{@code startPos} is the {@code drainHead} value the store captured atomically with its
+     * ready-buffer snapshot, under the store lock. Implementations must record it as the
+     * per-channel cutoff used by phase-2 to decide which spill entries belong to this checkpoint
+     * versus this channel's Step 1 ready snapshot.
      */
-    void onChannelCheckpointStarted(long checkpointId, InputChannelInfo channelInfo);
+    void onChannelCheckpointStarted(
+            long checkpointId, InputChannelInfo channelInfo, EntryPosition startPos);
 
     /**
      * Invoked from inside {@code RecoveredBufferStore#notifyCheckpointStopped} when the owning

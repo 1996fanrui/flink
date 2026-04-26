@@ -18,6 +18,7 @@
 package org.apache.flink.runtime.io.network.partition.consumer;
 
 import org.apache.flink.core.memory.MemorySegmentFactory;
+import org.apache.flink.runtime.checkpoint.channel.EntryPosition;
 import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.runtime.checkpoint.channel.RecordingChannelStateWriter;
 import org.apache.flink.runtime.checkpoint.channel.RecoveredBufferStoreCoordinator;
@@ -461,14 +462,23 @@ class RecoveredBufferStoreTest {
     private static class RecordingCoordinator implements RecoveredBufferStoreCoordinator {
         final List<Long> checkpointIds = new ArrayList<>();
         final List<InputChannelInfo> checkpointChannels = new ArrayList<>();
+        final List<EntryPosition> checkpointStartPositions = new ArrayList<>();
         final List<Long> stoppedCheckpointIds = new ArrayList<>();
         final List<InputChannelInfo> stoppedChannels = new ArrayList<>();
         final List<InputChannelInfo> released = new ArrayList<>();
+        volatile EntryPosition currentDrainHead = EntryPosition.END;
 
         @Override
-        public void onChannelCheckpointStarted(long checkpointId, InputChannelInfo channelInfo) {
+        public EntryPosition getCurrentDrainHead() {
+            return currentDrainHead;
+        }
+
+        @Override
+        public void onChannelCheckpointStarted(
+                long checkpointId, InputChannelInfo channelInfo, EntryPosition startPos) {
             checkpointIds.add(checkpointId);
             checkpointChannels.add(channelInfo);
+            checkpointStartPositions.add(startPos);
         }
 
         @Override
