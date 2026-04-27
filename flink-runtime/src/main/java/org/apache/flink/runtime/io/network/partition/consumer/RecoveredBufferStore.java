@@ -33,7 +33,7 @@ import java.io.IOException;
  *
  * <h3>Locking contract</h3>
  *
- * The store's intrinsic monitor IS the channel-private lock. Callers MUST hold {@code synchronized
+ * <p>The store's intrinsic monitor IS the channel-private lock. Callers MUST hold {@code synchronized
  * (store)} when invoking the consumer-side query methods ({@link #tryTake}, {@link
  * #peekNextDataType}, {@link #isEmpty}) and the setters ({@link #setCoordinator},
  * {@link #setDataAvailableListener}). Implementations enforce this with an internal {@code assert

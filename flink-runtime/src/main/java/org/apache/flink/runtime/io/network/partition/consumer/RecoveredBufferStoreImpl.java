@@ -42,7 +42,7 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  *
  * <h3>Locking contract</h3>
  *
- * The store's intrinsic monitor ({@code this}) IS the channel-private lock. The store does NOT
+ * <p>The store's intrinsic monitor ({@code this}) IS the channel-private lock. The store does NOT
  * synchronise its own methods; callers must hold {@code synchronized (store)} when invoking any
  * method marked {@link GuardedBy @GuardedBy("this")}. Each such method runs an
  * {@code assert Thread.holdsLock(this)} so violations surface immediately under {@code -ea}.
@@ -60,14 +60,14 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  *
  * <h3>Lock order</h3>
  *
- * Gate's {@code inputChannelsWithData} → channel store. The capture-then-fire-outside protocol
+ * <p>Gate's {@code inputChannelsWithData} → channel store. The capture-then-fire-outside protocol
  * exists so the producer side can publish a buffer (taking the store lock) and only afterwards
  * traverse the gate-side notify path (which acquires the gate lock); without it the producer would
  * form an AB-BA deadlock with the consumer (gate → store).
  *
  * <h3>Thread roles</h3>
  *
- * Public consumer methods are driven by the Task thread. Producer-side mutators ({@link
+ * <p>Public consumer methods are driven by the Task thread. Producer-side mutators ({@link
  * #addBuffer}, {@link #addBufferAfterDisk}, {@link #incrementPending}) are called from the
  * Recovery thread via FilteredBufferDispatcher.
  */
