@@ -65,9 +65,9 @@ public class FilteredBufferDispatcherImpl
      * Per-channel stores used by this dispatcher. Typed as the concrete {@link
      * RecoveredBufferStoreImpl} rather than {@link
      * org.apache.flink.runtime.io.network.partition.consumer.RecoveredBufferStore} because the
-     * producer-side methods (addBuffer, incrementPending, decrementPending) are intentionally not
-     * part of the public interface — they are only called by FilteredBufferDispatcher, which is
-     * the sole producer of buffers for the stores.
+     * producer-side methods (addBuffer, incrementPending) are intentionally not part of the public
+     * interface — they are only called by FilteredBufferDispatcher, which is the sole producer of
+     * buffers for the stores.
      */
     private final Map<InputChannelInfo, RecoveredBufferStoreImpl> storesByChannel;
 
@@ -109,10 +109,11 @@ public class FilteredBufferDispatcherImpl
 
     /**
      * Position of the next spill entry the drain bundle will pop from the global FIFO across all
-     * sealed Readers. The drain bundle commits addBuffer + decrementPending and then advances this
-     * field as its last action under {@code synchronized(store_X)}; the volatile semantics provide
-     * cross-channel visibility for {@code Step 1} of any other channel reading the field under its
-     * own store lock. {@code null} until the first spill entry is seen.
+     * sealed Readers. The drain bundle commits addBuffer (which folds in the matching pending
+     * decrement) and then advances this field as its last action under {@code synchronized(store_X)};
+     * the volatile semantics provide cross-channel visibility for {@code Step 1} of any other
+     * channel reading the field under its own store lock. {@code null} until the first spill entry
+     * is seen.
      */
     private volatile EntryPosition drainHead;
 
@@ -242,45 +243,26 @@ public class FilteredBufferDispatcherImpl
                 byte[] data = new byte[entryLength];
                 reader.readBytesAt(entryOffset, entryLength, data, 0);
 
-                // Section 3 (commit under store lock): pop the entry from the Reader's deque,
-                // hand the populated buffer to the store, decrement pending, and advance
-                // drainHead — in that strict order. The pop-then-add ordering keeps Step 1 from
-                // observing an entry that has been popped from disk but has not yet appeared in
-                // readyBuffers (which would falsely classify it as "already drained" and lose the
-                // buffer from both Step 1 and phase 2). drainHead must be the last write because
-                // its volatile publication is the synchronization point cross-channel readers rely
-                // on to conclude "drainHead crossed e ⇒ e is in store_C.readyBuffers".
-                //
-                // Section 4 (fire listener outside store lock): the data-available listener path
-                // goes through SingleInputGate.queueChannel, which acquires the gate's
-                // inputChannelsWithData monitor. A task thread holds that gate monitor while
-                // calling store.peekNextDataType() / store.tryTake() under the store lock. Firing
-                // the listener while we still hold the store lock forms an AB-BA deadlock with
-                // that task thread (gate lock → store lock vs. store lock → gate lock). We
-                // capture the listener inside the store lock via the *AndCaptureListener variants
-                // and invoke onDataAvailable() after the store lock is released.
+                // Section 3 (commit under store lock + fire listener outside): pop the entry from
+                // the Reader, hand the populated buffer to the store (which folds in the matching
+                // pending decrement), and advance drainHead. The pop-then-add ordering keeps
+                // Step 1 from observing an entry popped from disk but not yet in readyBuffers.
+                // drainHead must be the last write so its volatile publication signals "drainHead
+                // crossed e ⇒ e is in store_C.readyBuffers" to cross-channel readers. The
+                // data-available listener is captured inside the store lock and fired afterwards
+                // to avoid an AB-BA deadlock with the task thread (gate lock → store lock).
                 RecoveredBufferStoreImpl store =
                         Preconditions.checkNotNull(
                                 storesByChannel.get(ch), "No store for channel %s", ch);
-                RecoveredBufferStore.DataAvailableListener addListener;
-                RecoveredBufferStore.DataAvailableListener decrementListener;
+                RecoveredBufferStore.DataAvailableListener listener;
                 synchronized (store) {
                     reader.skipNextEntry();
                     writeChunkToBuffer(buffer, data, entryLength);
-                    addListener = store.addBufferAndCaptureListener(buffer);
-                    decrementListener = store.decrementPendingAndCaptureListener();
+                    listener = store.addBufferAndCaptureListener(buffer);
                     drainHead = computeDrainHeadFrom(i);
                 }
-                // At most one of {addListener, decrementListener} can be non-null in this commit
-                // path: addBufferAndCaptureListener leaves readyBuffers non-empty, so the
-                // subsequent decrementPendingAndCaptureListener cannot observe wasEmpty=true and
-                // therefore returns null. We still tolerate both being non-null defensively to
-                // avoid silently dropping a wake-up if that invariant ever changes.
-                if (addListener != null) {
-                    addListener.onDataAvailable();
-                }
-                if (decrementListener != null && decrementListener != addListener) {
-                    decrementListener.onDataAvailable();
+                if (listener != null) {
+                    listener.onDataAvailable();
                 }
             }
         }
@@ -608,7 +590,6 @@ public class FilteredBufferDispatcherImpl
                         Preconditions.checkNotNull(
                                 storesByChannel.get(ch), "No store for channel %s", ch);
                 store.addBuffer(buffer);
-                store.decrementPending();
             }
         }
     }

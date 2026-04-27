@@ -423,8 +423,13 @@ class RecoveredBufferStoreTest {
             assertThat(store.size()).isEqualTo(1);
         }
 
-        store.decrementPending();
+        // Drain the pending entry by handing back a buffer; addBuffer folds in the matching
+        // pending decrement.
+        store.addBuffer(createBuffer(new byte[] {1}));
         synchronized (store) {
+            // pending consumed, buffer became ready — still size 1 but now in readyBuffers
+            assertThat(store.size()).isEqualTo(1);
+            store.tryTake().recycleBuffer();
             assertThat(store.isEmpty()).isTrue();
             assertThat(store.size()).isEqualTo(0);
         }
@@ -446,10 +451,11 @@ class RecoveredBufferStoreTest {
             assertThat(store.size()).isEqualTo(2);
         }
 
-        store.decrementPending();
-        store.decrementPending();
+        // Drain both pending entries by handing back buffers; each addBuffer consumes one pending.
+        store.addBuffer(createBuffer(new byte[] {2}));
+        store.addBuffer(createBuffer(new byte[] {3}));
         synchronized (store) {
-            assertThat(store.size()).isEqualTo(0);
+            assertThat(store.size()).isEqualTo(2);
         }
 
         store.releaseAll();

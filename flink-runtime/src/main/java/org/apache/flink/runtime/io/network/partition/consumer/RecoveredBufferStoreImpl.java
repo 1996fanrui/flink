@@ -53,10 +53,10 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  * store lock around both reads itself.
  *
  * <p>Two-phase methods ({@link #addBufferAndCaptureListener}, {@link
- * #addBufferAfterDiskAndCaptureListener}, {@link #decrementPendingAndCaptureListener},
- * {@link #checkpoint}, {@link #releaseAll}, {@link #notifyCheckpointStopped}) self-manage their own
- * {@code synchronized (this)} block: they commit state inside the block and then fire any captured
- * listener / coordinator callback after the block has been exited (capture-then-fire-outside).
+ * #addBufferAfterDiskAndCaptureListener}, {@link #checkpoint}, {@link #releaseAll},
+ * {@link #notifyCheckpointStopped}) self-manage their own {@code synchronized (this)} block: they
+ * commit state inside the block and then fire any captured listener / coordinator callback after
+ * the block has been exited (capture-then-fire-outside).
  *
  * <h3>Lock order</h3>
  *
@@ -68,8 +68,8 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  * <h3>Thread roles</h3>
  *
  * Public consumer methods are driven by the Task thread. Producer-side mutators ({@link
- * #addBuffer}, {@link #addBufferAfterDisk}, {@link #incrementPending}, {@link #decrementPending})
- * are called from the Recovery thread via FilteredBufferDispatcher.
+ * #addBuffer}, {@link #addBufferAfterDisk}, {@link #incrementPending}) are called from the
+ * Recovery thread via FilteredBufferDispatcher.
  */
 @Internal
 public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
@@ -87,9 +87,10 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
      * have been drained. Used for finish/control events (currently only the per-channel
      * {@link org.apache.flink.runtime.io.network.partition.consumer.EndOfInputChannelStateEvent})
      * whose contract is "everything before me has been delivered". When {@link #pendingCount}
-     * drops to zero in {@link #decrementPending()}, the deferred buffers are atomically promoted
-     * into {@link #readyBuffers} so the consumer sees them strictly after the last drained spill
-     * entry — a logical FIFO that does not require routing events through the spill path.
+     * drops to zero inside {@link #addBufferAndCaptureListener}, the deferred buffers are
+     * atomically promoted into {@link #readyBuffers} so the consumer sees them strictly after the
+     * last drained spill entry — a logical FIFO that does not require routing events through the
+     * spill path.
      *
      * <p>Not counted as part of the public {@link #size()} / {@link #isEmpty()} surface: while
      * something is deferred, {@code pendingCount > 0} already keeps the store non-empty; the
@@ -316,6 +317,12 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
      * listener would run while that outer lock is held and re-introduce the AB-BA deadlock with
      * the task thread (gate lock → store lock).
      *
+     * <p>If {@link #pendingCount} is non-zero when this method is called, the buffer being added
+     * is necessarily a drained spill entry (the only producer path into a non-idle store goes
+     * through the dispatcher's drain), so {@code pendingCount} is decremented here. When that
+     * decrement reaches zero, any {@link #deferredBuffers} are promoted into {@link #readyBuffers}
+     * in the same critical section.
+     *
      * @return the listener to fire, or {@code null} if no notification is needed (queue was already
      *     non-empty, no listener registered, or the store has been released)
      */
@@ -328,13 +335,22 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
             }
             boolean wasEmpty = readyBuffers.isEmpty();
             readyBuffers.add(buffer);
+            if (pendingCount > 0) {
+                pendingCount--;
+                if (pendingCount == 0 && !deferredBuffers.isEmpty()) {
+                    while (!deferredBuffers.isEmpty()) {
+                        readyBuffers.add(deferredBuffers.pollFirst());
+                    }
+                }
+            }
             return wasEmpty ? dataAvailableListener : null;
         }
     }
 
     /**
      * Increments the pending spill entry count. Called when FilteredBufferDispatcher spills data to
-     * disk.
+     * disk; the matching decrement happens implicitly inside {@link #addBufferAndCaptureListener}
+     * when the spill entry is drained back into a buffer.
      */
     @GuardedBy("this")
     public void incrementPending() {
@@ -343,54 +359,10 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
     }
 
     /**
-     * Decrements the pending spill entry count. Called when FilteredBufferDispatcher drains a spill
-     * entry (into a buffer via P3/close path, or directly to checkpoint storage via phase-2 path).
-     *
-     * <p>When the count drops to zero and there are deferred buffers (queued by
-     * {@link #addBufferAfterDisk}), those buffers are promoted into {@link #readyBuffers} in the
-     * same critical section so the consumer cannot observe an "empty with hidden deferred
-     * buffers" state. The data-available listener is invoked outside the monitor, mirroring the
-     * lock-order pattern used by {@link #addBuffer}.
-     *
-     * <p>Callers that wrap this method in their own {@code synchronized(store)} block must instead
-     * use {@link #decrementPendingAndCaptureListener()} and fire the returned listener after
-     * exiting that outer block — see {@link #addBufferAndCaptureListener(Buffer)} for the
-     * lock-order rationale.
-     */
-    public void decrementPending() {
-        DataAvailableListener listenerToFire = decrementPendingAndCaptureListener();
-        if (listenerToFire != null) {
-            listenerToFire.onDataAvailable();
-        }
-    }
-
-    /**
-     * Variant of {@link #decrementPending()} that captures the data-available listener inside the
-     * store monitor and returns it instead of firing it. Same lock-order constraints as {@link
-     * #addBufferAndCaptureListener(Buffer)} apply to the caller.
-     */
-    @Nullable
-    public DataAvailableListener decrementPendingAndCaptureListener() {
-        synchronized (this) {
-            pendingCount--;
-            if (pendingCount == 0 && !deferredBuffers.isEmpty()) {
-                boolean wasEmpty = readyBuffers.isEmpty();
-                while (!deferredBuffers.isEmpty()) {
-                    readyBuffers.add(deferredBuffers.pollFirst());
-                }
-                if (wasEmpty) {
-                    return dataAvailableListener;
-                }
-            }
-            return null;
-        }
-    }
-
-    /**
      * Adds a buffer that must only become consumer-visible after all on-disk entries have been
      * drained. If no spill entries are pending, the buffer is delivered immediately as a normal
      * ready buffer. Otherwise it is held in {@link #deferredBuffers} and atomically promoted by
-     * {@link #decrementPending()} when the count reaches zero.
+     * {@link #addBufferAndCaptureListener(Buffer)} when the count reaches zero.
      *
      * <p>Used by {@code RecoveredInputChannel#finishReadRecoveredState} to publish the per-channel
      * {@code EndOfInputChannelStateEvent} so the event always lands strictly after the last
