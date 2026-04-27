@@ -422,10 +422,17 @@ public class SingleInputGate extends IndexedInputGate {
                     // invoked from FilteredBufferDispatcherImpl#close after drain finishes.
                     InputChannel realInputChannel =
                             ((RecoveredInputChannel) inputChannel).toInputChannel();
-                    int buffersInUseCount = realInputChannel.getBuffersInUseCount();
 
-                    // Phase 2: Atomically update data structures under the lock.
+                    // Phase 2: Atomically update data structures under the lock. Reading
+                    // {@code buffersInUseCount} INSIDE the gate lock closes a TOCTOU window:
+                    // a concurrent producer could otherwise add a buffer to the channel between a
+                    // lock-free read above and the {@code inputChannelsWithData.add} below, which
+                    // — combined with notifyChannelNonEmpty already running under the same gate
+                    // lock — would either skip enqueuing the channel (count read == 0) or enqueue
+                    // it twice (count read > 0 plus the listener-driven add).
                     synchronized (inputChannelsWithData) {
+                        int buffersInUseCount = realInputChannel.getBuffersInUseCount();
+
                         if (inputChannelsWithData.contains(inputChannel)) {
                             inputChannelsWithData.getAndRemove(ch -> ch == inputChannel);
                         }

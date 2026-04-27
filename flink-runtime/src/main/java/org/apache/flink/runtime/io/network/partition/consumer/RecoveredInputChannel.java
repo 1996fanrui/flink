@@ -101,7 +101,9 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
         bufferManager = new BufferManager(inputGate.getMemorySegmentProvider(), this, 0);
         this.networkBuffersPerChannel = networkBuffersPerChannel;
         this.store = new RecoveredBufferStoreImpl(getChannelInfo());
-        store.setDataAvailableListener(this::notifyChannelNonEmpty);
+        synchronized (store) {
+            store.setDataAvailableListener(this::notifyChannelNonEmpty);
+        }
     }
 
     /**
@@ -216,7 +218,14 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     @Nullable
     private BufferAndAvailability getNextRecoveredStateBuffer() throws IOException {
         checkState(!isReleased.get(), "Trying to read from released RecoveredInputChannel");
-        final Buffer next = store.tryTake();
+        // tryTake + peekNextDataType under one lock so the consumer never observes a torn view
+        // (post-take, pre-peek) where another producer slipped a buffer in between.
+        final Buffer next;
+        final Buffer.DataType nextDataType;
+        synchronized (store) {
+            next = store.tryTake();
+            nextDataType = next != null ? store.peekNextDataType() : Buffer.DataType.NONE;
+        }
 
         if (next == null) {
             return null;
@@ -226,7 +235,6 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
             stateConsumedFuture.complete(null);
             return null;
         } else {
-            final Buffer.DataType nextDataType = store.peekNextDataType();
             return new BufferAndAvailability(next, nextDataType, 0, sequenceNumber++);
         }
     }
@@ -254,6 +262,7 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
 
     @Override
     int getBuffersInUseCount() {
+        // size() is lock-free best-effort — see RecoveredBufferStore javadoc.
         return store.size();
     }
 
@@ -339,6 +348,7 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
 
     @VisibleForTesting
     protected int getNumberOfQueuedBuffers() {
+        // size() is lock-free best-effort — see RecoveredBufferStore javadoc.
         return store.size();
     }
 

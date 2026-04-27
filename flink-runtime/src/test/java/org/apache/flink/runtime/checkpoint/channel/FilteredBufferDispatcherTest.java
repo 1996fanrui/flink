@@ -130,8 +130,14 @@ class FilteredBufferDispatcherTest {
     /** Drains all ready buffers from a store and returns their data. */
     private List<byte[]> drainStore(RecoveredBufferStoreImpl store) {
         List<byte[]> result = new ArrayList<>();
-        Buffer buf;
-        while ((buf = store.tryTake()) != null) {
+        while (true) {
+            Buffer buf;
+            synchronized (store) {
+                buf = store.tryTake();
+            }
+            if (buf == null) {
+                break;
+            }
             byte[] data = new byte[buf.getSize()];
             buf.getMemorySegment().get(0, data, 0, buf.getSize());
             buf.recycleBuffer();
@@ -175,7 +181,7 @@ class FilteredBufferDispatcherTest {
         List<byte[]> buffers = drainStore(store0);
         byte[] actual = concat(buffers);
         assertThat(actual).isEqualTo(data);
-        assertThat(store0.isEmpty()).isTrue();
+        assertEmpty(store0);
     }
 
     /** Buffer supplier always returns null. Data goes to disk, replayed on close. */
@@ -196,7 +202,7 @@ class FilteredBufferDispatcherTest {
         writer.flush();
 
         // Before drain, store should have no ready buffers (data is on disk as pending)
-        assertThat(store0.tryTake()).isNull();
+        assertThat(tryTake(store0)).isNull();
 
         writer.drainPendingSpill();
         writer.close();
@@ -205,7 +211,7 @@ class FilteredBufferDispatcherTest {
         List<byte[]> buffers = drainStore(store0);
         byte[] actual = concat(buffers);
         assertThat(actual).isEqualTo(data);
-        assertThat(store0.isEmpty()).isTrue();
+        assertEmpty(store0);
     }
 
     /** First write spills, then buffer becomes available. P3 replays from disk. */
@@ -489,7 +495,7 @@ class FilteredBufferDispatcherTest {
         writer.flush();
 
         // Before drain, no ready buffers
-        assertThat(store0.tryTake()).isNull();
+        assertThat(tryTake(store0)).isNull();
 
         writer.drainPendingSpill();
 
@@ -502,7 +508,7 @@ class FilteredBufferDispatcherTest {
 
         // close() is pure resource release — no additional drain
         writer.close();
-        assertThat(store0.tryTake()).isNull();
+        assertThat(tryTake(store0)).isNull();
     }
 
     /** close() twice doesn't throw; drainPendingSpill() after close() is a no-op. */
@@ -943,7 +949,7 @@ class FilteredBufferDispatcherTest {
         writer.drainPendingSpill();
         writer.close();
 
-        Buffer delivered = store0.tryTake();
+        Buffer delivered = tryTake(store0);
         assertThat(delivered).isNotNull();
         byte[] actual = new byte[delivered.getSize()];
         delivered.getMemorySegment().get(0, actual, 0, delivered.getSize());
@@ -1073,8 +1079,8 @@ class FilteredBufferDispatcherTest {
         writer.flush();
 
         // Before phase 2: both stores non-empty
-        assertThat(store0.isEmpty()).isFalse();
-        assertThat(store1.isEmpty()).isFalse();
+        assertNotEmpty(store0);
+        assertNotEmpty(store1);
 
         // Phase 2: all callbacks arrive — entries are copied to checkpoint, but pendingCount stays
         long checkpointId = 7L;
@@ -1082,17 +1088,17 @@ class FilteredBufferDispatcherTest {
         writer.onChannelCheckpointStarted(checkpointId, ch1, writer.getCurrentDrainHead());
 
         // pendingCount untouched — stores still report non-empty
-        assertThat(store0.isEmpty()).isFalse();
-        assertThat(store1.isEmpty()).isFalse();
+        assertNotEmpty(store0);
+        assertNotEmpty(store1);
 
         // drainPendingSpill() delivers all entries to stores; only then do the counts go to zero
         writer.drainPendingSpill();
         writer.close();
         // Drain the ready buffers so isEmpty() reflects pendingCount only
-        while (store0.tryTake() != null) {}
-        while (store1.tryTake() != null) {}
-        assertThat(store0.isEmpty()).isTrue();
-        assertThat(store1.isEmpty()).isTrue();
+        drainReady(store0);
+        drainReady(store1);
+        assertEmpty(store0);
+        assertEmpty(store1);
     }
 
     /**
@@ -1120,7 +1126,7 @@ class FilteredBufferDispatcherTest {
         writer.drainPendingSpill();
         writer.close();
 
-        Buffer delivered = store0.tryTake();
+        Buffer delivered = tryTake(store0);
         assertThat(delivered).isNotNull();
         byte[] actual = new byte[delivered.getSize()];
         delivered.getMemorySegment().get(0, actual, 0, delivered.getSize());
@@ -1163,8 +1169,8 @@ class FilteredBufferDispatcherTest {
         writer.drainPendingSpill();
         writer.close();
 
-        Buffer buf0 = store0.tryTake();
-        Buffer buf1 = store1.tryTake();
+        Buffer buf0 = tryTake(store0);
+        Buffer buf1 = tryTake(store1);
         assertThat(buf0).isNotNull();
         assertThat(buf1).isNotNull();
         byte[] got0 = new byte[buf0.getSize()];
@@ -1210,7 +1216,7 @@ class FilteredBufferDispatcherTest {
         writer.close();
 
         // store1 still receives its data; store0 must stay empty since ch0 entries were dropped.
-        assertThat(store0.tryTake()).isNull();
+        assertThat(tryTake(store0)).isNull();
         assertThat(concat(drainStore(store1))).isEqualTo(d1);
     }
 
@@ -1440,7 +1446,7 @@ class FilteredBufferDispatcherTest {
         }
 
         // The written bytes were intentionally dropped (abort semantics). Store must remain empty.
-        assertThat(store0.tryTake()).isNull();
+        assertThat(tryTake(store0)).isNull();
     }
 
     /**
@@ -1844,5 +1850,34 @@ class FilteredBufferDispatcherTest {
         drainFuture.get(5, TimeUnit.SECONDS);
 
         writer.close();
+    }
+
+    // -- helpers --
+
+    private static void assertEmpty(RecoveredBufferStoreImpl store) {
+        synchronized (store) {
+            assertThat(store.isEmpty()).isTrue();
+        }
+    }
+
+    private static void assertNotEmpty(RecoveredBufferStoreImpl store) {
+        synchronized (store) {
+            assertThat(store.isEmpty()).isFalse();
+        }
+    }
+
+    private static Buffer tryTake(RecoveredBufferStoreImpl store) {
+        synchronized (store) {
+            return store.tryTake();
+        }
+    }
+
+    private static void drainReady(RecoveredBufferStoreImpl store) {
+        synchronized (store) {
+            Buffer b;
+            while ((b = store.tryTake()) != null) {
+                b.recycleBuffer();
+            }
+        }
     }
 }

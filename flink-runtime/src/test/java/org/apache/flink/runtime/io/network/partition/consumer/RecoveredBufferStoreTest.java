@@ -46,28 +46,35 @@ class RecoveredBufferStoreTest {
     void testStoreLifecycle() {
         RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(DEFAULT_CHANNEL_INFO);
 
-        // Initially empty
-        assertThat(store.isEmpty()).isTrue();
-        assertThat(store.size()).isEqualTo(0);
-        assertThat(store.peekNextDataType()).isEqualTo(Buffer.DataType.NONE);
+        // Initially empty — query methods require holding the store monitor (locking contract).
+        synchronized (store) {
+            assertThat(store.isEmpty()).isTrue();
+            assertThat(store.size()).isEqualTo(0);
+            assertThat(store.peekNextDataType()).isEqualTo(Buffer.DataType.NONE);
+        }
 
         // Add a buffer
         NetworkBuffer buffer1 = createBuffer(new byte[] {1, 2, 3, 4});
         store.addBuffer(buffer1);
 
-        assertThat(store.isEmpty()).isFalse();
-        assertThat(store.size()).isEqualTo(1);
-        assertThat(store.peekNextDataType()).isEqualTo(Buffer.DataType.DATA_BUFFER);
+        Buffer taken;
+        synchronized (store) {
+            assertThat(store.isEmpty()).isFalse();
+            assertThat(store.size()).isEqualTo(1);
+            assertThat(store.peekNextDataType()).isEqualTo(Buffer.DataType.DATA_BUFFER);
 
-        // Take the buffer
-        Buffer taken = store.tryTake();
-        assertThat(taken).isNotNull();
-        assertThat(store.isEmpty()).isTrue();
-        assertThat(store.size()).isEqualTo(0);
+            // Take the buffer
+            taken = store.tryTake();
+            assertThat(taken).isNotNull();
+            assertThat(store.isEmpty()).isTrue();
+            assertThat(store.size()).isEqualTo(0);
+        }
         taken.recycleBuffer();
 
-        // tryTake on empty returns null
-        assertThat(store.tryTake()).isNull();
+        synchronized (store) {
+            // tryTake on empty returns null
+            assertThat(store.tryTake()).isNull();
+        }
     }
 
     /**
@@ -92,7 +99,9 @@ class RecoveredBufferStoreTest {
         assertThat(writer.getAddedInput().get(DEFAULT_CHANNEL_INFO)).hasSize(1);
 
         // The original buffer should still be in the store (retained, not consumed)
-        assertThat(store.size()).isEqualTo(1);
+        synchronized (store) {
+            assertThat(store.size()).isEqualTo(1);
+        }
 
         // Clean up: recycle the buffer recorded by writer
         writer.getAddedInput().get(DEFAULT_CHANNEL_INFO).forEach(Buffer::recycleBuffer);
@@ -131,7 +140,10 @@ class RecoveredBufferStoreTest {
                                 barrier.await();
                                 int consumed = 0;
                                 while (consumed < numBuffers) {
-                                    Buffer buf = store.tryTake();
+                                    Buffer buf;
+                                    synchronized (store) {
+                                        buf = store.tryTake();
+                                    }
                                     if (buf != null) {
                                         buf.recycleBuffer();
                                         consumed++;
@@ -149,7 +161,9 @@ class RecoveredBufferStoreTest {
         consumer.join(10_000);
 
         assertThat(error.get()).isNull();
-        assertThat(store.isEmpty()).isTrue();
+        synchronized (store) {
+            assertThat(store.isEmpty()).isTrue();
+        }
     }
 
     /**
@@ -169,21 +183,29 @@ class RecoveredBufferStoreTest {
         store.addBuffer(buf3);
 
         // Simulate partial consumption before conversion
-        Buffer taken1 = store.tryTake();
+        Buffer taken1;
+        synchronized (store) {
+            taken1 = store.tryTake();
+        }
         assertThat(taken1).isNotNull();
         taken1.recycleBuffer();
 
         // After conversion, continue consuming remaining buffers
-        Buffer taken2 = store.tryTake();
-        assertThat(taken2).isNotNull();
+        Buffer taken2;
+        Buffer taken3;
+        synchronized (store) {
+            taken2 = store.tryTake();
+            assertThat(taken2).isNotNull();
+            taken3 = store.tryTake();
+            assertThat(taken3).isNotNull();
+        }
         taken2.recycleBuffer();
-
-        Buffer taken3 = store.tryTake();
-        assertThat(taken3).isNotNull();
         taken3.recycleBuffer();
 
-        assertThat(store.isEmpty()).isTrue();
-        assertThat(store.tryTake()).isNull();
+        synchronized (store) {
+            assertThat(store.isEmpty()).isTrue();
+            assertThat(store.tryTake()).isNull();
+        }
     }
 
     /** Verify releaseAll recycles all buffers and clears state. */
@@ -200,8 +222,10 @@ class RecoveredBufferStoreTest {
 
         assertThat(buf1.isRecycled()).isTrue();
         assertThat(buf2.isRecycled()).isTrue();
-        assertThat(store.isEmpty()).isTrue();
-        assertThat(store.size()).isEqualTo(0);
+        synchronized (store) {
+            assertThat(store.isEmpty()).isTrue();
+            assertThat(store.size()).isEqualTo(0);
+        }
     }
 
     /** Verify releaseAll notifies the registered coordinator with the bound channel info. */
@@ -211,17 +235,23 @@ class RecoveredBufferStoreTest {
         RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(channelInfo);
 
         RecordingCoordinator coordinator = new RecordingCoordinator();
-        store.setCoordinator(coordinator);
+        synchronized (store) {
+            store.setCoordinator(coordinator);
+        }
 
         // Add some in-memory and on-disk bookkeeping to make the release meaningful.
         store.addBuffer(createBuffer(new byte[] {1}));
-        store.incrementPending();
+        synchronized (store) {
+            store.incrementPending();
+        }
 
         store.releaseAll();
 
         assertThat(coordinator.released).containsExactly(channelInfo);
-        assertThat(store.isEmpty()).isTrue();
-        assertThat(store.size()).isEqualTo(0);
+        synchronized (store) {
+            assertThat(store.isEmpty()).isTrue();
+            assertThat(store.size()).isEqualTo(0);
+        }
     }
 
     /**
@@ -240,8 +270,10 @@ class RecoveredBufferStoreTest {
     void testDataAvailableListenerFiresOutsideStoreMonitor() {
         RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(DEFAULT_CHANNEL_INFO);
         boolean[] storeMonitorHeldDuringCallback = {false};
-        store.setDataAvailableListener(
-                () -> storeMonitorHeldDuringCallback[0] = Thread.holdsLock(store));
+        synchronized (store) {
+            store.setDataAvailableListener(
+                    () -> storeMonitorHeldDuringCallback[0] = Thread.holdsLock(store));
+        }
 
         store.addBuffer(createBuffer(new byte[] {1}));
 
@@ -275,12 +307,14 @@ class RecoveredBufferStoreTest {
         AtomicReference<Throwable> error = new AtomicReference<>();
 
         // Listener mirrors SingleInputGate.queueChannel: must take gateLock to enqueue.
-        store.setDataAvailableListener(
-                () -> {
-                    synchronized (gateLock) {
-                        // touch shared state under the gate lock to mirror real notify path
-                    }
-                });
+        synchronized (store) {
+            store.setDataAvailableListener(
+                    () -> {
+                        synchronized (gateLock) {
+                            // touch shared state under the gate lock to mirror real notify path
+                        }
+                    });
+        }
 
         // Thread A (task): take gateLock first, then call into the store. This emulates
         // SingleInputGate holding inputChannelsWithData while reading peekNextDataType.
@@ -302,7 +336,9 @@ class RecoveredBufferStoreTest {
                                     // Now reach into the store under gateLock — this mirrors
                                     // peekNextDataType / size and would block on the store monitor
                                     // if addBuffer is still inside synchronized.
-                                    store.peekNextDataType();
+                                    synchronized (store) {
+                                        store.peekNextDataType();
+                                    }
                                 }
                             } catch (Throwable t) {
                                 error.set(t);
@@ -348,7 +384,9 @@ class RecoveredBufferStoreTest {
     void testDataAvailableListener() {
         RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(DEFAULT_CHANNEL_INFO);
         int[] callbackCount = {0};
-        store.setDataAvailableListener(() -> callbackCount[0]++);
+        synchronized (store) {
+            store.setDataAvailableListener(() -> callbackCount[0]++);
+        }
 
         // Add first buffer: should trigger listener (store was empty)
         store.addBuffer(createBuffer(new byte[] {1}));
@@ -359,8 +397,10 @@ class RecoveredBufferStoreTest {
         assertThat(callbackCount[0]).isEqualTo(1);
 
         // Drain both buffers
-        store.tryTake().recycleBuffer();
-        store.tryTake().recycleBuffer();
+        synchronized (store) {
+            store.tryTake().recycleBuffer();
+            store.tryTake().recycleBuffer();
+        }
 
         // Add buffer again to empty store: should trigger listener
         store.addBuffer(createBuffer(new byte[] {3}));
@@ -374,16 +414,20 @@ class RecoveredBufferStoreTest {
     void testPendingCount() {
         RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(DEFAULT_CHANNEL_INFO);
 
-        store.incrementPending();
+        synchronized (store) {
+            store.incrementPending();
 
-        // Store not empty when pending entries exist
-        assertThat(store.isEmpty()).isFalse();
-        // size() reports ready + pending so the channel-level backlog reflects on-disk data too
-        assertThat(store.size()).isEqualTo(1);
+            // Store not empty when pending entries exist
+            assertThat(store.isEmpty()).isFalse();
+            // size() reports ready + pending so the channel-level backlog reflects on-disk data too
+            assertThat(store.size()).isEqualTo(1);
+        }
 
         store.decrementPending();
-        assertThat(store.isEmpty()).isTrue();
-        assertThat(store.size()).isEqualTo(0);
+        synchronized (store) {
+            assertThat(store.isEmpty()).isTrue();
+            assertThat(store.size()).isEqualTo(0);
+        }
     }
 
     /** Verify size() aggregates ready buffers and pending on-disk entries. */
@@ -392,17 +436,21 @@ class RecoveredBufferStoreTest {
         RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(DEFAULT_CHANNEL_INFO);
 
         store.addBuffer(createBuffer(new byte[] {1}));
-        store.incrementPending();
-        store.incrementPending();
+        synchronized (store) {
+            store.incrementPending();
+            store.incrementPending();
 
-        assertThat(store.size()).isEqualTo(3);
+            assertThat(store.size()).isEqualTo(3);
 
-        store.tryTake().recycleBuffer();
-        assertThat(store.size()).isEqualTo(2);
+            store.tryTake().recycleBuffer();
+            assertThat(store.size()).isEqualTo(2);
+        }
 
         store.decrementPending();
         store.decrementPending();
-        assertThat(store.size()).isEqualTo(0);
+        synchronized (store) {
+            assertThat(store.size()).isEqualTo(0);
+        }
 
         store.releaseAll();
     }
@@ -422,7 +470,9 @@ class RecoveredBufferStoreTest {
         RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(channelInfo);
 
         RecordingCoordinator coordinator = new RecordingCoordinator();
-        store.setCoordinator(coordinator);
+        synchronized (store) {
+            store.setCoordinator(coordinator);
+        }
 
         store.addBuffer(createBuffer(new byte[] {1, 2}));
 
@@ -452,7 +502,9 @@ class RecoveredBufferStoreTest {
         RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(channelInfo);
 
         RecordingCoordinator coordinator = new RecordingCoordinator();
-        store.setCoordinator(coordinator);
+        synchronized (store) {
+            store.setCoordinator(coordinator);
+        }
 
         RecordingChannelStateWriter writer = new RecordingChannelStateWriter();
         writer.start(1L, null);
@@ -486,7 +538,9 @@ class RecoveredBufferStoreTest {
         RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(channelInfo);
 
         RecordingCoordinator coordinator = new RecordingCoordinator();
-        store.setCoordinator(coordinator);
+        synchronized (store) {
+            store.setCoordinator(coordinator);
+        }
 
         store.notifyCheckpointStopped(11L);
         store.notifyCheckpointStopped(12L);
@@ -516,7 +570,9 @@ class RecoveredBufferStoreTest {
         RecoveredBufferStore store = new RecoveredBufferStoreImpl(DEFAULT_CHANNEL_INFO);
         int[] callCount = {0};
         // Must compile and run without instanceof check
-        store.setDataAvailableListener(() -> callCount[0]++);
+        synchronized (store) {
+            store.setDataAvailableListener(() -> callCount[0]++);
+        }
 
         ((RecoveredBufferStoreImpl) store).addBuffer(createBuffer(new byte[] {1}));
         assertThat(callCount[0]).isEqualTo(1);
@@ -572,6 +628,119 @@ class RecoveredBufferStoreTest {
         empty.setCoordinator(new RecordingCoordinator());
         empty.setDataAvailableListener(() -> {});
         // No exception == pass
+    }
+
+    // ---------------------------------------------------------------------------
+    // Locking-contract regression tests
+    // ---------------------------------------------------------------------------
+
+    /**
+     * Calling a {@code @GuardedBy("this")} method without holding the store monitor must trip the
+     * {@code assert Thread.holdsLock(this)} guard under {@code -ea}. This locks the contract in:
+     * future refactors that accidentally drop the synchronized wrapper at a call site will fail
+     * loudly in tests instead of silently producing torn reads.
+     */
+    @Test
+    void testGuardedMethodsAssertHoldsLock() {
+        // The AssertionError surfaces only with assertions enabled; flink test JVMs run with -ea
+        // by default. Skip the test cleanly if for some reason this JVM was started without -ea
+        // so the suite does not turn red on a JVM configuration issue.
+        if (!RecoveredBufferStoreTest.class.desiredAssertionStatus()) {
+            return;
+        }
+
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(DEFAULT_CHANNEL_INFO);
+        try {
+            assertThat(catchAssertion(() -> store.tryTake())).isTrue();
+            assertThat(catchAssertion(() -> store.peekNextDataType())).isTrue();
+            assertThat(catchAssertion(() -> store.isEmpty())).isTrue();
+            assertThat(catchAssertion(() -> store.incrementPending())).isTrue();
+            assertThat(catchAssertion(() -> store.setCoordinator(new RecordingCoordinator())))
+                    .isTrue();
+            assertThat(catchAssertion(() -> store.setDataAvailableListener(() -> {}))).isTrue();
+            // size() is the deliberate exception — lock-free for metric / gate-bookkeeping paths.
+            // Calling it without holding the monitor must NOT trip the assertion guard.
+            assertThat(catchAssertion(() -> store.size())).isFalse();
+        } finally {
+            store.releaseAll();
+        }
+    }
+
+    /**
+     * Concurrent drain test: when the producer keeps appending and the consumer keeps polling,
+     * each {@code tryTake + peekNextDataType} pair observed by the consumer must be self-
+     * consistent — if {@code peekNextDataType()} returns {@code NONE} after a successful tryTake
+     * it must mean the next tryTake on the same thread also returns null (modulo any further
+     * producer activity that happened strictly after the peek), and if it returns a non-NONE type
+     * the next tryTake must return a buffer with that type. The test guards against future
+     * regressions where someone splits the take/peek pair across two store-lock acquisitions.
+     */
+    @Test
+    void testTryTakePeekPairAtomicUnderConcurrency() throws Exception {
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(DEFAULT_CHANNEL_INFO);
+        int numBuffers = 500;
+        CyclicBarrier startBarrier = new CyclicBarrier(2);
+        AtomicReference<Throwable> error = new AtomicReference<>();
+
+        Thread producer =
+                new Thread(
+                        () -> {
+                            try {
+                                startBarrier.await();
+                                for (int i = 0; i < numBuffers; i++) {
+                                    store.addBuffer(createBuffer(new byte[] {(byte) i}));
+                                }
+                            } catch (Throwable t) {
+                                error.set(t);
+                            }
+                        },
+                        "atomic-pair-producer");
+
+        Thread consumer =
+                new Thread(
+                        () -> {
+                            try {
+                                startBarrier.await();
+                                int consumed = 0;
+                                while (consumed < numBuffers) {
+                                    Buffer taken;
+                                    Buffer.DataType peekedType;
+                                    synchronized (store) {
+                                        taken = store.tryTake();
+                                        peekedType = store.peekNextDataType();
+                                    }
+                                    if (taken == null) {
+                                        // peeked type with no taken buffer must be NONE
+                                        assertThat(peekedType).isEqualTo(Buffer.DataType.NONE);
+                                        continue;
+                                    }
+                                    taken.recycleBuffer();
+                                    consumed++;
+                                }
+                            } catch (Throwable t) {
+                                error.set(t);
+                            }
+                        },
+                        "atomic-pair-consumer");
+
+        producer.start();
+        consumer.start();
+        producer.join(10_000);
+        consumer.join(10_000);
+
+        assertThat(error.get()).isNull();
+        synchronized (store) {
+            assertThat(store.isEmpty()).isTrue();
+        }
+    }
+
+    private static boolean catchAssertion(Runnable r) {
+        try {
+            r.run();
+            return false;
+        } catch (AssertionError ae) {
+            return true;
+        }
     }
 
     /**

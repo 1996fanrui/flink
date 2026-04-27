@@ -226,7 +226,7 @@ class GateFilterHandlerTest {
 
         List<Long> values = new ArrayList<>();
         Buffer buffer;
-        while ((buffer = store.tryTake()) != null) {
+        while ((buffer = takeUnderLock(store)) != null) {
             deserializer.setNextBuffer(buffer);
             while (true) {
                 RecordDeserializer.DeserializationResult result =
@@ -245,5 +245,11 @@ class GateFilterHandlerTest {
             }
         }
         return values;
+    }
+
+    private static Buffer takeUnderLock(RecoveredBufferStoreImpl store) {
+        synchronized (store) {
+            return store.tryTake();
+        }
     }
 }

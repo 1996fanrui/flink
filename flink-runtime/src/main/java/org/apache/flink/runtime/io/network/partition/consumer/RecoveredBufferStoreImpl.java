@@ -36,18 +36,40 @@ import java.util.List;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
- * Thread-safe implementation of {@link RecoveredBufferStore} that manages per-channel recovered
- * buffers. Buffers are either ready (in-memory, available for consumption) or pending (on disk,
- * tracked by count only — the actual spill entries are owned by FilteredBufferDispatcher).
+ * Per-channel store for recovered buffers. Buffers are either ready (in-memory, available for
+ * consumption) or pending (on disk, tracked by count only — the actual spill entries are owned by
+ * FilteredBufferDispatcher).
  *
- * <p>Thread safety: all methods that access {@code readyBuffers} or {@code pendingCount} are
- * synchronized on {@code this}. The {@code released} flag is volatile since it is only written
- * once. Coordinator notifications and the data-available listener are invoked <em>outside</em>
- * any store-level lock to prevent deadlocks with the coordinator's own synchronisation.
+ * <h3>Locking contract</h3>
  *
- * <p>Public interface methods are called from the Task thread. Internal methods (addBuffer,
- * incrementPending, decrementPending) are called from the Recovery thread
- * (FilteredBufferDispatcher).
+ * The store's intrinsic monitor ({@code this}) IS the channel-private lock. The store does NOT
+ * synchronise its own methods; callers must hold {@code synchronized (store)} when invoking any
+ * method marked {@link GuardedBy @GuardedBy("this")}. Each such method runs an
+ * {@code assert Thread.holdsLock(this)} so violations surface immediately under {@code -ea}.
+ *
+ * <p>{@link #size()} is the deliberate exception: it is a lock-free best-effort read that
+ * supports metric / gate-bookkeeping paths which tolerate a slightly stale value. It MUST NOT be
+ * combined with {@link #isEmpty()} to derive a stronger invariant unless the caller holds the
+ * store lock around both reads itself.
+ *
+ * <p>Two-phase methods ({@link #addBufferAndCaptureListener}, {@link
+ * #addBufferAfterDiskAndCaptureListener}, {@link #decrementPendingAndCaptureListener},
+ * {@link #checkpoint}, {@link #releaseAll}, {@link #notifyCheckpointStopped}) self-manage their own
+ * {@code synchronized (this)} block: they commit state inside the block and then fire any captured
+ * listener / coordinator callback after the block has been exited (capture-then-fire-outside).
+ *
+ * <h3>Lock order</h3>
+ *
+ * Gate's {@code inputChannelsWithData} → channel store. The capture-then-fire-outside protocol
+ * exists so the producer side can publish a buffer (taking the store lock) and only afterwards
+ * traverse the gate-side notify path (which acquires the gate lock); without it the producer would
+ * form an AB-BA deadlock with the consumer (gate → store).
+ *
+ * <h3>Thread roles</h3>
+ *
+ * Public consumer methods are driven by the Task thread. Producer-side mutators ({@link
+ * #addBuffer}, {@link #addBufferAfterDisk}, {@link #incrementPending}, {@link #decrementPending})
+ * are called from the Recovery thread via FilteredBufferDispatcher.
  */
 @Internal
 public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
@@ -105,23 +127,37 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
 
     @Nullable
     @Override
-    public synchronized Buffer tryTake() {
+    @GuardedBy("this")
+    public Buffer tryTake() {
+        assert Thread.holdsLock(this);
         return readyBuffers.poll();
     }
 
     @Override
-    public synchronized Buffer.DataType peekNextDataType() {
+    @GuardedBy("this")
+    public Buffer.DataType peekNextDataType() {
+        assert Thread.holdsLock(this);
         Buffer peeked = readyBuffers.peek();
         return peeked != null ? peeked.getDataType() : Buffer.DataType.NONE;
     }
 
     @Override
-    public synchronized boolean isEmpty() {
+    @GuardedBy("this")
+    public boolean isEmpty() {
+        assert Thread.holdsLock(this);
         return readyBuffers.isEmpty() && pendingCount == 0;
     }
 
+    /**
+     * Lock-free best-effort read used by metric and gate-bookkeeping paths that can tolerate a
+     * slightly stale value. Both reads ({@code readyBuffers.size()} and {@code pendingCount}) are
+     * single-word and the worst observable inconsistency is "size off by 1 vs. the actual state",
+     * which is exactly what every other {@code unsynchronizedGetNumberOfQueuedBuffers} caller
+     * already accepts. Callers that need a consistent {@code isEmpty + size} pair must take the
+     * store lock around both calls themselves.
+     */
     @Override
-    public synchronized int size() {
+    public int size() {
         return readyBuffers.size() + pendingCount;
     }
 
@@ -227,7 +263,9 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
     // ---------------------------------------------------------------------------
 
     @Override
-    public synchronized void setCoordinator(RecoveredBufferStoreCoordinator coordinator) {
+    @GuardedBy("this")
+    public void setCoordinator(RecoveredBufferStoreCoordinator coordinator) {
+        assert Thread.holdsLock(this);
         this.coordinator = coordinator;
     }
 
@@ -238,7 +276,9 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
      * waking up the Task thread waiting for data.
      */
     @Override
-    public synchronized void setDataAvailableListener(DataAvailableListener listener) {
+    @GuardedBy("this")
+    public void setDataAvailableListener(DataAvailableListener listener) {
+        assert Thread.holdsLock(this);
         this.dataAvailableListener = listener;
     }
 
@@ -296,7 +336,9 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
      * Increments the pending spill entry count. Called when FilteredBufferDispatcher spills data to
      * disk.
      */
-    public synchronized void incrementPending() {
+    @GuardedBy("this")
+    public void incrementPending() {
+        assert Thread.holdsLock(this);
         pendingCount++;
     }
 

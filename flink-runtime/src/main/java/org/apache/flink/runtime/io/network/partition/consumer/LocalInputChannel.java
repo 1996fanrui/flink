@@ -126,7 +126,9 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
         // would discard the store reference while FilteredBufferDispatcher still has pending
         // writes.
         this.recoveredStore = checkNotNull(recoveredStore);
-        this.recoveredStore.setDataAvailableListener(this::notifyChannelNonEmpty);
+        synchronized (this.recoveredStore) {
+            this.recoveredStore.setDataAvailableListener(this::notifyChannelNonEmpty);
+        }
     }
 
     // ------------------------------------------------------------------------
@@ -138,8 +140,12 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
         // together via the local subpartition view). toBeConsumedBuffers contains only
         // FullyFilledBuffer splits — ordinary data fragments that do not belong in channel state.
         // The recoveredStore is passed so that ready buffers + FilteredBufferDispatcher callback
-        // are handled
-        // by the centralized startPersisting path.
+        // are handled by the centralized startPersisting path. startPersisting itself manages the
+        // brief store-lock acquisition needed for the isEmpty/size assertion; it must not run
+        // under an outer store lock because store.checkpoint() fires the coordinator callback
+        // (dispatcher's synchronized method) and we must not hold the store lock when crossing
+        // into the dispatcher monitor (lock order: dispatcher → store on the recovery thread, so
+        // the reverse here would deadlock).
         channelStatePersister.startPersisting(
                 barrier.getId(), recoveredStore, Collections.emptyList());
     }
@@ -259,8 +265,13 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
     public Optional<BufferAndAvailability> getNextBuffer() throws IOException {
         checkError();
 
-        // Check recovered store first (recovery path)
-        if (!recoveredStore.isEmpty()) {
+        // Check recovered store first (recovery path). isEmpty() must run under the store lock
+        // because the store's contract requires the caller to hold it.
+        final boolean stillRecovering;
+        synchronized (recoveredStore) {
+            stillRecovering = !recoveredStore.isEmpty();
+        }
+        if (stillRecovering) {
             return getNextRecoveredBuffer();
         }
 
@@ -351,10 +362,12 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
             if (!expectedNextDataType.hasPriority()) {
                 // Reset hasPendingPriorityEvent to false if no more priority event
                 hasPendingPriorityEvent = false;
-                if (!recoveredStore.isEmpty()) {
-                    // Correct nextDataType: if recoveredStore has data, the actual next
-                    // element to consume is from recoveredStore, not from subpartitionView
-                    expectedNextDataType = recoveredStore.peekNextDataType();
+                synchronized (recoveredStore) {
+                    if (!recoveredStore.isEmpty()) {
+                        // Correct nextDataType: if recoveredStore has data, the actual next
+                        // element to consume is from recoveredStore, not from subpartitionView
+                        expectedNextDataType = recoveredStore.peekNextDataType();
+                    }
                 }
             }
 
@@ -366,12 +379,17 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
                             next.getSequenceNumber()));
         }
 
-        Buffer next = recoveredStore.tryTake();
-        if (next == null) {
-            return Optional.empty();
+        // tryTake + peekNextDataType together must be atomic so the consumer never observes a
+        // torn (post-take, pre-peek) view.
+        final Buffer next;
+        Buffer.DataType nextDataType;
+        synchronized (recoveredStore) {
+            next = recoveredStore.tryTake();
+            if (next == null) {
+                return Optional.empty();
+            }
+            nextDataType = recoveredStore.peekNextDataType();
         }
-
-        Buffer.DataType nextDataType = recoveredStore.peekNextDataType();
         int sequenceNumber = Integer.MIN_VALUE; // recovered buffers use MIN_VALUE sequence range
 
         // If this is the last recovered buffer and nextDataType is NONE, dynamically check if
@@ -535,6 +553,7 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
     @Override
     int getBuffersInUseCount() {
         ResultSubpartitionView view = this.subpartitionView;
+        // size() is lock-free best-effort — see RecoveredBufferStore javadoc.
         return recoveredStore.size()
                 + toBeConsumedBuffers.size()
                 + (view == null ? 0 : view.getNumberOfQueuedBuffers());

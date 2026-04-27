@@ -123,16 +123,31 @@ public final class ChannelStatePersister {
         // draining) together with RemoteInputChannel#getNextBuffer draining the store first.
         // Violations here indicate one of those assumptions broke and must fail-fast rather than
         // silently produce corrupt channel state.
+        //
+        // The store-lock acquisition here is brief and intentionally released before
+        // {@code store.checkpoint(...)} below: store.checkpoint() fires the dispatcher coordinator
+        // callback (a synchronized method on the dispatcher) and the dispatcher acquires the store
+        // lock from the recovery thread; holding the store lock across that callback would form an
+        // AB-BA deadlock. Capturing the snapshot here is sufficient — once recovery has finished
+        // (this method only fires once a physical channel has been wired up) the only writer to
+        // the store is the post-flush spill drainer, which appends; once {@code storeEmpty} has
+        // been observed true, drainPendingSpill has nothing to add.
+        final boolean storeEmpty;
+        final int storeSize;
+        synchronized (store) {
+            storeEmpty = store.isEmpty();
+            storeSize = store.size();
+        }
         checkState(
-                store.isEmpty() || knownBuffers.isEmpty(),
+                storeEmpty || knownBuffers.isEmpty(),
                 "Invariant violated: store has data (size=%s) AND knownBuffers non-empty (size=%s) at barrier %s. "
                         + "Requires UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM=true so upstream does not "
                         + "replay output state into receivedBuffers while the recovered store is still draining.",
-                store.size(),
+                storeSize,
                 knownBuffers.size(),
                 barrierId);
 
-        if (!store.isEmpty()) {
+        if (!storeEmpty) {
             try {
                 store.checkpoint(channelStateWriter, barrierId);
             } catch (IOException e) {

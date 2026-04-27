@@ -29,12 +29,28 @@ import java.io.IOException;
 
 /**
  * Per-channel store for recovered buffers during unaligned checkpoint recovery. Buffers can be
- * either in-memory (ready for consumption) or on disk (pending spill entries). This interface
- * provides thread-safe access for consumption by the Task thread and population by the Recovery
- * thread.
+ * either in-memory (ready for consumption) or on disk (pending spill entries).
+ *
+ * <h3>Locking contract</h3>
+ *
+ * The store's intrinsic monitor IS the channel-private lock. Callers MUST hold {@code synchronized
+ * (store)} when invoking the consumer-side query methods ({@link #tryTake}, {@link
+ * #peekNextDataType}, {@link #isEmpty}) and the setters ({@link #setCoordinator},
+ * {@link #setDataAvailableListener}). Implementations enforce this with an internal {@code assert
+ * Thread.holdsLock(this)} that fires under {@code -ea}.
+ *
+ * <p>{@link #size()} is exempt and lock-free: it is intended for metric / gate-bookkeeping paths
+ * that already tolerate a slightly stale read. Callers that need a consistent {@code isEmpty +
+ * size} pair must wrap both calls in a single {@code synchronized (store)} block themselves.
+ *
+ * <p>The lifecycle methods {@link #checkpoint}, {@link #releaseAll} and {@link
+ * #notifyCheckpointStopped} self-manage their store-level locking and fire any coordinator
+ * callback <em>outside</em> the lock to avoid deadlock with the coordinator's own synchronisation.
  *
  * <p>Use {@link #EMPTY} as a sentinel when no recovered data is present (non-filtering mode, or
- * after recovery has fully drained), rather than holding {@code null} references.
+ * after recovery has fully drained), rather than holding {@code null} references. The sentinel's
+ * methods are no-ops; callers still wrap them in {@code synchronized (store)} to keep the same
+ * call shape regardless of which implementation backs the channel.
  */
 @Internal
 public interface RecoveredBufferStore {

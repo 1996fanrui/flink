@@ -155,7 +155,9 @@ public class FilteredBufferDispatcherImpl
         // maintain its wait-set and drop still-pending on-disk spill entries the moment a channel
         // is released, instead of holding the disk resources until dispatcher close().
         for (RecoveredBufferStoreImpl store : storesByChannel.values()) {
-            store.setCoordinator(this);
+            synchronized (store) {
+                store.setCoordinator(this);
+            }
         }
     }
 
@@ -570,7 +572,9 @@ public class FilteredBufferDispatcherImpl
                         storesByChannel.get(channelInfo),
                         "No store for channel %s",
                         channelInfo);
-        store.incrementPending();
+        synchronized (store) {
+            store.incrementPending();
+        }
     }
 
     /**
