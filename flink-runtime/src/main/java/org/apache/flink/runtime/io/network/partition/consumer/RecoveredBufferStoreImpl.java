@@ -255,22 +255,40 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
      * monitor. A task thread holding that monitor while peeking the store would otherwise form an
      * AB-BA deadlock with this method. Lock-order matches the two-phase pattern used by
      * {@link #checkpoint}, {@link #releaseAll} and {@link #notifyCheckpointStopped}.
+     *
+     * <p>Callers that wrap this method in their own {@code synchronized(store)} block must instead
+     * use {@link #addBufferAndCaptureListener(Buffer)} and fire the returned listener after exiting
+     * that outer block — otherwise the listener still runs while the outer lock is held and the
+     * AB-BA risk reappears.
      */
     public void addBuffer(Buffer buffer) {
-        DataAvailableListener listenerToFire = null;
+        DataAvailableListener listenerToFire = addBufferAndCaptureListener(buffer);
+        if (listenerToFire != null) {
+            listenerToFire.onDataAvailable();
+        }
+    }
+
+    /**
+     * Variant of {@link #addBuffer(Buffer)} that captures the data-available listener inside the
+     * store monitor and returns it instead of firing it. Callers must invoke {@code
+     * onDataAvailable()} on the returned listener (if non-null) <em>after</em> releasing any outer
+     * lock that orders before the gate's {@code inputChannelsWithData} monitor — otherwise the
+     * listener would run while that outer lock is held and re-introduce the AB-BA deadlock with
+     * the task thread (gate lock → store lock).
+     *
+     * @return the listener to fire, or {@code null} if no notification is needed (queue was already
+     *     non-empty, no listener registered, or the store has been released)
+     */
+    @Nullable
+    public DataAvailableListener addBufferAndCaptureListener(Buffer buffer) {
         synchronized (this) {
             if (released) {
                 buffer.recycleBuffer();
-                return;
+                return null;
             }
             boolean wasEmpty = readyBuffers.isEmpty();
             readyBuffers.add(buffer);
-            if (wasEmpty) {
-                listenerToFire = dataAvailableListener;
-            }
-        }
-        if (listenerToFire != null) {
-            listenerToFire.onDataAvailable();
+            return wasEmpty ? dataAvailableListener : null;
         }
     }
 
@@ -291,9 +309,26 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
      * same critical section so the consumer cannot observe an "empty with hidden deferred
      * buffers" state. The data-available listener is invoked outside the monitor, mirroring the
      * lock-order pattern used by {@link #addBuffer}.
+     *
+     * <p>Callers that wrap this method in their own {@code synchronized(store)} block must instead
+     * use {@link #decrementPendingAndCaptureListener()} and fire the returned listener after
+     * exiting that outer block — see {@link #addBufferAndCaptureListener(Buffer)} for the
+     * lock-order rationale.
      */
     public void decrementPending() {
-        DataAvailableListener listenerToFire = null;
+        DataAvailableListener listenerToFire = decrementPendingAndCaptureListener();
+        if (listenerToFire != null) {
+            listenerToFire.onDataAvailable();
+        }
+    }
+
+    /**
+     * Variant of {@link #decrementPending()} that captures the data-available listener inside the
+     * store monitor and returns it instead of firing it. Same lock-order constraints as {@link
+     * #addBufferAndCaptureListener(Buffer)} apply to the caller.
+     */
+    @Nullable
+    public DataAvailableListener decrementPendingAndCaptureListener() {
         synchronized (this) {
             pendingCount--;
             if (pendingCount == 0 && !deferredBuffers.isEmpty()) {
@@ -302,12 +337,10 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
                     readyBuffers.add(deferredBuffers.pollFirst());
                 }
                 if (wasEmpty) {
-                    listenerToFire = dataAvailableListener;
+                    return dataAvailableListener;
                 }
             }
-        }
-        if (listenerToFire != null) {
-            listenerToFire.onDataAvailable();
+            return null;
         }
     }
 
@@ -324,26 +357,38 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
      *
      * <p>The listener is invoked <em>outside</em> the store monitor for the same lock-order
      * reasons documented on {@link #addBuffer}.
+     *
+     * <p>Callers that wrap this method in their own {@code synchronized(store)} block must instead
+     * use {@link #addBufferAfterDiskAndCaptureListener(Buffer)} and fire the returned listener
+     * after exiting that outer block.
      */
     public void addBufferAfterDisk(Buffer buffer) {
-        DataAvailableListener listenerToFire = null;
+        DataAvailableListener listenerToFire = addBufferAfterDiskAndCaptureListener(buffer);
+        if (listenerToFire != null) {
+            listenerToFire.onDataAvailable();
+        }
+    }
+
+    /**
+     * Variant of {@link #addBufferAfterDisk(Buffer)} that captures the data-available listener
+     * inside the store monitor and returns it instead of firing it. Same lock-order constraints as
+     * {@link #addBufferAndCaptureListener(Buffer)} apply to the caller.
+     */
+    @Nullable
+    public DataAvailableListener addBufferAfterDiskAndCaptureListener(Buffer buffer) {
         synchronized (this) {
             if (released) {
                 buffer.recycleBuffer();
-                return;
+                return null;
             }
             if (pendingCount == 0) {
                 boolean wasEmpty = readyBuffers.isEmpty();
                 readyBuffers.add(buffer);
-                if (wasEmpty) {
-                    listenerToFire = dataAvailableListener;
-                }
+                return wasEmpty ? dataAvailableListener : null;
             } else {
                 deferredBuffers.add(buffer);
+                return null;
             }
-        }
-        if (listenerToFire != null) {
-            listenerToFire.onDataAvailable();
         }
     }
 }

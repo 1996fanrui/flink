@@ -19,6 +19,7 @@ package org.apache.flink.runtime.checkpoint.channel;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
+import org.apache.flink.runtime.io.network.partition.consumer.RecoveredBufferStore;
 import org.apache.flink.runtime.io.network.partition.consumer.RecoveredBufferStoreImpl;
 import org.apache.flink.util.CloseableIterator;
 import org.apache.flink.util.Preconditions;
@@ -247,15 +248,37 @@ public class FilteredBufferDispatcherImpl
                 // buffer from both Step 1 and phase 2). drainHead must be the last write because
                 // its volatile publication is the synchronization point cross-channel readers rely
                 // on to conclude "drainHead crossed e ⇒ e is in store_C.readyBuffers".
+                //
+                // Section 4 (fire listener outside store lock): the data-available listener path
+                // goes through SingleInputGate.queueChannel, which acquires the gate's
+                // inputChannelsWithData monitor. A task thread holds that gate monitor while
+                // calling store.peekNextDataType() / store.tryTake() under the store lock. Firing
+                // the listener while we still hold the store lock forms an AB-BA deadlock with
+                // that task thread (gate lock → store lock vs. store lock → gate lock). We
+                // capture the listener inside the store lock via the *AndCaptureListener variants
+                // and invoke onDataAvailable() after the store lock is released.
                 RecoveredBufferStoreImpl store =
                         Preconditions.checkNotNull(
                                 storesByChannel.get(ch), "No store for channel %s", ch);
+                RecoveredBufferStore.DataAvailableListener addListener;
+                RecoveredBufferStore.DataAvailableListener decrementListener;
                 synchronized (store) {
                     reader.skipNextEntry();
                     writeChunkToBuffer(buffer, data, entryLength);
-                    store.addBuffer(buffer);
-                    store.decrementPending();
+                    addListener = store.addBufferAndCaptureListener(buffer);
+                    decrementListener = store.decrementPendingAndCaptureListener();
                     drainHead = computeDrainHeadFrom(i);
+                }
+                // At most one of {addListener, decrementListener} can be non-null in this commit
+                // path: addBufferAndCaptureListener leaves readyBuffers non-empty, so the
+                // subsequent decrementPendingAndCaptureListener cannot observe wasEmpty=true and
+                // therefore returns null. We still tolerate both being non-null defensively to
+                // avoid silently dropping a wake-up if that invariant ever changes.
+                if (addListener != null) {
+                    addListener.onDataAvailable();
+                }
+                if (decrementListener != null && decrementListener != addListener) {
+                    decrementListener.onDataAvailable();
                 }
             }
         }

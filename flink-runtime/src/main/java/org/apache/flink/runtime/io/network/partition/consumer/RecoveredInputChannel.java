@@ -189,12 +189,25 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
         //   because bufferFilteringCompleteFuture is not yet done.
         // - future first (no lock): toInputChannel() passes the store before the event is added,
         //   losing the EndOfInputChannelStateEvent.
-        // RecoveredBufferStoreImpl.addBufferAfterDisk uses the same intrinsic monitor, so
-        // synchronizing on the store here makes the pair atomic.
+        // RecoveredBufferStoreImpl uses the same intrinsic monitor, so synchronizing on the store
+        // here makes the pair atomic.
+        //
+        // The data-available listener must be fired *outside* this synchronized(store) block: the
+        // listener path goes through SingleInputGate.queueChannel which acquires the gate's
+        // inputChannelsWithData monitor, while a task thread holding that monitor calls
+        // store.peekNextDataType() / store.tryTake() under the store lock. Firing the listener
+        // while we still hold the store lock forms an AB-BA deadlock with that task thread (gate
+        // lock → store lock vs. store lock → gate lock). Capture the listener inside the store
+        // lock via addBufferAfterDiskAndCaptureListener and fire it after the lock is released.
+        RecoveredBufferStore.DataAvailableListener listenerToFire;
         synchronized (store) {
-            store.addBufferAfterDisk(
-                    EventSerializer.toBuffer(EndOfInputChannelStateEvent.INSTANCE, false));
+            listenerToFire =
+                    store.addBufferAfterDiskAndCaptureListener(
+                            EventSerializer.toBuffer(EndOfInputChannelStateEvent.INSTANCE, false));
             bufferFilteringCompleteFuture.complete(null);
+        }
+        if (listenerToFire != null) {
+            listenerToFire.onDataAvailable();
         }
         bufferManager.releaseFloatingBuffers();
         LOG.debug("{}/{} finished recovering input.", inputGate.getOwningTaskName(), channelInfo);
