@@ -173,18 +173,27 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     }
 
     public void finishReadRecoveredState() throws IOException {
-        // Adding the event and completing the future must be atomic under the store lock.
-        // Without this, either ordering has a race:
-        // - event first: task thread consumes EndOfInputChannelStateEvent, which completes
-        //   stateConsumedFuture. When checkpointing during recovery is disabled,
-        //   stateConsumedFuture triggers requestPartitions -> toInputChannel(), which
-        //   fails because bufferFilteringCompleteFuture is not yet done.
-        // - future first: toInputChannel() passes the store before the event is added,
+        // Use addBufferAfterDisk so the event becomes consumer-visible only after every disk-
+        // resident spill entry for this channel has been drained. If the dispatcher never spilled
+        // (pendingCount == 0) the store delivers the event immediately as a normal ready buffer;
+        // otherwise it is held in deferredBuffers and atomically promoted into readyBuffers when
+        // the last drainPendingSpill pop hits zero. This preserves the EndOfInputChannelStateEvent
+        // contract ("everything before me has been delivered") without routing the event through
+        // the dispatcher's spill path.
+        //
+        // Adding the event and completing the future must be atomic under the store lock,
+        // otherwise:
+        // - event first (no lock): task thread consumes EndOfInputChannelStateEvent, which
+        //   completes stateConsumedFuture. When checkpointing during recovery is disabled,
+        //   stateConsumedFuture triggers requestPartitions -> toInputChannel(), which fails
+        //   because bufferFilteringCompleteFuture is not yet done.
+        // - future first (no lock): toInputChannel() passes the store before the event is added,
         //   losing the EndOfInputChannelStateEvent.
-        // RecoveredBufferStoreImpl.addBuffer is synchronized, so we synchronize on the store
-        // to guarantee atomicity of adding the event and completing the future.
+        // RecoveredBufferStoreImpl.addBufferAfterDisk uses the same intrinsic monitor, so
+        // synchronizing on the store here makes the pair atomic.
         synchronized (store) {
-            store.addBuffer(EventSerializer.toBuffer(EndOfInputChannelStateEvent.INSTANCE, false));
+            store.addBufferAfterDisk(
+                    EventSerializer.toBuffer(EndOfInputChannelStateEvent.INSTANCE, false));
             bufferFilteringCompleteFuture.complete(null);
         }
         bufferManager.releaseFloatingBuffers();

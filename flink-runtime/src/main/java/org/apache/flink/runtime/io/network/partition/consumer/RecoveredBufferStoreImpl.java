@@ -60,6 +60,24 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
     @GuardedBy("this")
     private int pendingCount = 0;
 
+    /**
+     * Buffers that must only become consumer-visible <em>after</em> all on-disk pending entries
+     * have been drained. Used for finish/control events (currently only the per-channel
+     * {@link org.apache.flink.runtime.io.network.partition.consumer.EndOfInputChannelStateEvent})
+     * whose contract is "everything before me has been delivered". When {@link #pendingCount}
+     * drops to zero in {@link #decrementPending()}, the deferred buffers are atomically promoted
+     * into {@link #readyBuffers} so the consumer sees them strictly after the last drained spill
+     * entry — a logical FIFO that does not require routing events through the spill path.
+     *
+     * <p>Not counted as part of the public {@link #size()} / {@link #isEmpty()} surface: while
+     * something is deferred, {@code pendingCount > 0} already keeps the store non-empty; the
+     * promotion to {@code readyBuffers} happens in the same critical section that drops
+     * {@code pendingCount} to zero, so the store is never observed as "empty with deferred
+     * buffers still hidden".
+     */
+    @GuardedBy("this")
+    private final ArrayDeque<Buffer> deferredBuffers = new ArrayDeque<>();
+
     private volatile boolean released = false;
 
     @GuardedBy("this")
@@ -132,15 +150,28 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
             c = coordinator;
             startPos = c != null ? c.getCurrentDrainHead() : EntryPosition.END;
             if (!readyBuffers.isEmpty()) {
+                // Mirror RemoteInputChannel#getInflightBuffersUnsafe: only data buffers belong
+                // in the persisted in-flight channel state. Non-data entries in readyBuffers
+                // (notably the EndOfInputChannelStateEvent that finishReadRecoveredState pushes
+                // and that the task may not yet have consumed when CDR transitions to RUNNING
+                // before stateConsumedFuture completes) are control signals — passing them to
+                // ChannelStateWriteRequest#checkBufferIsBuffer kills the writer worker thread
+                // (IllegalArgumentException), which then surfaces on every subsequent enqueue
+                // as "not running". Events stay in readyBuffers and are recycled later by the
+                // task's normal tryTake path.
                 List<Buffer> retained = new ArrayList<>(readyBuffers.size());
                 for (Buffer buffer : readyBuffers) {
-                    retained.add(buffer.retainBuffer());
+                    if (buffer.isBuffer()) {
+                        retained.add(buffer.retainBuffer());
+                    }
                 }
-                writer.addInputData(
-                        checkpointId,
-                        channelInfo,
-                        ChannelStateWriter.SEQUENCE_NUMBER_RESTORED,
-                        CloseableIterator.fromList(retained, Buffer::recycleBuffer));
+                if (!retained.isEmpty()) {
+                    writer.addInputData(
+                            checkpointId,
+                            channelInfo,
+                            ChannelStateWriter.SEQUENCE_NUMBER_RESTORED,
+                            CloseableIterator.fromList(retained, Buffer::recycleBuffer));
+                }
             }
         }
 
@@ -154,8 +185,8 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
 
     @Override
     public void releaseAll() {
-        // Step 1: flip the released flag and recycle ready buffers under lock; capture the
-        // coordinator reference for invocation outside the lock.
+        // Step 1: flip the released flag and recycle ready / deferred buffers under lock; capture
+        // the coordinator reference for invocation outside the lock.
         RecoveredBufferStoreCoordinator c;
         synchronized (this) {
             released = true;
@@ -163,6 +194,10 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
                 buffer.recycleBuffer();
             }
             readyBuffers.clear();
+            for (Buffer buffer : deferredBuffers) {
+                buffer.recycleBuffer();
+            }
+            deferredBuffers.clear();
             pendingCount = 0;
             c = coordinator;
         }
@@ -250,8 +285,65 @@ public class RecoveredBufferStoreImpl implements RecoveredBufferStore {
     /**
      * Decrements the pending spill entry count. Called when FilteredBufferDispatcher drains a spill
      * entry (into a buffer via P3/close path, or directly to checkpoint storage via phase-2 path).
+     *
+     * <p>When the count drops to zero and there are deferred buffers (queued by
+     * {@link #addBufferAfterDisk}), those buffers are promoted into {@link #readyBuffers} in the
+     * same critical section so the consumer cannot observe an "empty with hidden deferred
+     * buffers" state. The data-available listener is invoked outside the monitor, mirroring the
+     * lock-order pattern used by {@link #addBuffer}.
      */
-    public synchronized void decrementPending() {
-        pendingCount--;
+    public void decrementPending() {
+        DataAvailableListener listenerToFire = null;
+        synchronized (this) {
+            pendingCount--;
+            if (pendingCount == 0 && !deferredBuffers.isEmpty()) {
+                boolean wasEmpty = readyBuffers.isEmpty();
+                while (!deferredBuffers.isEmpty()) {
+                    readyBuffers.add(deferredBuffers.pollFirst());
+                }
+                if (wasEmpty) {
+                    listenerToFire = dataAvailableListener;
+                }
+            }
+        }
+        if (listenerToFire != null) {
+            listenerToFire.onDataAvailable();
+        }
+    }
+
+    /**
+     * Adds a buffer that must only become consumer-visible after all on-disk entries have been
+     * drained. If no spill entries are pending, the buffer is delivered immediately as a normal
+     * ready buffer. Otherwise it is held in {@link #deferredBuffers} and atomically promoted by
+     * {@link #decrementPending()} when the count reaches zero.
+     *
+     * <p>Used by {@code RecoveredInputChannel#finishReadRecoveredState} to publish the per-channel
+     * {@code EndOfInputChannelStateEvent} so the event always lands strictly after the last
+     * recovered data buffer for the channel — preserving the contract "all data has been read"
+     * without needing the event to traverse the dispatcher's spill path.
+     *
+     * <p>The listener is invoked <em>outside</em> the store monitor for the same lock-order
+     * reasons documented on {@link #addBuffer}.
+     */
+    public void addBufferAfterDisk(Buffer buffer) {
+        DataAvailableListener listenerToFire = null;
+        synchronized (this) {
+            if (released) {
+                buffer.recycleBuffer();
+                return;
+            }
+            if (pendingCount == 0) {
+                boolean wasEmpty = readyBuffers.isEmpty();
+                readyBuffers.add(buffer);
+                if (wasEmpty) {
+                    listenerToFire = dataAvailableListener;
+                }
+            } else {
+                deferredBuffers.add(buffer);
+            }
+        }
+        if (listenerToFire != null) {
+            listenerToFire.onDataAvailable();
+        }
     }
 }
