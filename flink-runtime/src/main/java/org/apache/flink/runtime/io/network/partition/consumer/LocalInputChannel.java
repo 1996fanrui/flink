@@ -43,6 +43,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
+import javax.annotation.concurrent.GuardedBy;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
@@ -363,10 +364,11 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
                 // Reset hasPendingPriorityEvent to false if no more priority event
                 hasPendingPriorityEvent = false;
                 synchronized (recoveredStore) {
+                    // If recoveredStore has data, the actual next element to consume is
+                    // from recoveredStore (FIFO), not from subpartitionView; otherwise
+                    // keep subpartitionView's hint.
                     if (!recoveredStore.isEmpty()) {
-                        // Correct nextDataType: if recoveredStore has data, the actual next
-                        // element to consume is from recoveredStore, not from subpartitionView
-                        expectedNextDataType = recoveredStore.peekNextDataType();
+                        expectedNextDataType = peekNextDataType();
                     }
                 }
             }
@@ -388,12 +390,17 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
             if (next == null) {
                 return Optional.empty();
             }
-            nextDataType = recoveredStore.peekNextDataType();
+            nextDataType = peekNextDataType();
         }
         int sequenceNumber = Integer.MIN_VALUE; // recovered buffers use MIN_VALUE sequence range
 
         // If this is the last recovered buffer and nextDataType is NONE, dynamically check if
         // subpartitionView has data available so the consumer is woken up without a round-trip.
+        // Done outside the recoveredStore lock: subpartitionView calls take producer-side locks
+        // and holding the store monitor across them would form an AB-BA cycle with the producer's
+        // notify path (subpartition lock -> gate.notifyChannelNonEmpty -> inputChannelsWithData
+        // lock; the consumer side already holds gate -> store, so adding store -> subpartition
+        // here would close the loop).
         if (nextDataType == Buffer.DataType.NONE && subpartitionView != null) {
             ResultSubpartitionView.AvailabilityWithBacklog availability =
                     subpartitionView.getAvailabilityAndBacklog(true);
@@ -405,6 +412,28 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
         BufferAndBacklog bufferAndBacklog =
                 new BufferAndBacklog(next, 0, nextDataType, sequenceNumber);
         return getBufferAndAvailability(bufferAndBacklog);
+    }
+
+    /**
+     * Returns the data type of the next consumer-visible buffer that lives behind the
+     * {@link #recoveredStore} monitor. Returns {@link Buffer.DataType#NONE} when the store
+     * has no head ready (either fully empty or only on-disk pending entries left — in the
+     * latter case the drain listener will fire once readyBuffers becomes non-empty).
+     *
+     * <p>The {@link #subpartitionView} tier is intentionally NOT consulted here: that call
+     * acquires producer-side locks, and inspecting it under the recoveredStore monitor would
+     * create an AB-BA cycle with the producer's notify path. Callers that need the
+     * subpartitionView fallback must do it outside the lock.
+     *
+     * <p>Caller MUST hold the {@link #recoveredStore} monitor.
+     */
+    @GuardedBy("recoveredStore")
+    private Buffer.DataType peekNextDataType() {
+        assert Thread.holdsLock(recoveredStore);
+        if (!recoveredStore.isEmpty()) {
+            return recoveredStore.peekNextDataType();
+        }
+        return Buffer.DataType.NONE;
     }
 
     /** Consumes the next buffer from toBeConsumedBuffers (split buffers from FullyFilledBuffer). */

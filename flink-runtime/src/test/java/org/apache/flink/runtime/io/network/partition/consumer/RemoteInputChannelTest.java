@@ -2243,6 +2243,78 @@ class RemoteInputChannelTest {
         assertThat(second.get().buffer().getSize()).isEqualTo(20);
     }
 
+    @Test
+    void testNextDataTypeReflectsReceivedBuffersWhenRecoveredStoreExhausted()
+            throws Exception {
+        // When the very last tryTake empties the recovered store but receivedBuffers
+        // already has a buffer queued by onBuffer (this happens in production when the
+        // channel was already in inputChannelsWithData with the bit set, so the
+        // notifyChannelNonEmpty triggered by onBuffer is short-circuited by
+        // alreadyEnqueued), getNextBuffer must surface the receivedBuffers head as the
+        // next data type so moreAvailable() == true and the gate keeps the channel
+        // enqueued. Otherwise the queued buffer becomes invisible to the gate.
+        SingleInputGate inputGate = createSingleInputGate(1);
+
+        RecoveredBufferStoreImpl store = new RecoveredBufferStoreImpl(new InputChannelInfo(0, 0));
+        store.addBuffer(TestBufferFactory.createBuffer(10));
+        store.addBuffer(TestBufferFactory.createBuffer(20));
+
+        ConnectionID connectionId =
+                new ConnectionID(
+                        org.apache.flink.runtime.clusterframework.types.ResourceID.generate(),
+                        new java.net.InetSocketAddress("localhost", 0),
+                        0);
+        RemoteInputChannel channel =
+                new RemoteInputChannel(
+                        inputGate,
+                        0,
+                        new ResultPartitionID(),
+                        new ResultSubpartitionIndexSet(0),
+                        connectionId,
+                        InputChannelTestUtils.mockConnectionManagerWithPartitionRequestClient(
+                                mock(PartitionRequestClient.class)),
+                        0,
+                        0,
+                        0,
+                        2,
+                        new SimpleCounter(),
+                        new SimpleCounter(),
+                        ChannelStateWriter.NO_OP,
+                        store);
+
+        inputGate.setInputChannels(channel);
+        channel.requestSubpartitions();
+
+        // First take: store still has one more, moreAvailable=true (purely from store).
+        Optional<BufferAndAvailability> first = channel.getNextBuffer();
+        assertThat(first).isPresent();
+        assertThat(first.get().moreAvailable()).isTrue();
+        first.get().buffer().recycleBuffer();
+
+        // Producer-side message arrives via the network thread and lands in
+        // receivedBuffers. The data type is irrelevant for this assertion (production
+        // hits this with RECOVERY_COMPLETION but any non-priority buffer reproduces it).
+        Buffer received = TestBufferFactory.createBuffer(30);
+        channel.onBuffer(received, 0, 0, 0);
+
+        // Last take from the recovered store. Without the fix the next-data-type peek
+        // only consults the recovered store and returns NONE — the gate then sees
+        // moreAvailable=false and never re-enqueues the channel.
+        Optional<BufferAndAvailability> second = channel.getNextBuffer();
+        assertThat(second).isPresent();
+        assertThat(second.get().moreAvailable())
+                .as(
+                        "moreAvailable must reflect receivedBuffers when the recovered store is exhausted")
+                .isTrue();
+        second.get().buffer().recycleBuffer();
+
+        // Sanity: the buffer queued via onBuffer is still consumable from the post-recovery path.
+        Optional<BufferAndAvailability> third = channel.getNextBuffer();
+        assertThat(third).isPresent();
+        assertThat(third.get().buffer().getSize()).isEqualTo(30);
+        third.get().buffer().recycleBuffer();
+    }
+
     private static final class TestBufferPool extends NoOpBufferPool {
 
         @Override

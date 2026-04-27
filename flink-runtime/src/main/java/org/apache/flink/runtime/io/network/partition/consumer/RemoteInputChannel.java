@@ -283,78 +283,62 @@ public class RemoteInputChannel extends InputChannel {
 
     @Override
     public Optional<BufferAndAvailability> getNextBuffer() throws IOException {
-        // Recovery path: priority events bypass recoveredStore; otherwise drain recoveredStore.
-        // The isEmpty / tryTake / peekNextDataType combo runs under a single store-lock
-        // acquisition so the consumer never sees a torn (post-take, pre-peek) view of the store.
-        final Buffer recovered;
-        final DataType recoveredNextDataType;
-        final boolean stillRecovering;
-        final boolean priorityFirst;
-        synchronized (recoveredStore) {
-            if (recoveredStore.isEmpty()) {
-                recovered = null;
-                recoveredNextDataType = DataType.NONE;
-                stillRecovering = false;
-                priorityFirst = false;
-            } else if (hasPendingPriorityEvent) {
-                // Drop down to the priority branch (handled below outside the lock).
-                recovered = null;
-                recoveredNextDataType = DataType.NONE;
-                stillRecovering = true;
-                priorityFirst = true;
-            } else {
-                recovered = recoveredStore.tryTake();
-                recoveredNextDataType =
-                        recovered != null ? recoveredStore.peekNextDataType() : DataType.NONE;
-                // Even when tryTake() returns null we are still in recovery: the store has on-disk
-                // pending entries that have not yet been loaded.
-                stillRecovering = true;
-                priorityFirst = false;
-            }
-        }
-
-        if (stillRecovering) {
-            if (priorityFirst) {
-                Optional<BufferAndAvailability> priority = pollPendingPriorityEvent();
-                if (priority.isPresent()) {
-                    return priority;
-                }
-            }
-            if (recovered != null) {
-                numBytesIn.inc(recovered.getSize());
-                numBuffersIn.inc();
-                return Optional.of(
-                        new BufferAndAvailability(
-                                recovered, recoveredNextDataType, 0, Integer.MIN_VALUE));
-            }
-            // Recovery branch active but nothing ready (only on-disk pending entries left).
-            return Optional.empty();
-        }
-
-        // Post-recovery: PrioritizedDeque returns priority elements first, so the flag is no
-        // longer needed for routing. Maintain the invariant by clearing the flag if the polled
-        // element was the last priority.
-        final SequenceBuffer next;
+        // Single-lock decision: classify the state and pick the next buffer in one critical
+        // section so "is recovery done", "is there a priority event", "what is the next
+        // data type" cannot be torn against the underlying queues. Splitting the decision
+        // across multiple synchronized blocks would let producers slip data into
+        // receivedBuffers (or drain the store) between segments and surface a stale
+        // moreAvailable that hides queued buffers from the gate.
+        final Buffer recoveredBuffer;
+        final SequenceBuffer fromReceivedBuffers;
         final DataType nextDataType;
 
         synchronized (recoveredStore) {
-            checkPartitionRequestQueueInitialized();
-
-            next = receivedBuffers.poll();
-
-            if (next != null) {
-                totalQueueSizeInBytes -= next.buffer.getSize();
-                if (receivedBuffers.getNumPriorityElements() == 0) {
-                    hasPendingPriorityEvent = false;
+            if (!recoveredStore.isEmpty()) {
+                if (hasPendingPriorityEvent) {
+                    fromReceivedBuffers = pollPendingPriorityEvent();
+                    if (fromReceivedBuffers == null) {
+                        // Defensive: invariant should keep the flag aligned with
+                        // receivedBuffers.getNumPriorityElements() > 0; if it is not,
+                        // mirror the pre-refactor behavior and yield without consuming
+                        // from the recovered store.
+                        return Optional.empty();
+                    }
+                    nextDataType = peekNextDataType();
+                    recoveredBuffer = null;
+                } else {
+                    recoveredBuffer = recoveredStore.tryTake();
+                    if (recoveredBuffer == null) {
+                        // readyBuffers empty but pendingCount > 0: the drain listener
+                        // will wake us when the next buffer lands in readyBuffers.
+                        return Optional.empty();
+                    }
+                    nextDataType = peekNextDataType();
+                    fromReceivedBuffers = null;
                 }
+            } else {
+                checkPartitionRequestQueueInitialized();
+                fromReceivedBuffers = receivedBuffers.poll();
+                if (fromReceivedBuffers != null) {
+                    totalQueueSizeInBytes -= fromReceivedBuffers.buffer.getSize();
+                    if (receivedBuffers.getNumPriorityElements() == 0) {
+                        hasPendingPriorityEvent = false;
+                    }
+                }
+                nextDataType = peekNextDataType();
+                recoveredBuffer = null;
             }
-            nextDataType =
-                    receivedBuffers.peek() != null
-                            ? receivedBuffers.peek().buffer.getDataType()
-                            : DataType.NONE;
         }
 
-        if (next == null) {
+        if (recoveredBuffer != null) {
+            numBytesIn.inc(recoveredBuffer.getSize());
+            numBuffersIn.inc();
+            return Optional.of(
+                    new BufferAndAvailability(
+                            recoveredBuffer, nextDataType, 0, Integer.MIN_VALUE));
+        }
+
+        if (fromReceivedBuffers == null) {
             if (isReleased.get()) {
                 throw new CancelTaskException(
                         "Queried for a buffer after channel has been released.");
@@ -364,65 +348,73 @@ public class RemoteInputChannel extends InputChannel {
 
         NetworkActionsLogger.traceInput(
                 "RemoteInputChannel#getNextBuffer",
-                next.buffer,
+                fromReceivedBuffers.buffer,
                 inputGate.getOwningTaskName(),
                 channelInfo,
                 channelStatePersister,
-                next.sequenceNumber);
-        numBytesIn.inc(next.buffer.getSize());
+                fromReceivedBuffers.sequenceNumber);
+        numBytesIn.inc(fromReceivedBuffers.buffer.getSize());
         numBuffersIn.inc();
         return Optional.of(
-                new BufferAndAvailability(next.buffer, nextDataType, 0, next.sequenceNumber));
+                new BufferAndAvailability(
+                        fromReceivedBuffers.buffer,
+                        nextDataType,
+                        0,
+                        fromReceivedBuffers.sequenceNumber));
     }
 
     /**
-     * Pulls the priority element at the head of {@link #receivedBuffers} (skipping
-     * {@link #recoveredStore}). Returns {@link Optional#empty()} if no priority element is
-     * pending. Reading {@link #hasPendingPriorityEvent} under the lock keeps the flag and the
-     * queue state consistent with each other.
+     * Returns the data type of the next buffer the consumer will see across the layered
+     * sources ({@link #recoveredStore} first, then {@link #receivedBuffers}), respecting the
+     * priority-bypass rule. Returns {@link DataType#NONE} when neither source has a visible
+     * head; this includes the case where the recovered store has only on-disk pending entries
+     * (the drain listener will fire once they land in readyBuffers).
+     *
+     * <p>Caller MUST hold the {@link #recoveredStore} monitor.
      */
-    private Optional<BufferAndAvailability> pollPendingPriorityEvent() throws IOException {
-        final SequenceBuffer next;
-        DataType nextDataType;
-        synchronized (recoveredStore) {
-            if (!hasPendingPriorityEvent) {
-                return Optional.empty();
-            }
-            checkPartitionRequestQueueInitialized();
-
-            next = receivedBuffers.poll();
-            checkState(
-                    next != null && next.buffer.getDataType().hasPriority(),
-                    "Expected priority event, but got %s",
-                    next == null ? "null" : next.buffer.getDataType());
-            totalQueueSizeInBytes -= next.buffer.getSize();
-
-            if (receivedBuffers.getNumPriorityElements() == 0) {
-                hasPendingPriorityEvent = false;
-            }
-            // After the priority drain, the true next element is whatever the consumer sees first.
-            // If the recovered store still has data, that takes precedence over the non-priority
-            // head of receivedBuffers since recovered data is always consumed first.
-            if (!hasPendingPriorityEvent && !recoveredStore.isEmpty()) {
-                nextDataType = recoveredStore.peekNextDataType();
-            } else {
-                SequenceBuffer peeked = receivedBuffers.peek();
-                nextDataType =
-                        peeked != null ? peeked.buffer.getDataType() : DataType.NONE;
-            }
+    @GuardedBy("recoveredStore")
+    private DataType peekNextDataType() {
+        assert Thread.holdsLock(recoveredStore);
+        if (hasPendingPriorityEvent) {
+            // Priority head bypasses the FIFO recovery-first rule.
+            SequenceBuffer peeked = receivedBuffers.peek();
+            return peeked != null ? peeked.buffer.getDataType() : DataType.NONE;
         }
+        if (!recoveredStore.isEmpty()) {
+            // readyBuffers head if any; NONE while only pendingCount > 0 — the drain
+            // listener will wake the consumer when readyBuffers becomes non-empty.
+            return recoveredStore.peekNextDataType();
+        }
+        SequenceBuffer peeked = receivedBuffers.peek();
+        return peeked != null ? peeked.buffer.getDataType() : DataType.NONE;
+    }
 
-        NetworkActionsLogger.traceInput(
-                "RemoteInputChannel#getNextBuffer",
-                next.buffer,
-                inputGate.getOwningTaskName(),
-                channelInfo,
-                channelStatePersister,
-                next.sequenceNumber);
-        numBytesIn.inc(next.buffer.getSize());
-        numBuffersIn.inc();
-        return Optional.of(
-                new BufferAndAvailability(next.buffer, nextDataType, 0, next.sequenceNumber));
+    /**
+     * Pulls the priority head of {@link #receivedBuffers} (skipping {@link #recoveredStore})
+     * and updates {@link #hasPendingPriorityEvent} when the last priority is drained.
+     * Returns {@code null} when no priority element is pending. Caller MUST hold the
+     * {@link #recoveredStore} monitor.
+     */
+    @GuardedBy("recoveredStore")
+    @Nullable
+    private SequenceBuffer pollPendingPriorityEvent() throws IOException {
+        assert Thread.holdsLock(recoveredStore);
+        if (!hasPendingPriorityEvent) {
+            return null;
+        }
+        checkPartitionRequestQueueInitialized();
+
+        SequenceBuffer next = receivedBuffers.poll();
+        checkState(
+                next != null && next.buffer.getDataType().hasPriority(),
+                "Expected priority event, but got %s",
+                next == null ? "null" : next.buffer.getDataType());
+        totalQueueSizeInBytes -= next.buffer.getSize();
+
+        if (receivedBuffers.getNumPriorityElements() == 0) {
+            hasPendingPriorityEvent = false;
+        }
+        return next;
     }
 
     // ------------------------------------------------------------------------
