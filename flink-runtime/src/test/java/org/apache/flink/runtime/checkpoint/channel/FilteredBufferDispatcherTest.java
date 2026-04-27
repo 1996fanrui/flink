@@ -1393,6 +1393,11 @@ class FilteredBufferDispatcherTest {
             // Park until a buffer arrives through releaseQueue or the thread is interrupted.
             return releaseQueue.take();
         }
+
+        @Override
+        public void releaseExclusiveBuffers() {
+            // No-op: this test fixture has no per-channel buffer manager to tear down.
+        }
     }
 
     /**

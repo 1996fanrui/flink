@@ -248,6 +248,18 @@ public class SequentialChannelStateReaderImpl implements SequentialChannelStateR
             return lookup(channelInfo).requestBufferBlocking();
         }
 
+        @Override
+        public void releaseExclusiveBuffers() throws IOException {
+            // Drain is finished. Mark each channel's drain-done flag; the actual release fires
+            // in a two-flag rendezvous (drainDone + converted) inside RecoveredInputChannel —
+            // releasing here directly would race with mailbox-driven convertRecoveredInputChannels
+            // and cause task pollNext on the not-yet-replaced gate slot to hit the released-channel
+            // checkState in RecoveredInputChannel#getNextRecoveredStateBuffer.
+            for (RecoveredInputChannel ch : channelMap.values()) {
+                ch.markDrainDone();
+            }
+        }
+
         private RecoveredInputChannel lookup(InputChannelInfo channelInfo) {
             RecoveredInputChannel ch = channelMap.get(channelInfo);
             if (ch == null) {

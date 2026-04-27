@@ -184,6 +184,9 @@ class GateFilterHandlerBufferOwnershipTest {
                     public Buffer requestBufferBlocking(InputChannelInfo channelInfo) {
                         return createEmptyBuffer();
                     }
+
+                    @Override
+                    public void releaseExclusiveBuffers() {}
                 };
         return new FilteredBufferDispatcherImpl(
                 storesByChannel,

@@ -41,4 +41,18 @@ interface BufferRequester {
     /** Blocking request; waits until a buffer becomes available. */
     Buffer requestBufferBlocking(InputChannelInfo channelInfo)
             throws InterruptedException, IOException;
+
+    /**
+     * Releases the exclusive buffers held by every channel served by this requester. Must be
+     * called after the dispatcher's drain has finished so the underlying pools are no longer
+     * being read from. Idempotent.
+     *
+     * <p>Symmetric tear-down counterpart of {@link #requestBuffer} / {@link #requestBufferBlocking}:
+     * whoever supplies the buffers also owns their final disposal. Centralising the release here
+     * lets {@code convertRecoveredInputChannels} stop calling {@code releaseAllResources()} on the
+     * {@link org.apache.flink.runtime.io.network.partition.consumer.RecoveredInputChannel} —
+     * which would otherwise wipe the recovered store and exclusive segments while drain is still
+     * in flight.
+     */
+    void releaseExclusiveBuffers() throws IOException;
 }

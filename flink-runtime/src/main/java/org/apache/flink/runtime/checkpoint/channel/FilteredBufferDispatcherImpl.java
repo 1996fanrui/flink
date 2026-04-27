@@ -282,6 +282,12 @@ public class FilteredBufferDispatcherImpl
             spillFile.close();
             spillFile = null;
         }
+        // Hand off the symmetric tear-down: the BufferRequester returns each RecoveredInputChannel's
+        // exclusive segments to the global pool now that drain is no longer reading from them.
+        // Doing this here (post-drain, post-flush) guarantees no spill entry was abandoned mid-load
+        // and lets task threads still consuming buffers from the recovered store recycle them
+        // straight to the global pool (BufferManager.recycle's released-channel shortcut).
+        bufferRequester.releaseExclusiveBuffers();
     }
 
     @Override

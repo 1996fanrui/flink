@@ -269,8 +269,49 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
 
     void releaseAllResources() throws IOException {
         if (isReleased.compareAndSet(false, true)) {
-            store.releaseAll();
             bufferManager.releaseAllBuffers(new ArrayDeque<>());
+        }
+    }
+
+    /**
+     * Tear-down fired only after BOTH (a) drain has finished and (b) the gate slot has been
+     * replaced by the physical channel. Releases the {@link BufferManager}'s exclusive segments
+     * back to the global pool but does <em>not</em> touch the recovered store — the store
+     * reference has been transferred to the physical channel by {@link #toInputChannel} and is
+     * owned (and finally released) there. Sets {@link #isReleased} so {@link BufferManager#recycle}
+     * returns lingering segments (still in flight via buffers in the store) straight to the global
+     * pool, preventing leaks. Idempotent with {@link #releaseAllResources} via the same atomic
+     * flag, so the abort path that calls {@code releaseAllResources} stays correct.
+     */
+    private void releaseAfterDrain() throws IOException {
+        if (isReleased.compareAndSet(false, true)) {
+            bufferManager.releaseAllBuffers(new ArrayDeque<>());
+        }
+    }
+
+    private volatile boolean drainDone = false;
+    private volatile boolean converted = false;
+
+    /**
+     * Signalled by {@code BufferRequester#releaseExclusiveBuffers} (invoked from
+     * {@code FilteredBufferDispatcher#close} on the recovery thread once drain has finished).
+     */
+    public void markDrainDone() throws IOException {
+        drainDone = true;
+        if (converted) {
+            releaseAllResources();
+        }
+    }
+
+    /**
+     * Signalled by {@code SingleInputGate#convertRecoveredInputChannels} on the mailbox thread
+     * after the gate slot has been replaced by the physical channel and the old RecoveredInputChannel
+     * is no longer reachable through the gate.
+     */
+    public void markConverted() throws IOException {
+        converted = true;
+        if (drainDone) {
+            releaseAllResources();
         }
     }
 

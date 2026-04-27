@@ -66,4 +66,9 @@ final class TestBufferPool implements BufferRequester {
     public Buffer requestBufferBlocking(InputChannelInfo channelInfo) {
         return drainPool.poll();
     }
+
+    @Override
+    public void releaseExclusiveBuffers() {
+        // No-op: tests pre-supply queues; nothing to return to a global pool.
+    }
 }
