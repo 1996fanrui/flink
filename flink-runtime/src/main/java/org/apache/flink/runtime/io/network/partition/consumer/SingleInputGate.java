@@ -458,6 +458,15 @@ public class SingleInputGate extends IndexedInputGate {
                 }
             }
         }
+
+        try (GateNotificationHelper notification =
+                new GateNotificationHelper(this, inputChannelsWithData)) {
+            synchronized (inputChannelsWithData) {
+                if (!inputChannelsWithData.isEmpty()) {
+                    notification.notifyDataAvailable();
+                }
+            }
+        }
     }
 
     private void internalRequestPartitions() {
