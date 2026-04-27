@@ -13,7 +13,7 @@ flowchart LR
     IN[filterAndRewrite bytes] --> W(dispatcher<br/>memory cache)
     W -- P1: got buffer --> NB[Network buffer<br/>→ InputChannel]
     W -- P2: no buffer --> D[(Spill file<br/>single reused)]
-    D --> R1[Replay 路径<br/>task thread]
+    D --> R1[Drain 路径<br/>recovery thread]
     D --> R2[Checkpoint 路径<br/>snapshot]
     R1 --> NB
     R2 --> CP[Checkpoint 输出流]
@@ -27,7 +27,7 @@ flowchart LR
   - 原 Reader — dispatcher 在 recovery thread 上消费（replay 链路）
   - snapshot Reader — `reader.snapshot()` 产出的独立对象，由 ChannelStateWriter 的 executor 消费（checkpoint 链路）
 
-close 连锁：`dispatcher.close()` → `writer.close()` → 所有 Reader.close()。
+资源释放连锁：`dispatcher.close()` → `writer.close()` → 所有 Reader.close()。**注意**：`dispatcher.close()` 是纯资源释放，不再做业务收尾。drain 残留 spill 由独立方法 `dispatcher.drainPendingSpill()` 完成，必须在 `close()` 之前显式调用，详见 `close_drain_separation.md`。
 
 ## 为什么这样设计
 
@@ -37,7 +37,7 @@ close 连锁：`dispatcher.close()` → `writer.close()` → 所有 Reader.close
 
 **两条读路径彼此独立**：
 
-- **Replay（task thread）**：network buffer 腾空时，把下一条 entry 从磁盘读回内存，装进 buffer，投给 input channel。这是**最终消费**。
+- **Replay/drain（recovery thread）**：dispatcher 在 recovery thread 上消费原 Reader，把磁盘数据加载回 network buffer 并投递给目标 channel 的 `RecoveredBufferStore`（eagerDrain on each write，最后由 `drainPendingSpill()` 兜底排空）。Task thread 后续从 store 取 buffer 完成最终消费。
 - **Checkpoint**：checkpoint 触发时对磁盘做一次 snapshot，异步写进 checkpoint 输出流。**不消费 replay 的数据**（复制语义），所以不影响 replay 进度，也允许多次 checkpoint 各自独立快照。
 
 ## Checkpoint 的 wait 机制

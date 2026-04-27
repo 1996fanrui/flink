@@ -6,7 +6,7 @@ Spill 文件里的 entries 会被**两条独立的链路**各自消费/读取，
 
 | 链路 | 触发时机 | 持有的 Reader | 消费性质 |
 |---|---|---|---|
-| **Input channel 回放链路** | 回放 buffer 腾出时 (`eagerDrain`) / dispatcher 收尾 (`close()` drain) | `FilteredSpillFile` 创建的**原 Reader**（`spillFile.getReaders()`） | **最终处置**：逐个 `readNext()`，每个 entry 的字节读进 network buffer 投给 `RecoveredBufferStore` |
+| **Input channel 回放链路** | 回放 buffer 腾出时 (`eagerDrain`) / dispatcher 收尾 (`drainPendingSpill()`) | `FilteredSpillFile` 创建的**原 Reader**（`spillFile.getReaders()`） | **最终处置**：逐个 `readNext()`，每个 entry 的字节读进 network buffer 投给 `RecoveredBufferStore` |
 | **Checkpoint 链路** | `onChannelCheckpointStarted` 在 wait-set 收敛时触发 `addInputDataFromSpill` | 对每个原 Reader 调 `snapshot()` 生成一组**独立 Reader 对象**（新 FileChannel + 独立 entries Deque + 预 sealed），交给异步 `DrainChunkIterator` | **拍照备份**：snapshot 消费者逐个 `readNext()`，字节写入 checkpoint 输出流 |
 
 **关键：两条链路的 Reader 对象完全不共享。** 原 Reader 归回放链路独占；snapshot Reader 归 checkpoint drain 独占。两者各有自己的 `FileChannel`、各有自己的 `Deque<Entry>`、各有自己的内部 buffer。磁盘上的字节是同一份（page cache 共享），但在 Java 堆里是两套独立对象。
@@ -27,7 +27,7 @@ Spill 文件里的 entries 会被**两条独立的链路**各自消费/读取，
 
 ## Sealed 状态：写完的显式标志
 
-之前"Reader.entries 内容已经定格"这个前提完全依赖**时序暗示**（filter → flush → checkpoint/close drain 的严格先后）。时序契约容易被后续改动意外破坏——比如谁在 filter 阶段结束后又补一笔 `addEntry` 就会静默损坏 checkpoint。
+之前"Reader.entries 内容已经定格"这个前提完全依赖**时序暗示**（filter → flush → checkpoint/drainPendingSpill 的严格先后）。时序契约容易被后续改动意外破坏——比如谁在 filter 阶段结束后又补一笔 `addEntry` 就会静默损坏 checkpoint。
 
 引入 `Reader.sealed` 把这个不变式变成**代码层面的显式状态**：
 
@@ -173,7 +173,7 @@ public static class Reader implements Closeable {
 
 ### `close()` 生命周期
 
-- 原 Reader 由 `FilteredSpillFile` 拥有，在 `spillFile.close()` 时连锁关闭（并删除物理文件）。
+- 原 Reader 由 `FilteredSpillFile` 拥有，在 `spillFile.close()` 时连锁关闭（并删除物理文件）。`spillFile.close()` 由 `FilteredBufferDispatcher.close()` 触发，**只做资源释放**，不再承担 drain 残留 entries 的职责（详见 `close_drain_separation.md`）。
 - Snapshot Reader 由 checkpoint drain 的 `CloseableIterator` 拥有，iterator 的 `close()` 里 close 所有 snapshot readers（无论 drain 成功还是失败）。
 
 ---
@@ -277,7 +277,7 @@ onChannelCheckpointStarted(c1) 收敛            │
       │                       DrainChunkIterator.close()
       │                         for s in snapshots₁: s.close()
       ▼                                        │
-close() drain                                  │
+drainPendingSpill (不持锁)                      │
   for r in original readers:                   │
     while r.hasEntries():                      │
       chunk = r.readNext()                     │
@@ -291,10 +291,15 @@ close() drain                                  │
 onChannelCheckpointStarted(c2) 收敛            │
   synchronized(this) {                         │
     snapshots₂ = [r.snapshot() for r]          │
-      ← 只拍到"还没被 close drain readNext 走"的 entries
+      ← 只拍到"还没被 drainPendingSpill readNext 走"的 entries
     addInputDataFromSpill(c2, iter(snaps₂)) ─► │
   }                                            ▼
                                        ... 独立消费 snapshots₂ ...
+      │
+      ▼
+close (仅资源释放，短锁)                        │
+  spillFile.close()                            │
+    → 关 file channel + 删物理文件             │
 ```
 
 Checkpoint #1 的 snapshots、checkpoint #2 的 snapshots、原 readers — 三组 Reader 对象物理上完全分离，各组由一个线程独占使用。三者都指向磁盘上相同的 spill 文件，但走三个独立的 FileChannel（page cache 共享）。

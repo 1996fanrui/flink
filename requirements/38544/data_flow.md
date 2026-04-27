@@ -10,7 +10,7 @@
 - **FilteredSpillFile.Reader** — 每物理文件一个；持 entries deque；`readNext()` 出 `Chunk` 给回放链路；`snapshot()` 出独立 Reader 给 checkpoint 链路
 - **RecoveredBufferStore**（每 channel 一个） — 持有 ready buffers；`tryTake()` 给 InputChannel 消费；`checkpoint()` 把自己的 ready buffers 入 checkpoint
 
-dispatcher 持有 `FilteredSpillFile`；`FilteredSpillFile` 持有 `List<Reader>`；Reader 的消费者有 replay（原 Reader）+ checkpoint（snapshot Reader）。关闭连锁：`dispatcher.close()` → `spillFile.close()` → 所有 Reader.close() + 删除物理文件。
+dispatcher 持有 `FilteredSpillFile`；`FilteredSpillFile` 持有 `List<Reader>`；Reader 的消费者有 replay（原 Reader）+ checkpoint（snapshot Reader）。资源释放连锁：`dispatcher.close()` → `spillFile.close()` → 所有 Reader.close() + 删除物理文件。**注意**：`dispatcher.close()` 仅做资源释放，不再做业务收尾——drain 残留 spill 是 `drainPendingSpill()` 的职责，必须在 `close()` 之前显式调用，详见 `close_drain_separation.md`。
 
 ---
 
@@ -46,7 +46,7 @@ graph TD
     Pool --> DP
     DP -->|"P1 flush"| Store
     DP -->|"P2 flush"| Writer
-    DP -->|"eagerDrain / close drain"| Readers
+    DP -->|"eagerDrain / drainPendingSpill"| Readers
     Writer --> Disk
     Writer -->|"addEntry"| Readers
     Readers -->|"readNext → Chunk"| Store
@@ -76,21 +76,24 @@ flowchart TD
     Filter --> S3Check
 
     S3Check -- No --> Flush["dispatcher.flush():<br/>flush cache + spillFile.finish()"]
-    Flush --> Finish["finishReadRecoveredState():<br/>complete future → trigger channel conversion"]
-    Finish --> Drain["dispatcher.close():<br/>blocking drain + cleanup"]
-    Drain --> End(("End"))
+    Flush --> Finish["stateHandler.finishRecovery():<br/>complete future → trigger channel conversion"]
+    Finish --> Drain["dispatcher.drainPendingSpill():<br/>blocking drain (no monitor held)"]
+    Drain --> Close["dispatcher.close():<br/>release resources only"]
+    Close --> End(("End"))
 
     style Read fill:#2196F3,color:#fff
     style Filter fill:#FF9800,color:#fff
     style Flush fill:#9C27B0,color:#fff
     style Finish fill:#E91E63,color:#fff
     style Drain fill:#4CAF50,color:#fff
+    style Close fill:#607D8B,color:#fff
 ```
 
-时序：
+时序（详细契约见 `close_drain_separation.md`）：
 1. **dispatcher.flush()** — flush cache 的残留数据到 P1 或 P2；`spillFile.finish()` seal 最后一个 Reader。此后不再接受 write。
-2. **finishReadRecoveredState()** — 完成 per-channel `bufferFilteringCompleteFuture`；Task thread 感知后触发 `convertRecoveredInputChannels()`（Store 引用从 RecoveredInputChannel 移交到 LocalInputChannel/RemoteInputChannel）。
-3. **dispatcher.close()** — 阻塞 drain（下方单独画），把 Reader 里剩下的每条 entry 都投到 Store，然后清理 spill 文件。
+2. **stateHandler.finishRecovery()** — 显式触发 channel conversion：完成 per-channel `bufferFilteringCompleteFuture`；Task thread 感知后触发 `convertRecoveredInputChannels()`（Store 引用从 RecoveredInputChannel 移交到 LocalInputChannel/RemoteInputChannel）。注意：此调用与 dispatcher 解耦，由调用方显式编排，不依赖 try-with-resources 反向 close 顺序。
+3. **dispatcher.drainPendingSpill()** — 阻塞 drain（下方单独画），把 Reader 里剩下的每条 entry 都投到 Store。**不持 dispatcher monitor**，与 task 线程的 `onChannelCheckpointStopped` 等并发路径互不阻塞。失败语义=生产者-消费者：拿不到 buffer 阻塞，task 异常由 interrupt 打断。
+4. **dispatcher.close()** — 仅资源释放：`spillFile.close()` 关 file channel + 删物理文件 + 清字段。短锁、不阻塞、幂等、不抛业务异常。由 try-with-resources 自动调用。
 
 ---
 
@@ -150,23 +153,23 @@ P2 两条触发路径：
 
 **P1 / P2 可反复切换**：`spillFile.isIdle()` 实时反映"当前是否还有 pending entry"。先 spill 再被 eagerDrain 完全搬回内存后，`isIdle()` 会重新变 true，后续 flush 可再次走 P1 直投 buffer。也就是说 isIdle 不是单向门（"一旦 spill 就永远非 idle"是错的），而是跟随 reader 的 entries 数量动态变化。
 
-### 场景 3：`close()` 的 blocking drain
+### 场景 3：`drainPendingSpill()` 的 blocking drain
 
-filter 阶段结束后、channel conversion 完成时 `close()` 被调用，把所有剩余磁盘数据 drain 回 Store。和 eagerDrain 同结构，只是 **bufferSupplier 换成 blocking 版本**（会阻塞直到拿到 buffer）：
+filter 阶段结束、`stateHandler.finishRecovery()` 已经触发 channel conversion 之后，调用方显式调用 `dispatcher.drainPendingSpill()` 把所有剩余磁盘数据 drain 回 Store。和 eagerDrain 同结构，只是 **bufferSupplier 换成 blocking 版本**（会阻塞直到拿到 buffer），且**不持 dispatcher monitor**：
 
 ```mermaid
 flowchart TD
-    C(("close() drain")) --> Iter{"下一个 Reader<br/>还有 entries?"}
-    Iter -- No --> Cleanup["spillFile.close() (deletes all spill files)"]
+    C(("drainPendingSpill()")) --> Iter{"下一个 Reader<br/>还有 entries?"}
+    Iter -- No --> Done(("drain 完成"))
     Iter -- Yes --> PeekCi["ci = reader.peekNextChannel()"]
-    PeekCi --> BlockBuf["blockingBufferSupplier(ci)<br/>(可能阻塞)"]
+    PeekCi --> BlockBuf["blockingBufferSupplier(ci)<br/>(可能阻塞，可被 interrupt 打断)"]
     BlockBuf --> Consume["chunk = reader.readNext()<br/>memcpy → MemorySegment<br/>store.addBuffer + decrementPending"]
     Consume --> Iter
-    Cleanup --> Done(("close 完成"))
 
     style Consume fill:#4CAF50,color:#fff
-    style Cleanup fill:#9C27B0,color:#fff
 ```
+
+资源释放（`spillFile.close()` 删物理文件）由独立的 `dispatcher.close()` 完成，参见 `close_drain_separation.md`。
 
 ---
 

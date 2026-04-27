@@ -116,9 +116,9 @@ OutputWriter can switch between buffer and file at any byte position. A record m
 
 Two drain phases:
 1. **P3 eager drain** (during filtering): on each write(), OutputWriter eagerly replays disk data when buffer available, delivering to target channel's RecoveredBufferStore.
-2. **Blocking drain** (after filtering): `OutputWriter.close()` runs blocking drain loop — `requestBufferBlocking()` → load from disk → deliver to target channel's RecoveredBufferStore — until disk empty. This loop runs concurrently with Task thread consumption. Channel conversion does NOT wait for drain to complete.
+2. **Blocking drain** (after filtering): `OutputWriter.drainPendingSpill()` runs blocking drain loop — `requestBufferBlocking()` → load from disk → deliver to target channel's RecoveredBufferStore — until disk empty. The drain loop **does not hold the dispatcher monitor**, so it runs concurrently with Task thread consumption, checkpoint callbacks, and channel conversion. The drain is interruptible: `Thread.interrupt()` unblocks the buffer wait and surfaces `InterruptedException` on the abort path.
 
-`OutputWriter.flush()` flushes the active buffer's partial data to the target Store. After flush(), no more write() calls are allowed. flush() is called before `finishReadRecoveredState()` to ensure all filtered data is available for consumption and checkpoint before channel conversion. `OutputWriter.close()` performs the blocking drain and cleans up spill files.
+`OutputWriter.flush()` flushes the active buffer's partial data to the target Store and seals all Readers. After flush(), no more write() calls are allowed. The recovery thread then calls `stateHandler.finishRecovery()` to trigger channel conversion, followed by `OutputWriter.drainPendingSpill()` for the blocking drain. `OutputWriter.close()` performs **resource release only** (deletes spill files, closes file handles). See `close_drain_separation.md` for the long-term contract.
 
 ### REQ-SPDR Spill Directory from IOManager
 
@@ -131,7 +131,7 @@ RecoveredInputChannel must provide both blocking and non-blocking buffer request
 - `requestBuffer()` — non-blocking, returns null when pool exhausted. Wraps `bufferManager.requestBuffer()`. Used by OutputWriter for P1 path (write to buffer) and P3 path (replay disk data).
 - `requestBufferBlocking()` — blocking, waits until buffer available. Used by:
   - **Non-filtering mode**: original recovery path, unchanged. Blocks until a Network Buffer is available from the pool.
-  - **Filtering mode**: used by OutputWriter.close() drain loop. At drain time, Task thread is consuming and recycling buffers concurrently, so blocking eventually returns. The current heap buffer fallback (`allocateUnpooledSegment`) in filtering mode is **removed** — OutputWriter spills to disk instead.
+  - **Filtering mode**: used by `OutputWriter.drainPendingSpill()`. At drain time, Task thread is consuming and recycling buffers concurrently, so blocking eventually returns. The current heap buffer fallback (`allocateUnpooledSegment`) in filtering mode is **removed** — OutputWriter spills to disk instead.
 
 OutputWriter receives these as functional interfaces via constructor, decoupled from RecoveredInputChannel.
 
@@ -187,29 +187,31 @@ RecoveredBufferStore (per-channel)
 1. Created per-channel during recovery. OutputWriter holds references to all stores.
 2. OutputWriter populates stores: P1 → buffer directly into target store's ready queue; P2 → disk (shared spill file)
 3. RecoveredInputChannel consumes via `store.tryTake()` during recovery phase
-4. Filtering completes → `finishReadRecoveredState()` → channel conversion. Store reference transfers from RecoveredInputChannel to LocalInputChannel/RemoteInputChannel
-5. Blocking drain loop (recovery thread) continues after filtering: loads disk data into buffers, dispatches to correct channel's store based on SpillEntry's channelInfo
-6. Store reports completion when all data consumed and drain loop finished
-7. InputChannel decides when to stop using the store (separate from store's own state)
+4. Filtering completes → `OutputWriter.flush()` flushes the active buffer's partial data into the target store and seals all spill Readers (no more `write()` after this)
+5. `stateHandler.finishRecovery()` → `inputGate.finishReadRecoveredState()` → channel conversion. Store reference transfers from RecoveredInputChannel to LocalInputChannel/RemoteInputChannel
+6. `OutputWriter.drainPendingSpill()` (recovery thread) runs after channel conversion: loads disk data into buffers, dispatches to correct channel's store based on SpillEntry's channelInfo. Drain does not hold the dispatcher monitor.
+7. Store reports completion when all data consumed and `drainPendingSpill()` has finished (calls `markComplete()` per store)
+8. try-with-resources reverse-closes filteringHandler / OutputWriter / stateHandler — each `close()` is pure resource release (short-locked, non-blocking, idempotent)
+9. InputChannel decides when to stop using the store (separate from store's own state)
 
 **Interface** (verified against LocalInputChannel.getNextRecoveredBuffer, checkpointStarted, releaseAllResources, getBuffersInUseCount):
 
 Consumption:
-- `tryTake()` → Buffer or null — non-blocking, returns next ready buffer from internal queue. Returns null if no ready buffer (disk data may still be loading by drain loop)
+- `tryTake()` → Buffer or null — non-blocking, returns next ready buffer from internal queue. Returns null if no ready buffer (disk data may still be loading by `drainPendingSpill`)
 - `peekNextDataType()` → Buffer.DataType — data type of the next available buffer without consuming. Returns `NONE` if empty
 
 State:
 - `isEmpty()` → boolean — no ready buffers AND no pending disk data. InputChannel uses this to decide whether to fall through to its next data source
-- `isComplete()` → boolean — all data consumed AND drain loop finished (no more data will ever be added). InputChannel uses this to decide when to drop the store reference
+- `isComplete()` → boolean — all data consumed AND `drainPendingSpill` finished (no more data will ever be added). InputChannel uses this to decide when to drop the store reference
 - `size()` → int — number of ready buffers (for `getBuffersInUseCount`)
 
 Checkpoint:
-- `checkpoint(ChannelStateWriter, checkpointId, channelInfo)` — snapshot all remaining data:
+- `checkpoint(ChannelStateWriter writer, long checkpointId)` — snapshot all remaining data (store is constructor-bound to its `InputChannelInfo`):
   1. Ready buffers: retain each buffer, pass to `ChannelStateWriter.addInputData(CloseableIterator<Buffer>)` (existing API)
   2. Disk data: for each pending SpillEntry, open InputStream from FilteredSpillFile.Reader → pass to `ChannelStateWriter.addInputData(checkpointId, info, seqNum, InputStream, dataLength)` (new streaming overload). Streams from spill file directly to checkpoint DataOutputStream, without consuming Network Buffer Pool buffers. ChannelStateWriter streaming overload is a new method added as part of this design (not modifying existing addInputData behavior)
 
 Resource cleanup:
-- `releaseAll()` — recycle all ready buffers, close spill files, stop drain loop
+- `releaseAll()` — recycle all ready buffers and clean up store-local resources. The OutputWriter's `drainPendingSpill` loop is task-wide (not store-owned) and is not stopped from here; subsequent `addBuffer` calls into a released store are dropped by the store itself
 
 Note: priority event handling (hasPendingPriorityEvent, fetching from subpartitionView) stays in InputChannel — the store is not involved. InputChannel handles priority events before calling `store.tryTake()`.
 
