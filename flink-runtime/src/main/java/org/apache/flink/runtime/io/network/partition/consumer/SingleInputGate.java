@@ -407,18 +407,24 @@ public class SingleInputGate extends IndexedInputGate {
                     continue;
                 }
                 try {
-                    // Phase 1: Convert channel and release resources outside the lock.
-                    // These calls may acquire the receivedBuffers lock internally, so they
-                    // run outside inputChannelsWithData lock to maintain a consistent lock
-                    // order with onRecoveredStateBuffer() which acquires receivedBuffers
-                    // first and then inputChannelsWithData.
+                    // Convert outside the lock so toInputChannel() can take the store lock
+                    // internally without violating the store-then-gate order.
+                    //
+                    // Do NOT call inputChannel.releaseAllResources() here: the recovered store
+                    // has just been transferred to the physical channel and the BufferManager's
+                    // exclusive segments are still being consumed by the concurrent
+                    // drainPendingSpill. Both are released later — store by the physical
+                    // channel's releaseAllResources, BufferManager by
+                    // BufferRequester#releaseExclusiveBuffers from FilteredBufferDispatcher#close.
                     InputChannel realInputChannel =
                             ((RecoveredInputChannel) inputChannel).toInputChannel();
-                    inputChannel.releaseAllResources();
-                    int buffersInUseCount = realInputChannel.getBuffersInUseCount();
 
-                    // Phase 2: Atomically update data structures under the lock.
+                    // Read buffersInUseCount INSIDE the gate lock to close a TOCTOU window with
+                    // a concurrent producer add → enqueue would either be skipped (count == 0)
+                    // or doubled (count > 0 plus the listener-driven add).
                     synchronized (inputChannelsWithData) {
+                        int buffersInUseCount = realInputChannel.getBuffersInUseCount();
+
                         if (inputChannelsWithData.contains(inputChannel)) {
                             inputChannelsWithData.getAndRemove(ch -> ch == inputChannel);
                         }
@@ -434,9 +440,21 @@ public class SingleInputGate extends IndexedInputGate {
                             enqueuedInputChannelsWithData.set(realInputChannel.getChannelIndex());
                         }
                     }
+                    // Signal the drainDone+converted rendezvous; BufferManager teardown fires
+                    // once drain also completes.
+                    ((RecoveredInputChannel) inputChannel).markStoreTransferred();
                 } catch (Throwable t) {
                     inputChannel.setError(t);
                     return;
+                }
+            }
+        }
+
+        try (GateNotificationHelper notification =
+                new GateNotificationHelper(this, inputChannelsWithData)) {
+            synchronized (inputChannelsWithData) {
+                if (!inputChannelsWithData.isEmpty()) {
+                    notification.notifyDataAvailable();
                 }
             }
         }
