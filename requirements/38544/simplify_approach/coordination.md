@@ -1,87 +1,87 @@
-# 跨线程协作：锁原则与 checkpoint 协议
+# Cross-thread cooperation: lock principles and the checkpoint protocol
 
-> 范围：`channelIOExecutor`（async 线程，由 [`unspiller.md`](./unspiller.md) 描述）与 task 线程（mailbox，由 [`input_channel.md`](./input_channel.md) 描述消费侧）之间的协作机制。本文是上面两份文档共同遵守的契约。
+> Scope: the cooperation mechanism between `channelIOExecutor` (the async thread, described in [`unspiller.md`](./unspiller.md)) and the task thread (mailbox; the consumer side is described in [`input_channel.md`](./input_channel.md)). This doc is the contract that the other two docs both adhere to.
 
-## 1. 两条强原则
+## 1. Two strong principles
 
-**原则 1：所有写入 `LocalInputChannel` / `RemoteInputChannel` 的动作必须在 `Unspiller.monitor` 内完成。**
+**Principle 1: every write into `LocalInputChannel` / `RemoteInputChannel` must happen inside `Unspiller.monitor`.**
 
-适用对象（无一例外）：
+Targets (no exceptions):
 
-- drain 阶段 `channelIOExecutor` 把 recovered buffer 投到 channel；
-- drain 完成后 `channelIOExecutor` 投递 `EndOfInputChannelStateEvent` 到 channel；
-- checkpoint Step 1 由 task 线程把 `RecoveryCheckpointBarrier` 插到每个 channel。
+- the drain phase `channelIOExecutor` delivering a recovered buffer into a channel;
+- after drain finishes, `channelIOExecutor` delivering `EndOfInputChannelStateEvent` into a channel;
+- checkpoint Step 1, the task thread inserting `RecoveryCheckpointBarrier` into each channel.
 
-理由：channel 的 `receivedBuffers` 是 FIFO，task 线程拍盘需要在某一刻把「channel 之前到达的 buffer」与「channel 之后到达的 buffer」一刀切开。所有写者都通过同一把锁才能让这一刀切的位置是确定的。
+Reason: a channel's `receivedBuffers` is a FIFO. At snapshot time the task thread needs to draw a single cut separating "buffers that arrived before" from "buffers that arrived after" in the channel. Only when all writers go through the same lock is the position of that cut deterministic.
 
-**原则 2：`Unspiller` 内部 `(currentSegmentIndex, currentOffset)` 的推进，必须与对应的 channel add-buffer 在同一个临界段内。**
+**Principle 2: advancing `Unspiller`'s internal `(currentSegmentIndex, currentOffset)` must happen in the same critical section as the corresponding channel add-buffer.**
 
-理由：task 线程拍盘时同时取「磁盘消费进度 = `(currentSegmentIndex, currentOffset)`」与「channel 内存数据 = `receivedBuffers` 到 barrier 为止」。如果 `offset` 推进与 add-buffer 不在同一临界段，task 线程可能拍到：
+Reason: at snapshot time the task thread simultaneously takes "disk consumption progress = `(currentSegmentIndex, currentOffset)`" and "channel in-memory data = `receivedBuffers` up to the barrier". If `offset` advance and add-buffer were not in the same critical section, the task thread could observe:
 
-- offset 已推进但 buffer 还没进 channel → 这条 entry 既不在 disk snapshot 也不在 memory snapshot，**丢数据**；
-- 或反过来 buffer 已进 channel 但 offset 未推进 → 这条 entry 同时落在两边，**重复**。
+- offset already advanced but the buffer has not yet entered the channel → this entry is in neither the disk snapshot nor the memory snapshot, **data lost**;
+- or, conversely, the buffer is already in the channel but the offset hasn't advanced → this entry lands in both sides, **duplicated**.
 
-两条原则共同保证 task 线程拍盘时 (内存 + 磁盘) 集合完整且 disjoint，是整个 3-step 协议正确性的基础。
+Together the two principles guarantee that at snapshot time the (memory + disk) sets are complete and disjoint — this is the foundation of the entire 3-step protocol's correctness.
 
-## 2. 锁的使用画像
+## 2. Usage profile of the lock
 
-| 持有者 | 频次 | 时长 | 在临界段内做什么 |
+| Holder | Frequency | Duration | What happens inside the critical section |
 |---|---|---|---|
-| `channelIOExecutor`（drain 阶段） | 高频，每条 entry 一次 | 毫秒级（一次盘读 + 投递 channel + 更新 offset） | (读盘 → add-buffer → 推进 offset)，三件事强绑定 |
-| task 线程 | 极低频，**只在 checkpoint 触发的瞬间一次** | 毫秒级（拍盘 + N 个 channel 各插一条 barrier） | 见下方 Step 1 |
+| `channelIOExecutor` (drain phase) | High, once per entry | Millisecond scale (one disk read + delivery + offset update) | (disk read → add-buffer → advance offset), the three tightly bound |
+| Task thread | Extremely low, **exactly once at the moment a checkpoint fires** | Millisecond scale (snapshot + insert one barrier into each of N channels) | See Step 1 below |
 
-锁序固定 `Unspiller.monitor → InputChannel.receivedBuffers`，两个持有者都同向，无环、无死锁。
+The lock order is fixed at `Unspiller.monitor → InputChannel.receivedBuffers`; both holders go in the same direction; no cycle, no deadlock.
 
-`channelIOExecutor` 的 buffer 申请 park（`LocalBufferPool.getAvailableFuture()`）**必须在 monitor 外**进行 —— 否则 buffer pool 抖动会顺带阻塞 task 线程 Step 1。
+The `channelIOExecutor`'s buffer-allocation parking (`LocalBufferPool.getAvailableFuture()`) **must happen outside the monitor** — otherwise buffer-pool jitter would in turn block task-thread Step 1.
 
-## 3. Checkpoint 3-step 协议
+## 3. The checkpoint 3-step protocol
 
-由 task 线程在 mailbox 上执行。
+Executed by the task thread on the mailbox.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant T as task 线程 (mailbox)
+    participant T as task thread (mailbox)
     participant U as Unspiller
     participant CIO as channelIOExecutor
     participant Ch as InputChannel
     participant W as ChannelStateWriter
-    Note over CIO: drain 中：每帧短持 monitor
+    Note over CIO: in drain: holds monitor briefly per frame
     T->>U: snap = snapshotAndInsertBarriers()
     activate U
-    Note over U: 进入 monitor<br/>(CIO 被挡在下一帧临界段之外)
-    loop 对该 task 的每个 InputChannel
+    Note over U: enter monitor<br/>(CIO blocked outside next-frame critical section)
+    loop For each InputChannel of this task
       U->>Ch: receivedBuffers.add(RecoveryCheckpointBarrier)
     end
-    Note over U: 退出 monitor
+    Note over U: exit monitor
     deactivate U
-    Note over CIO: drain 继续<br/>(新投递都在 barrier 之后)
-    par Step 2：内存 snapshot
-      loop 对每个 InputChannel
-        T->>Ch: 遍历 receivedBuffers<br/>barrier 之前的 retainBuffer
+    Note over CIO: drain resumes<br/>(new deliveries all land after the barrier)
+    par Step 2: in-memory snapshot
+      loop For each InputChannel
+        T->>Ch: walk receivedBuffers<br/>retainBuffer for those before the barrier
         T->>W: addInputData(buffers)
-        T->>Ch: 丢弃 barrier
+        T->>Ch: drop the barrier
       end
-    and Step 3：磁盘 slice
+    and Step 3: disk slice
       T->>W: addInputDataFromSpill(snap)
-      Note right of W: writer 异步 demux<br/>按 entry.channelInfo 路由
+      Note right of W: writer asynchronously demuxes<br/>routes by entry.channelInfo
     end
 ```
 
-### Step 1 —— 一次原子调用
+### Step 1 — a single atomic call
 
 ```
 snap = unspiller.snapshotAndInsertBarriers();
 ```
 
-内部行为见 [`unspiller.md`](./unspiller.md) §3。Unspiller 在 monitor 内完成：拍 `DiskSnapshot` + 给 `allChannels` 每个 channel 末尾 `add(RecoveryCheckpointBarrier)`。
+Internal behavior in [`unspiller.md`](./unspiller.md) §3. Inside the monitor, Unspiller takes a `DiskSnapshot` + `add(RecoveryCheckpointBarrier)` to the tail of each channel in `allChannels`.
 
-退出 monitor 后：
+After leaving the monitor:
 
-- `channelIOExecutor` 可继续 drain；其后续 add-buffer 在每个 channel 都落在 barrier 之后，Step 2 看不到；
-- `channelIOExecutor` 后续推进的 `currentOffset` 一定 > `snap.startPos`，Step 3 的 iterator 会跳过 `entryPos < startPos` 的 entry。
+- `channelIOExecutor` can resume drain; every subsequent add-buffer lands after the barrier in its channel, so Step 2 cannot see them;
+- `channelIOExecutor`'s subsequently advanced `currentOffset` is strictly greater than `snap.startPos`; the Step 3 iterator skips entries with `entryPos < startPos`.
 
-### Step 2 —— 内存 snapshot
+### Step 2 — in-memory snapshot
 
 ```
 for (InputChannel ch : allChannels) {
@@ -91,7 +91,7 @@ for (InputChannel ch : allChannels) {
     while (it.hasNext()) {
       Buffer b = it.next();
       if (b instanceof RecoveryCheckpointBarrier) { it.remove(); break; }
-      retained.add(b.retainBuffer());                 // 引用计数 +1
+      retained.add(b.retainBuffer());                 // refcount +1
     }
   }
   channelStateWriter.addInputData(
@@ -100,57 +100,57 @@ for (InputChannel ch : allChannels) {
 }
 ```
 
-- 用 `retainBuffer` + 遍历，不 `poll`：channel 里这些 buffer 还要被 task 自己消费。
-- barrier sentinel 用 `it.remove()` 抹掉，task 后续消费看不到它。
+- Use `retainBuffer` + iteration, not `poll`: these buffers in the channel still need to be consumed by the task itself.
+- The barrier sentinel is removed by `it.remove()`; subsequent task consumption does not see it.
 
-### Step 3 —— 磁盘 slice
+### Step 3 — disk slice
 
 ```
 channelStateWriter.addInputDataFromSpill(checkpointId, snap);
 ```
 
-`addInputDataFromSpill` 是 `ChannelStateWriter` 的新方法，签名：
+`addInputDataFromSpill` is a new method on `ChannelStateWriter` with signature:
 
 ```java
 void addInputDataFromSpill(long checkpointId, CloseableIterator<DiskSnapshot.Chunk> chunks);
 ```
 
-writer 在 async 线程上按 `chunk.channelInfo` demux 到各 channel 的 checkpoint output stream。
+The writer, on its async thread, demuxes by `chunk.channelInfo` into each channel's checkpoint output stream.
 
-### Step 2 与 Step 3 的顺序
+### Ordering between Step 2 and Step 3
 
-- 都必须在 Step 1 之后；
-- 二者之间无顺序依赖（一个是 task 线程同步执行，一个是 task → writer 线程的异步投递）。落地建议代码上线性：先 Step 2 后 Step 3。
+- Both must run after Step 1;
+- There is no ordering dependency between the two (one runs synchronously on the task thread, the other is an async task → writer-thread submission). The recommendation is to keep code linear: do Step 2 first, then Step 3.
 
-## 4. `RecoveryCheckpointBarrier` Sentinel
+## 4. The `RecoveryCheckpointBarrier` sentinel
 
 ```java
 public final class RecoveryCheckpointBarrier implements Buffer { /* sentinel marker */ }
 ```
 
-约束：
+Constraints:
 
-- 仅 task 线程在 Step 1 内 `add` 进 `receivedBuffers`；
-- 仅 task 线程在 Step 2 内识别并 `remove`；
-- 算子层不会看到它，因为 Step 2 一定在 channel 的下一次 task 消费循环之前完成（同一 mailbox tick）；
-- 实现层面可继承现有 `Buffer` 子类加 marker 字段，或新建 sentinel 类型；最终编码方式落地时定，**语义不会再变**。
+- Only the task thread `add`s it into `receivedBuffers` in Step 1;
+- Only the task thread recognizes and `remove`s it in Step 2;
+- The operator layer never sees it, because Step 2 always completes before the channel's next task consumption loop (same mailbox tick);
+- At the implementation level, this can be a marker field on an existing `Buffer` subclass or a brand-new sentinel type; the final encoding form will be decided during landing, but **the semantics will not change**.
 
-## 5. 正确性论证
+## 5. Correctness proof
 
-设 task 线程在某一时刻 T 完成 Step 1。证明本次 checkpoint 完整且无重复：
+Suppose the task thread finishes Step 1 at some moment T. Prove this checkpoint is complete and contains no duplicates:
 
-- **完整**：T 时刻所有未消费的 recovery 数据由两部分组成 ——
-  - 已被 drain 投到某个 channel 但 task 尚未消费的部分 → 在该 channel `receivedBuffers` 的 barrier 之前 → Step 2 捕获；
-  - 还在磁盘上的部分（按 entry 维度 = `entryPos >= snap.startPos`）→ Step 3 捕获。
+- **Complete**: at moment T, all unconsumed recovery data falls into two parts —
+  - the portion already drained into some channel but not yet consumed by the task → before the barrier in that channel's `receivedBuffers` → captured by Step 2;
+  - the portion still on disk (in entry granularity, `entryPos >= snap.startPos`) → captured by Step 3.
 
-- **不重复**：在 monitor 内 T 时刻同时观察 `currentOffset` 与每个 channel 的 barrier 位置；原则 2 保证「磁盘 offset 推进」与「channel add-buffer」是同一原子动作，所以这两套位置是同一物理时刻的快照 —— 不可能某条 entry 在 `currentOffset` 之前（属于「已投递」）的同时又出现在 barrier 之后（属于「未投递」）。
+- **No duplicates**: inside the monitor at moment T, `currentOffset` and each channel's barrier position are observed at the same time; Principle 2 guarantees that "advance disk offset" and "channel add-buffer" are the same atomic action, so the two positions are a snapshot of the same physical instant — it is impossible for some entry to be before `currentOffset` (i.e. "already delivered") and at the same time after the barrier (i.e. "not yet delivered").
 
-- **drain 继续后不污染本次 checkpoint**：原则 1 保证 monitor 释放前 `channelIOExecutor` 进不了任何 channel 的 `receivedBuffers`；monitor 释放后它的下一次 add-buffer 一定 happen-after 已插入的 barrier，所以新投递都在 barrier 之后。
+- **drain resuming does not contaminate this checkpoint**: Principle 1 guarantees that before the monitor is released, `channelIOExecutor` cannot enter any channel's `receivedBuffers`; after the monitor is released, its next add-buffer is guaranteed to happen-after the already-inserted barrier, so all new deliveries land after the barrier.
 
-## 6. 与 FLINK-39519 类 race 的关系
+## 6. Relationship to the FLINK-39519 class of races
 
-master 上 `RecoveredInputChannel` 上的 listener 切换（`stateConsumedFuture` 触发 conversion 后 channel 引用变化）曾导致 stale-enqueue race。本设计下：
+On master, listener switching on `RecoveredInputChannel` (the channel reference changes after `stateConsumedFuture` triggers conversion) once caused a stale-enqueue race. Under this design:
 
-- conversion 完成在 drain 启动**之前**（filter → conversion → drain 严格串行，见 [`overview.md`](./overview.md) §2）；
-- `Unspiller.allChannels` 在构造时一次性获得物理 channel 引用，drain 阶段不会再切换；
-- 没有 listener 切换窗口，无 stale-enqueue 可能。
+- conversion completes **before** drain starts (filter → conversion → drain is strictly serial; see [`overview.md`](./overview.md) §2);
+- `Unspiller.allChannels` is captured with physical channel references at construction time and is never switched again during drain;
+- there is no listener-switching window; no possibility of stale-enqueue.
