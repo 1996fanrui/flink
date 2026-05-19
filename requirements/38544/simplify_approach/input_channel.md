@@ -25,8 +25,8 @@ The interface intentionally contains only the delivery side (`onRecoveredStateBu
 
 | Field | Single, well-defined purpose |
 |---|---|
-| `recoveredBuffers: Deque<Buffer>` (new) | FIFO of buffers delivered by drain. The field exists only for recovery; once `recoveredStateFinished=true` and the queue has drained, it stays empty for the rest of the task's lifetime. |
-| `recoveredStateFinished: boolean` (new) | Starts false; flipped to true exactly once by `finishReadRecoveredState()`. The single source of truth for "drain is no longer producing into this channel". |
+| `recoveredBuffers: Deque<Buffer>` (new) | FIFO of buffers delivered by drain. The field exists only for recovery; once `allRecoveredBuffersDelivered=true` and the queue has drained, it stays empty for the rest of the task's lifetime. |
+| `allRecoveredBuffersDelivered: boolean` (new) | Starts false; flipped to true exactly once by `finishReadRecoveredState()`. Specifically means **"the spiller / drain producer has finished adding recovered buffers into this channel"** — it does NOT mean "the consumer has finished consuming them". Full recovery completion is `allRecoveredBuffersDelivered == true && recoveredBuffers.isEmpty()`. |
 
 ### 3.3 Locking `recoveredBuffers` — reuse, don't add a new lock
 
@@ -73,7 +73,7 @@ Net effect: every recovery responsibility previously living on `toBeConsumedBuff
 ### 3.6 Consumer logic — `getNextBuffer()`
 
 ```
-if (!recoveredStateFinished):
+if (!allRecoveredBuffersDelivered):
     // Recovery in progress: serve recoveredBuffers; let only priority events through from upstream.
     if (hasPendingPriorityEvent)            return <pull priority event from upstream>;
     if (!recoveredBuffers.isEmpty())        return recoveredBuffers.poll();
@@ -89,12 +89,62 @@ else:
 ### 3.7 `stateConsumedFuture`
 
 Completed by the channel itself when both hold:
-- `recoveredStateFinished == true`;
+- `allRecoveredBuffersDelivered == true`;
 - `recoveredBuffers` is empty.
 
 Whichever transition makes both true is the trigger — either `finishReadRecoveredState()` runs when `recoveredBuffers` is already empty, or the consumer polls the last entry off `recoveredBuffers` after the flag is already set. No EOICS sentinel is inserted into the queue.
 
-### 3.8 Why we did not reuse existing master upstream entries
+### 3.8 Extending `checkpointStarted` to snapshot `recoveredBuffers`
+
+`channel.checkpointStarted(barrier)` is master's per-channel snapshot entry, reached from `IndexedInputGate.checkpointStarted` iterating channels. We **extend the existing method in place** (both `RemoteInputChannel.checkpointStarted` and `LocalInputChannel.checkpointStarted`) rather than introduce a separate `snapshotRecoveredBuffersUpToBarrier` method — the per-channel snapshot decision lives in one place. The dispatcher in [`coordination.md`](./coordination.md#32-shared-task-level-dispatcher) §3.2 only iterates gates per master, gates iterate channels per master, and each channel picks one of two mutually exclusive branches based on its own state.
+
+Extension shape (pseudocode; same on Local & Remote):
+
+```java
+public void checkpointStarted(CheckpointBarrier barrier) throws CheckpointException {
+    synchronized (channelMonitor()) {
+        // Recovery-phase predicate uses BOTH fields. The four boundary cases:
+        //   - drain hasn't produced yet:         !allRecoveredBuffersDelivered, recoveredBuffers empty   → in recovery
+        //   - drain producing:                   !allRecoveredBuffersDelivered, recoveredBuffers non-empty → in recovery
+        //   - drain done, consumer behind:        allRecoveredBuffersDelivered, recoveredBuffers non-empty → in recovery
+        //   - recovery fully done:                allRecoveredBuffersDelivered, recoveredBuffers empty   → NOT in recovery
+        // This predicate is the NEGATION of the stateConsumedFuture completion
+        // condition (§3.7) — same source of truth, opposite phase.
+        boolean inRecovery = !allRecoveredBuffersDelivered || !recoveredBuffers.isEmpty();
+
+        if (inRecovery) {
+            // Defensive: during recovery, upstream must not have sent live data buffers.
+            assert receivedBuffersHasNoLiveDataBuffer()
+                : "live upstream data observed in receivedBuffers during recovery";
+
+            // Walk recoveredBuffers up to the RecoveryCheckpointBarrier sentinel inserted
+            // by Step 1; retain pre-barrier buffers and hand them to the channel state writer.
+            List<Buffer> retained = new ArrayList<>();
+            Iterator<Buffer> it = recoveredBuffers.iterator();
+            while (it.hasNext()) {
+                Buffer b = it.next();
+                if (b instanceof RecoveryCheckpointBarrier) { it.remove(); break; }
+                retained.add(b.retainBuffer());           // retain — task still consumes from queue
+            }
+            channelStateWriter.addInputData(
+                barrier.getId(), channelInfo, SEQUENCE_NUMBER_RESTORED,
+                CloseableIterator.fromList(retained, Buffer::recycleBuffer));
+        } else {
+            // Master existing — channelStatePersister.startPersisting + maybePersist setup,
+            // persists receivedBuffers content (upstream live data). Untouched from master.
+            <master existing body>
+        }
+    }
+}
+```
+
+Notes:
+
+- **Mutually exclusive branches.** The two branches are **never both executed**. During recovery, only the new branch runs; outside recovery, only master's body runs. The temporal mutual-exclusion invariant (recovery-side state and upstream live data never coexist) makes this branch correctness-preserving — in either branch, the "other side"'s state is empty by construction.
+- **`receivedBuffersHasNoLiveDataBuffer()`** is a channel-internal helper. Remote: iterate `receivedBuffers` and verify every buffer has `!Buffer.isBuffer()` (only priority events / control buffers, no data). Local: trivially `true` (no `receivedBuffers` field on master; live data is pulled via `subpartitionView` only after `recoveredBuffers` is empty per §3.6).
+- **`channelMonitor()`** is the same monitor used by `onRecoveredStateBuffer` and `getNextBuffer`: `synchronized(receivedBuffers)` on Remote, `synchronized(recoveredBuffers)` on Local (§3.3).
+
+### 3.9 Why we did not reuse existing master upstream entries
 
 - `RemoteInputChannel.onBuffer` also runs sequence-number validation, priority branching, `channelStatePersister` bookkeeping, and `onSenderBacklog` — all network-protocol-specific side effects that misfire on drain output. Bypassing them in-place is larger surgery than adding a separate method.
 - `LocalInputChannel` has no push entry on master at all (pull-based via `subpartitionView`); something new must be added regardless.
@@ -104,7 +154,7 @@ Whichever transition makes both true is the trigger — either `finishReadRecove
 - `getNextBuffer` external callers (`InputGate.pollNext`, `StreamTaskNetworkInput`, etc.) keep the same signature and contract.
 - `notifyChannelNonEmpty / queueChannel / inputChannelsWithData` is unchanged; both upstream add (master path) and `recoveredBuffers` add (new `onRecoveredStateBuffer`) call it.
 - The priority-event chain on the upstream side (`addPriorityBuffer / firstPriorityEvent`) is unchanged.
-- `recoveredStateFinished` transitions false → true exactly once per recovery, inside `Unspiller.lock`.
+- `allRecoveredBuffersDelivered` transitions false → true exactly once per recovery, inside `Unspiller.lock`.
 - `toBeConsumedBuffers` carries only `FullyFilledBuffer` splits — no recovery data. Its access remains single-threaded (task thread re-entrant inside `getNextBuffer`); no lock is needed for it.
 - The existing `onRecoveredStateBuffer` / `finishReadRecoveredState` on `RecoveredInputChannel` are untouched and continue to serve the filter-off path.
 

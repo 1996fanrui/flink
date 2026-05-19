@@ -157,10 +157,12 @@ public interface RecoverableInputChannel {
      *  Caller (drain or task-thread Step 1) MUST hold Unspiller.lock. */
     void onRecoveredStateBuffer(Buffer buffer);
 
-    /** Mark recovery delivery complete on this channel; flips
-     *  recoveredStateFinished from false to true exactly once. After this call,
-     *  the channel completes stateConsumedFuture as soon as recoveredBuffers
-     *  becomes empty.
+    /** Signal that the spiller / drain producer has finished adding recovered
+     *  buffers into this channel; flips allRecoveredBuffersDelivered from false to true
+     *  exactly once. Producer-side completion only — the consumer may still
+     *  have leftover buffers in recoveredBuffers. The channel completes
+     *  stateConsumedFuture once both this flag is true AND recoveredBuffers is
+     *  empty.
      *
      *  Caller (drain, end-of-drain) MUST hold Unspiller.lock. */
     void finishReadRecoveredState();
@@ -240,6 +242,6 @@ A few cross-thread artifacts are not themselves Java interfaces but pass through
 ## 7. Simplifications this design delivers
 
 - No cross-channel coordinator object; no "wait until every channel has been notified before snapshotting" wait-set;
-- The `getNextBuffer` change is small and self-contained: a `recoveredStateFinished` flag plus a queue-2 check, both fully described in [`input_channel.md`](./input_channel.md) §3; existing callers and the wake-up chain are untouched;
+- The `getNextBuffer` change is small and self-contained: a `allRecoveredBuffersDelivered` flag plus a queue-2 check, both fully described in [`input_channel.md`](./input_channel.md) §3; existing callers and the wake-up chain are untouched;
 - No "filter / drain writing to a channel concurrently"; filter does not touch channels, and drain is a single-threaded sequential writer;
 - No borrowed gate lock for stale-enqueue races; channel references are captured once at `Unspiller` construction and never switched during drain.

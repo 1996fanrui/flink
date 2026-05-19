@@ -101,7 +101,7 @@ public final class Unspiller implements RecoveryCheckpointTrigger, Closeable {
             }
             seg.close();
         }
-        // (D) Drain done. Flip recoveredStateFinished on every channel inside the lock.
+        // (D) Drain done. Flip allRecoveredBuffersDelivered on every channel inside the lock.
         synchronized (lock) {
             for (RecoverableInputChannel ch : allChannels) ch.finishReadRecoveredState();
         }
@@ -132,7 +132,7 @@ Steps (A)/(B)/(C)/(D) refer to the labelled lines inside `drain()` (§3.2).
 - **(A)** Buffer-allocation parking is inside `BufferManager.requestBufferBlocking`, on the channel's own `bufferQueue` (Java `Object.wait/notifyAll`, woken by `BufferPool`'s `BufferListener` callback). This park MUST happen outside `Unspiller.lock`; otherwise buffer-pool jitter would in turn block checkpoint Step 1.
 - **(B)** Disk read (`seg.readBytesAt`) runs outside `Unspiller.lock`. The buf is local to this iteration and not yet visible to any other thread, so reading it concurrently with the task thread's snapshot is safe.
 - **(C)** The two-statement critical section is **the only place** `currentSegmentIndex` / `currentOffset` are mutated and **the only place** drain calls `ch.onRecoveredStateBuffer(...)`. The two actions must stay coupled — this is the second strong principle in [`coordination.md`](./coordination.md); separating them would create a window where the snapshot sees a half-applied entry (either "already in channel but offset not advanced" or "offset advanced but not yet in channel").
-- **(D)** After the full segment set is iterated, drain takes the lock one more time and calls `finishReadRecoveredState()` on every channel. The channel itself completes `stateConsumedFuture` once both its `recoveredStateFinished` flag is true and its `recoveredBuffers` field is empty (see [`input_channel.md`](./input_channel.md) §3.7). No EOICS sentinel buffer is inserted into the queue.
+- **(D)** After the full segment set is iterated, drain takes the lock one more time and calls `finishReadRecoveredState()` on every channel. The channel itself completes `stateConsumedFuture` once both its `allRecoveredBuffersDelivered` flag is true and its `recoveredBuffers` field is empty (see [`input_channel.md`](./input_channel.md) §3.7). No EOICS sentinel buffer is inserted into the queue.
 
 ## 5. Reuse / change boundary against master
 

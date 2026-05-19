@@ -87,7 +87,7 @@ Implemented by `RecoveredInputChannel`, `LocalInputChannel`, `RemoteInputChannel
 | Method | Lock precondition | Purpose |
 |---|---|---|
 | `onRecoveredStateBuffer(Buffer buffer)` | Caller MUST hold `Unspiller.lock`. | Append `buffer` to the channel's `recoveredBuffers`. Used for both real recovered data and the `RecoveryCheckpointBarrier` sentinel (channel impl does not distinguish). |
-| `finishReadRecoveredState()` | Caller MUST hold `Unspiller.lock`. | Flip `recoveredStateFinished` to true. The channel completes `stateConsumedFuture` once both this flag is set and `recoveredBuffers` has been fully consumed. |
+| `finishReadRecoveredState()` | Caller MUST hold `Unspiller.lock`. | Flip `allRecoveredBuffersDelivered` to true. The channel completes `stateConsumedFuture` once both this flag is set and `recoveredBuffers` has been fully consumed. |
 
 ### 2.3 `BufferRequester` — unspilling thread → buffer pool
 
@@ -100,91 +100,158 @@ A two-method interface; lives in the same package as `Unspiller` so the cross-pa
 
 ## 3. The checkpoint 3-step protocol
 
-Executed by the task thread on the mailbox.
+### 3.1 Trigger point — the two `Alternating*` UC entry points
+
+In master, `CheckpointableInput.checkpointStarted` is reached from exactly two call sites:
+
+- `AlternatingWaitingForFirstBarrierUnaligned.barrierReceived` — the checkpoint started as UC from the outset;
+- `AlternatingCollectingBarriers.barrierReceived` — aligned barrier in flight, but the alignment has now timed out and is being switched to UC.
+
+These two **are the UC entry points** in master's barrier handler. Recovery-during-checkpoint is a UC-only feature, so plugging the 3-step in via these two entries covers every relevant case — nothing else triggers UC handling.
+
+We add **one** call to a shared task-level dispatcher (see §3.2) at the top of each of these two methods. No further hook points are required.
+
+### 3.2 Shared task-level dispatcher
+
+The same body runs for both `Alternating*` callers — one helper on `ChannelState`:
+
+```java
+// ChannelState.onCheckpointStartedForAllInputs (called from both Alternating* classes)
+public void onCheckpointStartedForAllInputs(CheckpointBarrier barrier,
+                                             ChannelStateWriter writer) throws ... {
+    // (1) Task-level Step 1 — snapshot disk + insert RecoveryCheckpointBarrier into each
+    //     channel's recoveredBuffers. RecoveryCheckpointTrigger is a no-op impl when the
+    //     feature is off or recovery has fully completed; returns an empty DiskSnapshot
+    //     and inserts no barriers. Outer code does not branch on the feature flag.
+    DiskSnapshot snap = recoveryCheckpointTrigger.snapshotAndInsertBarriers();
+
+    // (2) Master-existing per-gate iteration. Internally each channel's
+    //     checkpointStarted picks ONE of two mutually exclusive branches based
+    //     on its own (allRecoveredBuffersDelivered, recoveredBuffers) state:
+    //       - in recovery  → walk recoveredBuffers up to RecoveryCheckpointBarrier
+    //       - not recovery → master's existing receivedBuffers persistence
+    //     See §3.3 for the channel-internal body; no outer Step 2 loop.
+    for (CheckpointableInput input : inputs) {
+        input.checkpointStarted(barrier);
+    }
+
+    // (3) Task-level Step 3 — hand the disk slice to the writer.
+    writer.addInputDataFromSpill(barrier.getId(), snap);
+}
+```
+
+Two `Alternating*` callers reduce to one line each:
+
+```java
+channelState.onCheckpointStartedForAllInputs(unalignedBarrier, channelStateWriter);
+controller.triggerGlobalCheckpoint(unalignedBarrier);
+```
+
+Key properties:
+
+- **No `if (filter-on)` at this layer.** Step 1 and Step 3 always run; they collapse to no-op when there's nothing to do (feature off, or recovery fully completed on every channel) via:
+  - `RecoveryCheckpointTrigger.snapshotAndInsertBarriers()` no-ops (empty `DiskSnapshot`, no barrier inserts) when the spill file is empty AND `allRecoveredBuffersDelivered` is true on every channel;
+  - `ChannelStateWriter.addInputDataFromSpill(empty)` no-ops on the writer side.
+- **No outer Step 2 loop.** Step 2 is **embedded inside each `channel.checkpointStarted(barrier)`** (master's existing per-channel method, now extended — see §3.3). The dispatcher only iterates gates per master; gates iterate channels per master; channels handle both old (receivedBuffers) and new (recoveredBuffers) work in one place.
+- **Task-level once per checkpoint.** `recoveryCheckpointTrigger.snapshotAndInsertBarriers()` is called exactly once, regardless of gate count. Master per-gate iteration covers all channels exactly once.
+
+Sequence view of the dispatcher running on the task thread:
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant T as task thread (mailbox)
+    participant CS as ChannelState
     participant U as Unspiller
     participant CIO as channelIOExecutor
-    participant Ch as InputChannel
+    participant Ch as RecoverableInputChannel (×N)
     participant W as ChannelStateWriter
-    Note over CIO: in drain: holds lock briefly per entry
-    T->>U: snap = snapshotAndInsertBarriers()
+    Note over CIO: drain holds Unspiller.lock briefly per entry
+    T->>CS: onCheckpointStartedForAllInputs(barrier)
+    activate CS
+    Note over CS: Step 1
+    CS->>U: snap = snapshotAndInsertBarriers()
     activate U
-    Note over U: enter synchronized(lock)<br/>(CIO blocked outside next critical section)
-    loop For each RecoverableInputChannel of this task
+    Note over U: enter synchronized(Unspiller.lock)<br/>(CIO blocked outside next critical section)
+    loop per RecoverableInputChannel
       U->>Ch: onRecoveredStateBuffer(RecoveryCheckpointBarrier)
     end
-    Note over U: exit synchronized(lock)
+    Note over U: exit synchronized(Unspiller.lock)
     deactivate U
-    Note over CIO: drain resumes<br/>(new deliveries all land after the barrier)
-    par Step 2: in-memory snapshot
-      loop For each InputChannel
-        T->>Ch: walk receivedBuffers<br/>retainBuffer for those before the barrier
-        T->>W: addInputData(buffers)
-        T->>Ch: drop the barrier
-      end
-    and Step 3: disk slice
-      T->>W: addInputDataFromSpill(snap)
-      Note right of W: writer asynchronously demuxes<br/>routes by entry.channelInfo
+    Note over CIO: drain resumes;<br/>new deliveries all land after the barrier
+    Note over CS: master-existing per-gate iteration<br/>(Step 2 embedded inside each channel.checkpointStarted)
+    loop per CheckpointableInput → per channel
+      CS->>Ch: checkpointStarted(barrier)
+      Note right of Ch: if inRecovery → walk recoveredBuffers up to barrier<br/>else → master receivedBuffers persistence<br/>(mutually exclusive — never both)
+      Ch->>W: addInputData(retained pre-barrier buffers)
     end
+    Note over CS: Step 3
+    CS->>W: addInputDataFromSpill(snap)
+    Note right of W: writer async demux<br/>by entry.channelInfo
+    deactivate CS
 ```
 
-### Step 1 — a single atomic call
+### 3.3 Inside `channel.checkpointStarted` — Step 2 embedded
 
-```
-snap = unspiller.snapshotAndInsertBarriers();
-```
+Both `RemoteInputChannel.checkpointStarted` and `LocalInputChannel.checkpointStarted` extend their master-existing bodies with **one mutually exclusive branch** — recovery and non-recovery never both run. Master's existing receivedBuffers persistence runs **only** when not in recovery; the new recoveredBuffers walk runs **only** when in recovery. The temporal mutual-exclusion invariant (§3.4 defensive assert) makes this branch correctness-preserving.
 
-Internal behavior in [`unspiller.md`](./unspiller.md) §3. Inside `synchronized (lock)`, Unspiller takes a `DiskSnapshot` and calls `ch.onRecoveredStateBuffer(barrier)` on every channel in `allChannels` (the barrier is a sentinel `Buffer`; from the channel's perspective it is just another append to `recoveredBuffers`).
+```java
+// channel.checkpointStarted (RemoteInputChannel / LocalInputChannel)
+public void checkpointStarted(CheckpointBarrier barrier) throws CheckpointException {
+    synchronized (channelMonitor()) {
+        boolean inRecovery = !allRecoveredBuffersDelivered || !recoveredBuffers.isEmpty();
+        if (inRecovery) {
+            // Defensive: during recovery, upstream must not have sent live data
+            // buffers into receivedBuffers (only priority events / control buffers).
+            assert receivedBuffersHasNoLiveDataBuffer()
+                : "live upstream data observed in receivedBuffers during recovery";
 
-After releasing the lock:
-
-- `channelIOExecutor` can resume drain; every subsequent add-buffer lands after the barrier in its channel, so Step 2 cannot see them;
-- `channelIOExecutor`'s subsequently advanced `currentOffset` is strictly greater than `snap.startPos`; the Step 3 iterator skips entries with `entryPos < startPos`.
-
-### Step 2 — in-memory snapshot
-
-```
-for (InputChannel ch : allChannels) {
-  List<Buffer> retained = new ArrayList<>();
-  synchronized (ch.receivedBuffers) {
-    Iterator<Buffer> it = ch.receivedBuffers.iterator();
-    while (it.hasNext()) {
-      Buffer b = it.next();
-      if (b instanceof RecoveryCheckpointBarrier) { it.remove(); break; }
-      retained.add(b.retainBuffer());                 // refcount +1
+            // Walk recoveredBuffers up to the RecoveryCheckpointBarrier sentinel
+            // inserted by Step 1, retain pre-barrier buffers, hand them to the
+            // channel state writer. Drop the barrier sentinel itself.
+            List<Buffer> retained = new ArrayList<>();
+            Iterator<Buffer> it = recoveredBuffers.iterator();
+            while (it.hasNext()) {
+                Buffer b = it.next();
+                if (b instanceof RecoveryCheckpointBarrier) { it.remove(); break; }
+                retained.add(b.retainBuffer());        // retain — task still consumes from queue
+            }
+            channelStateWriter.addInputData(
+                barrier.getId(), channelInfo, SEQUENCE_NUMBER_RESTORED,
+                CloseableIterator.fromList(retained, Buffer::recycleBuffer));
+        } else {
+            // Master existing — channelStatePersister.startPersisting + maybePersist
+            // setup; persists receivedBuffers content (upstream live data).
+            // Untouched from master.
+            <master existing body>
+        }
     }
-  }
-  channelStateWriter.addInputData(
-      checkpointId, ch.channelInfo, SEQUENCE_NUMBER_RESTORED,
-      CloseableIterator.fromList(retained, Buffer::recycleBuffer));
 }
 ```
 
-- Use `retainBuffer` + iteration, not `poll`: these buffers in the channel still need to be consumed by the task itself.
-- The barrier sentinel is removed by `it.remove()`; subsequent task consumption does not see it.
+Key points:
 
-### Step 3 — disk slice
+- **Mutually exclusive branches.** During recovery, only the new branch runs; master's body is skipped (it has nothing to do — `receivedBuffers` has no live data, only priority events handled separately by the barrier-arrival mechanism that triggered this checkpoint). Outside recovery, only master's body runs — `recoveredBuffers` is empty, no walk needed.
+- **Recovery-phase predicate uses BOTH fields** — `!allRecoveredBuffersDelivered || !recoveredBuffers.isEmpty()`. This catches every moment the channel still has work to do recovery-side, including the boundary cases where the producer hasn't yet started delivering (`recoveredBuffers` empty but flag false) and where the producer finished but the consumer hasn't drained (flag true but `recoveredBuffers` non-empty). It is the **negation** of the `stateConsumedFuture` completion predicate ([`input_channel.md`](./input_channel.md) §3.7).
+- **`receivedBuffersHasNoLiveDataBuffer()`** — channel-internal helper. On `RemoteInputChannel`: iterate `receivedBuffers` and verify every buffer has `!Buffer.isBuffer()` (priority events / control buffers only, no data). On `LocalInputChannel`: trivially `true` (no `receivedBuffers` field; live data arrives via `subpartitionView` which is consulted only after `recoveredBuffers` is empty per §3.6).
+- **`channelMonitor()`** — same monitor used by `onRecoveredStateBuffer` (Remote: `synchronized(receivedBuffers)`, Local: `synchronized(recoveredBuffers)`). See §1 lock order.
 
-```
-channelStateWriter.addInputDataFromSpill(checkpointId, snap);
-```
+### 3.4 Step 1 and Step 3 details
 
-`addInputDataFromSpill` is a new method on `ChannelStateWriter` with signature:
+**Step 1** — `snapshotAndInsertBarriers()` internal behavior in [`unspiller.md`](./unspiller.md) §3.2: inside `synchronized(Unspiller.lock)`, take a `DiskSnapshot` and call `ch.onRecoveredStateBuffer(RecoveryCheckpointBarrier)` on every channel in `allChannels`. After releasing the lock, `channelIOExecutor` resumes drain; subsequent add-buffers land after the barrier; subsequent `currentOffset` advances past `snap.startPos` (so Step 3's iterator skips already-delivered entries).
+
+**Step 3** — new `ChannelStateWriter` method:
 
 ```java
 void addInputDataFromSpill(long checkpointId, CloseableIterator<DiskSnapshot.Chunk> chunks);
 ```
 
-The writer, on its async thread, demuxes by `chunk.channelInfo` into each channel's checkpoint output stream.
+Async writer thread demuxes by `chunk.channelInfo` into each channel's checkpoint output stream. Empty `DiskSnapshot` is a no-op at the writer side.
 
-### Ordering between Step 2 and Step 3
+### 3.5 Ordering
 
-- Both must run after Step 1;
-- There is no ordering dependency between the two (one runs synchronously on the task thread, the other is an async task → writer-thread submission). The recommendation is to keep code linear: do Step 2 first, then Step 3.
+- Step 1 runs first (the disk snap + barrier inserts must precede everything else).
+- Step 2 (inside each `channel.checkpointStarted`) and Step 3 (`addInputDataFromSpill`) both follow Step 1; there is no ordering dependency between Step 2 and Step 3 in §3.2's pseudocode the per-gate loop runs before the explicit Step 3 call, which is the recommended linear form.
 
 ## 4. The `RecoveryCheckpointBarrier` sentinel
 
@@ -194,7 +261,7 @@ public final class RecoveryCheckpointBarrier implements Buffer { /* sentinel mar
 
 Constraints:
 
-- Only the task thread `add`s it into `receivedBuffers` in Step 1;
+- Only the task thread `add`s it into `recoveredBuffers` in Step 1 (via `onRecoveredStateBuffer`);
 - Only the task thread recognizes and `remove`s it in Step 2;
 - The operator layer never sees it, because Step 2 always completes before the channel's next task consumption loop (same mailbox tick);
 - At the implementation level, this can be a marker field on an existing `Buffer` subclass or a brand-new sentinel type; the final encoding form will be decided during landing, but **the semantics will not change**.
@@ -204,7 +271,7 @@ Constraints:
 Suppose the task thread finishes Step 1 at some moment T. Prove this checkpoint is complete and contains no duplicates:
 
 - **Complete**: at moment T, all unconsumed recovery data falls into two parts —
-  - the portion already drained into some channel but not yet consumed by the task → before the barrier in that channel's `receivedBuffers` → captured by Step 2;
+  - the portion already drained into some channel but not yet consumed by the task → before the barrier in that channel's `recoveredBuffers` → captured by Step 2;
   - the portion still on disk (in entry granularity, `entryPos >= snap.startPos`) → captured by Step 3.
 
 - **No duplicates**: inside `synchronized (lock)` at moment T, `currentOffset` and each channel's barrier position are observed at the same time; Principle 2 guarantees that "advance disk offset" and "channel add-buffer" are the same atomic action, so the two positions are a snapshot of the same physical instant — it is impossible for some entry to be before `currentOffset` (i.e. "already delivered") and at the same time after the barrier (i.e. "not yet delivered").
