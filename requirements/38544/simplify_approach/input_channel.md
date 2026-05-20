@@ -13,6 +13,8 @@
 
 Master `RecoveredInputChannel` keeps a single FIFO `receivedBuffers` and puts every recovered buffer in **before** `requestSubpartition()` is called, so order is automatic. In this design drain runs **after** conversion (so the physical channel is in place when checkpoint barriers arrive) — by then upstream has already been told to send, and upstream data may race drain into the same channel. A "channel side untouched" assumption is therefore impossible: something on the channel must separate recovery delivery from upstream delivery and enforce ordering. Rejected alternatives that try to avoid touching the channel are listed in §5.
 
+Second, in-recovery checkpoints require a new per-channel method to snapshot `recoveredBuffers` up to a cpId-matched `RecoveryCheckpointBarrier` — absent on master.
+
 ## 3. Final design
 
 ### 3.1 The `RecoverableInputChannel` interface
@@ -43,7 +45,7 @@ Global lock order:
 SpillFileReader.lock → channel-internal queue monitor
 ```
 
-`onRecoveredStateBuffer` and `finishReadRecoveredState` enter the channel monitor while the caller already holds `SpillFileReader.lock`; `getNextBuffer` and Step 2's snapshot walk hold only the channel monitor; network `onBuffer` (Remote) still holds only `receivedBuffers` (= the same channel monitor). No path takes the locks in reverse — no cycle, no deadlock. See [`coordination.md`](./coordination.md#lock-order) §1 "Lock order" for the full per-path table.
+`onRecoveredStateBuffer` enters the channel monitor while the caller already holds `SpillFileReader.lock`; `finishReadRecoveredState` enters the channel monitor without `SpillFileReader.lock` (end-of-drain exception, see [`coordination.md`](./coordination.md) §1); `getNextBuffer` and Step 2's snapshot walk hold only the channel monitor; network `onBuffer` (Remote) still holds only `receivedBuffers` (= the same channel monitor). No path takes the locks in reverse — no cycle, no deadlock. See [`coordination.md`](./coordination.md#lock-order) §1 "Lock order" for the full per-path table.
 
 ### 3.4 The two semantically distinct queues on `LocalInputChannel`
 
@@ -96,7 +98,7 @@ Whichever transition makes both true is the trigger — either `finishReadRecove
 
 ### 3.8 Extending `checkpointStarted` to snapshot `recoveredBuffers`
 
-`channel.checkpointStarted(barrier)` is master's per-channel snapshot entry, reached from `IndexedInputGate.checkpointStarted` iterating channels. We **extend the existing method in place** (both `RemoteInputChannel.checkpointStarted` and `LocalInputChannel.checkpointStarted`) rather than introduce a separate `snapshotRecoveredBuffersUpToBarrier` method — the per-channel snapshot decision lives in one place. The dispatcher in [`coordination.md`](./coordination.md#32-shared-task-level-dispatcher) §3.2 only iterates gates per master, gates iterate channels per master, and each channel picks one of two mutually exclusive branches based on its own state.
+`channel.checkpointStarted(barrier)` is master's per-channel snapshot entry, reached from `IndexedInputGate.checkpointStarted` iterating channels. The cpId-bounded scan can be expressed either **(a) inlined into the existing `checkpointStarted`** (one method, two mutually exclusive branches — shown in the pseudocode below) **or (b) extracted into a sibling method** such as `snapshotDuringRecovery(long cpId)` / `checkpointStartedInRecoveryPhase` called by the dispatcher when the channel is in recovery. Both forms are protocol-equivalent; the dispatcher in [`coordination.md`](./coordination.md#32-shared-task-level-dispatcher) §3.2 only iterates gates per master and each channel picks one branch based on its own state. The doc shows form (a); the final choice is local to the channel implementation and can be made during coding when the actual diff size is visible.
 
 Extension shape (pseudocode; same on Local & Remote):
 
