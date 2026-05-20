@@ -10,7 +10,7 @@ There is exactly one lock in this design: a private `Object lock` field on `Spil
 
 | Resource | Why it is guarded by this lock |
 |---|---|
-| Each `RecoverableInputChannel`'s `recoveredBuffers` write path during recovery (delegated through `onRecoveredStateBuffer` / `finishReadRecoveredState`) | Recovery delivery and the task-thread checkpoint barrier insertion must observe a single cut per channel; that cut is deterministic only if all writes funnel through one lock. |
+| Each `RecoverableInputChannel`'s `recoveredBuffers` write path during recovery (delegated through `onRecoveredStateBuffer`) | Recovery delivery and the task-thread checkpoint barrier insertion must observe a single cut per channel; that cut is deterministic only if all writes funnel through one lock. `finishReadRecoveredState` at end-of-drain is NOT covered here — see §1 "End-of-drain exception" below. |
 | `SpillFileReader.currentSegmentIndex` and `SpillFileReader.currentOffset` | Their advance must be observed as one atomic action together with the matching channel add-buffer; otherwise the task thread snapshot can see a half-applied entry. |
 | The Step 1 barrier-insertion sequence (snapshot disk + add a `RecoveryCheckpointBarrier` to every channel) | The task thread must take the disk cut and insert all per-channel barriers in one atomic interval, so that the recovered-data set is disjoint between "before barrier" and "after barrier". |
 
@@ -21,8 +21,9 @@ The lock does NOT guard: any upstream-side state (`receivedBuffers` on `RemoteIn
 **Principle 1.** Every recovery-side mutation on a `RecoverableInputChannel` happens inside `synchronized (SpillFileReader.lock)`. Targets (no exceptions):
 
 - drain calling `ch.onRecoveredStateBuffer(buf)` to deliver a recovered buffer;
-- drain calling `ch.finishReadRecoveredState()` after the last entry is delivered;
 - task thread inserting `RecoveryCheckpointBarrier` into each channel at Step 1 (also performed via `ch.onRecoveredStateBuffer(barrier)` — the barrier is just a sentinel `Buffer`).
+
+**End-of-drain exception.** `drain` calling `ch.finishReadRecoveredState()` after the last entry is delivered runs **outside** `SpillFileReader.lock`. At this point no more buffers will be added, so the (queue, offset) atomicity that this principle protects does not apply; the flag is published through the channel's internal monitor that `finishReadRecoveredState` already takes. See [`unspiller.md`](./unspiller.md) §4 step (D).
 
 **Principle 2.** Advancing `currentSegmentIndex` / `currentOffset` happens in the **same** `synchronized (SpillFileReader.lock)` block as the matching `ch.onRecoveredStateBuffer(buf)`. They are inseparable; if the lock is split, the task thread can observe a half-applied state and either drop or double-count an entry.
 
@@ -31,7 +32,7 @@ The lock does NOT guard: any upstream-side state (`receivedBuffers` on `RemoteIn
 | Thread | Frequency | Body of the critical section |
 |---|---|---|
 | `channelIOExecutor` (drain phase) | High — once per spill entry | **Exactly two actions, both pure in-memory** (see [`unspiller.md`](./unspiller.md) §4 step (C)): (1) `ch.onRecoveredStateBuffer(buf)`; (2) `seg.pollNextEntry()` + update `(currentSegmentIndex, currentOffset)`. Microsecond scale. |
-| `channelIOExecutor` (drain finish) | Once at end of drain | `ch.finishReadRecoveredState()` on every channel ([`unspiller.md`](./unspiller.md) §4 step (D)). |
+| `channelIOExecutor` (drain finish) | Once at end of drain | `ch.finishReadRecoveredState()` on every channel — **runs outside the lock** (see "End-of-drain exception" above and [`unspiller.md`](./unspiller.md) §4 step (D)). |
 | task thread | Exactly once at the moment a checkpoint fires | (1) snapshot every `SpillFileSegment` and capture `(currentSegmentIndex, currentOffset)` as the `DiskSnapshot.startPos`; (2) call `ch.onRecoveredStateBuffer(new RecoveryCheckpointBarrier())` on every channel. Body is fully in-memory; the disk read for Step 3 happens **after** the lock is released, on the writer thread. |
 
 ### What happens outside the lock
@@ -87,7 +88,7 @@ Implemented by `RecoveredInputChannel`, `LocalInputChannel`, `RemoteInputChannel
 | Method | Lock precondition | Purpose |
 |---|---|---|
 | `onRecoveredStateBuffer(Buffer buffer)` | Caller MUST hold `SpillFileReader.lock`. | Append `buffer` to the channel's `recoveredBuffers`. Used for both real recovered data and the `RecoveryCheckpointBarrier` sentinel (channel impl does not distinguish). |
-| `finishReadRecoveredState()` | Caller MUST hold `SpillFileReader.lock`. | Flip `allRecoveredBuffersDelivered` to true. The channel completes `stateConsumedFuture` once both this flag is set and `recoveredBuffers` has been fully consumed. |
+| `finishReadRecoveredState()` | Caller does NOT need to hold `SpillFileReader.lock` (end-of-drain exception — see §1). | Flip `allRecoveredBuffersDelivered` to true. The channel completes `stateConsumedFuture` once both this flag is set and `recoveredBuffers` has been fully consumed. |
 
 ### 2.3 `BufferRequester` — unspilling thread → buffer pool
 
