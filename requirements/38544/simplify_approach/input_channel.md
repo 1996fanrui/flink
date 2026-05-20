@@ -7,7 +7,7 @@
 - Drain uses the **same two-method vocabulary** for every channel kind (recovered / local / remote). The channel implementation hides the rest.
 - The `notifyChannelNonEmpty / queueChannel / inputChannelsWithData` wake-up chain on master is **unchanged**; recovery delivery and upstream delivery both go through it.
 - Recovery data and upstream data must be consumed **in order** (all recovery data before any normal upstream data), with one explicit exception: priority events on the upstream side (UC barriers, etc.) may pass through during recovery — this is exactly what `checkpointingDuringRecoveryEnabled` exists for.
-- Every channel write during recovery happens inside `Unspiller.lock` (see [`coordination.md`](./coordination.md) principle 1).
+- Every channel write during recovery happens inside `SpillFileReader.lock` (see [`coordination.md`](./coordination.md) principle 1).
 
 ## 2. Why this requires channel-side changes
 
@@ -17,7 +17,7 @@ Master `RecoveredInputChannel` keeps a single FIFO `receivedBuffers` and puts ev
 
 ### 3.1 The `RecoverableInputChannel` interface
 
-The two new methods are extracted into a Java interface declared in [`overview.md`](./overview.md#62-recoverableinputchannel--unspilling-thread--physical-channels) §6.2, implemented by every channel kind that participates in recovery delivery: `RecoveredInputChannel`, `LocalInputChannel`, `RemoteInputChannel`. Drain holds channel references typed as `RecoverableInputChannel` (via `Unspiller.channelByInfo: Map<InputChannelInfo, RecoverableInputChannel>`); it never casts down to a specific channel class. Method names are taken verbatim from master's existing `RecoveredInputChannel` API so drain has a uniform vocabulary across all three implementations.
+The two new methods are extracted into a Java interface declared in [`overview.md`](./overview.md#62-recoverableinputchannel--unspilling-thread--physical-channels) §6.2, implemented by every channel kind that participates in recovery delivery: `RecoveredInputChannel`, `LocalInputChannel`, `RemoteInputChannel`. Drain holds channel references typed as `RecoverableInputChannel` (via `SpillFileReader.channelByInfo: Map<InputChannelInfo, RecoverableInputChannel>`); it never casts down to a specific channel class. Method names are taken verbatim from master's existing `RecoveredInputChannel` API so drain has a uniform vocabulary across all three implementations.
 
 The interface intentionally contains only the delivery side (`onRecoveredStateBuffer`, `finishReadRecoveredState`). Buffer allocation lives behind a separate contract (`BufferRequester`, [`overview.md`](./overview.md#63-bufferrequester--unspilling-thread--buffer-pool) §6.3); this keeps `LocalInputChannel`, which has no per-channel buffer pool on master, from being forced to invent one.
 
@@ -40,10 +40,10 @@ The interface intentionally contains only the delivery side (`onRecoveredStateBu
 Global lock order:
 
 ```
-Unspiller.lock → channel-internal queue monitor
+SpillFileReader.lock → channel-internal queue monitor
 ```
 
-`onRecoveredStateBuffer` and `finishReadRecoveredState` enter the channel monitor while the caller already holds `Unspiller.lock`; `getNextBuffer` and Step 2's snapshot walk hold only the channel monitor; network `onBuffer` (Remote) still holds only `receivedBuffers` (= the same channel monitor). No path takes the locks in reverse — no cycle, no deadlock. See [`coordination.md`](./coordination.md#lock-order) §1 "Lock order" for the full per-path table.
+`onRecoveredStateBuffer` and `finishReadRecoveredState` enter the channel monitor while the caller already holds `SpillFileReader.lock`; `getNextBuffer` and Step 2's snapshot walk hold only the channel monitor; network `onBuffer` (Remote) still holds only `receivedBuffers` (= the same channel monitor). No path takes the locks in reverse — no cycle, no deadlock. See [`coordination.md`](./coordination.md#lock-order) §1 "Lock order" for the full per-path table.
 
 ### 3.4 The two semantically distinct queues on `LocalInputChannel`
 
@@ -123,7 +123,10 @@ public void checkpointStarted(CheckpointBarrier barrier) throws CheckpointExcept
             Iterator<Buffer> it = recoveredBuffers.iterator();
             while (it.hasNext()) {
                 Buffer b = it.next();
-                if (b instanceof RecoveryCheckpointBarrier) { it.remove(); break; }
+                if (b instanceof RecoveryCheckpointBarrier
+                        && ((RecoveryCheckpointBarrier) b).getCheckpointId() == barrier.getId()) {
+                    it.remove(); break;
+                }
                 retained.add(b.retainBuffer());           // retain — task still consumes from queue
             }
             channelStateWriter.addInputData(
@@ -154,7 +157,7 @@ Notes:
 - `getNextBuffer` external callers (`InputGate.pollNext`, `StreamTaskNetworkInput`, etc.) keep the same signature and contract.
 - `notifyChannelNonEmpty / queueChannel / inputChannelsWithData` is unchanged; both upstream add (master path) and `recoveredBuffers` add (new `onRecoveredStateBuffer`) call it.
 - The priority-event chain on the upstream side (`addPriorityBuffer / firstPriorityEvent`) is unchanged.
-- `allRecoveredBuffersDelivered` transitions false → true exactly once per recovery, inside `Unspiller.lock`.
+- `allRecoveredBuffersDelivered` transitions false → true exactly once per recovery, inside `SpillFileReader.lock`.
 - `toBeConsumedBuffers` carries only `FullyFilledBuffer` splits — no recovery data. Its access remains single-threaded (task thread re-entrant inside `getNextBuffer`); no lock is needed for it.
 - The existing `onRecoveredStateBuffer` / `finishReadRecoveredState` on `RecoveredInputChannel` are untouched and continue to serve the filter-off path.
 
