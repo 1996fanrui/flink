@@ -68,8 +68,9 @@ public final class SpillFileReader implements RecoveryCheckpointTrigger, Closeab
     private final BufferRequester bufferRequester;                                  // buffer allocation + release
     /** Global lock. Dedicated `Object` field (not `synchronized(this)`) — named,
      *  GuardedBy-annotated, grep-able. Guards: (a) channel `recoveredBuffers` writes
-     *  via onRecoveredStateBuffer / finishReadRecoveredState; (b) drain progress
-     *  fields below; (c) Step 1 barrier insertion. */
+     *  via onRecoveredStateBuffer; (b) drain progress fields below; (c) Step 1
+     *  barrier insertion. End-of-drain `finishReadRecoveredState` is NOT guarded
+     *  here — see §4 step (D). */
     private final Object lock = new Object();
 
     // drain progress, guarded by `lock`
@@ -109,10 +110,11 @@ public final class SpillFileReader implements RecoveryCheckpointTrigger, Closeab
             }
             seg.close();
         }
-        // (D) Drain done. Flip allRecoveredBuffersDelivered on every channel inside the lock.
-        synchronized (lock) {
-            for (RecoverableInputChannel ch : allChannels) ch.finishReadRecoveredState();
-        }
+        // (D) Drain done. No more buffers will be added, so the (queue, offset) atomicity
+        //     that Principle 1 protects does not apply here — runs outside the lock. The
+        //     flag is published via the channel's internal monitor that
+        //     finishReadRecoveredState already takes.
+        for (RecoverableInputChannel ch : allChannels) ch.finishReadRecoveredState();
     }
 
     @Override public DiskSnapshot snapshotAndInsertBarriers();   // see overview §6.1
@@ -146,7 +148,7 @@ Steps (A)/(B)/(C)/(D) refer to the labelled lines inside `drain()` (§3).
 - **(A)** Buffer allocation goes through `bufferRequester.requestBufferBlocking(channelInfo)`. The implementation delegates to `RecoveredInputChannel.requestBufferBlocking()`, which parks on `BufferManager.bufferQueue` (Java `Object.wait/notifyAll`, woken by `BufferPool`'s `BufferListener`). This park MUST happen outside `SpillFileReader.lock`; otherwise buffer-pool jitter would in turn block checkpoint Step 1.
 - **(B)** Disk read (`seg.readBytesAt`) runs outside `SpillFileReader.lock`. The buf is local to this iteration and not yet visible to any other thread, so reading it concurrently with the task thread's snapshot is safe.
 - **(C)** The two-statement critical section is **the only place** `currentSegmentIndex` / `currentOffset` are mutated and **the only place** drain calls `ch.onRecoveredStateBuffer(...)`. The two actions must stay coupled — this is the second strong principle in [`coordination.md`](./coordination.md); separating them would create a window where the snapshot sees a half-applied entry (either "already in channel but offset not advanced" or "offset advanced but not yet in channel").
-- **(D)** After the full segment set is iterated, drain takes the lock one more time and calls `finishReadRecoveredState()` on every channel. The channel itself completes `stateConsumedFuture` once both its `allRecoveredBuffersDelivered` flag is true and its `recoveredBuffers` field is empty (see [`input_channel.md`](./input_channel.md) §3.7). No EOICS sentinel buffer is inserted into the queue.
+- **(D)** After the full segment set is iterated, drain calls `finishReadRecoveredState()` on every channel **outside `SpillFileReader.lock`**. At this point no more buffers will be added, so the (queue, offset) atomicity that Principle 1 protects does not apply; the flag is published through the channel's internal monitor that `finishReadRecoveredState` already takes. The channel itself completes `stateConsumedFuture` once both its `allRecoveredBuffersDelivered` flag is true and its `recoveredBuffers` field is empty (see [`input_channel.md`](./input_channel.md) §3.7). No EOICS sentinel buffer is inserted into the queue.
 
 ## 5. Reuse / change boundary against master
 

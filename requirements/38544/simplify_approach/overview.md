@@ -93,7 +93,7 @@ filter / drain run on `channelIOExecutor` ([`unspiller.md`](./unspiller.md)); co
 
 The whole design revolves around **one lock**: a private `Object lock` field on `SpillFileReader`, taken via plain `synchronized (lock)` blocks (NOT the implicit `this` monitor — so the lock is a named, grep-able, `@GuardedBy`-annotated field). Two strong principles cut across all three sub-docs; the implementation must obey them:
 
-**Principle 1**: during recovery, every channel-state mutation on `LocalInputChannel` / `RemoteInputChannel` — `channelIOExecutor` calling `onRecoveredStateBuffer()` / `finishReadRecoveredState()`, or the task thread inserting a `RecoveryCheckpointBarrier` at checkpoint Step 1 (also via `onRecoveredStateBuffer(barrier)`) — **must happen inside `synchronized (SpillFileReader.lock)`**.
+**Principle 1**: during recovery, every channel-state mutation on `LocalInputChannel` / `RemoteInputChannel` — `channelIOExecutor` calling `onRecoveredStateBuffer()`, or the task thread inserting a `RecoveryCheckpointBarrier` at checkpoint Step 1 (also via `onRecoveredStateBuffer(barrier)`) — **must happen inside `synchronized (SpillFileReader.lock)`**. (End-of-drain `finishReadRecoveredState` is exempt — no more buffers are being added then, so the cut atomicity does not apply; see [`unspiller.md`](./unspiller.md) §4 step (D).)
 
 **Principle 2**: advancing `SpillFileReader`'s internal `(currentSegmentIndex, currentOffset)` **must happen in the same critical section as the corresponding channel add-buffer**.
 
@@ -170,7 +170,10 @@ public interface RecoverableInputChannel {
      *  stateConsumedFuture once both this flag is true AND recoveredBuffers is
      *  empty.
      *
-     *  Caller (drain, end-of-drain) MUST hold SpillFileReader.lock. */
+     *  Caller (drain, end-of-drain) does NOT need to hold SpillFileReader.lock:
+     *  no more buffers are being added at this point, so the (queue, offset)
+     *  atomicity that Principle 1 protects does not apply. The flag is published
+     *  through the channel's internal monitor that this method takes. */
     void finishReadRecoveredState();
 }
 ```
