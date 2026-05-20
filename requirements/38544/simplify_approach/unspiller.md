@@ -1,4 +1,4 @@
-# Unspiller component (async-thread side)
+# Spill pipeline: `SpillFileWriter` / `SpillFileReader` (async-thread side)
 
 > Scope: all new behavior that runs on the existing master `channelIOExecutor` when filter is on. When the feature is off, this thread follows the master path unchanged.
 
@@ -15,14 +15,53 @@ Covers the two periods of recovery, serially, all on the single-thread `channelI
 |---|---|
 | `FilteredBufferWriter` | Accumulation before writing to disk during filter. One `prefilterBuffer` per task (used by filter to read source data) + one `postfilterBuffer` (accumulates filter output); when the latter is full, flush it to `SpillFile`. **Replaces the heap-fallback branch inside master's `RecoveredInputChannel.requestBufferBlocking`**, eliminating heap growth at the source. |
 | `SpillFile` | The actual on-disk object. Multi-segment: rotates once a single file exceeds 64 MB; each entry carries `(channelInfo, offset, length)` metadata in an in-memory `entries` queue. `snapshot()` can clone the entries (independent of the frozen state), used for checkpoint snapshotting. |
-| `Unspiller` main body | drain loop + the global `Object lock` (used via `synchronized(lock)`) + advancing `(currentSegmentIndex, currentOffset)`. This is the object that exposes the public interface to the task thread. |
+| `SpillFileWriter` | Phase 1 (filter) façade. Owns `SpillFile` during filter; appends `(channelInfo, length, payload)` records; closes after filter completes and hands `SpillFile` to a `SpillFileReader`. Task thread does not hold a reference. |
+| `SpillFileReader` main body | Phase 2 (drain) façade. drain loop + the global `Object lock` (used via `synchronized(lock)`) + advancing `(currentSegmentIndex, currentOffset)`. Implements `RecoveryCheckpointTrigger`; the task thread holds the reference. |
 
-## 3. The `Unspiller` class
+## 2a. SpillFile format and lifecycle
 
-All three cross-thread Java interfaces (`RecoveryCheckpointTrigger`, `RecoverableInputChannel`, `BufferRequester`) plus the `RecoveredChannelBufferRequester` implementation are declared in [`overview.md`](./overview.md#6-cross-thread-java-interfaces) §6 and are not redeclared here. `Unspiller implements RecoveryCheckpointTrigger, Closeable`; the task thread holds the reference typed as the interface.
+**On-disk format.** Filter writes are single-threaded append (`channelIOExecutor` is the only writer); each record is `(channelInfo, length, payload)`. A file rotates into a new segment once it exceeds the configured size (64 MB default); within a segment, writes are sequential.
+
+**Read patterns.** Drain reads the segment list in order. Each in-recovery checkpoint's Step 3 reader (one per cpId) opens an independent reader over the same SpillFile starting at `snap.startPos`. Every reader is **per-stream sequential** (no seek-backward); multiple concurrent readers (drain + N cpId readers) share the file via independent file handles, so file-level IO is interleaved but not random.
+
+**DiskSnapshot fields**: `segmentList` (immutable snapshot of segments at the Step 1 lock-held moment) + `startPos: (segmentIndex, offset)`. End position is implicit — `segmentList`'s last segment's current end, well-defined because filter completes before drain starts and never extends the file again.
+
+**File lifecycle (ref counter).**
+
+| Holder | Acquired at | Released at |
+|---|---|---|
+| drain | `SpillFileReader` construction | drain loop exits (after §4 step (D)) |
+| each in-recovery cpId Step 3 reader | inside `snapshotAndInsertBarriers`, holding the lock, when the DiskSnapshot is built | callback chained onto `ChannelStateWriter.getAndRemoveWriteResult(cpId).getInputChannelStateHandles()` |
+
+Counter reaches zero → SpillFile deletes all segments. Task abort drives the same path: `ChannelStateWriter.abort(cpId, cause, cleanup)` exceptionally completes the per-cpId future, the callback still fires, the ref is released.
+
+## 2b. The `SpillFileWriter` class (phase 1)
 
 ```java
-public final class Unspiller implements RecoveryCheckpointTrigger, Closeable {
+public final class SpillFileWriter implements Closeable {
+    private final SpillFile spillFile;
+    private final FilteredBufferWriter accumulator;   // one pre + one post buffer
+
+    public SpillFileWriter(SpillFile spillFile, FilteredBufferWriter accumulator);
+
+    /** Append one record. Called by filter on channelIOExecutor (single writer). */
+    public void write(InputChannelInfo channelInfo, Buffer data) throws IOException;
+
+    /** Flushes the accumulator's remaining post-filter buffer to `SpillFile` and closes
+     *  for write. After this returns, the `SpillFile` is final and is handed to a
+     *  `SpillFileReader` for phase 2. */
+    @Override public void close() throws IOException;
+}
+```
+
+Single-phase: no cross-thread access (the task thread does not see this class), no lock, no checkpoint interface.
+
+## 3. The `SpillFileReader` class (phase 2)
+
+All three cross-thread Java interfaces (`RecoveryCheckpointTrigger`, `RecoverableInputChannel`, `BufferRequester`) plus the `RecoveredChannelBufferRequester` implementation are declared in [`overview.md`](./overview.md#6-cross-thread-java-interfaces) §6 and are not redeclared here. `SpillFileReader implements RecoveryCheckpointTrigger, Closeable`; the task thread holds the reference typed as the interface.
+
+```java
+public final class SpillFileReader implements RecoveryCheckpointTrigger, Closeable {
     private final SpillFile spillFile;
     private final List<RecoverableInputChannel> allChannels;                       // full channel set of this task
     private final Map<InputChannelInfo, RecoverableInputChannel> channelByInfo;    // derived from allChannels
@@ -37,7 +76,7 @@ public final class Unspiller implements RecoveryCheckpointTrigger, Closeable {
     @GuardedBy("lock") private int  currentSegmentIndex;
     @GuardedBy("lock") private long currentOffset;
 
-    public Unspiller(SpillFile spillFile,
+    public SpillFileReader(SpillFile spillFile,
                      List<RecoverableInputChannel> allChannels,
                      BufferRequester bufferRequester);
 
@@ -88,7 +127,7 @@ public final class Unspiller implements RecoveryCheckpointTrigger, Closeable {
 }
 ```
 
-The task thread holds the reference typed as `RecoveryCheckpointTrigger`, not as `Unspiller`. `drain()` and the constructor are within-thread / setup-time, not part of the cross-thread interface.
+The task thread holds the reference typed as `RecoveryCheckpointTrigger`, not as `SpillFileReader`. `drain()` and the constructor are within-thread / setup-time, not part of the cross-thread interface.
 
 `DiskSnapshot` exposed to `ChannelStateWriter`:
 
@@ -104,8 +143,8 @@ public final class DiskSnapshot implements CloseableIterator<DiskSnapshot.Chunk>
 
 Steps (A)/(B)/(C)/(D) refer to the labelled lines inside `drain()` (§3).
 
-- **(A)** Buffer allocation goes through `bufferRequester.requestBufferBlocking(channelInfo)`. The implementation delegates to `RecoveredInputChannel.requestBufferBlocking()`, which parks on `BufferManager.bufferQueue` (Java `Object.wait/notifyAll`, woken by `BufferPool`'s `BufferListener`). This park MUST happen outside `Unspiller.lock`; otherwise buffer-pool jitter would in turn block checkpoint Step 1.
-- **(B)** Disk read (`seg.readBytesAt`) runs outside `Unspiller.lock`. The buf is local to this iteration and not yet visible to any other thread, so reading it concurrently with the task thread's snapshot is safe.
+- **(A)** Buffer allocation goes through `bufferRequester.requestBufferBlocking(channelInfo)`. The implementation delegates to `RecoveredInputChannel.requestBufferBlocking()`, which parks on `BufferManager.bufferQueue` (Java `Object.wait/notifyAll`, woken by `BufferPool`'s `BufferListener`). This park MUST happen outside `SpillFileReader.lock`; otherwise buffer-pool jitter would in turn block checkpoint Step 1.
+- **(B)** Disk read (`seg.readBytesAt`) runs outside `SpillFileReader.lock`. The buf is local to this iteration and not yet visible to any other thread, so reading it concurrently with the task thread's snapshot is safe.
 - **(C)** The two-statement critical section is **the only place** `currentSegmentIndex` / `currentOffset` are mutated and **the only place** drain calls `ch.onRecoveredStateBuffer(...)`. The two actions must stay coupled — this is the second strong principle in [`coordination.md`](./coordination.md); separating them would create a window where the snapshot sees a half-applied entry (either "already in channel but offset not advanced" or "offset advanced but not yet in channel").
 - **(D)** After the full segment set is iterated, drain takes the lock one more time and calls `finishReadRecoveredState()` on every channel. The channel itself completes `stateConsumedFuture` once both its `allRecoveredBuffersDelivered` flag is true and its `recoveredBuffers` field is empty (see [`input_channel.md`](./input_channel.md) §3.7). No EOICS sentinel buffer is inserted into the queue.
 
@@ -124,6 +163,6 @@ Changed:
 
 - Remove the heap fallback in `RecoveredInputChannel.requestBufferBlocking` (the `MemorySegmentFactory.allocateUnpooledSegment` block at lines 354-360) — the OOM path FLINK-38544 exists to fix.
 - Promote `RecoveredInputChannel.releaseAllResources()` from package-private to `public` (no behavior change, just visibility) so `RecoveredChannelBufferRequester` in `o.a.f.runtime.checkpoint.channel` can call it.
-- Add new classes: `FilteredBufferWriter`, `SpillFile`, `Unspiller`, `DiskSnapshot`, `RecoveredChannelBufferRequester`.
+- Add new classes: `FilteredBufferWriter`, `SpillFile`, `SpillFileWriter`, `SpillFileReader`, `DiskSnapshot`, `RecoveredChannelBufferRequester`.
 - Add three new interfaces (declared in [`overview.md`](./overview.md#6-cross-thread-java-interfaces) §6): `RecoveryCheckpointTrigger`, `RecoverableInputChannel`, `BufferRequester`.
 - Switch the filter-phase `bufferSupplier` from `channel::requestBufferBlocking` to the reusable `prefilterBuffer` source.

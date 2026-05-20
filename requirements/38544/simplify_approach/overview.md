@@ -3,7 +3,7 @@
 > Entry point to the overall design. The detailed landing is split into three docs by direction:
 >
 > - [`input_channel.md`](./input_channel.md) — InputChannel-side changes (the task-thread consumer side)
-> - [`unspiller.md`](./unspiller.md) — the `Unspiller` component (the `channelIOExecutor` async-thread side)
+> - [`unspiller.md`](./unspiller.md) — the `SpillFileWriter` / `SpillFileReader` components (the `channelIOExecutor` async-thread side)
 > - [`coordination.md`](./coordination.md) — the cooperation between the two sides (lock principles + the checkpoint 3-step protocol)
 >
 > The current branch is historical reference only; no class names from it appear in this doc family.
@@ -14,7 +14,13 @@
 
 **Goal**: replace the heap fallback with **disk spill**, bounding the memory footprint during filter to a constant (one prefilter buffer + one postfilter buffer) and eliminating heap growth on this path. Every mechanism discussed below is an implementation choice serving this goal.
 
-**Scope**: the new logic only applies when `checkpointingDuringRecoveryEnabled=true` and filter is actually active. When the feature is off, recovery follows the master path verbatim, with no extra code paths and no overhead.
+**Scope**: the new logic only applies when `checkpointingDuringRecoveryEnabled=true` and recovery carries channel-state buffers (regardless of rescale / filter — see [apache/flink#28107 `405faaaab1`](https://github.com/apache/flink/pull/28107/commits/405faaaab161db291dbcf7b70e76cc27e0441cb6) for why no-rescale recovery also needs the spill path). When the feature is off, recovery follows the master path verbatim, with no extra code paths and no overhead.
+
+| feature flag | recovery 是否带 channel state buffer | spill / SpillFileReader / SpillFileWriter |
+|---|---|---|
+| off | any | no (master legacy path) |
+| on | no (含 aligned 恢复 / 空 UC 恢复) | no (没数据可写) |
+| on | yes | **yes** (rescale → filter + 写盘；no rescale → raw passthrough + 写盘) |
 
 **Baseline**: the `channelIOExecutor` single-thread executor already exists on master and already runs the recovery main loop. This design **introduces no new thread**; it only modifies the existing thread's behavior when filter is on: "write to channel" becomes "write to disk first, replay later".
 
@@ -47,9 +53,9 @@ sequenceDiagram
       loop per spill entry
         CIO->>PC: requestBufferBlocking()
         DISK-->>CIO: read entry
-        CIO->>PC: onRecoveredStateBuffer(buf) (inside Unspiller.lock)
+        CIO->>PC: onRecoveredStateBuffer(buf) (inside SpillFileReader.lock)
       end
-      CIO->>PC: finishReadRecoveredState() (inside Unspiller.lock)
+      CIO->>PC: finishReadRecoveredState() (inside SpillFileReader.lock)
       Note right of PC: channel completes stateConsumedFuture<br/>once recoveredBuffers is drained
     end
 ```
@@ -81,32 +87,32 @@ flowchart LR
     CP -.->|only at checkpoint moment| CIO
 ```
 
-filter / drain run on `channelIOExecutor` ([`unspiller.md`](./unspiller.md)); conversion / checkpoint trigger / normal consumption run on the mailbox ([`input_channel.md`](./input_channel.md) covers the consumer side). The two threads cooperate **only at the moment a checkpoint is triggered**, via `Unspiller.lock` ([`coordination.md`](./coordination.md)).
+filter / drain run on `channelIOExecutor` ([`unspiller.md`](./unspiller.md)); conversion / checkpoint trigger / normal consumption run on the mailbox ([`input_channel.md`](./input_channel.md) covers the consumer side). The two threads cooperate **only at the moment a checkpoint is triggered**, via `SpillFileReader.lock` ([`coordination.md`](./coordination.md)).
 
 ## 4. The global lock — two strong principles
 
-The whole design revolves around **one lock**: a private `Object lock` field on `Unspiller`, taken via plain `synchronized (lock)` blocks (NOT the implicit `this` monitor — so the lock is a named, grep-able, `@GuardedBy`-annotated field). Two strong principles cut across all three sub-docs; the implementation must obey them:
+The whole design revolves around **one lock**: a private `Object lock` field on `SpillFileReader`, taken via plain `synchronized (lock)` blocks (NOT the implicit `this` monitor — so the lock is a named, grep-able, `@GuardedBy`-annotated field). Two strong principles cut across all three sub-docs; the implementation must obey them:
 
-**Principle 1**: during recovery, every channel-state mutation on `LocalInputChannel` / `RemoteInputChannel` — `channelIOExecutor` calling `onRecoveredStateBuffer()` / `finishReadRecoveredState()`, or the task thread inserting a `RecoveryCheckpointBarrier` at checkpoint Step 1 (also via `onRecoveredStateBuffer(barrier)`) — **must happen inside `synchronized (Unspiller.lock)`**.
+**Principle 1**: during recovery, every channel-state mutation on `LocalInputChannel` / `RemoteInputChannel` — `channelIOExecutor` calling `onRecoveredStateBuffer()` / `finishReadRecoveredState()`, or the task thread inserting a `RecoveryCheckpointBarrier` at checkpoint Step 1 (also via `onRecoveredStateBuffer(barrier)`) — **must happen inside `synchronized (SpillFileReader.lock)`**.
 
-**Principle 2**: advancing `Unspiller`'s internal `(currentSegmentIndex, currentOffset)` **must happen in the same critical section as the corresponding channel add-buffer**.
+**Principle 2**: advancing `SpillFileReader`'s internal `(currentSegmentIndex, currentOffset)` **must happen in the same critical section as the corresponding channel add-buffer**.
 
-The two principles together guarantee that when the task thread takes a snapshot, the (memory + disk) sets are complete and disjoint — relaxing either creates an inconsistency window where an entry "lands in both sides" or "is missed by both sides". Detailed correctness proof in [`coordination.md`](./coordination.md) §5.
+The two principles together guarantee that when the task thread takes a snapshot, the (memory + disk) sets are complete and disjoint — relaxing either creates an inconsistency window where an entry "lands in both sides" or "is missed by both sides". The `RecoveryCheckpointBarrier` is the channel-side cut and `(currentSegmentIndex, currentOffset)` is the disk-side cut; the two principles ensure both cuts are observed at the same instant. Detailed correctness proof in [`coordination.md`](./coordination.md) §5.
 
 ### Usage profile of the lock
 
 - **`channelIOExecutor`**: high-frequency, short-held — once per entry, millisecond scale.
 - **Task thread**: extremely low-frequency, **entered exactly once per checkpoint trigger**.
 
-Lock order is fixed: `Unspiller.lock` is always taken first; any nested locking is the channel's own (e.g. `RemoteInputChannel`'s internal `synchronized(receivedBuffers)` inside `onRecoveredStateBuffer`). Both holders go in the same direction; no deadlock.
+Lock order is fixed: `SpillFileReader.lock` is always taken first; any nested locking is the channel's own (e.g. `RemoteInputChannel`'s internal `synchronized(receivedBuffers)` inside `onRecoveredStateBuffer`). Both holders go in the same direction; no deadlock.
 
-`channelIOExecutor` parks for buffer allocation inside `BufferManager.requestBufferBlocking`, on the channel's own `bufferQueue` (Java `Object.wait/notifyAll`, woken by `BufferPool`'s `BufferListener` callback). The park **must happen outside `Unspiller.lock`**; otherwise buffer-pool jitter would stall the checkpoint.
+`channelIOExecutor` parks for buffer allocation inside `BufferManager.requestBufferBlocking`, on the channel's own `bufferQueue` (Java `Object.wait/notifyAll`, woken by `BufferPool`'s `BufferListener` callback). The park **must happen outside `SpillFileReader.lock`**; otherwise buffer-pool jitter would stall the checkpoint.
 
 ## 5. Checkpoint 3-step (skeleton)
 
 Executed by the task thread on the mailbox; detailed step boundary conditions and correctness proof in [`coordination.md`](./coordination.md) §3 / §5.
 
-1. **Step 1**: `snap = unspiller.snapshotAndInsertBarriers()` — single atomic call. Inside, Unspiller enters `synchronized (lock)`, takes a `DiskSnapshot`, calls `ch.onRecoveredStateBuffer(barrier)` on every channel, and exits the block.
+1. **Step 1**: `snap = unspiller.snapshotAndInsertBarriers()` — single atomic call. Inside, SpillFileReader enters `synchronized (lock)`, takes a `DiskSnapshot`, calls `ch.onRecoveredStateBuffer(barrier)` on every channel, and exits the block.
 2. **Step 2**: embedded inside each `channel.checkpointStarted(barrier)` (master's existing per-channel entry, reached via `input.checkpointStarted`). If the channel is still in recovery, walk its `recoveredBuffers` up to the barrier and persist; otherwise run master's existing `receivedBuffers` persistence. The two branches are mutually exclusive — see [`coordination.md`](./coordination.md) §3.3.
 3. **Step 3**: `channelStateWriter.addInputDataFromSpill(checkpointId, snap)` — writer asynchronously demuxes by `entry.channelInfo` into each channel's checkpoint output.
 
@@ -116,7 +122,7 @@ Every cross-thread API in this design is funneled through three Java interfaces.
 
 ### 6.1 `RecoveryCheckpointTrigger` — task thread → unspilling thread
 
-Implemented by `Unspiller`; the task thread holds the reference typed as the interface.
+Implemented by `SpillFileReader`; the task thread holds the reference typed as the interface.
 
 ```java
 package org.apache.flink.runtime.checkpoint.channel;
@@ -125,14 +131,14 @@ package org.apache.flink.runtime.checkpoint.channel;
 public interface RecoveryCheckpointTrigger {
 
     /** Step 1 of the recovery-checkpoint protocol. Atomically:
-     *    (1) enters Unspiller.lock,
+     *    (1) enters SpillFileReader.lock,
      *    (2) snapshots every SpillFileSegment and captures
      *        (currentSegmentIndex, currentOffset) as DiskSnapshot.startPos,
      *    (3) calls onRecoveredStateBuffer(new RecoveryCheckpointBarrier())
      *        on every channel of the task,
      *    (4) leaves the lock.
      *
-     *  Caller (task thread) MUST NOT hold Unspiller.lock — the implementation
+     *  Caller (task thread) MUST NOT hold SpillFileReader.lock — the implementation
      *  takes the lock itself. Returns the DiskSnapshot for the caller to feed
      *  into ChannelStateWriter.addInputDataFromSpill at Step 3. */
     DiskSnapshot snapshotAndInsertBarriers();
@@ -141,7 +147,7 @@ public interface RecoveryCheckpointTrigger {
 
 ### 6.2 `RecoverableInputChannel` — unspilling thread → physical channels
 
-Implemented by `RecoveredInputChannel`, `LocalInputChannel`, `RemoteInputChannel`. Drain holds channel references typed as the interface (via `Unspiller.channelByInfo`); it never casts down. Method names mirror master's existing `RecoveredInputChannel` API.
+Implemented by `RecoveredInputChannel`, `LocalInputChannel`, `RemoteInputChannel`. Drain holds channel references typed as the interface (via `SpillFileReader.channelByInfo`); it never casts down. Method names mirror master's existing `RecoveredInputChannel` API.
 
 ```java
 package org.apache.flink.runtime.io.network.partition.consumer;
@@ -154,7 +160,7 @@ public interface RecoverableInputChannel {
      *  the buffer is recycled silently. Wakes the consumer via the existing
      *  notifyChannelNonEmpty chain if the queue was empty before this call.
      *
-     *  Caller (drain or task-thread Step 1) MUST hold Unspiller.lock. */
+     *  Caller (drain or task-thread Step 1) MUST hold SpillFileReader.lock. */
     void onRecoveredStateBuffer(Buffer buffer);
 
     /** Signal that the spiller / drain producer has finished adding recovered
@@ -164,14 +170,14 @@ public interface RecoverableInputChannel {
      *  stateConsumedFuture once both this flag is true AND recoveredBuffers is
      *  empty.
      *
-     *  Caller (drain, end-of-drain) MUST hold Unspiller.lock. */
+     *  Caller (drain, end-of-drain) MUST hold SpillFileReader.lock. */
     void finishReadRecoveredState();
 }
 ```
 
 ### 6.3 `BufferRequester` — unspilling thread → buffer pool
 
-Two-method interface that funnels every buffer allocation drain needs. Lives in the same package as `Unspiller`, so `Unspiller` depends only on this interface — the cross-package access to `RecoveredInputChannel`'s release primitive lives inside the single implementation `RecoveredChannelBufferRequester`.
+Two-method interface that funnels every buffer allocation drain needs. Lives in the same package as `SpillFileReader`, so `SpillFileReader` depends only on this interface — the cross-package access to `RecoveredInputChannel`'s release primitive lives inside the single implementation `RecoveredChannelBufferRequester`.
 
 ```java
 package org.apache.flink.runtime.checkpoint.channel;
@@ -186,7 +192,7 @@ public interface BufferRequester {
      *  BufferManager.bufferQueue (Object.wait / notifyAll), woken by
      *  BufferPool's BufferListener callback.
      *
-     *  Caller MUST NOT hold Unspiller.lock. */
+     *  Caller MUST NOT hold SpillFileReader.lock. */
     Buffer requestBufferBlocking(InputChannelInfo channelInfo)
             throws InterruptedException, IOException;
 
@@ -236,7 +242,7 @@ A few cross-thread artifacts are not themselves Java interfaces but pass through
 | Artifact | Where | Used by |
 |---|---|---|
 | `DiskSnapshot` | Returned by `RecoveryCheckpointTrigger.snapshotAndInsertBarriers()` | task thread Step 3 → `ChannelStateWriter.addInputDataFromSpill` |
-| `RecoveryCheckpointBarrier` | A sentinel `Buffer` task thread passes through `RecoverableInputChannel.onRecoveredStateBuffer(...)` at Step 1; channel impl treats it opaquely | task thread (inserts in Step 1, consumes in Step 2) |
+| `RecoveryCheckpointBarrier` | A sentinel `Buffer` carrying the cpId of the triggering checkpoint; task thread passes it through `RecoverableInputChannel.onRecoveredStateBuffer(...)` at Step 1; channel impl treats the payload opaquely but Step 2 matches on cpId | task thread (inserts in Step 1, consumes in Step 2) |
 | `ChannelStateWriter.addInputDataFromSpill` | New method on `ChannelStateWriter` | task thread Step 3 |
 
 ## 7. Simplifications this design delivers
@@ -244,4 +250,4 @@ A few cross-thread artifacts are not themselves Java interfaces but pass through
 - No cross-channel coordinator object; no "wait until every channel has been notified before snapshotting" wait-set;
 - The `getNextBuffer` change is small and self-contained: a single `inRecovery` predicate over `allRecoveredBuffersDelivered` and `recoveredBuffers`, fully described in [`input_channel.md`](./input_channel.md) §3; existing callers and the wake-up chain are untouched;
 - No "filter / drain writing to a channel concurrently"; filter does not touch channels, and drain is a single-threaded sequential writer;
-- No borrowed gate lock for stale-enqueue races; channel references are captured once at `Unspiller` construction and never switched during drain.
+- No borrowed gate lock for stale-enqueue races; channel references are captured once at `SpillFileReader` construction and never switched during drain.
