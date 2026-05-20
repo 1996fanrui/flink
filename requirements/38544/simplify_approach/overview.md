@@ -55,7 +55,7 @@ sequenceDiagram
         DISK-->>CIO: read entry
         CIO->>PC: onRecoveredStateBuffer(buf) (inside SpillFileReader.lock)
       end
-      CIO->>PC: finishReadRecoveredState() (inside SpillFileReader.lock)
+      CIO->>PC: finishReadRecoveredState() (outside the lock — end-of-drain exception)
       Note right of PC: channel completes stateConsumedFuture<br/>once recoveredBuffers is drained
     end
 ```
@@ -112,7 +112,7 @@ Lock order is fixed: `SpillFileReader.lock` is always taken first; any nested lo
 
 Executed by the task thread on the mailbox; detailed step boundary conditions and correctness proof in [`coordination.md`](./coordination.md) §3 / §5.
 
-1. **Step 1**: `snap = unspiller.snapshotAndInsertBarriers()` — single atomic call. Inside, SpillFileReader enters `synchronized (lock)`, takes a `DiskSnapshot`, calls `ch.onRecoveredStateBuffer(barrier)` on every channel, and exits the block.
+1. **Step 1**: `snap = recoveryCheckpointTrigger.snapshotAndInsertBarriers()` — single atomic call. Inside, `SpillFileReader` enters `synchronized (lock)`, takes a `DiskSnapshot`, calls `ch.onRecoveredStateBuffer(barrier)` on every channel, and exits the block.
 2. **Step 2**: embedded inside each `channel.checkpointStarted(barrier)` (master's existing per-channel entry, reached via `input.checkpointStarted`). If the channel is still in recovery, walk its `recoveredBuffers` up to the barrier and persist; otherwise run master's existing `receivedBuffers` persistence. The two branches are mutually exclusive — see [`coordination.md`](./coordination.md) §3.3.
 3. **Step 3**: `channelStateWriter.addInputDataFromSpill(checkpointId, snap)` — writer asynchronously demuxes by `entry.channelInfo` into each channel's checkpoint output.
 
