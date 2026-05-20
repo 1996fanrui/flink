@@ -7,7 +7,7 @@
 - Drain uses the **same two-method vocabulary** for every channel kind (recovered / local / remote). The channel implementation hides the rest.
 - The `notifyChannelNonEmpty / queueChannel / inputChannelsWithData` wake-up chain on master is **unchanged**; recovery delivery and upstream delivery both go through it.
 - Recovery data and upstream data must be consumed **in order** (all recovery data before any normal upstream data), with one explicit exception: priority events on the upstream side (UC barriers, etc.) may pass through during recovery — this is exactly what `checkpointingDuringRecoveryEnabled` exists for.
-- Every channel write during recovery happens inside `SpillFileReader.lock` (see [`coordination.md`](./coordination.md) principle 1).
+- Every recovery-data add to `recoveredBuffers` happens inside `SpillFileReader.lock` (see [`coordination.md`](./coordination.md) principle 1; end-of-drain `finishReadRecoveredState` is the exception).
 
 ## 2. Why this requires channel-side changes
 
@@ -159,7 +159,7 @@ Notes:
 - `getNextBuffer` external callers (`InputGate.pollNext`, `StreamTaskNetworkInput`, etc.) keep the same signature and contract.
 - `notifyChannelNonEmpty / queueChannel / inputChannelsWithData` is unchanged; both upstream add (master path) and `recoveredBuffers` add (new `onRecoveredStateBuffer`) call it.
 - The priority-event chain on the upstream side (`addPriorityBuffer / firstPriorityEvent`) is unchanged.
-- `allRecoveredBuffersDelivered` transitions false → true exactly once per recovery, inside `SpillFileReader.lock`.
+- `allRecoveredBuffersDelivered` transitions false → true exactly once per recovery, via the channel's internal monitor (end-of-drain exception, see [`coordination.md`](./coordination.md) §1).
 - `toBeConsumedBuffers` carries only `FullyFilledBuffer` splits — no recovery data. Its access remains single-threaded (task thread re-entrant inside `getNextBuffer`); no lock is needed for it.
 - The existing `onRecoveredStateBuffer` / `finishReadRecoveredState` on `RecoveredInputChannel` are untouched and continue to serve the filter-off path.
 
