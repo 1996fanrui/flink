@@ -63,7 +63,7 @@ The recovery feature itself is **not** being removed — it is still required. T
 | FLINK-39018 site | Currently (recovery coupled to `toBeConsumedBuffers`) | After decoupling (recovery moved onto `recoveredBuffers`) |
 |---|---|---|
 | Constructor param `ArrayDeque<Buffer> initialRecoveredBuffers` + body migrating it into `toBeConsumedBuffers` (commit `d1914c63c95`) | Receives migrated buffers from `RecoveredInputChannel.toInputChannel()` and stashes them in `toBeConsumedBuffers` | Migration still happens, but expressed via the new uniform method path: `RecoveredInputChannel.toInputChannel()` calls `onRecoveredStateBuffer` for each buffer and then `finishReadRecoveredState()`, so migrated buffers land in `recoveredBuffers` — same shape drain uses. The dedicated constructor parameter is dropped because it is no longer needed; the migration is expressed through the new methods. |
-| `getNextBuffer` early branch `if (!toBeConsumedBuffers.isEmpty()) return getNextRecoveredBuffer()` (commit `cebc174ad5f`) | Routes `toBeConsumedBuffers` consumption through a recovery-aware path (because the queue also holds recovered buffers) | `toBeConsumedBuffers` branch returns to its FullyFilledBuffer-splits-only form (`return getBufferAndAvailability(toBeConsumedBuffers.removeFirst())`). A new branch on `recoveredBuffers` (§3.5) serves recovery. |
+| `getNextBuffer` early branch `if (!toBeConsumedBuffers.isEmpty()) return getNextRecoveredBuffer()` (commit `cebc174ad5f`) | Routes `toBeConsumedBuffers` consumption through a recovery-aware path (because the queue also holds recovered buffers) | `toBeConsumedBuffers` branch returns to its FullyFilledBuffer-splits-only form (`return getBufferAndAvailability(toBeConsumedBuffers.removeFirst())`). A new branch on `recoveredBuffers` (§3.6) serves recovery. |
 | `getNextRecoveredBuffer()` method body (commit `cebc174ad5f`) | Priority-event interleaving against `toBeConsumedBuffers`-held recovered buffers | The interleaving logic is preserved; it moves into the new recovery branch and operates on `recoveredBuffers` + `hasPendingPriorityEvent` instead. The standalone method is removed because there is no longer a coupling to interleave against. |
 | `hasPendingPriorityEvent` field (commit `cebc174ad5f`) | Set by `notifyPriorityEvent`, consulted by `getNextRecoveredBuffer` | Unchanged. The new recovery branch reads it for the same purpose. |
 | `checkpointStarted` scanning `toBeConsumedBuffers` for inflight buffers (commit `3aef0932ded`) | Persists `toBeConsumedBuffers` contents (which included recovered buffers) on a checkpoint barrier | Recovery-time persistence is **not lost** — it moves to the 3-step protocol in [`coordination.md`](./coordination.md), which snapshots `recoveredBuffers` together with the on-disk slice. `checkpointStarted` returns to its pre-39018 shape (`startPersisting(barrier.getId(), Collections.emptyList())`) because `toBeConsumedBuffers` no longer carries any recovery data. |
@@ -72,19 +72,19 @@ Net effect: every recovery responsibility previously living on `toBeConsumedBuff
 
 ### 3.6 Consumer logic — `getNextBuffer()`
 
+Uses the same `inRecovery` predicate as §3.8 (single source of truth: this channel still has recovery-side work iff producer hasn't finished OR queue isn't drained yet):
+
 ```
-if (!allRecoveredBuffersDelivered):
-    // Recovery in progress: serve recoveredBuffers; let only priority events through from upstream.
-    if (hasPendingPriorityEvent)            return <pull priority event from upstream>;
-    if (!recoveredBuffers.isEmpty())        return recoveredBuffers.poll();
+inRecovery = !allRecoveredBuffersDelivered || !recoveredBuffers.isEmpty();
+if (inRecovery):
+    if (hasPendingPriorityEvent)        return <pull priority event from upstream>;
+    if (!recoveredBuffers.isEmpty())    return recoveredBuffers.poll();
     return empty;                                                                       // block ordinary upstream
 else:
-    // Recovery done: drain any leftover recoveredBuffers, then resume master behavior.
-    if (!recoveredBuffers.isEmpty())        return recoveredBuffers.poll();
     return <master path>;                                                                // toBeConsumedBuffers splits → subpartitionView (Local) ; receivedBuffers (Remote)
 ```
 
-`<pull priority event from upstream>` reuses the master-existing priority path: for `RemoteInputChannel`, it is the `addPriorityBuffer` / head-of-`receivedBuffers` priority position; for `LocalInputChannel`, it pulls the priority entry out of `subpartitionView` (the logic that used to live in `getNextRecoveredBuffer`). This is the only path by which upstream data may leave the channel during recovery — it is what lets unaligned checkpoint barriers from upstream fire while drain is still producing.
+`<pull priority event from upstream>` reuses the master-existing priority path: for `RemoteInputChannel`, head-of-`receivedBuffers` priority position (via `addPriorityBuffer`); for `LocalInputChannel`, pull the priority entry out of `subpartitionView` (logic that used to live in `getNextRecoveredBuffer`). This is the only path by which upstream data leaves the channel during recovery — it lets unaligned checkpoint barriers fire while drain is still producing.
 
 ### 3.7 `stateConsumedFuture`
 

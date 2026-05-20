@@ -152,7 +152,7 @@ Key properties:
 - **No `if (filter-on)` at this layer.** Step 1 and Step 3 always run; they collapse to no-op when there's nothing to do (feature off, or recovery fully completed on every channel) via:
   - `RecoveryCheckpointTrigger.snapshotAndInsertBarriers()` no-ops (empty `DiskSnapshot`, no barrier inserts) when the spill file is empty AND `allRecoveredBuffersDelivered` is true on every channel;
   - `ChannelStateWriter.addInputDataFromSpill(empty)` no-ops on the writer side.
-- **No outer Step 2 loop.** Step 2 is **embedded inside each `channel.checkpointStarted(barrier)`** (master's existing per-channel method, now extended — see §3.3). The dispatcher only iterates gates per master; gates iterate channels per master; channels handle both old (receivedBuffers) and new (recoveredBuffers) work in one place.
+- **No outer Step 2 loop.** Step 2 is **embedded inside each `channel.checkpointStarted(barrier)`** (master's existing per-channel method, now extended — see §3.3). The dispatcher only iterates gates per master; gates iterate channels per master; each channel picks one of two mutually exclusive branches based on its own state.
 - **Task-level once per checkpoint.** `recoveryCheckpointTrigger.snapshotAndInsertBarriers()` is called exactly once, regardless of gate count. Master per-gate iteration covers all channels exactly once.
 
 Sequence view of the dispatcher running on the task thread:
@@ -238,7 +238,7 @@ Key points:
 
 ### 3.4 Step 1 and Step 3 details
 
-**Step 1** — `snapshotAndInsertBarriers()` internal behavior in [`unspiller.md`](./unspiller.md) §3.2: inside `synchronized(Unspiller.lock)`, take a `DiskSnapshot` and call `ch.onRecoveredStateBuffer(RecoveryCheckpointBarrier)` on every channel in `allChannels`. After releasing the lock, `channelIOExecutor` resumes drain; subsequent add-buffers land after the barrier; subsequent `currentOffset` advances past `snap.startPos` (so Step 3's iterator skips already-delivered entries).
+**Step 1** — `snapshotAndInsertBarriers()` internal behavior in [`unspiller.md`](./unspiller.md) §3: inside `synchronized(Unspiller.lock)`, take a `DiskSnapshot` and call `ch.onRecoveredStateBuffer(RecoveryCheckpointBarrier)` on every channel in `allChannels`. After releasing the lock, `channelIOExecutor` resumes drain; subsequent add-buffers land after the barrier; subsequent `currentOffset` advances past `snap.startPos` (so Step 3's iterator skips already-delivered entries).
 
 **Step 3** — new `ChannelStateWriter` method:
 
@@ -250,8 +250,8 @@ Async writer thread demuxes by `chunk.channelInfo` into each channel's checkpoin
 
 ### 3.5 Ordering
 
-- Step 1 runs first (the disk snap + barrier inserts must precede everything else).
-- Step 2 (inside each `channel.checkpointStarted`) and Step 3 (`addInputDataFromSpill`) both follow Step 1; there is no ordering dependency between Step 2 and Step 3 in §3.2's pseudocode the per-gate loop runs before the explicit Step 3 call, which is the recommended linear form.
+- Step 1 runs first — the disk snap + barrier inserts must precede everything else.
+- Step 2 (inside each `channel.checkpointStarted`) and Step 3 (`addInputDataFromSpill`) both follow Step 1; there is no ordering dependency between them. The §3.2 pseudocode runs the per-gate loop (containing Step 2) before the explicit Step 3 call, which is the recommended linear form.
 
 ## 4. The `RecoveryCheckpointBarrier` sentinel
 

@@ -106,9 +106,9 @@ Lock order is fixed: `Unspiller.lock` is always taken first; any nested locking 
 
 Executed by the task thread on the mailbox; detailed step boundary conditions and correctness proof in [`coordination.md`](./coordination.md) §3 / §5.
 
-1. **Step 1**: `snap = unspiller.snapshotAndInsertBarriers()` — a single atomic call. Inside, the Unspiller enters `synchronized (lock)`, takes a `DiskSnapshot`, calls `ch.onRecoveredStateBuffer(barrier)` on every channel, and exits the block.
-2. **Step 2**: walk each channel's `receivedBuffers`; for buffers before the barrier, `retainBuffer` them and hand them to `ChannelStateWriter.addInputData`; drop the barrier itself.
-3. **Step 3**: `channelStateWriter.addInputDataFromSpill(checkpointId, snap)` — the writer asynchronously demuxes by `entry.channelInfo` into each channel's checkpoint output.
+1. **Step 1**: `snap = unspiller.snapshotAndInsertBarriers()` — single atomic call. Inside, Unspiller enters `synchronized (lock)`, takes a `DiskSnapshot`, calls `ch.onRecoveredStateBuffer(barrier)` on every channel, and exits the block.
+2. **Step 2**: embedded inside each `channel.checkpointStarted(barrier)` (master's existing per-channel entry, reached via `input.checkpointStarted`). If the channel is still in recovery, walk its `recoveredBuffers` up to the barrier and persist; otherwise run master's existing `receivedBuffers` persistence. The two branches are mutually exclusive — see [`coordination.md`](./coordination.md) §3.3.
+3. **Step 3**: `channelStateWriter.addInputDataFromSpill(checkpointId, snap)` — writer asynchronously demuxes by `entry.channelInfo` into each channel's checkpoint output.
 
 ## 6. Cross-thread Java interfaces
 
@@ -242,6 +242,6 @@ A few cross-thread artifacts are not themselves Java interfaces but pass through
 ## 7. Simplifications this design delivers
 
 - No cross-channel coordinator object; no "wait until every channel has been notified before snapshotting" wait-set;
-- The `getNextBuffer` change is small and self-contained: a `allRecoveredBuffersDelivered` flag plus a queue-2 check, both fully described in [`input_channel.md`](./input_channel.md) §3; existing callers and the wake-up chain are untouched;
+- The `getNextBuffer` change is small and self-contained: a single `inRecovery` predicate over `allRecoveredBuffersDelivered` and `recoveredBuffers`, fully described in [`input_channel.md`](./input_channel.md) §3; existing callers and the wake-up chain are untouched;
 - No "filter / drain writing to a channel concurrently"; filter does not touch channels, and drain is a single-threaded sequential writer;
 - No borrowed gate lock for stale-enqueue races; channel references are captured once at `Unspiller` construction and never switched during drain.
