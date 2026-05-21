@@ -267,20 +267,24 @@ class InputChannelRecoveredStateHandler
     }
 
     /**
-     * Heap-backed segments owned by this handler, retained across the filter phase so that the
-     * pre-filter and post-filter buffers can survive intermediate {@code recycleBuffer()} calls
-     * from the filter without returning memory to the network pool. Freed in {@link #close()}.
+     * Pool-backed buffers owned by this handler, retained across the filter phase so that the
+     * prefilter and postfilter accumulator slots survive intermediate {@code recycleBuffer()} calls
+     * from the filter without returning memory to the network pool. The handler hands the
+     * accumulator a no-op-recycler wrapper over the same {@link MemorySegment}; the underlying
+     * pooled buffer is recycled (returning the segment to the pool) in {@link #close()}.
      */
-    @Nullable private MemorySegment filterPrefilterSegment;
+    @Nullable private Buffer filterPrefilterPooledBuffer;
 
-    @Nullable private MemorySegment filterPostfilterSegment;
+    @Nullable private Buffer filterPostfilterPooledBuffer;
 
     /**
-     * Lazily constructs the spill-file pipeline on the first filter call. Buffers backing the
-     * accumulator are wrapped over handler-owned segments with no-op recyclers so that any
-     * intermediate {@code recycleBuffer()} (e.g. from {@code filterAndRewrite} on an empty-output
-     * path) does not return memory to the underlying pool — the segments live for the entire filter
-     * phase and are released through {@link #close()}.
+     * Lazily constructs the spill-file pipeline on the first filter call. The two accumulator
+     * buffers are sourced from the network buffer pool via the source channel's exclusive pool — no
+     * heap fallback. Their underlying {@link MemorySegment}s are re-wrapped in {@link
+     * NetworkBuffer}s with no-op recyclers so that any intermediate {@code recycleBuffer()} (e.g.
+     * from {@code filterAndRewrite} on an empty-output path) does not return memory to the pool
+     * mid-filter — the segments live for the entire filter phase and are returned to the pool in
+     * {@link #close()} by recycling the original pooled buffers.
      */
     private SpillFileWriter ensureSpillFileWriter(RecoveredInputChannel channel)
             throws IOException, InterruptedException {
@@ -290,15 +294,21 @@ class InputChannelRecoveredStateHandler
         Path baseDir = resolveSpillBaseDir();
         SpillFile spillFile = new SpillFile(baseDir);
 
-        filterPrefilterSegment = MemorySegmentFactory.allocateUnpooledSegment(memorySegmentSize);
-        filterPostfilterSegment = MemorySegmentFactory.allocateUnpooledSegment(memorySegmentSize);
+        // Acquire two pool-backed buffers from the source channel's exclusive pool. These hold
+        // the accumulator's prefilter and postfilter memory for the whole filter phase. The
+        // working-set memory footprint stays at one prefilter + one postfilter buffer.
+        filterPrefilterPooledBuffer = channel.requestBufferBlocking();
+        filterPostfilterPooledBuffer = channel.requestBufferBlocking();
+        MemorySegment prefilterSegment = filterPrefilterPooledBuffer.getMemorySegment();
+        MemorySegment postfilterSegment = filterPostfilterPooledBuffer.getMemorySegment();
+
         BufferRecycler resetOnlyRecycler =
                 segment -> {
-                    // No-op: handler retains ownership of the heap segment for the duration of
-                    // the filter phase. The segment is freed in close().
+                    // No-op: handler retains ownership of the pooled segment for the duration of
+                    // the filter phase. The underlying pooled buffer is recycled in close().
                 };
-        Buffer prefilter = new NetworkBuffer(filterPrefilterSegment, resetOnlyRecycler);
-        Buffer initialPostfilter = new NetworkBuffer(filterPostfilterSegment, resetOnlyRecycler);
+        Buffer prefilter = new NetworkBuffer(prefilterSegment, resetOnlyRecycler);
+        Buffer initialPostfilter = new NetworkBuffer(postfilterSegment, resetOnlyRecycler);
 
         FilteredBufferWriter accumulator =
                 new FilteredBufferWriter(
@@ -310,7 +320,7 @@ class InputChannelRecoveredStateHandler
                             // rotation re-wraps the same underlying segment in a fresh
                             // NetworkBuffer so the working-set memory footprint stays at
                             // one prefilter + one postfilter buffer for the whole filter phase.
-                            return new NetworkBuffer(filterPostfilterSegment, resetOnlyRecycler);
+                            return new NetworkBuffer(postfilterSegment, resetOnlyRecycler);
                         });
         spillFileWriter = new SpillFileWriter(spillFile, accumulator);
         return spillFileWriter;
@@ -365,13 +375,13 @@ class InputChannelRecoveredStateHandler
                 spillFileWriter = null;
             }
         }
-        if (filterPrefilterSegment != null) {
-            filterPrefilterSegment.free();
-            filterPrefilterSegment = null;
+        if (filterPrefilterPooledBuffer != null) {
+            filterPrefilterPooledBuffer.recycleBuffer();
+            filterPrefilterPooledBuffer = null;
         }
-        if (filterPostfilterSegment != null) {
-            filterPostfilterSegment.free();
-            filterPostfilterSegment = null;
+        if (filterPostfilterPooledBuffer != null) {
+            filterPostfilterPooledBuffer.recycleBuffer();
+            filterPostfilterPooledBuffer = null;
         }
         // note that we need to finish all RecoveredInputChannels, not just those with state
         for (final InputGate inputGate : inputGates) {
