@@ -190,6 +190,26 @@ public interface ChannelStateWriter extends Closeable {
     ChannelStateWriteResult getAndRemoveWriteResult(long checkpointId)
             throws IllegalArgumentException;
 
+    /**
+     * Records input-channel state from a spill file that was written during the filter phase of a
+     * recovery-with-checkpoint. The writer asynchronously demuxes entries by {@code
+     * entry.channelInfo} into each channel's checkpoint output.
+     *
+     * <p>The default no-op closes {@code chunks} and swallows any exception on close; this covers
+     * all existing implementations that do not participate in the disk-spill path.
+     *
+     * @param checkpointId the checkpoint id that triggered the spill snapshot
+     * @param chunks iterator over spill-file entries; caller transfers ownership and the callee is
+     *     responsible for closing it
+     */
+    default void addInputDataFromSpill(
+            long checkpointId, CloseableIterator<DiskSnapshot.Chunk> chunks) {
+        try {
+            chunks.close();
+        } catch (Exception ignored) {
+        }
+    }
+
     ChannelStateWriter NO_OP = new NoOpChannelStateWriter();
 
     /** No-op implementation of {@link ChannelStateWriter}. */
@@ -229,6 +249,15 @@ public interface ChannelStateWriter extends Closeable {
             return new ChannelStateWriteResult(
                     CompletableFuture.completedFuture(Collections.emptyList()),
                     CompletableFuture.completedFuture(Collections.emptyList()));
+        }
+
+        @Override
+        public void addInputDataFromSpill(
+                long checkpointId, CloseableIterator<DiskSnapshot.Chunk> chunks) {
+            try {
+                chunks.close();
+            } catch (Exception ignored) {
+            }
         }
 
         @Override
