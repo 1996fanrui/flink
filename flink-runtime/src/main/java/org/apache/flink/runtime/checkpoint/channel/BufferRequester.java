@@ -23,10 +23,10 @@ import org.apache.flink.runtime.io.network.buffer.Buffer;
 import java.io.IOException;
 
 /**
- * Funnels every buffer allocation that the drain (SpillFileReader) needs. Lives in the same
- * package as {@code SpillFileReader}, so {@code SpillFileReader} depends only on this interface;
- * the cross-package access to {@code RecoveredInputChannel}'s release primitive is encapsulated
- * inside the single implementation {@code RecoveredChannelBufferRequester}.
+ * Funnels every buffer allocation that the drain (SpillFileReader) needs. Lives in the same package
+ * as {@code SpillFileReader}, so {@code SpillFileReader} depends only on this interface; the
+ * cross-package access to {@code RecoveredInputChannel}'s release primitive is encapsulated inside
+ * the single implementation {@code RecoveredChannelBufferRequester}.
  */
 @Internal
 public interface BufferRequester {
@@ -35,11 +35,11 @@ public interface BufferRequester {
      * Blocks until a buffer is available from the source channel's pool. Implementations are
      * expected to delegate to {@code RecoveredInputChannel.requestBufferBlocking()} (the existing
      * method on master, with the heap fallback removed in Phase 4). Internally parks on the
-     * per-channel {@code BufferManager.bufferQueue} ({@code Object.wait / notifyAll}), woken by
-     * the {@code BufferPool}'s {@code BufferListener} callback.
+     * per-channel {@code BufferManager.bufferQueue} ({@code Object.wait / notifyAll}), woken by the
+     * {@code BufferPool}'s {@code BufferListener} callback.
      *
-     * <p>Caller MUST NOT hold {@code SpillFileReader.lock}. Parking inside the lock would stall
-     * the checkpoint trigger whenever buffer-pool pressure causes a wait, because the task thread
+     * <p>Caller MUST NOT hold {@code SpillFileReader.lock}. Parking inside the lock would stall the
+     * checkpoint trigger whenever buffer-pool pressure causes a wait, because the task thread
      * cannot acquire the lock to insert its barrier.
      *
      * @param channelInfo identifies the channel whose buffer pool to allocate from

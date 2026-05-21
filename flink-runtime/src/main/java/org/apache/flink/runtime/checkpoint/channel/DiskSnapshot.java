@@ -20,34 +20,32 @@ package org.apache.flink.runtime.checkpoint.channel;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.CloseableIterator;
 
+import java.io.IOException;
+import java.util.List;
 import java.util.NoSuchElementException;
 
 /**
- * A snapshot of the spill-file state at the moment a recovery checkpoint was triggered. Returned
- * by {@link RecoveryCheckpointTrigger#snapshotAndInsertBarriers} at Step 1 and fed into
- * {@link ChannelStateWriter#addInputDataFromSpill} at Step 3.
+ * A snapshot of the spill-file state at the moment a recovery checkpoint was triggered. Returned by
+ * {@link RecoveryCheckpointTrigger#snapshotAndInsertBarriers} at Step 1 and fed into the
+ * channel-state writer at Step 3.
  *
- * <p>Iterating over a {@code DiskSnapshot} yields {@link Chunk} entries — one per spill-file
- * entry that falls within the snapshot window. The iteration starting point is captured as
- * {@link StartPos} inside the lock in {@code RecoveryCheckpointTrigger}, ensuring that entries
- * already delivered to channel queues before the checkpoint barrier are excluded from the disk
- * portion.
- *
- * <p>The real iteration logic (seeking to {@link StartPos} and reading entries) is introduced in
- * Phase 4. This skeleton provides the type declarations and the {@link #empty()} factory used by
- * the feature-off code path.
+ * <p>Iteration yields one {@link Chunk} per entry that falls strictly after {@link StartPos} —
+ * entries already delivered by the drain are skipped. {@link StartPos} is captured inside {@code
+ * SpillFileReader.lock} at the same instant the {@link RecoveryCheckpointBarrier} sentinels are
+ * inserted into channel queues; this guarantees the in-memory and on-disk portions are disjoint and
+ * cover every entry exactly once.
  */
 @Internal
 public final class DiskSnapshot implements CloseableIterator<DiskSnapshot.Chunk> {
 
-    /**
-     * A single recovered-state entry read from the spill file, belonging to one input channel.
-     */
+    /** A single recovered-state entry read from the spill file, belonging to one input channel. */
     public static final class Chunk {
         /** The channel this entry belongs to. */
         public final InputChannelInfo channelInfo;
+
         /** Raw bytes of the recovered buffer. */
         public final byte[] data;
+
         /** Number of valid bytes in {@link #data}. */
         public final int length;
 
@@ -60,16 +58,13 @@ public final class DiskSnapshot implements CloseableIterator<DiskSnapshot.Chunk>
 
     /**
      * The position within the spill file at which this snapshot begins. Captured atomically inside
-     * {@code SpillFileReader.lock} at the same instant that the {@link RecoveryCheckpointBarrier}
-     * sentinels are inserted into the channel queues. This guarantees that the disk and memory
-     * portions of the snapshot are disjoint and together cover all entries exactly once.
-     *
-     * <p>Phase 4 fills in the real seek logic; this skeleton declares the type so that the
-     * interface contract can be established without churn.
+     * {@code SpillFileReader.lock} together with the per-channel barrier inserts so the disk
+     * portion and the in-memory portion of the snapshot share a single physical instant.
      */
     public static final class StartPos {
         /** Index of the spill-file segment that is current at snapshot time. */
         public final int segmentIndex;
+
         /** Byte offset within that segment at snapshot time. */
         public final long offset;
 
@@ -82,33 +77,99 @@ public final class DiskSnapshot implements CloseableIterator<DiskSnapshot.Chunk>
     private static final DiskSnapshot EMPTY_INSTANCE = new DiskSnapshot();
 
     /**
-     * Returns a {@code DiskSnapshot} over an empty range: {@link #hasNext()} is always
-     * {@code false}, {@link #next()} always throws {@link NoSuchElementException}, and
-     * {@link #close()} is a no-op. Used by the feature-off code path where no spill file exists.
-     *
-     * @return the shared empty instance
+     * Returns a {@code DiskSnapshot} over an empty range: {@link #hasNext()} is always {@code
+     * false}, {@link #next()} always throws {@link NoSuchElementException}, and {@link #close()} is
+     * a no-op. Used by the feature-off code path where no spill file exists and by the
+     * recovery-already-done path where the drain has consumed all entries.
      */
     public static DiskSnapshot empty() {
         return EMPTY_INSTANCE;
     }
 
+    private final SpillFile.Snapshot snapshot;
+    private final StartPos startPos;
+    private final List<SpillFile.Entry> entries;
+    private int entryCursor;
+    private boolean closed;
+
     /**
-     * Default constructor. At this skeleton phase the instance is always in the empty state;
-     * Phase 4 will introduce the constructor that accepts a {@link StartPos} and the spill-file
-     * handle.
+     * Constructs an empty snapshot — the {@link #empty()} singleton state. Iteration is immediately
+     * exhausted.
      */
-    DiskSnapshot() {}
+    private DiskSnapshot() {
+        this.snapshot = null;
+        this.startPos = null;
+        this.entries = java.util.Collections.emptyList();
+        this.entryCursor = 0;
+        this.closed = false;
+    }
+
+    public DiskSnapshot(SpillFile.Snapshot snapshot, StartPos startPos) {
+        this.snapshot = snapshot;
+        this.startPos = startPos;
+        this.entries = snapshot.getEntries();
+        this.entryCursor = 0;
+        this.closed = false;
+    }
 
     @Override
     public boolean hasNext() {
-        return false;
+        if (closed) {
+            return false;
+        }
+        skipPreDrained();
+        return entryCursor < entries.size();
     }
 
     @Override
     public Chunk next() {
-        throw new NoSuchElementException("DiskSnapshot is empty");
+        if (closed) {
+            throw new NoSuchElementException("DiskSnapshot is closed");
+        }
+        skipPreDrained();
+        if (entryCursor >= entries.size()) {
+            throw new NoSuchElementException("DiskSnapshot is exhausted");
+        }
+        SpillFile.Entry e = entries.get(entryCursor++);
+        byte[] data = new byte[e.length];
+        try {
+            snapshot.getSegments().get(e.segmentIndex).readBytesAt(e.offset, e.length, data);
+        } catch (IOException ioe) {
+            throw new RuntimeException(
+                    "Failed to read spill entry from segment " + e.segmentIndex, ioe);
+        }
+        return new Chunk(e.channelInfo, data, e.length);
     }
 
+    /**
+     * Phase 4 release is a structural no-op; Phase 5 attaches a per-reader ref-counter so the
+     * spill-file segments can be deleted once both the drain and every in-recovery checkpoint
+     * reader have released their references.
+     */
     @Override
-    public void close() {}
+    public void close() {
+        closed = true;
+    }
+
+    /**
+     * Skips entries whose {@code (segmentIndex, offset)} is strictly before {@link #startPos}.
+     * Those have already been delivered by the drain and live in the channel queues — the caller
+     * observes them via the per-channel pre-barrier walk in Step 2.
+     */
+    private void skipPreDrained() {
+        if (startPos == null) {
+            return;
+        }
+        while (entryCursor < entries.size()) {
+            SpillFile.Entry e = entries.get(entryCursor);
+            boolean preDrained =
+                    e.segmentIndex < startPos.segmentIndex
+                            || (e.segmentIndex == startPos.segmentIndex
+                                    && e.offset < startPos.offset);
+            if (!preDrained) {
+                break;
+            }
+            entryCursor++;
+        }
+    }
 }

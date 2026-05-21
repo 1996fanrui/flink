@@ -194,7 +194,6 @@ public final class RecoveryCheckpointBarrier implements Buffer {
 
     @Override
     public void setDataType(DataType dataType) {
-        throw new UnsupportedOperationException(
-                "RecoveryCheckpointBarrier data type is immutable");
+        throw new UnsupportedOperationException("RecoveryCheckpointBarrier data type is immutable");
     }
 }

@@ -44,7 +44,11 @@ import org.apache.flink.runtime.checkpoint.SnapshotType;
 import org.apache.flink.runtime.checkpoint.SubTaskInitializationMetricsBuilder;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
 import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
+import org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointTrigger;
 import org.apache.flink.runtime.checkpoint.channel.SequentialChannelStateReader;
+import org.apache.flink.runtime.checkpoint.channel.SpillFile;
+import org.apache.flink.runtime.checkpoint.channel.SpillFileReader;
+import org.apache.flink.runtime.checkpoint.channel.SpillFileReaderBootstrap;
 import org.apache.flink.runtime.checkpoint.filemerging.FileMergingSnapshotManager;
 import org.apache.flink.runtime.execution.CancelTaskException;
 import org.apache.flink.runtime.execution.Environment;
@@ -63,6 +67,8 @@ import org.apache.flink.runtime.io.network.partition.ChannelStateHolder;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionType;
 import org.apache.flink.runtime.io.network.partition.consumer.IndexedInputGate;
 import org.apache.flink.runtime.io.network.partition.consumer.InputGate;
+import org.apache.flink.runtime.io.network.partition.consumer.RecoverableInputChannel;
+import org.apache.flink.runtime.io.network.partition.consumer.RecoveredInputChannel;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.jobgraph.tasks.CheckpointableTask;
 import org.apache.flink.runtime.jobgraph.tasks.CoordinatedTask;
@@ -136,6 +142,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
@@ -303,6 +310,14 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 
     /** TODO it might be replaced by the global IO executor on TaskManager level future. */
     private final ExecutorService channelIOExecutor;
+
+    /**
+     * Trigger for the recovery-checkpoint protocol's Step 1 (snapshot disk + insert per-channel
+     * sentinels). Published by {@code restoreStateAndGates} on the filter-on path once the {@link
+     * SpillFileReader} has been constructed; null on the filter-off path. The Phase 5 dispatcher
+     * reads this reference from the task thread.
+     */
+    @Nullable private volatile RecoveryCheckpointTrigger recoveryCheckpointTrigger;
 
     // ========================================================
     //  Final  checkpoint / savepoint
@@ -904,6 +919,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
         // start checkpointing. If we implement incremental checkpointing of input channel state
         // we must make sure it supports CheckpointType#FULL_CHECKPOINT.
         List<CompletableFuture<?>> recoveredFutures = new ArrayList<>(inputGates.length);
+        List<CompletableFuture<?>> conversionDoneFutures = new ArrayList<>(inputGates.length);
         for (InputGate inputGate : inputGates) {
             CompletableFuture<?> requestPartitionsTrigger =
                     checkpointingDuringRecoveryEnabled
@@ -912,10 +928,41 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 
             recoveredFutures.add(requestPartitionsTrigger);
 
+            CompletableFuture<Void> conversionDone = new CompletableFuture<>();
+            conversionDoneFutures.add(conversionDone);
             requestPartitionsTrigger.thenRun(
                     () ->
                             mainMailboxExecutor.execute(
-                                    inputGate::requestPartitions, "Input gate request partitions"));
+                                    () -> {
+                                        try {
+                                            inputGate.requestPartitions();
+                                            conversionDone.complete(null);
+                                        } catch (Throwable t) {
+                                            conversionDone.completeExceptionally(t);
+                                            throw t;
+                                        }
+                                    },
+                                    "Input gate request partitions"));
+        }
+
+        // Filter-on path: after every gate finishes converting recovered channels to their
+        // physical forms, build the SpillFileReader and submit drain to the existing
+        // channelIOExecutor. The source RecoveredInputChannel set must be snapshotted before
+        // conversion (those channels no longer exist after requestPartitions returns); the
+        // physical RecoverableInputChannel set is collected post-conversion. Both are captured
+        // on the task thread inside a mailbox tick so no other thread can observe a half-converted
+        // state.
+        if (checkpointingDuringRecoveryEnabled) {
+            Map<InputChannelInfo, RecoveredInputChannel> sourceChannels =
+                    SpillFileReaderBootstrap.collectRecoveredChannels(inputGates);
+            CompletableFuture<Void> allConverted =
+                    CompletableFuture.allOf(
+                            conversionDoneFutures.toArray(new CompletableFuture[0]));
+            allConverted.thenRun(
+                    () ->
+                            mainMailboxExecutor.execute(
+                                    () -> submitDrainIfFilterOn(reader, inputGates, sourceChannels),
+                                    "Submit recovery drain"));
         }
 
         // Return allOf future instead of thenRun future. thenRun() returns a NEW future that
@@ -933,6 +980,56 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                 CompletableFuture.allOf(recoveredFutures.toArray(new CompletableFuture[0]));
         allRecoveredFuture.thenRun(mailboxProcessor::suspend);
         return allRecoveredFuture;
+    }
+
+    /**
+     * Builds the {@link SpillFileReader} after conversion and submits the drain to {@link
+     * #channelIOExecutor}. No-op on the filter-off path (no spill file was produced). Runs on the
+     * task thread (mailbox). Drain exceptions bubble through {@link #asyncExceptionHandler} — the
+     * same path used for the existing {@code readInputData} async failures.
+     */
+    private void submitDrainIfFilterOn(
+            SequentialChannelStateReader reader,
+            InputGate[] inputGates,
+            Map<InputChannelInfo, RecoveredInputChannel> sourceChannels) {
+        SpillFile spillFile = reader.getProducedSpillFile();
+        if (spillFile == null) {
+            // Filter-off path: nothing was spilled to disk during recovery. The existing
+            // master code path (data delivered straight to channel queues) handles drain.
+            return;
+        }
+        List<RecoverableInputChannel> physicalChannels =
+                SpillFileReaderBootstrap.collectPhysicalChannels(inputGates);
+        SpillFileReader spillReader =
+                SpillFileReaderBootstrap.buildReader(spillFile, sourceChannels, physicalChannels);
+        // Stash the trigger so the Phase 5 dispatcher can call Step 1 from the task thread.
+        this.recoveryCheckpointTrigger = spillReader;
+        channelIOExecutor.execute(
+                () -> {
+                    try {
+                        spillReader.drain();
+                    } catch (Throwable t) {
+                        asyncExceptionHandler.handleAsyncException(
+                                "Unable to drain recovered channel state", t);
+                    } finally {
+                        try {
+                            spillReader.close();
+                        } catch (Throwable closeError) {
+                            asyncExceptionHandler.handleAsyncException(
+                                    "Unable to close SpillFileReader after drain", closeError);
+                        }
+                    }
+                });
+    }
+
+    /**
+     * Test/dispatcher hook returning the {@link RecoveryCheckpointTrigger} stashed by {@link
+     * #submitDrainIfFilterOn}. Null on the filter-off path and before drain is wired.
+     */
+    @VisibleForTesting
+    @Nullable
+    public RecoveryCheckpointTrigger getRecoveryCheckpointTrigger() {
+        return recoveryCheckpointTrigger;
     }
 
     private void ensureNotCanceled() {

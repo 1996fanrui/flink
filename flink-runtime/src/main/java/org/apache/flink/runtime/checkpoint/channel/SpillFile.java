@@ -62,6 +62,12 @@ public final class SpillFile implements Closeable {
     /**
      * One on-disk segment of a {@link SpillFile}. Holds the segment index, file path, an opened
      * {@link FileChannel} for append-only writes, and a running byte counter.
+     *
+     * <p>Drain ({@code SpillFileReader}) maintains a private peek/poll cursor over the entries
+     * belonging to this segment so that read progress can be advanced atomically with the channel
+     * delivery inside {@code SpillFileReader.lock}. Each {@link #readBytesAt} call opens an
+     * independent read-only {@link FileChannel} so that the drain and any concurrent in-recovery
+     * checkpoint readers never share file position state.
      */
     static final class SpillFileSegment implements Closeable {
         final int segmentIndex;
@@ -70,11 +76,53 @@ public final class SpillFile implements Closeable {
         // Number of bytes written so far in this segment. Updated after every append.
         long currentEnd;
 
+        // Drain-side cursor over the entries that belong to this segment. Populated by the
+        // enclosing SpillFile after filter completes; consumed by drain. Not used by readers
+        // opened over a SpillFile.Snapshot — those iterate via their own cursor.
+        private final Deque<Entry> drainEntries = new ArrayDeque<>();
+
         SpillFileSegment(int segmentIndex, Path path, FileChannel channel) {
             this.segmentIndex = segmentIndex;
             this.path = path;
             this.channel = channel;
             this.currentEnd = 0L;
+        }
+
+        /** Returns the next entry to drain without removing it, or {@code null} when empty. */
+        Entry peekNextEntry() {
+            return drainEntries.peek();
+        }
+
+        /** Removes and returns the next entry to drain, or {@code null} when empty. */
+        Entry pollNextEntry() {
+            return drainEntries.poll();
+        }
+
+        /**
+         * Reads {@code length} bytes from {@code offset} into {@code dest} using an independently
+         * opened read-only {@link FileChannel}. A fresh handle per call avoids sharing position
+         * state with the segment's append-side handle and with any other concurrent reader (drain
+         * and the per-checkpoint readers can call this in parallel).
+         */
+        void readBytesAt(long offset, int length, byte[] dest) throws IOException {
+            checkArgument(length >= 0, "length must be non-negative: %s", length);
+            checkArgument(
+                    dest.length >= length, "dest buffer too small: %s < %s", dest.length, length);
+            try (FileChannel reader = FileChannel.open(path, StandardOpenOption.READ)) {
+                ByteBuffer view = ByteBuffer.wrap(dest, 0, length);
+                int totalRead = 0;
+                while (totalRead < length) {
+                    int n = reader.read(view, offset + totalRead);
+                    if (n < 0) {
+                        throw new IOException(
+                                "Unexpected EOF reading segment "
+                                        + path
+                                        + " at offset "
+                                        + (offset + totalRead));
+                    }
+                    totalRead += n;
+                }
+            }
         }
 
         @Override
@@ -161,7 +209,12 @@ public final class SpillFile implements Closeable {
             written += n;
         }
         active.currentEnd = offsetBeforeWrite + length;
-        entries.add(new Entry(channelInfo, active.segmentIndex, offsetBeforeWrite, length));
+        Entry entry = new Entry(channelInfo, active.segmentIndex, offsetBeforeWrite, length);
+        entries.add(entry);
+        // Mirror into the per-segment drain queue so SpillFileReader can peek/poll without
+        // re-grouping. Filter is single-writer; appending here observes the same single-writer
+        // invariant.
+        active.drainEntries.add(entry);
     }
 
     /**
@@ -239,6 +292,47 @@ public final class SpillFile implements Closeable {
     /** Returns an unmodifiable snapshot of the current segment list. */
     List<SpillFileSegment> segments() {
         return Collections.unmodifiableList(segments);
+    }
+
+    /**
+     * Returns an immutable point-in-time view of the file's metadata: a shallow copy of the segment
+     * list plus a defensive copy of the entry queue. Both lists are exposed as unmodifiable. Filter
+     * is the single writer of {@link #entries} and {@link SpillFileSegment#currentEnd}; once filter
+     * has completed (the only legitimate moment to call this method), neither changes, so the
+     * shallow segment copy is a stable read-only view of the on-disk layout.
+     *
+     * <p>Callers are expected to be on the task thread inside {@code SpillFileReader.lock}. The
+     * method itself does no synchronisation — atomicity with the drain progress fields is the
+     * caller's responsibility.
+     */
+    public Snapshot snapshot() {
+        return new Snapshot(new ArrayList<>(segments), new ArrayList<>(entries));
+    }
+
+    /**
+     * Immutable view of a {@link SpillFile} produced by {@link #snapshot()}. Used by the
+     * per-checkpoint readers ({@link DiskSnapshot}) to iterate the disk slice without touching the
+     * live writer state. The lists are unmodifiable; segments themselves remain shared with the
+     * underlying {@link SpillFile} since they are no longer mutated after filter completes.
+     */
+    public static final class Snapshot {
+        private final List<SpillFileSegment> segments;
+        private final List<Entry> entries;
+
+        Snapshot(List<SpillFileSegment> segments, List<Entry> entries) {
+            this.segments = Collections.unmodifiableList(segments);
+            this.entries = Collections.unmodifiableList(entries);
+        }
+
+        /** Returns the segments captured at snapshot time, in segment-index order. */
+        public List<SpillFileSegment> getSegments() {
+            return segments;
+        }
+
+        /** Returns the entries captured at snapshot time, in append order. */
+        public List<Entry> getEntries() {
+            return entries;
+        }
     }
 
     /**

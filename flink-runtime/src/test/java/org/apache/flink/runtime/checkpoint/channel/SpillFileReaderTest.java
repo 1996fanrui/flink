@@ -1,0 +1,305 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.flink.runtime.checkpoint.channel;
+
+import org.apache.flink.core.memory.MemorySegment;
+import org.apache.flink.core.memory.MemorySegmentFactory;
+import org.apache.flink.runtime.io.network.buffer.Buffer;
+import org.apache.flink.runtime.io.network.buffer.FreeingBufferRecycler;
+import org.apache.flink.runtime.io.network.buffer.NetworkBuffer;
+import org.apache.flink.runtime.io.network.partition.consumer.RecoverableInputChannel;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.nio.ByteBuffer;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/** Unit tests for {@link SpillFileReader}. */
+class SpillFileReaderTest {
+
+    @TempDir Path tempDir;
+
+    @Test
+    void testDrainEndToEnd() throws Exception {
+        InputChannelInfo cInfo = new InputChannelInfo(0, 0);
+        try (SpillFile spillFile = new SpillFile(tempDir)) {
+            spillFile.append(cInfo, ByteBuffer.wrap(payload(1)));
+            spillFile.append(cInfo, ByteBuffer.wrap(payload(2)));
+            spillFile.append(cInfo, ByteBuffer.wrap(payload(3)));
+
+            RecordingChannel rec = new RecordingChannel();
+            RecordingBufferRequester reqer = new RecordingBufferRequester();
+            SpillFileReader reader = newReader(spillFile, reqer, cInfo, rec);
+
+            reader.drain();
+            reader.close();
+
+            assertThat(rec.recovered).hasSize(3);
+            assertThat(toByteArrays(rec.recovered))
+                    .containsExactly(payload(1), payload(2), payload(3));
+            assertThat(rec.finishCalls).isEqualTo(1);
+            assertThat(reqer.releaseCalls).isEqualTo(1);
+        }
+    }
+
+    @Test
+    void testDrainDemuxByChannelInfo() throws Exception {
+        InputChannelInfo c0 = new InputChannelInfo(0, 0);
+        InputChannelInfo c1 = new InputChannelInfo(0, 1);
+        try (SpillFile spillFile = new SpillFile(tempDir)) {
+            spillFile.append(c0, ByteBuffer.wrap(payload(11)));
+            spillFile.append(c1, ByteBuffer.wrap(payload(22)));
+            spillFile.append(c0, ByteBuffer.wrap(payload(33)));
+            spillFile.append(c1, ByteBuffer.wrap(payload(44)));
+
+            RecordingChannel chan0 = new RecordingChannel();
+            RecordingChannel chan1 = new RecordingChannel();
+            SpillFileReader reader =
+                    newReader(spillFile, new RecordingBufferRequester(), c0, chan0, c1, chan1);
+
+            reader.drain();
+            reader.close();
+
+            assertThat(toByteArrays(chan0.recovered)).containsExactly(payload(11), payload(33));
+            assertThat(toByteArrays(chan1.recovered)).containsExactly(payload(22), payload(44));
+        }
+    }
+
+    @Test
+    void testDrainCallsFinishReadRecoveredStateAfterAllOnRecoveredStateBuffer() throws Exception {
+        InputChannelInfo c0 = new InputChannelInfo(0, 0);
+        InputChannelInfo c1 = new InputChannelInfo(0, 1);
+        try (SpillFile spillFile = new SpillFile(tempDir)) {
+            spillFile.append(c0, ByteBuffer.wrap(payload(1)));
+            spillFile.append(c1, ByteBuffer.wrap(payload(2)));
+
+            int[] seq = {0};
+            RecordingChannel chan0 = new RecordingChannel(seq);
+            RecordingChannel chan1 = new RecordingChannel(seq);
+            SpillFileReader reader =
+                    newReader(spillFile, new RecordingBufferRequester(), c0, chan0, c1, chan1);
+
+            reader.drain();
+            reader.close();
+
+            // finish must come strictly after every data delivery (sequence monotonic).
+            int maxDataSeq = Math.max(chan0.maxDataSeq, chan1.maxDataSeq);
+            int minFinishSeq = Math.min(chan0.finishSeq, chan1.finishSeq);
+            assertThat(maxDataSeq).isLessThan(minFinishSeq);
+        }
+    }
+
+    @Test
+    void testSnapshotAndInsertBarriersSnapsStartPos() throws Exception {
+        InputChannelInfo cInfo = new InputChannelInfo(0, 0);
+        try (SpillFile spillFile = new SpillFile(tempDir)) {
+            spillFile.append(cInfo, ByteBuffer.wrap(payload(5)));
+            spillFile.append(cInfo, ByteBuffer.wrap(payload(6)));
+
+            RecordingChannel chan = new RecordingChannel();
+            SpillFileReader reader =
+                    newReader(spillFile, new RecordingBufferRequester(), cInfo, chan);
+
+            long cpId = 42L;
+            DiskSnapshot snap = reader.snapshotAndInsertBarriers(cpId);
+
+            int count = 0;
+            while (snap.hasNext()) {
+                snap.next();
+                count++;
+            }
+            snap.close();
+            // Nothing drained — startPos is (0, 0), the snapshot covers every entry.
+            assertThat(count).isEqualTo(2);
+        }
+    }
+
+    @Test
+    void testSnapshotAndInsertBarriersInsertsBarrierPerChannel() throws Exception {
+        InputChannelInfo c0 = new InputChannelInfo(0, 0);
+        InputChannelInfo c1 = new InputChannelInfo(0, 1);
+        try (SpillFile spillFile = new SpillFile(tempDir)) {
+            spillFile.append(c0, ByteBuffer.wrap(payload(1)));
+            spillFile.append(c1, ByteBuffer.wrap(payload(2)));
+
+            RecordingChannel chan0 = new RecordingChannel();
+            RecordingChannel chan1 = new RecordingChannel();
+            SpillFileReader reader =
+                    newReader(spillFile, new RecordingBufferRequester(), c0, chan0, c1, chan1);
+
+            long cpId = 7L;
+            DiskSnapshot snap = reader.snapshotAndInsertBarriers(cpId);
+            snap.close();
+
+            assertThat(chan0.recovered).hasSize(1);
+            assertThat(chan1.recovered).hasSize(1);
+            assertThat(chan0.recovered.get(0)).isInstanceOf(RecoveryCheckpointBarrier.class);
+            assertThat(chan1.recovered.get(0)).isInstanceOf(RecoveryCheckpointBarrier.class);
+            assertThat(((RecoveryCheckpointBarrier) chan0.recovered.get(0)).getCheckpointId())
+                    .isEqualTo(cpId);
+            assertThat(((RecoveryCheckpointBarrier) chan1.recovered.get(0)).getCheckpointId())
+                    .isEqualTo(cpId);
+        }
+    }
+
+    @Test
+    void testSnapshotAndInsertBarriersReturnsEmptyWhenRecoveryDone() throws Exception {
+        InputChannelInfo cInfo = new InputChannelInfo(0, 0);
+        try (SpillFile spillFile = new SpillFile(tempDir)) {
+            spillFile.append(cInfo, ByteBuffer.wrap(payload(1)));
+            spillFile.append(cInfo, ByteBuffer.wrap(payload(2)));
+
+            RecordingChannel chan = new RecordingChannel();
+            SpillFileReader reader =
+                    newReader(spillFile, new RecordingBufferRequester(), cInfo, chan);
+
+            reader.drain();
+            int recoveredBefore = chan.recovered.size();
+
+            DiskSnapshot snap = reader.snapshotAndInsertBarriers(99L);
+            assertThat(snap.hasNext()).isFalse();
+            snap.close();
+
+            // No barrier inserted — channel buffer count is unchanged from post-drain state.
+            assertThat(chan.recovered).hasSize(recoveredBefore);
+            reader.close();
+        }
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // Fixtures
+    // -------------------------------------------------------------------------------------------
+
+    /**
+     * Lightweight {@link RecoverableInputChannel} stub. Records every buffer pushed via {@code
+     * onRecoveredStateBuffer} and counts {@code finishReadRecoveredState} calls. Optionally tracks
+     * a shared monotonic counter across multiple instances so tests can prove finish ordering
+     * relative to data delivery.
+     */
+    private static final class RecordingChannel implements RecoverableInputChannel {
+        final List<Buffer> recovered = new ArrayList<>();
+        int finishCalls = 0;
+
+        // Sequence-tracking fields (only used when a shared counter is provided).
+        private final int[] sequence;
+        int maxDataSeq = Integer.MIN_VALUE;
+        int finishSeq = -1;
+
+        RecordingChannel() {
+            this.sequence = null;
+        }
+
+        RecordingChannel(int[] sharedSequence) {
+            this.sequence = sharedSequence;
+        }
+
+        @Override
+        public void onRecoveredStateBuffer(Buffer buffer) {
+            recovered.add(buffer);
+            if (sequence != null) {
+                maxDataSeq = Math.max(maxDataSeq, ++sequence[0]);
+            }
+        }
+
+        @Override
+        public void finishReadRecoveredState() {
+            finishCalls++;
+            if (sequence != null) {
+                finishSeq = ++sequence[0];
+            }
+        }
+    }
+
+    /** Returns fresh heap-backed buffers and counts release calls. */
+    private static final class RecordingBufferRequester implements BufferRequester {
+        int releaseCalls = 0;
+
+        @Override
+        public Buffer requestBufferBlocking(InputChannelInfo channelInfo) {
+            MemorySegment seg = MemorySegmentFactory.allocateUnpooledSegment(4096);
+            return new NetworkBuffer(seg, FreeingBufferRecycler.INSTANCE);
+        }
+
+        @Override
+        public void releaseExclusiveBuffers() {
+            releaseCalls++;
+        }
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------------------------------
+
+    private static SpillFileReader newReader(
+            SpillFile spillFile, BufferRequester requester, Object... infoChannelPairs) {
+        List<RecoverableInputChannel> all = new ArrayList<>();
+        Map<InputChannelInfo, RecoverableInputChannel> byInfo = new LinkedHashMap<>();
+        for (int i = 0; i < infoChannelPairs.length; i += 2) {
+            InputChannelInfo info = (InputChannelInfo) infoChannelPairs[i];
+            RecoverableInputChannel ch = (RecoverableInputChannel) infoChannelPairs[i + 1];
+            all.add(ch);
+            byInfo.put(info, ch);
+        }
+        return new SpillFileReader(spillFile, all, byInfo, requester);
+    }
+
+    /** Deterministic 4-byte payload per id. */
+    private static byte[] payload(int id) {
+        return new byte[] {(byte) (id & 0xff), (byte) ((id >> 8) & 0xff), (byte) 0xAB, (byte) 0xCD};
+    }
+
+    private static List<byte[]> toByteArrays(List<Buffer> bufs) {
+        List<byte[]> out = new ArrayList<>();
+        for (Buffer buf : bufs) {
+            int len = buf.getSize();
+            byte[] arr = new byte[len];
+            buf.getMemorySegment().get(buf.getMemorySegmentOffset(), arr, 0, len);
+            out.add(arr);
+        }
+        return out;
+    }
+
+    @SuppressWarnings("unused")
+    private static byte[] flatten(byte[]... parts) {
+        int total = 0;
+        for (byte[] p : parts) {
+            total += p.length;
+        }
+        byte[] out = new byte[total];
+        int off = 0;
+        for (byte[] p : parts) {
+            System.arraycopy(p, 0, out, off, p.length);
+            off += p.length;
+        }
+        return out;
+    }
+
+    @SuppressWarnings("unused")
+    private static byte[] copyOf(byte[] src) {
+        return Arrays.copyOf(src, src.length);
+    }
+}

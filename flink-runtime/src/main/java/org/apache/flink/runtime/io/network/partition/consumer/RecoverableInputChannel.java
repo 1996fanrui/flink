@@ -52,10 +52,9 @@ public interface RecoverableInputChannel {
      * queued in {@code recoveredBuffers}. The channel completes {@code stateConsumedFuture} once
      * both this flag is {@code true} AND {@code recoveredBuffers} is empty.
      *
-     * <p>End-of-drain exception: caller does NOT need to hold {@code SpillFileReader.lock}.
-     * At this point no more buffers are being added, so the (queue, offset) atomicity that
-     * Principle 1 protects does not apply. The flag is published through the channel's own internal
-     * monitor.
+     * <p>End-of-drain exception: caller does NOT need to hold {@code SpillFileReader.lock}. At this
+     * point no more buffers are being added, so the (queue, offset) atomicity that Principle 1
+     * protects does not apply. The flag is published through the channel's own internal monitor.
      *
      * @throws IOException if an error occurs while finalising the channel state
      */

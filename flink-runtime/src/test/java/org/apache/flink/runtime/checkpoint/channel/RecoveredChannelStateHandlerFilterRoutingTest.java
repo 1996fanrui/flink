@@ -125,7 +125,7 @@ class RecoveredChannelStateHandlerFilterRoutingTest {
                     .as("filter-off must not create a SpillFile")
                     .isNull();
             handler.close();
-            assertThat(handler.getProducedSpillFileForTesting())
+            assertThat(handler.getProducedSpillFile())
                     .as("filter-off close() must not publish a SpillFile either")
                     .isNull();
         }
@@ -184,7 +184,7 @@ class RecoveredChannelStateHandlerFilterRoutingTest {
                                     + " bufferFilteringCompleteFuture completes")
                     .isTrue();
 
-            SpillFile produced = handler.getProducedSpillFileForTesting();
+            SpillFile produced = handler.getProducedSpillFile();
             assertThat(produced).isSameAs(activeSpillFile);
             assertThat(produced.isClosed()).isTrue();
         }
