@@ -32,9 +32,7 @@ import java.nio.ByteBuffer;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -51,7 +49,7 @@ class SpillFileReaderTest {
             spillFile.append(cInfo, ByteBuffer.wrap(payload(2)));
             spillFile.append(cInfo, ByteBuffer.wrap(payload(3)));
 
-            RecordingChannel rec = new RecordingChannel();
+            RecordingChannel rec = new RecordingChannel(cInfo);
             RecordingBufferRequester reqer = new RecordingBufferRequester();
             SpillFileReader reader = newReader(spillFile, reqer, cInfo, rec);
 
@@ -76,8 +74,8 @@ class SpillFileReaderTest {
             spillFile.append(c0, ByteBuffer.wrap(payload(33)));
             spillFile.append(c1, ByteBuffer.wrap(payload(44)));
 
-            RecordingChannel chan0 = new RecordingChannel();
-            RecordingChannel chan1 = new RecordingChannel();
+            RecordingChannel chan0 = new RecordingChannel(c0);
+            RecordingChannel chan1 = new RecordingChannel(c1);
             SpillFileReader reader =
                     newReader(spillFile, new RecordingBufferRequester(), c0, chan0, c1, chan1);
 
@@ -98,8 +96,8 @@ class SpillFileReaderTest {
             spillFile.append(c1, ByteBuffer.wrap(payload(2)));
 
             int[] seq = {0};
-            RecordingChannel chan0 = new RecordingChannel(seq);
-            RecordingChannel chan1 = new RecordingChannel(seq);
+            RecordingChannel chan0 = new RecordingChannel(c0, seq);
+            RecordingChannel chan1 = new RecordingChannel(c1, seq);
             SpillFileReader reader =
                     newReader(spillFile, new RecordingBufferRequester(), c0, chan0, c1, chan1);
 
@@ -120,7 +118,7 @@ class SpillFileReaderTest {
             spillFile.append(cInfo, ByteBuffer.wrap(payload(5)));
             spillFile.append(cInfo, ByteBuffer.wrap(payload(6)));
 
-            RecordingChannel chan = new RecordingChannel();
+            RecordingChannel chan = new RecordingChannel(cInfo);
             SpillFileReader reader =
                     newReader(spillFile, new RecordingBufferRequester(), cInfo, chan);
 
@@ -146,8 +144,8 @@ class SpillFileReaderTest {
             spillFile.append(c0, ByteBuffer.wrap(payload(1)));
             spillFile.append(c1, ByteBuffer.wrap(payload(2)));
 
-            RecordingChannel chan0 = new RecordingChannel();
-            RecordingChannel chan1 = new RecordingChannel();
+            RecordingChannel chan0 = new RecordingChannel(c0);
+            RecordingChannel chan1 = new RecordingChannel(c1);
             SpillFileReader reader =
                     newReader(spillFile, new RecordingBufferRequester(), c0, chan0, c1, chan1);
 
@@ -173,7 +171,7 @@ class SpillFileReaderTest {
             spillFile.append(cInfo, ByteBuffer.wrap(payload(1)));
             spillFile.append(cInfo, ByteBuffer.wrap(payload(2)));
 
-            RecordingChannel chan = new RecordingChannel();
+            RecordingChannel chan = new RecordingChannel(cInfo);
             SpillFileReader reader =
                     newReader(spillFile, new RecordingBufferRequester(), cInfo, chan);
 
@@ -201,6 +199,7 @@ class SpillFileReaderTest {
      * relative to data delivery.
      */
     private static final class RecordingChannel implements RecoverableInputChannel {
+        private final InputChannelInfo channelInfo;
         final List<Buffer> recovered = new ArrayList<>();
         int finishCalls = 0;
 
@@ -209,12 +208,19 @@ class SpillFileReaderTest {
         int maxDataSeq = Integer.MIN_VALUE;
         int finishSeq = -1;
 
-        RecordingChannel() {
+        RecordingChannel(InputChannelInfo channelInfo) {
+            this.channelInfo = channelInfo;
             this.sequence = null;
         }
 
-        RecordingChannel(int[] sharedSequence) {
+        RecordingChannel(InputChannelInfo channelInfo, int[] sharedSequence) {
+            this.channelInfo = channelInfo;
             this.sequence = sharedSequence;
+        }
+
+        @Override
+        public InputChannelInfo getChannelInfo() {
+            return channelInfo;
         }
 
         @Override
@@ -257,14 +263,13 @@ class SpillFileReaderTest {
     private static SpillFileReader newReader(
             SpillFile spillFile, BufferRequester requester, Object... infoChannelPairs) {
         List<RecoverableInputChannel> all = new ArrayList<>();
-        Map<InputChannelInfo, RecoverableInputChannel> byInfo = new LinkedHashMap<>();
         for (int i = 0; i < infoChannelPairs.length; i += 2) {
-            InputChannelInfo info = (InputChannelInfo) infoChannelPairs[i];
+            // The InputChannelInfo argument is now redundant (channels expose getChannelInfo
+            // directly) but kept in the call sites for readability; the helper ignores it.
             RecoverableInputChannel ch = (RecoverableInputChannel) infoChannelPairs[i + 1];
             all.add(ch);
-            byInfo.put(info, ch);
         }
-        return new SpillFileReader(spillFile, all, byInfo, requester);
+        return new SpillFileReader(spillFile, all, requester);
     }
 
     /** Deterministic 4-byte payload per id. */

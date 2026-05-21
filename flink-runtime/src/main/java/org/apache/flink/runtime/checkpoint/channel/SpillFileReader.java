@@ -67,19 +67,22 @@ public final class SpillFileReader implements RecoveryCheckpointTrigger, Closeab
     private long currentOffset = 0L;
 
     /**
-     * Constructs the reader from a frozen spill file and the physical channel set of the task. The
-     * map is derived from the same set (caller-provided so that the implementation does not need to
-     * downcast {@link RecoverableInputChannel} to retrieve {@code InputChannelInfo}).
+     * Constructs the reader from a frozen spill file and the physical channel set of the task.
+     * Derives the {@code InputChannelInfo}-keyed map internally via {@link
+     * RecoverableInputChannel#getChannelInfo()}.
      */
     public SpillFileReader(
             SpillFile spillFile,
             List<RecoverableInputChannel> allChannels,
-            Map<InputChannelInfo, RecoverableInputChannel> channelByInfo,
             BufferRequester bufferRequester) {
         this.spillFile = checkNotNull(spillFile);
         this.allChannels = checkNotNull(allChannels);
-        this.channelByInfo = new HashMap<>(checkNotNull(channelByInfo));
         this.bufferRequester = checkNotNull(bufferRequester);
+        Map<InputChannelInfo, RecoverableInputChannel> byInfo = new HashMap<>();
+        for (RecoverableInputChannel ch : allChannels) {
+            byInfo.put(ch.getChannelInfo(), ch);
+        }
+        this.channelByInfo = byInfo;
         // Drain holds one ref-count grant for the lifetime of this reader; matched by close().
         spillFile.acquire();
     }

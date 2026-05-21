@@ -18,6 +18,7 @@
 package org.apache.flink.runtime.io.network.partition.consumer;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 
 import java.io.IOException;
@@ -29,6 +30,14 @@ import java.io.IOException;
  */
 @Internal
 public interface RecoverableInputChannel {
+
+    /**
+     * Identifies the channel within its task. Every concrete implementor extends {@link
+     * InputChannel}, which exposes the same getter; surfacing it on the interface lets the drain
+     * (and any other consumer holding the interface type) build {@code InputChannelInfo}-keyed
+     * lookups without downcasting to {@link InputChannel}.
+     */
+    InputChannelInfo getChannelInfo();
 
     /**
      * Appends a recovered buffer (or a {@code RecoveryCheckpointBarrier} sentinel) to this

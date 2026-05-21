@@ -82,20 +82,16 @@ public final class SpillFileReaderBootstrap {
 
     /**
      * Constructs a {@link SpillFileReader} from a frozen {@link SpillFile} and the
-     * before/after-conversion channel sets. Used by the task thread after conversion.
+     * before/after-conversion channel sets. Used by the task thread after conversion. The {@code
+     * InputChannelInfo}-keyed map is derived internally from {@code physicalChannels}.
      */
     public static SpillFileReader buildReader(
             SpillFile spillFile,
             Map<InputChannelInfo, RecoveredInputChannel> sourceChannels,
             List<RecoverableInputChannel> physicalChannels) {
-        Map<InputChannelInfo, RecoverableInputChannel> byInfo = new LinkedHashMap<>();
-        for (RecoverableInputChannel ch : physicalChannels) {
-            byInfo.put(((InputChannel) ch).getChannelInfo(), ch);
-        }
         return new SpillFileReader(
                 spillFile,
                 physicalChannels,
-                byInfo,
                 new RecoveredChannelBufferRequester(new HashMap<>(sourceChannels)));
     }
 }

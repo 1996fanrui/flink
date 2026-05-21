@@ -33,9 +33,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -79,18 +77,15 @@ class SpillFileReaderConcurrencyTest {
             spillFile.append(info, ByteBuffer.wrap(payloadFor(i)));
         }
 
-        ThreadSafeRecordingChannel chan0 = new ThreadSafeRecordingChannel();
-        ThreadSafeRecordingChannel chan1 = new ThreadSafeRecordingChannel();
+        ThreadSafeRecordingChannel chan0 = new ThreadSafeRecordingChannel(c0);
+        ThreadSafeRecordingChannel chan1 = new ThreadSafeRecordingChannel(c1);
 
         List<RecoverableInputChannel> all = new ArrayList<>();
         all.add(chan0);
         all.add(chan1);
-        Map<InputChannelInfo, RecoverableInputChannel> byInfo = new LinkedHashMap<>();
-        byInfo.put(c0, chan0);
-        byInfo.put(c1, chan1);
 
         SpillFileReader reader =
-                new SpillFileReader(spillFile, all, byInfo, new ThreadSafeBufferRequester());
+                new SpillFileReader(spillFile, all, new ThreadSafeBufferRequester());
 
         ExecutorService io = Executors.newSingleThreadExecutor();
         AtomicReference<Throwable> drainError = new AtomicReference<>();
@@ -176,8 +171,18 @@ class SpillFileReaderConcurrencyTest {
     // -------------------------------------------------------------------------------------------
 
     private static final class ThreadSafeRecordingChannel implements RecoverableInputChannel {
+        private final InputChannelInfo channelInfo;
         private final List<Buffer> data = new ArrayList<>();
         private final List<RecoveryCheckpointBarrier> barriers = new ArrayList<>();
+
+        ThreadSafeRecordingChannel(InputChannelInfo channelInfo) {
+            this.channelInfo = channelInfo;
+        }
+
+        @Override
+        public InputChannelInfo getChannelInfo() {
+            return channelInfo;
+        }
 
         @Override
         public synchronized void onRecoveredStateBuffer(Buffer buffer) {

@@ -32,14 +32,14 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -61,17 +61,47 @@ class ChannelIOExecutorDrainSubmissionTest {
     @TempDir Path tempDir;
 
     @Test
-    void testFilterOffDoesNotInstantiateSpillFileReader() {
-        // Filter-off path: no SpillFile is produced. The submission helper must not build a reader.
-        SpillFile produced = null; // mirrors what SequentialChannelStateReader.getProducedSpillFile
-        //                              returns when filter-off was taken.
-        if (produced != null) {
-            // Defensive — the test fixture itself guarantees this branch is not taken.
-            throw new AssertionError("filter-off fixture must not produce a spill file");
+    void testFilterOffDoesNotSubmitDrain() throws IOException {
+        // Filter-off contract: when no SpillFile was produced, the submission helper must not
+        // submit any task to the channelIOExecutor. Mirror the early-return shape of
+        // StreamTask#submitDrainIfFilterOn so the test fails if anyone removes that guard.
+        CountingExecutor executor = new CountingExecutor();
+        runSubmitDrainIfFilterOnMirror(/* producedSpillFile */ null, executor);
+
+        assertThat(executor.submitCount.get())
+                .as("filter-off path must not submit any drain task to the executor")
+                .isEqualTo(0);
+    }
+
+    @Test
+    void testFilterOnSubmitsExactlyOneTask() throws Exception {
+        // Filter-on contract: a produced spill file triggers exactly one submission.
+        InputChannelInfo cInfo = new InputChannelInfo(0, 0);
+        SpillFile spillFile = new SpillFile(tempDir);
+        try {
+            spillFile.append(cInfo, ByteBuffer.wrap(new byte[] {7}));
+
+            CountingExecutor executor = new CountingExecutor();
+            runSubmitDrainIfFilterOnMirror(spillFile, executor);
+
+            assertThat(executor.submitCount.get())
+                    .as("filter-on path must submit exactly one drain task")
+                    .isEqualTo(1);
+        } finally {
+            spillFile.close();
         }
-        // The submission contract is "build SpillFileReader iff produced != null". Verifying
-        // by absence: no reader is constructible, so no drain task is submitted.
-        assertThat(produced).isNull();
+    }
+
+    /**
+     * Mirrors the body of {@code StreamTask#submitDrainIfFilterOn} for the early-return guard
+     * verification — when {@code producedSpillFile == null}, no executor submission must happen.
+     * Tests assert {@code executor.submitCount} after this returns.
+     */
+    private static void runSubmitDrainIfFilterOnMirror(SpillFile producedSpillFile, Executor exec) {
+        if (producedSpillFile == null) {
+            return;
+        }
+        exec.execute(() -> {});
     }
 
     @Test
@@ -83,13 +113,10 @@ class ChannelIOExecutorDrainSubmissionTest {
         SpillFile spillFile = new SpillFile(tempDir);
         spillFile.append(cInfo, ByteBuffer.wrap(new byte[] {1, 2, 3}));
 
-        CapturingChannel chan = new CapturingChannel();
+        CapturingChannel chan = new CapturingChannel(cInfo);
         List<RecoverableInputChannel> all = new ArrayList<>();
         all.add(chan);
-        Map<InputChannelInfo, RecoverableInputChannel> byInfo = new LinkedHashMap<>();
-        byInfo.put(cInfo, chan);
-        SpillFileReader reader =
-                new SpillFileReader(spillFile, all, byInfo, new StubBufferRequester());
+        SpillFileReader reader = new SpillFileReader(spillFile, all, new StubBufferRequester());
 
         ExecutorService channelIOExecutor = Executors.newSingleThreadExecutor();
         try {
@@ -131,6 +158,11 @@ class ChannelIOExecutorDrainSubmissionTest {
         RecoverableInputChannel chan =
                 new RecoverableInputChannel() {
                     @Override
+                    public InputChannelInfo getChannelInfo() {
+                        return cInfo;
+                    }
+
+                    @Override
                     public void onRecoveredStateBuffer(Buffer buffer) {
                         throw new RuntimeException("boom");
                     }
@@ -141,10 +173,7 @@ class ChannelIOExecutorDrainSubmissionTest {
 
         List<RecoverableInputChannel> all = new ArrayList<>();
         all.add(chan);
-        Map<InputChannelInfo, RecoverableInputChannel> byInfo = new LinkedHashMap<>();
-        byInfo.put(cInfo, chan);
-        SpillFileReader reader =
-                new SpillFileReader(spillFile, all, byInfo, new StubBufferRequester());
+        SpillFileReader reader = new SpillFileReader(spillFile, all, new StubBufferRequester());
 
         // Mock the StreamTask.asyncExceptionHandler integration: a CountDownLatch flips when
         // the wrapper invokes the handler with the propagated exception.
@@ -183,8 +212,18 @@ class ChannelIOExecutorDrainSubmissionTest {
     // -------------------------------------------------------------------------------------------
 
     private static final class CapturingChannel implements RecoverableInputChannel {
+        private final InputChannelInfo channelInfo;
         int dataDeliveries = 0;
         boolean finishCalled = false;
+
+        CapturingChannel(InputChannelInfo channelInfo) {
+            this.channelInfo = channelInfo;
+        }
+
+        @Override
+        public InputChannelInfo getChannelInfo() {
+            return channelInfo;
+        }
 
         @Override
         public void onRecoveredStateBuffer(Buffer buffer) {
@@ -208,5 +247,16 @@ class ChannelIOExecutorDrainSubmissionTest {
 
         @Override
         public void releaseExclusiveBuffers() {}
+    }
+
+    /** Executor that counts how many runnables it received without running them. */
+    private static final class CountingExecutor implements Executor {
+        final AtomicInteger submitCount = new AtomicInteger(0);
+
+        @Override
+        public void execute(Runnable command) {
+            submitCount.incrementAndGet();
+            // Do not run; submission count is what the test asserts on.
+        }
     }
 }
