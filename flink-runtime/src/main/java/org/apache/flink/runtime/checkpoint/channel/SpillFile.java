@@ -32,6 +32,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
@@ -157,6 +159,22 @@ public final class SpillFile implements Closeable {
     private final Deque<Entry> entries = new ArrayDeque<>();
     private boolean closed = false;
 
+    /**
+     * Number of live consumers that still need the on-disk segments: the drain reader, plus one per
+     * in-flight {@link DiskSnapshot} produced by a recovery-time checkpoint. Incremented by {@link
+     * #acquire()} and decremented by {@link #release()}. The actual segment deletion is gated by
+     * {@link #cleanedUp} so it runs at most once even when {@code release} and {@link #close()}
+     * race.
+     */
+    private final AtomicInteger refCount = new AtomicInteger(0);
+
+    /**
+     * Latches true the first time a cleanup path wins the CAS, making segment deletion idempotent
+     * across the {@code release-to-zero} path and the forced {@link #close()} path (which the
+     * shutdown / test harness needs even if some references are still outstanding).
+     */
+    private final AtomicBoolean cleanedUp = new AtomicBoolean(false);
+
     public SpillFile(Path baseDir, long segmentSizeBytes) {
         checkArgument(
                 segmentSizeBytes > 0, "segmentSizeBytes must be positive: %s", segmentSizeBytes);
@@ -249,9 +267,35 @@ public final class SpillFile implements Closeable {
     }
 
     /**
-     * Closes every segment file. Idempotent — repeated calls are no-ops, so the closure ordering
-     * inside higher-level facades ({@code SpillFileWriter}) can safely call this even after the
-     * accumulator has already closed it.
+     * Increments the reference count. Called once by the {@link SpillFileReader} constructor and
+     * once per {@link DiskSnapshot} produced at Step 1 of the recovery-checkpoint protocol. Pairs
+     * with {@link #release()}.
+     */
+    public void acquire() {
+        refCount.incrementAndGet();
+    }
+
+    /**
+     * Decrements the reference count. When the count reaches zero, attempts the one-shot segment
+     * deletion guarded by {@link #cleanedUp}. The CAS makes the deletion idempotent: concurrent
+     * {@code release()} callers that all observe zero, plus a racing forced {@link #close()}, all
+     * agree on a single cleanup. Once cleanup runs, {@link #closed} flips too so any further {@link
+     * #append} attempts fail loudly rather than write to deleted files.
+     */
+    public void release() throws IOException {
+        if (refCount.decrementAndGet() == 0) {
+            if (cleanedUp.compareAndSet(false, true)) {
+                closed = true;
+                deleteAllSegments();
+            }
+        }
+    }
+
+    /**
+     * Forced cleanup entry retained for tests and task-manager shutdown — callers may need to
+     * remove segments even if some {@link DiskSnapshot} references are still outstanding (e.g. the
+     * checkpoint they belong to was aborted before the writer future fired). Shares the {@link
+     * #cleanedUp} CAS with {@link #release()} so the actual deletion runs at most once.
      */
     @Override
     public void close() throws IOException {
@@ -259,10 +303,29 @@ public final class SpillFile implements Closeable {
             return;
         }
         closed = true;
+        if (cleanedUp.compareAndSet(false, true)) {
+            deleteAllSegments();
+        }
+    }
+
+    /**
+     * Closes every segment {@link FileChannel} and removes the underlying segment file from disk.
+     * Always invoked through the {@link #cleanedUp} CAS so it runs at most once.
+     */
+    private void deleteAllSegments() throws IOException {
         IOException firstError = null;
         for (SpillFileSegment seg : segments) {
             try {
                 seg.close();
+            } catch (IOException e) {
+                if (firstError == null) {
+                    firstError = e;
+                } else {
+                    firstError.addSuppressed(e);
+                }
+            }
+            try {
+                Files.deleteIfExists(seg.path);
             } catch (IOException e) {
                 if (firstError == null) {
                     firstError = e;

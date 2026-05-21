@@ -24,6 +24,8 @@ import java.io.IOException;
 import java.util.List;
 import java.util.NoSuchElementException;
 
+import static org.apache.flink.util.Preconditions.checkNotNull;
+
 /**
  * A snapshot of the spill-file state at the moment a recovery checkpoint was triggered. Returned by
  * {@link RecoveryCheckpointTrigger#snapshotAndInsertBarriers} at Step 1 and fed into the
@@ -89,25 +91,40 @@ public final class DiskSnapshot implements CloseableIterator<DiskSnapshot.Chunk>
     private final SpillFile.Snapshot snapshot;
     private final StartPos startPos;
     private final List<SpillFile.Entry> entries;
+
+    /**
+     * Back-reference to the {@link SpillFile} that produced this snapshot, so {@link #close()} can
+     * release the ref-count grant taken at construction time. {@code null} only for the {@link
+     * #empty()} singleton, whose {@link #close()} is a no-op.
+     */
+    @javax.annotation.Nullable private final SpillFile spillFile;
+
     private int entryCursor;
     private boolean closed;
 
     /**
      * Constructs an empty snapshot — the {@link #empty()} singleton state. Iteration is immediately
-     * exhausted.
+     * exhausted and {@link #close()} is a no-op (no ref-count to release).
      */
     private DiskSnapshot() {
         this.snapshot = null;
         this.startPos = null;
         this.entries = java.util.Collections.emptyList();
+        this.spillFile = null;
         this.entryCursor = 0;
         this.closed = false;
     }
 
-    public DiskSnapshot(SpillFile.Snapshot snapshot, StartPos startPos) {
+    /**
+     * Constructs a non-empty snapshot. The caller must have already incremented {@code
+     * spillFile.acquire()} inside {@code SpillFileReader.lock} so the ref-count grant is paired
+     * with this instance's {@link #close()}.
+     */
+    public DiskSnapshot(SpillFile.Snapshot snapshot, StartPos startPos, SpillFile spillFile) {
         this.snapshot = snapshot;
         this.startPos = startPos;
         this.entries = snapshot.getEntries();
+        this.spillFile = checkNotNull(spillFile);
         this.entryCursor = 0;
         this.closed = false;
     }
@@ -142,13 +159,20 @@ public final class DiskSnapshot implements CloseableIterator<DiskSnapshot.Chunk>
     }
 
     /**
-     * Phase 4 release is a structural no-op; Phase 5 attaches a per-reader ref-counter so the
-     * spill-file segments can be deleted once both the drain and every in-recovery checkpoint
-     * reader have released their references.
+     * Releases this snapshot's ref-count grant on the underlying {@link SpillFile}. Idempotent —
+     * the first close decrements; subsequent closes are no-ops. The actual segment deletion is
+     * gated by {@code SpillFile.cleanedUp}, so the file is removed only after every reader plus the
+     * drain has released its grant.
      */
     @Override
-    public void close() {
+    public void close() throws IOException {
+        if (closed) {
+            return;
+        }
         closed = true;
+        if (spillFile != null) {
+            spillFile.release();
+        }
     }
 
     /**

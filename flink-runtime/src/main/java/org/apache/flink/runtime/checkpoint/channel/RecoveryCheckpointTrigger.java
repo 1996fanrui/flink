@@ -52,4 +52,11 @@ public interface RecoveryCheckpointTrigger {
      * @return a snapshot of the disk state at the moment of the atomic cut
      */
     DiskSnapshot snapshotAndInsertBarriers(long checkpointId);
+
+    /**
+     * No-op singleton used on the feature-off path and once recovery has fully completed. Returning
+     * the empty {@link DiskSnapshot} singleton lets the dispatcher run Step 1 / Step 3
+     * unconditionally — there is no {@code if (filter-on)} branch at the dispatcher layer.
+     */
+    RecoveryCheckpointTrigger NO_OP = checkpointId -> DiskSnapshot.empty();
 }
