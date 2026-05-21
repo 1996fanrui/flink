@@ -209,7 +209,8 @@ class RecoveredChannelStateHandlerFilterRoutingTest {
                 new InputGate[] {inputGate},
                 identityRescalingForOneGate(),
                 null,
-                MemoryManager.DEFAULT_PAGE_SIZE);
+                MemoryManager.DEFAULT_PAGE_SIZE,
+                null);
     }
 
     private static InflightDataRescalingDescriptor identityRescalingForOneGate() {

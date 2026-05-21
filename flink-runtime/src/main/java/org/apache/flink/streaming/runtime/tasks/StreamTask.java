@@ -314,7 +314,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
     /**
      * Trigger for the recovery-checkpoint protocol's Step 1 (snapshot disk + insert per-channel
      * sentinels). Published by {@code restoreStateAndGates} on the filter-on path once the {@link
-     * SpillFileReader} has been constructed; null on the filter-off path. The Phase 5 dispatcher
+     * SpillFileReader} has been constructed; null on the filter-off path. The checkpoint dispatcher
      * reads this reference from the task thread.
      */
     @Nullable private volatile RecoveryCheckpointTrigger recoveryCheckpointTrigger;
@@ -1002,7 +1002,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                 SpillFileReaderBootstrap.collectPhysicalChannels(inputGates);
         SpillFileReader spillReader =
                 SpillFileReaderBootstrap.buildReader(spillFile, sourceChannels, physicalChannels);
-        // Stash the trigger so the Phase 5 dispatcher can call Step 1 from the task thread.
+        // Stash the trigger so the checkpoint dispatcher can call Step 1 from the task thread.
         this.recoveryCheckpointTrigger = spillReader;
         channelIOExecutor.execute(
                 () -> {

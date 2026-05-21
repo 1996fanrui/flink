@@ -32,19 +32,18 @@ import java.nio.file.Path;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Regression coverage for the heap-blowup scenario originally described in the FLINK-38544 ticket:
- * rescale + filter + a large recovered record. On master, the channel-state recovery would fall
- * back to {@code MemorySegmentFactory.allocateUnpooledSegment} and pin the entire recovered slice
- * on the task heap. After Phase 4 removes the heap fallback and Phase 5 wires up the dispatcher,
- * the same workload must stay bounded by the prefilter + postfilter buffer pair plus disk.
+ * Regression coverage for the heap-blowup scenario produced by rescale + filter + a large
+ * recovered record. The unspilling path is designed to stay bounded by the prefilter + postfilter
+ * buffer pair plus disk; a workload whose total recovered bytes greatly exceed any single buffer
+ * must spill to a {@link SpillFile} rather than pinning the bytes on the task heap.
  *
  * <p>A full {@code MiniCluster} reproduction of the OOM behaviour requires a tuned heap (e.g.
  * {@code -Xmx512m}) and a job graph that intentionally rescales a stateful operator with a large
  * keyed list state — the supporting fixtures live alongside {@code
  * UnalignedCheckpointRescaleITCase} and are heavy to spin up in a unit-style test. This ITCase
- * therefore focuses on the memory-bound invariant: a workload that would have allocated O(N) heap
- * on master writes the same data to a {@link SpillFile} bounded by configurable segment size, with
- * no per-record heap allocation kept by the spiller.
+ * therefore focuses on the memory-bound invariant: a workload whose recovered slice exceeds the
+ * accumulator size lands on a {@link SpillFile} bounded by configurable segment size, with no
+ * per-record heap allocation kept by the spiller.
  */
 class RescaleFilterLargeRecordOOMRegressionITCase {
 
@@ -52,9 +51,9 @@ class RescaleFilterLargeRecordOOMRegressionITCase {
 
     @Test
     void testLargeRecordsLandOnDiskNotHeap() throws IOException {
-        // Simulate a recovered slice large enough that the master heap-fallback path would have
-        // pinned several MiB on the task heap. The spill file caps segment size so disk usage is
-        // bounded and predictable.
+        // Simulate a recovered slice large enough that an unbounded heap-pinning path would
+        // have held several MiB on the task heap. The spill file caps segment size so disk
+        // usage is bounded and predictable.
         long segmentSize = 4L * 1024 * 1024; // 4 MiB per segment — bounded growth
         int largeRecordSize = 256 * 1024; // 256 KiB per record
         int recordCount = 64; // 16 MiB of recovered data, spread across 4 segments

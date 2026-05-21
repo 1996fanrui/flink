@@ -77,8 +77,9 @@ class AlternatingWaitingForFirstBarrierUnalignedDispatchHookTest {
         int methodEnd = findMethodEnd(source, methodStart);
         String body = source.substring(methodStart, methodEnd);
 
-        // The pre-trigger checkpointStarted per-input loop is the one Phase 5 replaced. Assert
-        // it is gone — the dispatcher owns this fan-out now.
+        // The pre-trigger per-input checkpointStarted fan-out has been replaced by the
+        // checkpoint dispatcher. Assert the original per-input loop is gone — the dispatcher
+        // owns the fan-out now.
         assertThat(body)
                 .as(
                         "Pre-trigger per-input checkpointStarted loop should be removed; dispatcher "

@@ -43,7 +43,7 @@ public final class SpillFileWriter implements Closeable {
         this.accumulator = checkNotNull(accumulator);
     }
 
-    /** Returns the underlying {@link SpillFile} so Phase 4 drain can read it post-close. */
+    /** Returns the underlying {@link SpillFile} so the drain can read it post-close. */
     public SpillFile getSpillFile() {
         return spillFile;
     }
