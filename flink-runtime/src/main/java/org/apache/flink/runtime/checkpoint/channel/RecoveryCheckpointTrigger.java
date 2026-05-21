@@ -42,11 +42,11 @@ public interface RecoveryCheckpointTrigger {
      * checkpoint dispatcher (Phase 5); it is embedded in the {@link RecoveryCheckpointBarrier}
      * sentinel so that Step 2 can correlate the barrier with the triggering checkpoint.
      *
-     * <p>Caller (task thread) MUST NOT hold {@code SpillFileReader.lock} — the implementation
-     * takes the lock itself.
+     * <p>Caller (task thread) MUST NOT hold {@code SpillFileReader.lock} — the implementation takes
+     * the lock itself.
      *
-     * <p>The returned {@link DiskSnapshot} feeds into
-     * {@link ChannelStateWriter#addInputDataFromSpill} at Step 3.
+     * <p>The returned {@link DiskSnapshot} feeds into {@link
+     * ChannelStateWriter#addInputDataFromSpill} at Step 3.
      *
      * @param checkpointId the id of the checkpoint being triggered
      * @return a snapshot of the disk state at the moment of the atomic cut

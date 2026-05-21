@@ -344,16 +344,20 @@ class InputChannelRecoveredStateHandler
         return Files.createTempDirectory(Paths.get(root), "flink-channel-spill-");
     }
 
-    @VisibleForTesting
+    /**
+     * Returns the produced {@link SpillFile} after {@link #close} has been called on the filter-on
+     * path. Returns {@code null} on the filter-off path or before close. The drain phase consumes
+     * this handle once filter is fully done.
+     */
     @Nullable
-    SpillFile getProducedSpillFileForTesting() {
+    SpillFile getProducedSpillFile() {
         return producedSpillFile;
     }
 
     /**
      * Test-only accessor for the SpillFile currently held by the active {@link SpillFileWriter}.
      * Returns {@code null} on the filter-off path or before the first filter call. Distinct from
-     * {@link #getProducedSpillFileForTesting()} which is populated only after {@link #close()}.
+     * {@link #getProducedSpillFile()} which is populated only after {@link #close()}.
      */
     @VisibleForTesting
     @Nullable
