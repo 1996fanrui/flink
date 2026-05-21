@@ -39,6 +39,9 @@ import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -92,6 +95,13 @@ class InputChannelRecoveredStateHandler
     private final int memorySegmentSize;
 
     /**
+     * Optional list of root tmp directories used to locate the spill-file base directory in
+     * filtering mode. Falls back to the JVM's {@code java.io.tmpdir} when {@code null} or empty —
+     * the spill file lives only for the filter phase so any writable location is acceptable.
+     */
+    @Nullable private final String[] spillTmpDirectories;
+
+    /**
      * Reusable heap memory segment backing the pre-filter buffer in filtering mode. Lazily
      * allocated on the first {@link #getPreFilterBuffer} call, reused for every subsequent call,
      * and freed in {@link #close()}.
@@ -108,17 +118,38 @@ class InputChannelRecoveredStateHandler
      */
     private boolean preFilterBufferInUse;
 
+    /**
+     * Lazily constructed on the first filter-phase call so that the buffers backing the accumulator
+     * can be drawn from a real {@link RecoveredInputChannel}'s pool. {@code null} on the filter-off
+     * path. Stays alive for the duration of the filter phase; closed (and the underlying {@link
+     * SpillFile} frozen) before {@link #close()} signals filtering completion.
+     */
+    @Nullable private SpillFileWriter spillFileWriter;
+
+    /** Frozen handle to the produced {@link SpillFile}, populated by {@link #close()}. */
+    @Nullable private SpillFile producedSpillFile;
+
     InputChannelRecoveredStateHandler(
             InputGate[] inputGates,
             InflightDataRescalingDescriptor channelMapping,
             @Nullable ChannelStateFilteringHandler filteringHandler,
             int memorySegmentSize) {
+        this(inputGates, channelMapping, filteringHandler, memorySegmentSize, null);
+    }
+
+    InputChannelRecoveredStateHandler(
+            InputGate[] inputGates,
+            InflightDataRescalingDescriptor channelMapping,
+            @Nullable ChannelStateFilteringHandler filteringHandler,
+            int memorySegmentSize,
+            @Nullable String[] spillTmpDirectories) {
         this.inputGates = inputGates;
         this.channelMapping = channelMapping;
         this.filteringHandler = filteringHandler;
         checkArgument(
                 memorySegmentSize > 0, "memorySegmentSize must be positive: %s", memorySegmentSize);
         this.memorySegmentSize = memorySegmentSize;
+        this.spillTmpDirectories = spillTmpDirectories;
     }
 
     @Override
@@ -211,18 +242,29 @@ class InputChannelRecoveredStateHandler
             Buffer retainedBuffer)
             throws IOException, InterruptedException {
         checkState(filteringHandler != null, "filtering handler not set.");
+        SpillFileWriter writer = ensureSpillFileWriter(channel);
+        FilteredBufferWriter accumulator = writer.getAccumulator();
+
         List<Buffer> filteredBuffers =
                 filteringHandler.filterAndRewrite(
                         channelInfo.getGateIdx(),
                         oldSubtaskIndex,
                         channelInfo.getInputChannelIdx(),
                         retainedBuffer,
-                        channel::requestBufferBlocking);
+                        accumulator::getPrefilterBuffer);
 
         int i = 0;
         try {
             for (; i < filteredBuffers.size(); i++) {
-                channel.onRecoveredStateBuffer(filteredBuffers.get(i));
+                Buffer filtered = filteredBuffers.get(i);
+                try {
+                    writer.write(channelInfo, filtered);
+                } finally {
+                    // The accumulator copies bytes into its post-filter buffer, so the supplier-
+                    // owned filtered buffer can be recycled immediately after each write — keeping
+                    // the supplier's buffer pool free for the next allocation.
+                    filtered.recycleBuffer();
+                }
             }
         } catch (Throwable t) {
             for (int j = i; j < filteredBuffers.size(); j++) {
@@ -232,8 +274,115 @@ class InputChannelRecoveredStateHandler
         }
     }
 
+    /**
+     * Heap-backed segments owned by this handler, retained across the filter phase so that the
+     * pre-filter and post-filter buffers can survive intermediate {@code recycleBuffer()} calls
+     * from the filter without returning memory to the network pool. Freed in {@link #close()}.
+     */
+    @Nullable private MemorySegment filterPrefilterSegment;
+
+    @Nullable private MemorySegment filterPostfilterSegment;
+
+    /**
+     * Lazily constructs the spill-file pipeline on the first filter call. Buffers backing the
+     * accumulator are wrapped over handler-owned heap segments with no-op recyclers so that any
+     * intermediate {@code recycleBuffer()} (e.g. from {@code filterAndRewrite} on an empty-output
+     * path) does not return memory to the network pool — the segments live for the entire filter
+     * phase.
+     *
+     * <p>Phase 4 will switch these allocations to the {@code RecoveredChannelBufferRequester};
+     * Phase 3 uses self-managed heap segments so that the bounded "2 buffers per task" property
+     * holds without depending on Phase 4 plumbing.
+     */
+    private SpillFileWriter ensureSpillFileWriter(RecoveredInputChannel channel)
+            throws IOException, InterruptedException {
+        if (spillFileWriter != null) {
+            return spillFileWriter;
+        }
+        Path baseDir = resolveSpillBaseDir();
+        SpillFile spillFile = new SpillFile(baseDir);
+
+        filterPrefilterSegment = MemorySegmentFactory.allocateUnpooledSegment(memorySegmentSize);
+        filterPostfilterSegment = MemorySegmentFactory.allocateUnpooledSegment(memorySegmentSize);
+        BufferRecycler resetOnlyRecycler =
+                segment -> {
+                    // No-op: handler retains ownership of the heap segment for the duration of
+                    // the filter phase. The segment is freed in close().
+                };
+        Buffer prefilter = new NetworkBuffer(filterPrefilterSegment, resetOnlyRecycler);
+        Buffer initialPostfilter = new NetworkBuffer(filterPostfilterSegment, resetOnlyRecycler);
+
+        FilteredBufferWriter accumulator =
+                new FilteredBufferWriter(
+                        spillFile,
+                        prefilter,
+                        initialPostfilter,
+                        () -> {
+                            // Phase 3 cap: only one post-filter buffer is allocated; if the
+                            // accumulator ever needs to rotate, it indicates filter output exceeds
+                            // a single buffer worth of data, which Phase 4 will support via the
+                            // RecoveredChannelBufferRequester. Returning the same segment wrapped
+                            // in a fresh NetworkBuffer keeps the bound at two buffers total while
+                            // preserving the rotate-and-flush semantics inside the accumulator.
+                            return new NetworkBuffer(filterPostfilterSegment, resetOnlyRecycler);
+                        });
+        spillFileWriter = new SpillFileWriter(spillFile, accumulator);
+        return spillFileWriter;
+    }
+
+    private Path resolveSpillBaseDir() throws IOException {
+        String root;
+        if (spillTmpDirectories != null && spillTmpDirectories.length > 0) {
+            root = spillTmpDirectories[0];
+        } else {
+            root = System.getProperty("java.io.tmpdir");
+        }
+        // A fresh subdirectory per handler instance keeps concurrent recoveries (and re-recoveries
+        // on the same JVM) isolated. The directory is purposely *not* deleted on close — drain
+        // consumes the produced files; deletion is governed by a ref-counted lifecycle introduced
+        // in a later phase.
+        return Files.createTempDirectory(Paths.get(root), "flink-channel-spill-");
+    }
+
+    @VisibleForTesting
+    @Nullable
+    SpillFile getProducedSpillFileForTesting() {
+        return producedSpillFile;
+    }
+
+    /**
+     * Test-only accessor for the SpillFile currently held by the active {@link SpillFileWriter}.
+     * Returns {@code null} on the filter-off path or before the first filter call. Distinct from
+     * {@link #getProducedSpillFileForTesting()} which is populated only after {@link #close()}.
+     */
+    @VisibleForTesting
+    @Nullable
+    SpillFile peekActiveSpillFileForTesting() {
+        return spillFileWriter == null ? null : spillFileWriter.getSpillFile();
+    }
+
     @Override
     public void close() throws IOException {
+        // Filter-phase spill file must be frozen before any channel sees finishReadRecoveredState
+        // — the latter completes bufferFilteringCompleteFuture on every channel, and Phase 4
+        // drain is allowed to assume the spill file is closed by the time that future fires.
+        if (spillFileWriter != null) {
+            SpillFile produced = spillFileWriter.getSpillFile();
+            try {
+                spillFileWriter.close();
+            } finally {
+                producedSpillFile = produced;
+                spillFileWriter = null;
+            }
+        }
+        if (filterPrefilterSegment != null) {
+            filterPrefilterSegment.free();
+            filterPrefilterSegment = null;
+        }
+        if (filterPostfilterSegment != null) {
+            filterPostfilterSegment.free();
+            filterPostfilterSegment = null;
+        }
         // note that we need to finish all RecoveredInputChannels, not just those with state
         for (final InputGate inputGate : inputGates) {
             inputGate.finishReadRecoveredState();
