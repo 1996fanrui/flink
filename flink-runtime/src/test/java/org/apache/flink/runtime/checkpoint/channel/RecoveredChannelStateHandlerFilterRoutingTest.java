@@ -102,6 +102,36 @@ class RecoveredChannelStateHandlerFilterRoutingTest {
     }
 
     @Test
+    void testFilterOnAccumulatorBuffersComeFromPoolNotHeap() throws Exception {
+        // The accumulator's prefilter + postfilter buffers must be sourced from the network
+        // buffer pool, not heap-allocated. Verify by observing pool reservation.
+        int availableBefore = networkBufferPool.getNumberOfAvailableMemorySegments();
+
+        ChannelStateFilteringHandler filteringHandler = newPassThroughFilteringHandler();
+        InputChannelRecoveredStateHandler handler = newFilterOnHandler(filteringHandler);
+        try (ChannelStateFilteringHandler ignored = filteringHandler) {
+            invokeRecoverWithRecords(handler, 1L, 2L, 3L);
+
+            // The pool must have shrunk by at least 2 segments — one prefilter + one postfilter
+            // for the accumulator. (Exclusive reservation per channel may take more; we only
+            // assert the lower bound here.)
+            int availableDuring = networkBufferPool.getNumberOfAvailableMemorySegments();
+            assertThat(availableDuring)
+                    .as("accumulator buffers must be sourced from the network buffer pool")
+                    .isLessThanOrEqualTo(availableBefore - 2);
+
+            // handler.close() recycles the two accumulator-owned pooled buffers; the channel
+            // still holds the other exclusive buffers it reserved on requestExclusiveBuffers,
+            // released only when the input gate is closed (mirroring master test fixtures).
+            handler.close();
+            inputGate.close();
+            assertThat(networkBufferPool.getNumberOfAvailableMemorySegments())
+                    .as("accumulator buffers must be returned to the pool by close + gate close")
+                    .isEqualTo(availableBefore);
+        }
+    }
+
+    @Test
     void testFilterOnDoesNotInvokeChannelOnRecoveredStateBuffer() throws Exception {
         ChannelStateFilteringHandler filteringHandler = newPassThroughFilteringHandler();
         try (ChannelStateFilteringHandler ignored = filteringHandler;
