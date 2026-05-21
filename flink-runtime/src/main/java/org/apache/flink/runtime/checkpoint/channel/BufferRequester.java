@@ -33,10 +33,9 @@ public interface BufferRequester {
 
     /**
      * Blocks until a buffer is available from the source channel's pool. Implementations are
-     * expected to delegate to {@code RecoveredInputChannel.requestBufferBlocking()} (the existing
-     * method on master, with the heap fallback removed in Phase 4). Internally parks on the
-     * per-channel {@code BufferManager.bufferQueue} ({@code Object.wait / notifyAll}), woken by the
-     * {@code BufferPool}'s {@code BufferListener} callback.
+     * expected to delegate to {@code RecoveredInputChannel.requestBufferBlocking()}, which parks on
+     * the per-channel {@code BufferManager.bufferQueue} ({@code Object.wait / notifyAll}) and is
+     * woken by the {@code BufferPool}'s {@code BufferListener} callback.
      *
      * <p>Caller MUST NOT hold {@code SpillFileReader.lock}. Parking inside the lock would stall the
      * checkpoint trigger whenever buffer-pool pressure causes a wait, because the task thread

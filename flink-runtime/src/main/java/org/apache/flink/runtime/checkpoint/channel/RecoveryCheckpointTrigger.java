@@ -39,8 +39,8 @@ public interface RecoveryCheckpointTrigger {
      * </ol>
      *
      * <p>The {@code checkpointId} is forwarded from {@code CheckpointBarrier.getId()} by the
-     * checkpoint dispatcher (Phase 5); it is embedded in the {@link RecoveryCheckpointBarrier}
-     * sentinel so that Step 2 can correlate the barrier with the triggering checkpoint.
+     * checkpoint dispatcher; it is embedded in the {@link RecoveryCheckpointBarrier} sentinel so
+     * that Step 2 can correlate the barrier with the triggering checkpoint.
      *
      * <p>Caller (task thread) MUST NOT hold {@code SpillFileReader.lock} — the implementation takes
      * the lock itself.

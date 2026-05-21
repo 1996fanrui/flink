@@ -41,8 +41,8 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 /**
  * An append-only, segmented on-disk store for recovered channel-state buffers produced by the
  * filter phase. Written by a single thread (the {@code channelIOExecutor}); records the metadata
- * for every appended payload in an in-memory {@link Entry} queue so that the drain phase (Phase 4)
- * can replay the payloads in order.
+ * for every appended payload in an in-memory {@link Entry} queue so that the drain can replay the
+ * payloads in order.
  *
  * <p>Segments rotate once a single file would exceed the configured segment size. The default size
  * caps each segment file at 64 MiB, balancing OS-level I/O scheduling against per-segment metadata
@@ -346,7 +346,7 @@ public final class SpillFile implements Closeable {
 
     /**
      * Returns an unmodifiable view of the entry queue. Package-private so callers in this package
-     * (Phase 4 drain, tests) can inspect the disk layout without touching internal state.
+     * (drain, tests) can inspect the disk layout without touching internal state.
      */
     List<Entry> entries() {
         return Collections.unmodifiableList(new ArrayList<>(entries));
@@ -400,10 +400,10 @@ public final class SpillFile implements Closeable {
 
     /**
      * Reads {@code length} bytes from {@code segmentIndex} starting at {@code offset} into a fresh
-     * byte array. Exists primarily so tests and Phase 4 drain code can verify on-disk content
-     * without re-implementing the segment lookup. Reads the open file channel directly via a
-     * position-based read so concurrent appends (single-writer guarantee aside) cannot affect the
-     * channel's logical position.
+     * byte array. Exists primarily so tests and drain code can verify on-disk content without
+     * re-implementing the segment lookup. Reads the open file channel directly via a position-based
+     * read so concurrent appends (single-writer guarantee aside) cannot affect the channel's
+     * logical position.
      */
     byte[] readBytes(int segmentIndex, long offset, int length) throws IOException {
         checkArgument(
