@@ -40,7 +40,8 @@ class DiskSnapshotTest {
             SpillFile.Snapshot snap = spillFile.snapshot();
             // startPos at segment 0, offset just past the 4th entry — the first 4 must be skipped.
             long endOf4th = sumLengthsUpTo(snap, 4);
-            DiskSnapshot iter = new DiskSnapshot(snap, new DiskSnapshot.StartPos(0, endOf4th));
+            DiskSnapshot iter =
+                    newDiskSnapshot(spillFile, snap, new DiskSnapshot.StartPos(0, endOf4th));
 
             List<Integer> visitedIndexes = new ArrayList<>();
             int cursor = 4;
@@ -60,7 +61,7 @@ class DiskSnapshotTest {
     void testChunkDataMatchesDisk() throws IOException {
         try (SpillFile spillFile = newSpillFileWithEntries(5)) {
             SpillFile.Snapshot snap = spillFile.snapshot();
-            DiskSnapshot iter = new DiskSnapshot(snap, new DiskSnapshot.StartPos(0, 0L));
+            DiskSnapshot iter = newDiskSnapshot(spillFile, snap, new DiskSnapshot.StartPos(0, 0L));
 
             int cursor = 0;
             while (iter.hasNext()) {
@@ -80,12 +81,23 @@ class DiskSnapshotTest {
     void testCloseStopsIteration() throws IOException {
         try (SpillFile spillFile = newSpillFileWithEntries(3)) {
             SpillFile.Snapshot snap = spillFile.snapshot();
-            DiskSnapshot iter = new DiskSnapshot(snap, new DiskSnapshot.StartPos(0, 0L));
+            DiskSnapshot iter = newDiskSnapshot(spillFile, snap, new DiskSnapshot.StartPos(0, 0L));
 
             assertThat(iter.hasNext()).isTrue();
             iter.close();
             assertThat(iter.hasNext()).isFalse();
         }
+    }
+
+    /**
+     * Mirrors production's pairing of {@link SpillFile#acquire()} with {@link DiskSnapshot}
+     * construction so the ref-count invariant holds even in tests that drive {@link DiskSnapshot}
+     * directly.
+     */
+    private static DiskSnapshot newDiskSnapshot(
+            SpillFile spillFile, SpillFile.Snapshot snap, DiskSnapshot.StartPos startPos) {
+        spillFile.acquire();
+        return new DiskSnapshot(snap, startPos, spillFile);
     }
 
     private SpillFile newSpillFileWithEntries(int count) throws IOException {

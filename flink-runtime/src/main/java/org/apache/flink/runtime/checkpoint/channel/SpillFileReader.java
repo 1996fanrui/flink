@@ -80,6 +80,8 @@ public final class SpillFileReader implements RecoveryCheckpointTrigger, Closeab
         this.allChannels = checkNotNull(allChannels);
         this.channelByInfo = new HashMap<>(checkNotNull(channelByInfo));
         this.bufferRequester = checkNotNull(bufferRequester);
+        // Drain holds one ref-count grant for the lifetime of this reader; matched by close().
+        spillFile.acquire();
     }
 
     /**
@@ -145,31 +147,36 @@ public final class SpillFileReader implements RecoveryCheckpointTrigger, Closeab
 
             // Recovery already done: every entry in the snapshot has been drained
             // (lexicographic (segmentIndex, offset) < (currentSegmentIndex, currentOffset)).
-            // No barrier needs inserting; readers see an empty disk slice.
+            // No barrier needs inserting; readers see an empty disk slice and we MUST NOT take
+            // a ref-count grant — the empty singleton's close() is a no-op.
             if (recoveryAlreadyDone(diskSnap, startSegmentIndex, startOffset)) {
                 return DiskSnapshot.empty();
             }
 
+            // Pair this acquire with DiskSnapshot.close() — the writer-completion callback
+            // attached by the dispatcher (success path) and the abort path both close the
+            // snapshot, releasing the grant exactly once.
+            spillFile.acquire();
             for (RecoverableInputChannel ch : allChannels) {
                 ch.onRecoveredStateBuffer(new RecoveryCheckpointBarrier(checkpointId));
             }
         }
 
         return new DiskSnapshot(
-                diskSnap, new DiskSnapshot.StartPos(startSegmentIndex, startOffset));
+                diskSnap, new DiskSnapshot.StartPos(startSegmentIndex, startOffset), spillFile);
     }
 
     /**
-     * Releases the source channels' exclusive buffer pools, then closes the spill file. Phase 5
-     * will replace the direct close with a release through the ref-counter shared with the
-     * per-checkpoint readers.
+     * Releases the source channels' exclusive buffer pools, then releases the drain's ref-count
+     * grant on the spill file. Actual segment deletion happens inside {@link SpillFile#release()}
+     * only once both this grant and every {@link DiskSnapshot} grant have been released.
      */
     @Override
     public void close() throws IOException {
         try {
             bufferRequester.releaseExclusiveBuffers();
         } finally {
-            spillFile.close();
+            spillFile.release();
         }
     }
 

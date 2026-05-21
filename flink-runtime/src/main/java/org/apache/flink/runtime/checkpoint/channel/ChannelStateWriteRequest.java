@@ -17,9 +17,12 @@
 
 package org.apache.flink.runtime.checkpoint.channel;
 
+import org.apache.flink.core.memory.MemorySegmentFactory;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter.ChannelStateWriteResult;
 import org.apache.flink.runtime.io.AvailabilityProvider;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
+import org.apache.flink.runtime.io.network.buffer.FreeingBufferRecycler;
+import org.apache.flink.runtime.io.network.buffer.NetworkBuffer;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.runtime.state.CheckpointStorageLocationReference;
 import org.apache.flink.util.CloseableIterator;
@@ -258,6 +261,20 @@ abstract class ChannelStateWriteRequest {
         return new CheckpointAbortRequest(jobVertexID, subtaskIndex, checkpointId, cause);
     }
 
+    /**
+     * Factory for the spill-replay request that feeds Step 3 of the recovery-checkpoint protocol.
+     * The returned request iterates {@code chunks} on the writer thread, adapts each raw byte
+     * payload into a one-shot unpooled {@link Buffer}, and demuxes the payload into the
+     * cpId-bucketed input channel stream by {@code chunk.channelInfo}.
+     */
+    static ChannelStateWriteRequest replayInputDataFromSpill(
+            JobVertexID jobVertexID,
+            int subtaskIndex,
+            long checkpointId,
+            CloseableIterator<DiskSnapshot.Chunk> chunks) {
+        return new SpillInputReplayRequest(jobVertexID, subtaskIndex, checkpointId, chunks);
+    }
+
     static ChannelStateWriteRequest registerSubtask(JobVertexID jobVertexID, int subtaskIndex) {
         return new SubtaskRegisterRequest(jobVertexID, subtaskIndex);
     }
@@ -421,4 +438,61 @@ final class SubtaskReleaseRequest extends ChannelStateWriteRequest {
 
     @Override
     public void cancel(Throwable cause) throws Exception {}
+}
+
+/**
+ * Writer-thread request that replays spill-file entries captured by a recovery-time {@link
+ * DiskSnapshot} into the cpId-bucketed input channel stream. The dispatcher routes this request to
+ * {@link ChannelStateCheckpointWriter#writeInput} demuxed by {@code chunk.channelInfo}. The raw
+ * payload bytes are wrapped in a per-iteration unpooled {@link NetworkBuffer} so the buffer pool is
+ * never touched on the writer side.
+ */
+final class SpillInputReplayRequest extends ChannelStateWriteRequest {
+
+    private final CloseableIterator<DiskSnapshot.Chunk> chunks;
+
+    SpillInputReplayRequest(
+            JobVertexID jobVertexID,
+            int subtaskIndex,
+            long checkpointId,
+            CloseableIterator<DiskSnapshot.Chunk> chunks) {
+        super(jobVertexID, subtaskIndex, checkpointId, "replayInputDataFromSpill");
+        this.chunks = Preconditions.checkNotNull(chunks);
+    }
+
+    /**
+     * Executes the demux on the writer thread. Each chunk is converted to a temporary {@link
+     * NetworkBuffer} backed by a wrap of the chunk's byte array — {@link FreeingBufferRecycler}
+     * means recycle simply discards the wrapper, leaving the byte array to normal GC. The chunks
+     * iterator is always closed (success and failure path).
+     */
+    void replay(ChannelStateCheckpointWriter writer) throws Exception {
+        try {
+            while (chunks.hasNext()) {
+                DiskSnapshot.Chunk chunk = chunks.next();
+                Buffer buffer =
+                        new NetworkBuffer(
+                                MemorySegmentFactory.wrap(chunk.data),
+                                FreeingBufferRecycler.INSTANCE,
+                                Buffer.DataType.DATA_BUFFER,
+                                chunk.length);
+                writer.writeInput(getJobVertexID(), getSubtaskIndex(), chunk.channelInfo, buffer);
+            }
+        } finally {
+            chunks.close();
+        }
+    }
+
+    @Override
+    public void cancel(Throwable cause) throws Exception {
+        try {
+            chunks.close();
+        } catch (Exception suppressed) {
+            if (cause != null) {
+                cause.addSuppressed(suppressed);
+            } else {
+                throw suppressed;
+            }
+        }
+    }
 }

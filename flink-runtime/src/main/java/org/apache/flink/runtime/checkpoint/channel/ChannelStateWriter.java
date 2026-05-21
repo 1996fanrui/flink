@@ -191,6 +191,20 @@ public interface ChannelStateWriter extends Closeable {
             throws IllegalArgumentException;
 
     /**
+     * Looks up the in-flight {@link ChannelStateWriteResult} for {@code checkpointId} without
+     * removing it from the writer's internal map. Used by the recovery-checkpoint dispatcher to
+     * attach a snapshot-release callback that fires when the cpId's input-channel-state future
+     * completes (success or abort), without interfering with the subtask coordinator's later {@link
+     * #getAndRemoveWriteResult} consumption.
+     *
+     * <p>Default returns {@link ChannelStateWriteResult#EMPTY} so feature-off / no-op writers see a
+     * completed future and trigger the snapshot-release callback immediately.
+     */
+    default ChannelStateWriteResult peekWriteResult(long checkpointId) {
+        return ChannelStateWriteResult.EMPTY;
+    }
+
+    /**
      * Records input-channel state from a spill file that was written during the filter phase of a
      * recovery-with-checkpoint. The writer asynchronously demuxes entries by {@code
      * entry.channelInfo} into each channel's checkpoint output.
@@ -249,6 +263,11 @@ public interface ChannelStateWriter extends Closeable {
             return new ChannelStateWriteResult(
                     CompletableFuture.completedFuture(Collections.emptyList()),
                     CompletableFuture.completedFuture(Collections.emptyList()));
+        }
+
+        @Override
+        public ChannelStateWriteResult peekWriteResult(long checkpointId) {
+            return ChannelStateWriteResult.EMPTY;
         }
 
         @Override
