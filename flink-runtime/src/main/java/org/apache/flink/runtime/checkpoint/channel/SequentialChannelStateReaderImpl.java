@@ -75,7 +75,8 @@ public class SequentialChannelStateReaderImpl implements SequentialChannelStateR
                                 inputGates,
                                 taskStateSnapshot.getInputRescalingDescriptor(),
                                 filteringHandler,
-                                filterContext.getMemorySegmentSize())) {
+                                filterContext.getMemorySegmentSize(),
+                                filterContext.getTmpDirectories())) {
             read(
                     stateHandler,
                     groupByDelegate(
