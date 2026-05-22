@@ -123,15 +123,15 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
                     stateConsumedFuture.isDone(), "recovered state is not fully consumed");
         }
 
-        // Extract remaining buffers before conversion.
-        // These buffers have been filtered but not yet consumed by the Task.
-        final ArrayDeque<Buffer> remainingBuffers;
+        // Invariant: on the cpDuringRecovery=true path no caller pushes anything into
+        // receivedBuffers (filter writes to SpillFile, pass-through also writes to SpillFile); on
+        // the cpDuringRecovery=false legacy path the task's inner mailbox loop consumes everything
+        // out of receivedBuffers before requestPartitions runs.
         synchronized (receivedBuffers) {
-            remainingBuffers = new ArrayDeque<>(receivedBuffers);
-            receivedBuffers.clear();
+            Preconditions.checkState(receivedBuffers.isEmpty(), "Received buffer should be empty.");
         }
 
-        final InputChannel inputChannel = toInputChannelInternal(remainingBuffers);
+        final InputChannel inputChannel = toInputChannelInternal();
         inputChannel.checkpointStopped(lastStoppedCheckpointId);
         return inputChannel;
     }
@@ -142,14 +142,13 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     }
 
     /**
-     * Creates the physical InputChannel from this recovered channel.
+     * Creates the physical InputChannel from this recovered channel. The remaining buffers are
+     * delivered via {@link RecoverableInputChannel#onRecoveredStateBuffer} after this method
+     * returns.
      *
-     * @param remainingBuffers buffers that have been filtered but not yet consumed by the Task.
-     *     These buffers will be migrated to the new physical channel.
      * @return the physical InputChannel (LocalInputChannel or RemoteInputChannel)
      */
-    protected abstract InputChannel toInputChannelInternal(ArrayDeque<Buffer> remainingBuffers)
-            throws IOException;
+    protected abstract InputChannel toInputChannelInternal() throws IOException;
 
     /**
      * Returns the future that completes when buffer filtering is complete. This future completes
@@ -195,20 +194,14 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     }
 
     public void finishReadRecoveredState() throws IOException {
-        // Adding the event and completing the future must be atomic under receivedBuffers lock.
-        // Without this, either ordering has a race:
-        // - event first: task thread consumes EndOfInputChannelStateEvent, which completes
-        //   stateConsumedFuture. When checkpointing during recovery is disabled,
-        //   stateConsumedFuture triggers requestPartitions -> toInputChannel(), which
-        //   fails because bufferFilteringCompleteFuture is not yet done.
-        // - future first: toInputChannel() extracts buffers before the event is added,
-        //   losing the EndOfInputChannelStateEvent.
-        // Both toInputChannel() and getNextRecoveredStateBuffer() synchronize on
-        // receivedBuffers, so holding the same lock here guarantees
-        // bufferFilteringCompleteFuture is always done before stateConsumedFuture.
+        // The legacy path waits for stateConsumedFuture, which is completed by consuming this
+        // sentinel. The checkpointing-during-recovery path waits only for filtering completion and
+        // later delivers its sentinel through the physical channel's recoveredQueue.
         synchronized (receivedBuffers) {
-            onRecoveredStateBuffer(
-                    EventSerializer.toBuffer(EndOfInputChannelStateEvent.INSTANCE, false));
+            if (!inputGate.isCheckpointingDuringRecoveryEnabled()) {
+                onRecoveredStateBuffer(
+                        EventSerializer.toBuffer(EndOfInputChannelStateEvent.INSTANCE, false));
+            }
             bufferFilteringCompleteFuture.complete(null);
         }
         bufferManager.releaseFloatingBuffers();

@@ -68,7 +68,6 @@ import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.util.ArrayDeque;
 import java.util.stream.Stream;
 
 import static org.apache.flink.runtime.io.network.netty.PartitionRequestQueueTest.blockChannel;
@@ -952,8 +951,7 @@ class CreditBasedPartitionRequestClientHandlerTest {
                     2,
                     new SimpleCounter(),
                     new SimpleCounter(),
-                    ChannelStateWriter.NO_OP,
-                    new ArrayDeque<>());
+                    ChannelStateWriter.NO_OP);
             this.expectedMessage = expectedMessage;
         }
 
