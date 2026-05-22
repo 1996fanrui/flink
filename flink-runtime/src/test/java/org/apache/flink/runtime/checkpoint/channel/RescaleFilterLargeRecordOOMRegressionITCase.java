@@ -17,10 +17,7 @@
  * under the License.
  */
 
-package org.apache.flink.test.checkpointing;
-
-import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
-import org.apache.flink.runtime.checkpoint.channel.SpillFile;
+package org.apache.flink.runtime.checkpoint.channel;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -32,10 +29,10 @@ import java.nio.file.Path;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Regression coverage for the heap-blowup scenario produced by rescale + filter + a large
- * recovered record. The unspilling path is designed to stay bounded by the prefilter + postfilter
- * buffer pair plus disk; a workload whose total recovered bytes greatly exceed any single buffer
- * must spill to a {@link SpillFile} rather than pinning the bytes on the task heap.
+ * Regression coverage for the heap-blowup scenario produced by rescale + filter + a large recovered
+ * record. The unspilling path is designed to stay bounded by the prefilter + postfilter buffer pair
+ * plus disk; a workload whose total recovered bytes greatly exceed any single buffer must spill to
+ * a {@link SpillFile} rather than pinning the bytes on the task heap.
  *
  * <p>A full {@code MiniCluster} reproduction of the OOM behaviour requires a tuned heap (e.g.
  * {@code -Xmx512m}) and a job graph that intentionally rescales a stateful operator with a large
