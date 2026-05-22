@@ -286,6 +286,12 @@ class InputChannelRecoveredStateHandler
         }
         Path baseDir = resolveSpillBaseDir();
         SpillFile spillFile = new SpillFile(baseDir);
+        // Producer-side ref-count grant. Held by the handler from filter-pipeline construction
+        // until the drain reader has been built on the task thread; transferred to the drain
+        // reader at handoff time (see StreamTask#handoffSpillReaderToDrain). Without this grant
+        // the SpillFile would be cleaned up between filter end and drain start, because nothing
+        // else holds the file alive in that window.
+        spillFile.acquire();
 
         filterOutputPooledBuffer = channel.requestBufferBlocking();
         MemorySegment outputSegment = filterOutputPooledBuffer.getMemorySegment();
