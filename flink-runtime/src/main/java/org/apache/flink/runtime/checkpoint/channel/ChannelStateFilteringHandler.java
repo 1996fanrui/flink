@@ -74,7 +74,6 @@ public class ChannelStateFilteringHandler implements Closeable {
     @Nullable
     public static ChannelStateFilteringHandler createFromContext(
             RecordFilterContext filterContext, InputGate[] inputGates) {
-        // Source tasks have no network inputs
         if (filterContext.getNumberOfGates() == 0) {
             return null;
         }
@@ -101,21 +100,16 @@ public class ChannelStateFilteringHandler implements Closeable {
     }
 
     /**
-     * Filters a recovered buffer from the specified virtual channel, returning new buffers
-     * containing only the records that belong to the current subtask.
-     *
-     * <p>One source buffer may produce 0 to N result buffers: 0 if all records are filtered out,
-     * and potentially more than 1 when a spanning record completes in this buffer. The deserializer
-     * caches partial record data from previous buffers, so the output may contain data that was not
-     * in the current source buffer, causing the total output size to exceed one buffer capacity.
-     * This can happen with any spanning record regardless of its size.
-     *
-     * @return filtered buffers, possibly empty if all records were filtered out.
+     * Filters a recovered buffer from the specified virtual channel; surviving records are written
+     * into buffers obtained from {@code bufferSupplier} (which is expected to own / flush them as
+     * appropriate). The deserializer may cache partial record data from previous buffers and
+     * complete spanning records during this call.
      */
-    public List<Buffer> filterAndRewrite(
+    public void filterAndRewrite(
             int gateIndex,
             int oldSubtaskIndex,
             int oldChannelIndex,
+            InputChannelInfo newChannelInfo,
             Buffer sourceBuffer,
             BufferSupplier bufferSupplier)
             throws IOException, InterruptedException {
@@ -135,8 +129,8 @@ public class ChannelStateFilteringHandler implements Closeable {
                             + gateIndex
                             + ". This gate is not a network input and should not have recovered buffers.");
         }
-        return gateHandler.filterAndRewrite(
-                oldSubtaskIndex, oldChannelIndex, sourceBuffer, bufferSupplier);
+        gateHandler.filterAndRewrite(
+                oldSubtaskIndex, oldChannelIndex, newChannelInfo, sourceBuffer, bufferSupplier);
     }
 
     /** Returns {@code true} if any virtual channel has a partial (spanning) record pending. */
@@ -157,10 +151,6 @@ public class ChannelStateFilteringHandler implements Closeable {
             }
         }
     }
-
-    // -------------------------------------------------------------------------------------------
-    // Private static helper methods
-    // -------------------------------------------------------------------------------------------
 
     /**
      * Creates a {@link GateFilterHandler} for a single gate. The method-level type parameter
@@ -256,14 +246,19 @@ public class ChannelStateFilteringHandler implements Closeable {
         }
     }
 
-    // -------------------------------------------------------------------------------------------
-    // Inner classes
-    // -------------------------------------------------------------------------------------------
-
-    /** Provides buffers for re-serializing filtered records. Implementations may block. */
+    /**
+     * Provides buffers for re-serializing filtered records, tagged with the destination input
+     * channel. Implementations may block.
+     *
+     * <p>The {@code channelInfo} argument lets the supplier track which channel currently owns the
+     * accumulator bytes; switching channels triggers a flush so each spill-file entry carries
+     * exactly one channel's bytes. Callers must pass the same {@code channelInfo} for every {@code
+     * requestBufferBlocking} call within the same filter invocation.
+     */
     @FunctionalInterface
     public interface BufferSupplier {
-        Buffer requestBufferBlocking() throws IOException, InterruptedException;
+        Buffer requestBufferBlocking(InputChannelInfo channelInfo)
+                throws IOException, InterruptedException;
     }
 
     /**
@@ -289,17 +284,20 @@ public class ChannelStateFilteringHandler implements Closeable {
 
         /**
          * Deserializes records from {@code sourceBuffer}, applies the virtual channel's record
-         * filter, and immediately re-serializes each surviving record into output buffers.
+         * filter, and immediately re-serializes each surviving record into buffers obtained from
+         * {@code bufferSupplier}. The supplier owns the returned buffers (e.g. {@link
+         * FilteredBufferWriter} flushes them to the spill file on channel switch / buffer full);
+         * this method does NOT call {@code recycleBuffer()} on supplier-returned buffers.
          */
-        List<Buffer> filterAndRewrite(
+        void filterAndRewrite(
                 int oldSubtaskIndex,
                 int oldChannelIndex,
+                InputChannelInfo newChannelInfo,
                 Buffer sourceBuffer,
                 BufferSupplier bufferSupplier)
                 throws IOException, InterruptedException {
 
             boolean sourceBufferOwnershipTransferred = false;
-            List<Buffer> resultBuffers = new ArrayList<>();
             Buffer currentBuffer = null;
             try {
                 SubtaskConnectionDescriptor key =
@@ -320,45 +318,23 @@ public class ChannelStateFilteringHandler implements Closeable {
                     DeserializationResult result = vc.getNextRecord(deserializationDelegate);
                     if (result.isFullRecord()) {
                         if (currentBuffer == null) {
-                            currentBuffer = bufferSupplier.requestBufferBlocking();
+                            currentBuffer = bufferSupplier.requestBufferBlocking(newChannelInfo);
                         }
                         currentBuffer =
                                 serializeElement(
                                         deserializationDelegate.getInstance(),
+                                        newChannelInfo,
                                         currentBuffer,
-                                        resultBuffers,
                                         bufferSupplier);
                     }
                     if (result.isBufferConsumed()) {
                         break;
                     }
                 }
-
-                if (currentBuffer != null) {
-                    if (currentBuffer.readableBytes() > 0) {
-                        resultBuffers.add(currentBuffer);
-                    } else {
-                        currentBuffer.recycleBuffer();
-                    }
-                    currentBuffer = null;
-                }
-
-                return resultBuffers;
             } catch (Throwable t) {
                 if (!sourceBufferOwnershipTransferred) {
                     sourceBuffer.recycleBuffer();
                 }
-                // Avoid double-recycle: currentBuffer may already be the last element in
-                // resultBuffers if serializeElement added it before the exception.
-                if (currentBuffer != null
-                        && (resultBuffers.isEmpty()
-                                || resultBuffers.get(resultBuffers.size() - 1) != currentBuffer)) {
-                    currentBuffer.recycleBuffer();
-                }
-                for (Buffer buf : resultBuffers) {
-                    buf.recycleBuffer();
-                }
-                resultBuffers.clear();
                 throw t;
             }
         }
@@ -368,12 +344,13 @@ public class ChannelStateFilteringHandler implements Closeable {
          * format (4-byte big-endian length + record bytes) expected by Flink's record
          * deserializers. Spills into new buffers from {@code bufferSupplier} when needed.
          *
-         * @return the buffer to continue writing into (may differ from the input buffer).
+         * @return the buffer to continue writing into (may differ from the input buffer when the
+         *     supplier swapped buffers on a buffer-full boundary).
          */
         private Buffer serializeElement(
                 StreamElement element,
+                InputChannelInfo newChannelInfo,
                 Buffer currentBuffer,
-                List<Buffer> resultBuffers,
                 BufferSupplier bufferSupplier)
                 throws IOException, InterruptedException {
             outputSerializer.clear();
@@ -383,7 +360,7 @@ public class ChannelStateFilteringHandler implements Closeable {
             writeLengthToBuffer(recordLength);
             currentBuffer =
                     writeDataToBuffer(
-                            lengthBuffer, 0, 4, currentBuffer, resultBuffers, bufferSupplier);
+                            lengthBuffer, 0, 4, newChannelInfo, currentBuffer, bufferSupplier);
 
             byte[] serializedData = outputSerializer.getSharedBuffer();
             currentBuffer =
@@ -391,8 +368,8 @@ public class ChannelStateFilteringHandler implements Closeable {
                             serializedData,
                             0,
                             recordLength,
+                            newChannelInfo,
                             currentBuffer,
-                            resultBuffers,
                             bufferSupplier);
             return currentBuffer;
         }
@@ -405,17 +382,19 @@ public class ChannelStateFilteringHandler implements Closeable {
         }
 
         /**
-         * Writes data to the current buffer, spilling into new buffers from {@code bufferSupplier}
-         * when the current one is full.
+         * Writes data to the current buffer, requesting fresh buffers from {@code bufferSupplier}
+         * when the current one is full. The supplier is expected to take ownership of (e.g. flush)
+         * the filled buffer before returning the next one — no recycle is performed here.
          *
-         * @return the buffer to continue writing into (may differ from the input buffer).
+         * @return the buffer to continue writing into (may differ from the input buffer when the
+         *     supplier swapped buffers on a buffer-full boundary).
          */
         private Buffer writeDataToBuffer(
                 byte[] data,
                 int dataOffset,
                 int dataLength,
+                InputChannelInfo newChannelInfo,
                 Buffer currentBuffer,
-                List<Buffer> resultBuffers,
                 BufferSupplier bufferSupplier)
                 throws IOException, InterruptedException {
             int offset = dataOffset;
@@ -425,9 +404,9 @@ public class ChannelStateFilteringHandler implements Closeable {
                 int writableBytes = currentBuffer.getMaxCapacity() - currentBuffer.getSize();
 
                 if (writableBytes == 0) {
-                    // Buffer is full, transfer ownership to resultBuffers
-                    resultBuffers.add(currentBuffer);
-                    currentBuffer = bufferSupplier.requestBufferBlocking();
+                    // Buffer is full; ask the supplier for the next one — supplier handles the
+                    // filled buffer's ownership (flush / hand-off) internally.
+                    currentBuffer = bufferSupplier.requestBufferBlocking(newChannelInfo);
                     writableBytes = currentBuffer.getMaxCapacity();
                 }
 
