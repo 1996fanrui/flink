@@ -19,8 +19,6 @@
 package org.apache.flink.runtime.io.network.partition.consumer;
 
 import org.apache.flink.annotation.VisibleForTesting;
-import org.apache.flink.core.memory.MemorySegment;
-import org.apache.flink.core.memory.MemorySegmentFactory;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.runtime.checkpoint.CheckpointException;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
@@ -29,13 +27,10 @@ import org.apache.flink.runtime.event.TaskEvent;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
 import org.apache.flink.runtime.io.network.api.serialization.EventSerializer;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
-import org.apache.flink.runtime.io.network.buffer.FreeingBufferRecycler;
-import org.apache.flink.runtime.io.network.buffer.NetworkBuffer;
 import org.apache.flink.runtime.io.network.logger.NetworkActionsLogger;
 import org.apache.flink.runtime.io.network.partition.ChannelStateHolder;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 import org.apache.flink.runtime.io.network.partition.ResultSubpartitionIndexSet;
-import org.apache.flink.runtime.memory.MemoryManager;
 import org.apache.flink.util.Preconditions;
 
 import org.slf4j.Logger;
@@ -105,7 +100,7 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
                 numBytesIn,
                 numBuffersIn);
 
-        bufferManager = new BufferManager(inputGate.getMemorySegmentProvider(), this, 0);
+        bufferManager = new BufferManager(inputGate.getMemorySegmentProvider(), this, 0, true);
         this.networkBuffersPerChannel = networkBuffersPerChannel;
     }
 
@@ -115,7 +110,7 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
         this.channelStateWriter = checkNotNull(channelStateWriter);
     }
 
-    public final InputChannel toInputChannel() throws IOException {
+    public final InputChannel toInputChannel(boolean needsRecovery) throws IOException {
         Preconditions.checkState(
                 bufferFilteringCompleteFuture.isDone(), "buffer filtering is not complete");
         if (!inputGate.isCheckpointingDuringRecoveryEnabled()) {
@@ -123,15 +118,13 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
                     stateConsumedFuture.isDone(), "recovered state is not fully consumed");
         }
 
-        // Invariant: when checkpointing-during-recovery is enabled no caller pushes anything into
-        // receivedBuffers (filter and pass-through both write to the SpillFile); otherwise the
-        // task's inner mailbox loop has consumed everything out of receivedBuffers before
-        // requestPartitions runs.
+        // With checkpointing-during-recovery, data is spilled instead of queued here.
         synchronized (receivedBuffers) {
             Preconditions.checkState(receivedBuffers.isEmpty(), "Received buffer should be empty.");
         }
 
-        final InputChannel inputChannel = toInputChannelInternal();
+        final InputChannel inputChannel = toInputChannelInternal(needsRecovery);
+        inputChannel.setup();
         inputChannel.checkpointStopped(lastStoppedCheckpointId);
         return inputChannel;
     }
@@ -142,11 +135,11 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     }
 
     /**
-     * Creates the physical {@link InputChannel} (local or remote) from this recovered channel. Any
-     * remaining buffers are delivered via {@link RecoverableInputChannel#onRecoveredStateBuffer}
-     * after this method returns.
+     * Creates the physical {@link InputChannel}; {@code needsRecovery} controls whether it starts
+     * in recovery.
      */
-    protected abstract InputChannel toInputChannelInternal() throws IOException;
+    protected abstract InputChannel toInputChannelInternal(boolean needsRecovery)
+            throws IOException;
 
     /**
      * Returns the future that completes when buffer filtering is complete. This future completes
@@ -192,10 +185,7 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     }
 
     public void finishReadRecoveredState() throws IOException {
-        // When checkpointing-during-recovery is disabled the gate waits for stateConsumedFuture,
-        // which is completed by consuming this sentinel. When enabled, the gate waits only for
-        // filtering completion and the sentinel is later delivered through the physical channel's
-        // recoveredQueue.
+        // Without checkpointing-during-recovery, the gate still waits for this sentinel to be read.
         synchronized (receivedBuffers) {
             if (!inputGate.isCheckpointingDuringRecoveryEnabled()) {
                 onRecoveredStateBuffer(
@@ -330,26 +320,7 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
             bufferManager.requestExclusiveBuffers(networkBuffersPerChannel);
             exclusiveBuffersAssigned = true;
         }
-        if (!inputGate.isCheckpointingDuringRecoveryEnabled()) {
-            // When checkpoint-during-recovery is not enabled, the original blocking allocation
-            // is used as-is — no heap buffer fallback, no behavior change from the legacy path.
-            return bufferManager.requestBufferBlocking();
-        }
-        // Use heap buffer fallback to avoid deadlock during filtering recovery: the filtering
-        // thread first requests buffers to read state (pre-filter), then requests more buffers
-        // to write filtered output (post-filter). If pre-filter buffers exhaust the pool,
-        // post-filter allocation blocks, stalling the thread so pre-filter buffers can never
-        // be consumed and released — the thread deadlocks itself. Heap buffers bypass the pool
-        // so post-filter writes always proceed. Both call sites (getBuffer and filterAndRewrite)
-        // go through this method, so the fallback applies uniformly.
-        // TODO: replace heap fallback with disk spilling to bound memory usage in FLINK-38544.
-        Buffer buffer = bufferManager.requestBuffer();
-        if (buffer != null) {
-            return buffer;
-        }
-        MemorySegment memorySegment =
-                MemorySegmentFactory.allocateUnpooledSegment(MemoryManager.DEFAULT_PAGE_SIZE);
-        return new NetworkBuffer(memorySegment, FreeingBufferRecycler.INSTANCE);
+        return bufferManager.requestBufferBlocking();
     }
 
     @Override
