@@ -147,8 +147,8 @@ final class ChannelState {
      *       Channel implementations pick mutually exclusive in-recovery / not-in-recovery branches
      *       inside their own monitor; see the channel-side documentation for details.
      *   <li>Step 3: {@code channelStateWriter.addInputDataFromSpill(cpId, snap)} — writer-side
-     *       async demux. The writer takes ownership of {@code snap}: it closes the iterator on
-     *       both the success path (its finally block) and the abort path (its cancel callback),
+     *       async demux. The writer takes ownership of {@code snap}: it closes the iterator on both
+     *       the success path (its finally block) and the abort path (its cancel callback),
      *       releasing the SpillFile ref-count grant exactly once.
      * </ol>
      *

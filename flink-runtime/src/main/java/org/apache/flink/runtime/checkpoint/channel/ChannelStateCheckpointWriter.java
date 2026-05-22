@@ -164,9 +164,8 @@ class ChannelStateCheckpointWriter {
 
     /**
      * Writes spilled input-channel chunks as a [4-byte length prefix][data bytes] pair per entry,
-     * demuxed by {@code chunk.channelInfo}. The raw bytes go straight into the checkpoint stream
-     * — no per-chunk {@code Buffer} wrapping. The iterator is closed on success and failure
-     * paths.
+     * demuxed by {@code chunk.channelInfo}. The raw bytes go straight into the checkpoint stream —
+     * no per-chunk {@code Buffer} wrapping. The iterator is closed on success and failure paths.
      */
     void writeInputFromSpill(
             JobVertexID jobVertexID,
@@ -194,8 +193,7 @@ class ChannelStateCheckpointWriter {
                             pendingResult
                                     .getInputChannelOffsets()
                                     .computeIfAbsent(
-                                            chunk.channelInfo,
-                                            unused -> new StateContentMetaInfo())
+                                            chunk.channelInfo, unused -> new StateContentMetaInfo())
                                     .withDataAdded(offset, size);
                         }
                     } finally {

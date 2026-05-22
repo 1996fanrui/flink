@@ -33,7 +33,6 @@ import org.apache.flink.runtime.io.network.ConnectionID;
 import org.apache.flink.runtime.io.network.ConnectionManager;
 import org.apache.flink.runtime.io.network.PartitionRequestClient;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
-import org.apache.flink.runtime.io.network.api.serialization.EventSerializer;
 import org.apache.flink.runtime.io.network.api.EventAnnouncement;
 import org.apache.flink.runtime.io.network.api.RecoveryMetadata;
 import org.apache.flink.runtime.io.network.api.serialization.EventSerializer;
@@ -47,7 +46,6 @@ import org.apache.flink.runtime.io.network.partition.PartitionNotFoundException;
 import org.apache.flink.runtime.io.network.partition.PrioritizedDeque;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 import org.apache.flink.runtime.io.network.partition.ResultSubpartitionIndexSet;
-import org.apache.flink.util.CloseableIterator;
 import org.apache.flink.util.ExceptionUtils;
 
 import org.apache.flink.shaded.guava33.com.google.common.collect.Iterators;
@@ -66,7 +64,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -858,8 +855,7 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
         try {
             List<Buffer> toPersist;
             synchronized (receivedBuffers) {
-                boolean inRecovery =
-                        !allRecoveredBuffersDelivered || !recoveredBuffers.isEmpty();
+                boolean inRecovery = !allRecoveredBuffersDelivered || !recoveredBuffers.isEmpty();
                 if (inRecovery) {
                     // Defensive: during recovery, receivedBuffers must contain only
                     // priority/control buffers (no live data); the two flows are mutually
@@ -888,7 +884,8 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
         } catch (IOException e) {
             throw new CheckpointException(
                     "Failed to extract recovered buffers for checkpoint " + barrier.getId(),
-                    CheckpointFailureReason.CHECKPOINT_DECLINED, e);
+                    CheckpointFailureReason.CHECKPOINT_DECLINED,
+                    e);
         }
     }
 
@@ -897,9 +894,9 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
      * {@code checkpointId}, retaining each pre-barrier <b>data</b> buffer for the channel-state
      * writer and removing the sentinel itself. Pre-barrier events (e.g. {@code
      * EndOfInputChannelStateEvent} migrated by {@code RecoveredInputChannel.toInputChannel}) are
-     * left in the queue for normal consumption — the channel-state writer only accepts data
-     * buffers (master's {@code ChannelStatePersister.maybePersist} enforces the same
-     * {@code isBuffer()} guard).
+     * left in the queue for normal consumption — the channel-state writer only accepts data buffers
+     * (master's {@code ChannelStatePersister.maybePersist} enforces the same {@code isBuffer()}
+     * guard).
      *
      * <p>Caller holds {@code synchronized(receivedBuffers)}.
      */
@@ -927,8 +924,7 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
             return false;
         }
         AbstractEvent event =
-                EventSerializer.fromBuffer(
-                        b, RecoveryCheckpointBarrier.class.getClassLoader());
+                EventSerializer.fromBuffer(b, RecoveryCheckpointBarrier.class.getClassLoader());
         b.setReaderIndex(0);
         return event instanceof RecoveryCheckpointBarrier
                 && ((RecoveryCheckpointBarrier) event).getCheckpointId() == checkpointId;
