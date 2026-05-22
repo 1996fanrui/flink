@@ -18,20 +18,59 @@ import re
 import sys
 from pathlib import Path
 
-_RUNNING_RE = re.compile(
+# Parameter block: greedy `.*` lets us match nested brackets like `[[1]]`
+# (JUnit5 Jupiter sometimes emits the param index wrapped in extra brackets).
+# Greediness is anchored by the required suffix ("is running.", "failed with:",
+# "successfully run."), so we cannot over-consume.
+_PARAM_BLOCK = r"(?:\[(.*)\])?"
+
+# JUnit4 / Surefire style: Test method[params](full.class.Name) is running.
+_RUNNING_RE_LEGACY = re.compile(
     r"^Test\s+(\w+)"           # method
-    r"(?:\[([^\]]*)\])?"       # optional [params]
-    r"\(([^)]+)\)"             # (full.class.Name)
-    r"\s+is running\.\s*$"
+    + _PARAM_BLOCK             # optional [params]
+    + r"\(([^)]+)\)"           # (full.class.Name)
+    + r"\s+is running\.\s*$"
 )
 
-_SUCCESS_RE = re.compile(
-    r"^Test\s+\w+(?:\[[^\]]*\])?\([^)]+\)\s+successfully run\.\s*$"
+# JUnit5 / Jupiter style: Test full.class.Name.method[params] is running.
+_RUNNING_RE_JUPITER = re.compile(
+    r"^Test\s+([\w.]+?)\.(\w+)"  # full.class.Name . method
+    + _PARAM_BLOCK                # optional [params]
+    + r"\s+is running\.\s*$"
 )
 
-_FAILED_RE = re.compile(
-    r"^Test\s+\w+(?:\[[^\]]*\])?\([^)]+\)\s+failed with:\s*$"
+_SUCCESS_RE_LEGACY = re.compile(
+    r"^Test\s+\w+" + _PARAM_BLOCK + r"\([^)]+\)\s+successfully run\.\s*$"
 )
+_SUCCESS_RE_JUPITER = re.compile(
+    r"^Test\s+[\w.]+?\.\w+" + _PARAM_BLOCK + r"\s+successfully run\.\s*$"
+)
+
+_FAILED_RE_LEGACY = re.compile(
+    r"^Test\s+\w+" + _PARAM_BLOCK + r"\([^)]+\)\s+failed with:\s*$"
+)
+_FAILED_RE_JUPITER = re.compile(
+    r"^Test\s+[\w.]+?\.\w+" + _PARAM_BLOCK + r"\s+failed with:\s*$"
+)
+
+
+def _match_running(line: str):
+    """Return (method, parameters, full_class_name) or None."""
+    m = _RUNNING_RE_LEGACY.match(line)
+    if m:
+        return m.group(1), m.group(2), m.group(3)
+    m = _RUNNING_RE_JUPITER.match(line)
+    if m:
+        return m.group(2), m.group(3), m.group(1)
+    return None
+
+
+def _is_success(line: str) -> bool:
+    return bool(_SUCCESS_RE_LEGACY.match(line) or _SUCCESS_RE_JUPITER.match(line))
+
+
+def _is_failed(line: str) -> bool:
+    return bool(_FAILED_RE_LEGACY.match(line) or _FAILED_RE_JUPITER.match(line))
 
 _SEPARATOR_RE = re.compile(r"^={60,}\s*$")
 
@@ -65,14 +104,12 @@ def split_failure_logs(log_file_path: str, output_dir: str) -> list[str]:
     i = 0
     while i < len(lines):
         line = lines[i].strip()
-        m = _RUNNING_RE.match(line)
+        m = _match_running(line)
         if not m:
             i += 1
             continue
 
-        method = m.group(1)
-        parameters = m.group(2)
-        full_class_name = m.group(3)
+        method, parameters, full_class_name = m
         test_class = _short_class_name(full_class_name)
 
         # Record the start of this test block (include separator before if present)
@@ -88,11 +125,11 @@ def split_failure_logs(log_file_path: str, output_dir: str) -> list[str]:
         while i < len(lines):
             cur = lines[i].strip()
 
-            if _SUCCESS_RE.match(cur):
+            if _is_success(cur):
                 i += 1
                 break
 
-            if _FAILED_RE.match(cur):
+            if _is_failed(cur):
                 is_failure = True
                 # Continue past error lines until separator
                 i += 1
