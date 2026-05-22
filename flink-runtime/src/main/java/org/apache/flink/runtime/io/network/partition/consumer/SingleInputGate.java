@@ -414,7 +414,11 @@ public class SingleInputGate extends IndexedInputGate {
                     // first and then inputChannelsWithData.
                     InputChannel realInputChannel =
                             ((RecoveredInputChannel) inputChannel).toInputChannel();
-                    inputChannel.releaseAllResources();
+                    if (!checkpointingDuringRecoveryEnabled) {
+                        // Filter-on path: the drain still needs to allocate from this channel's
+                        // BufferManager; SpillFileReader.close() releases it later.
+                        inputChannel.releaseAllResources();
+                    }
                     int buffersInUseCount = realInputChannel.getBuffersInUseCount();
 
                     // Phase 2: Atomically update data structures under the lock.
