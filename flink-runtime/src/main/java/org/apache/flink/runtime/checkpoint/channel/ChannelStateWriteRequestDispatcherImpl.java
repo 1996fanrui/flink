@@ -123,11 +123,27 @@ final class ChannelStateWriteRequestDispatcherImpl implements ChannelStateWriteR
             handleCheckpointStartRequest(request);
         } else if (request instanceof CheckpointInProgressRequest) {
             handleCheckpointInProgressRequest((CheckpointInProgressRequest) request);
+        } else if (request instanceof SpillInputReplayRequest) {
+            handleSpillInputReplayRequest((SpillInputReplayRequest) request);
         } else if (request instanceof CheckpointAbortRequest) {
             handleCheckpointAbortRequest(request);
         } else {
             throw new IllegalArgumentException("unknown request type: " + request);
         }
+    }
+
+    /**
+     * Routes a recovery-time spill replay to the same {@link ChannelStateCheckpointWriter} that
+     * services live {@link CheckpointInProgressRequest}s for the same cpId. The dispatcher's {@code
+     * dispatch} wrapper invokes {@link SpillInputReplayRequest#cancel} on any thrown exception,
+     * which closes the chunks iterator and ultimately fires the snapshot-release callback the
+     * dispatcher attached at Step 3.
+     */
+    private void handleSpillInputReplayRequest(SpillInputReplayRequest req) throws Exception {
+        checkArgument(
+                ongoingCheckpointId == req.getCheckpointId() && writer != null,
+                "writer not found while processing request: " + req);
+        req.replay(writer);
     }
 
     private void handleAbortedRequest(ChannelStateWriteRequest request) throws Exception {
