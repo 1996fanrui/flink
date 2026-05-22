@@ -27,7 +27,6 @@ import java.util.List;
 
 /** An {@link InputGate} with a specific index. */
 public abstract class IndexedInputGate extends InputGate implements CheckpointableInput {
-    /** Returns the index of this input gate. Only supported on */
     public abstract int getGateIndex();
 
     /** Returns the list of channels that have not received EndOfPartitionEvent. */
@@ -66,18 +65,30 @@ public abstract class IndexedInputGate extends InputGate implements Checkpointab
         getChannel(channelIndex).convertToPriorityEvent(sequenceNumber);
     }
 
-    /**
-     * Returns the type of this input channel's consumed result partition.
-     *
-     * @return consumed result partition type
-     */
+    /** Returns the type of this input channel's consumed result partition. */
     public abstract ResultPartitionType getConsumedPartitionType();
 
     public abstract void triggerDebloating();
 
-    /** Sets whether unaligned checkpointing during recovery is enabled. */
     public abstract void setCheckpointingDuringRecoveryEnabled(boolean enabled);
 
-    /** Returns whether unaligned checkpointing during recovery is enabled. */
     public abstract boolean isCheckpointingDuringRecoveryEnabled();
+
+    /**
+     * Sets whether this gate's physical channels will see a SpillFileReader-driven drain phase.
+     * Must be written on the channel IO executor before the buffer-filtering completion future is
+     * completed, so consumers racing with downstream mailbox tasks observe the final value.
+     *
+     * <p>Strictly tighter than {@link #isCheckpointingDuringRecoveryEnabled()}: the feature flag is
+     * known at gate-setup time, but the final-drain decision is only known after filter has
+     * actually produced (or failed to produce) a spill file.
+     */
+    public abstract void setFinalDrainEnabled(boolean enabled);
+
+    /**
+     * Returns whether this gate's physical channels will see a SpillFileReader-driven drain phase.
+     * Read by local/remote input channel constructors during gate conversion to decide the initial
+     * {@code RecoveredBufferQueue.allDelivered} state.
+     */
+    public abstract boolean isFinalDrainEnabled();
 }

@@ -34,7 +34,6 @@ import org.apache.flink.runtime.io.network.partition.ResultPartitionManager;
 import org.apache.flink.runtime.io.network.partition.ResultSubpartitionIndexSet;
 
 import java.net.InetSocketAddress;
-import java.util.ArrayDeque;
 
 import static org.apache.flink.runtime.io.network.partition.consumer.SingleInputGateTest.TestingResultPartitionManager;
 
@@ -154,6 +153,48 @@ public class InputChannelBuilder {
     }
 
     public LocalInputChannel buildLocalChannel(SingleInputGate inputGate) {
+        LocalInputChannel channel =
+                new LocalInputChannel(
+                        inputGate,
+                        channelIndex,
+                        partitionId,
+                        subpartitionIndexSet,
+                        partitionManager,
+                        taskEventPublisher,
+                        initialBackoff,
+                        maxBackoff,
+                        metrics.getNumBytesInLocalCounter(),
+                        metrics.getNumBuffersInLocalCounter(),
+                        stateWriter);
+        markNoRecovery(channel);
+        return channel;
+    }
+
+    public RemoteInputChannel buildRemoteChannel(SingleInputGate inputGate) {
+        RemoteInputChannel channel =
+                new RemoteInputChannel(
+                        inputGate,
+                        channelIndex,
+                        partitionId,
+                        subpartitionIndexSet,
+                        connectionID,
+                        connectionManager,
+                        initialBackoff,
+                        maxBackoff,
+                        partitionRequestListenerTimeout,
+                        networkBuffersPerChannel,
+                        metrics.getNumBytesInRemoteCounter(),
+                        metrics.getNumBuffersInRemoteCounter(),
+                        stateWriter);
+        markNoRecovery(channel);
+        return channel;
+    }
+
+    /**
+     * Same as {@link #buildLocalChannel(SingleInputGate)} but does NOT auto-mark the recovery phase
+     * complete. Used by tests that want to explicitly drive the recovery push interface.
+     */
+    public LocalInputChannel buildLocalChannelForRecoveryTest(SingleInputGate inputGate) {
         return new LocalInputChannel(
                 inputGate,
                 channelIndex,
@@ -165,11 +206,14 @@ public class InputChannelBuilder {
                 maxBackoff,
                 metrics.getNumBytesInLocalCounter(),
                 metrics.getNumBuffersInLocalCounter(),
-                stateWriter,
-                new ArrayDeque<>());
+                stateWriter);
     }
 
-    public RemoteInputChannel buildRemoteChannel(SingleInputGate inputGate) {
+    /**
+     * Same as {@link #buildRemoteChannel(SingleInputGate)} but does NOT auto-mark the recovery
+     * phase complete. Used by tests that want to explicitly drive the recovery push interface.
+     */
+    public RemoteInputChannel buildRemoteChannelForRecoveryTest(SingleInputGate inputGate) {
         return new RemoteInputChannel(
                 inputGate,
                 channelIndex,
@@ -183,8 +227,21 @@ public class InputChannelBuilder {
                 networkBuffersPerChannel,
                 metrics.getNumBytesInRemoteCounter(),
                 metrics.getNumBuffersInRemoteCounter(),
-                stateWriter,
-                new ArrayDeque<>());
+                stateWriter);
+    }
+
+    /**
+     * Test channels built via this builder do not undergo recovery by default; mark the recovery
+     * phase complete so {@code getNextBuffer()} falls through to the live path immediately,
+     * mirroring what {@code UnknownInputChannel.toLocalInputChannel/toRemoteInputChannel} does in
+     * production.
+     */
+    private static void markNoRecovery(RecoverableInputChannel channel) {
+        try {
+            channel.finishRecoveredBufferDelivery();
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     public LocalRecoveredInputChannel buildLocalRecoveredChannel(SingleInputGate inputGate) {

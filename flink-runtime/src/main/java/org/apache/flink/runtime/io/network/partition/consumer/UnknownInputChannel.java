@@ -35,7 +35,6 @@ import org.apache.flink.util.Preconditions;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
-import java.util.ArrayDeque;
 import java.util.Optional;
 
 import static org.apache.flink.runtime.checkpoint.CheckpointFailureReason.CHECKPOINT_DECLINED_TASK_NOT_READY;
@@ -171,37 +170,55 @@ class UnknownInputChannel extends InputChannel implements ChannelStateHolder {
 
     public RemoteInputChannel toRemoteInputChannel(
             ConnectionID producerAddress, ResultPartitionID resultPartitionID) {
-        return new RemoteInputChannel(
-                inputGate,
-                getChannelIndex(),
-                resultPartitionID,
-                consumedSubpartitionIndexSet,
-                checkNotNull(producerAddress),
-                connectionManager,
-                initialBackoff,
-                maxBackoff,
-                partitionRequestListenerTimeout,
-                networkBuffersPerChannel,
-                metrics.getNumBytesInRemoteCounter(),
-                metrics.getNumBuffersInRemoteCounter(),
-                channelStateWriter == null ? ChannelStateWriter.NO_OP : channelStateWriter,
-                new ArrayDeque<>());
+        RemoteInputChannel channel =
+                new RemoteInputChannel(
+                        inputGate,
+                        getChannelIndex(),
+                        resultPartitionID,
+                        consumedSubpartitionIndexSet,
+                        checkNotNull(producerAddress),
+                        connectionManager,
+                        initialBackoff,
+                        maxBackoff,
+                        partitionRequestListenerTimeout,
+                        networkBuffersPerChannel,
+                        metrics.getNumBytesInRemoteCounter(),
+                        metrics.getNumBuffersInRemoteCounter(),
+                        channelStateWriter == null ? ChannelStateWriter.NO_OP : channelStateWriter);
+        markNoRecovery(channel);
+        return channel;
     }
 
     public LocalInputChannel toLocalInputChannel(ResultPartitionID resultPartitionID) {
-        return new LocalInputChannel(
-                inputGate,
-                getChannelIndex(),
-                resultPartitionID,
-                consumedSubpartitionIndexSet,
-                partitionManager,
-                taskEventPublisher,
-                initialBackoff,
-                maxBackoff,
-                metrics.getNumBytesInLocalCounter(),
-                metrics.getNumBuffersInLocalCounter(),
-                channelStateWriter == null ? ChannelStateWriter.NO_OP : channelStateWriter,
-                new ArrayDeque<>());
+        LocalInputChannel channel =
+                new LocalInputChannel(
+                        inputGate,
+                        getChannelIndex(),
+                        resultPartitionID,
+                        consumedSubpartitionIndexSet,
+                        partitionManager,
+                        taskEventPublisher,
+                        initialBackoff,
+                        maxBackoff,
+                        metrics.getNumBytesInLocalCounter(),
+                        metrics.getNumBuffersInLocalCounter(),
+                        channelStateWriter == null ? ChannelStateWriter.NO_OP : channelStateWriter);
+        markNoRecovery(channel);
+        return channel;
+    }
+
+    /**
+     * Signals that the produced physical channel has no spilled state to replay, so {@link
+     * RemoteInputChannel#getNextBuffer()} / {@link LocalInputChannel#getNextBuffer()} fall through
+     * to the live upstream path immediately instead of staying in the in-recovery branch.
+     */
+    private static void markNoRecovery(RecoverableInputChannel channel) {
+        try {
+            channel.finishRecoveredBufferDelivery();
+        } catch (IOException e) {
+            throw new IllegalStateException(
+                    "Failed to mark non-recovery channel as recovery-complete", e);
+        }
     }
 
     @Override
