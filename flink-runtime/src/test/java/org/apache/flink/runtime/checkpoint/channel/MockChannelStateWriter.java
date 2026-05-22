@@ -75,6 +75,17 @@ public class MockChannelStateWriter implements ChannelStateWriter {
     }
 
     @Override
+    public void addInputDataFromSpill(
+            long checkpointId, CloseableIterator<DiskSnapshot.Chunk> chunks) {
+        checkCheckpointId(checkpointId);
+        try {
+            chunks.close();
+        } catch (Exception e) {
+            rethrow(e);
+        }
+    }
+
+    @Override
     public void addOutputData(
             long checkpointId, ResultSubpartitionInfo info, int startSeqNum, Buffer... data) {
         checkCheckpointId(checkpointId);
