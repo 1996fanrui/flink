@@ -72,9 +72,11 @@ final class AlternatingWaitingForFirstBarrierUnaligned implements BarrierHandler
 
         CheckpointBarrier unalignedBarrier = checkpointBarrier.asUnaligned();
         controller.initInputsCheckpoint(unalignedBarrier);
-        for (CheckpointableInput input : channelState.getInputs()) {
-            input.checkpointStarted(unalignedBarrier);
-        }
+        // Dispatcher owns per-input checkpointStarted fan-out, plus optional pre-snapshot and
+        // post-spill-replay handling for the recovery path. When spill-to-disk is off or
+        // recovery has finished, the pre/post hooks collapse to no-ops via the trigger / writer
+        // null-object routes.
+        channelState.onCheckpointStartedForAllInputs(unalignedBarrier);
         controller.triggerGlobalCheckpoint(unalignedBarrier);
         if (controller.allBarriersReceived()) {
             for (CheckpointableInput input : channelState.getInputs()) {

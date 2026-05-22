@@ -22,6 +22,8 @@ import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.execution.CheckpointingMode;
+import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
+import org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointTrigger;
 import org.apache.flink.runtime.io.network.partition.consumer.CheckpointableInput;
 import org.apache.flink.runtime.io.network.partition.consumer.IndexedInputGate;
 import org.apache.flink.runtime.io.network.partition.consumer.InputGate;
@@ -41,6 +43,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
+import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 /**
@@ -88,6 +91,30 @@ public class InputProcessorUtil {
             List<StreamTaskSourceInput<?>> sourceInputs,
             MailboxExecutor mailboxExecutor,
             TimerService timerService) {
+        return createCheckpointBarrierHandler(
+                toNotifyOnCheckpoint,
+                jobConf,
+                config,
+                checkpointCoordinator,
+                taskName,
+                inputGates,
+                sourceInputs,
+                mailboxExecutor,
+                timerService,
+                () -> RecoveryCheckpointTrigger.NO_OP);
+    }
+
+    public static CheckpointBarrierHandler createCheckpointBarrierHandler(
+            CheckpointableTask toNotifyOnCheckpoint,
+            Configuration jobConf,
+            StreamConfig config,
+            SubtaskCheckpointCoordinator checkpointCoordinator,
+            String taskName,
+            List<IndexedInputGate>[] inputGates,
+            List<StreamTaskSourceInput<?>> sourceInputs,
+            MailboxExecutor mailboxExecutor,
+            TimerService timerService,
+            Supplier<RecoveryCheckpointTrigger> recoveryCheckpointTriggerSupplier) {
 
         CheckpointableInput[] inputs =
                 Stream.<CheckpointableInput>concat(
@@ -98,6 +125,16 @@ public class InputProcessorUtil {
 
         Clock clock = SystemClock.getInstance();
         CheckpointingMode checkpointingMode = CheckpointingOptions.getCheckpointingMode(jobConf);
+        // Lazy proxy: the live trigger may not yet be resolvable at barrier-handler construction
+        // time (e.g. the SpillFileReader is only available after recovery filter completes), so
+        // the supplier is dereferenced at dispatch time.
+        RecoveryCheckpointTrigger lazyTrigger =
+                checkpointId -> {
+                    RecoveryCheckpointTrigger resolved = recoveryCheckpointTriggerSupplier.get();
+                    return (resolved != null ? resolved : RecoveryCheckpointTrigger.NO_OP)
+                            .snapshotAndInsertBarriers(checkpointId);
+                };
+        ChannelStateWriter channelStateWriter = checkpointCoordinator.getChannelStateWriter();
         switch (checkpointingMode) {
             case EXACTLY_ONCE:
                 int numberOfChannels =
@@ -115,7 +152,9 @@ public class InputProcessorUtil {
                         timerService,
                         inputs,
                         clock,
-                        numberOfChannels);
+                        numberOfChannels,
+                        lazyTrigger,
+                        channelStateWriter);
             case AT_LEAST_ONCE:
                 if (CheckpointingOptions.isUnalignedCheckpointEnabled(jobConf)) {
                     throw new IllegalStateException(
@@ -148,7 +187,9 @@ public class InputProcessorUtil {
             TimerService timerService,
             CheckpointableInput[] inputs,
             Clock clock,
-            int numberOfChannels) {
+            int numberOfChannels,
+            RecoveryCheckpointTrigger recoveryCheckpointTrigger,
+            ChannelStateWriter channelStateWriter) {
         boolean enableCheckpointAfterTasksFinished =
                 config.getConfiguration()
                         .get(CheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH);
@@ -161,6 +202,8 @@ public class InputProcessorUtil {
                     numberOfChannels,
                     BarrierAlignmentUtil.createRegisterTimerCallback(mailboxExecutor, timerService),
                     enableCheckpointAfterTasksFinished,
+                    recoveryCheckpointTrigger,
+                    channelStateWriter,
                     inputs);
         } else {
             return SingleCheckpointBarrierHandler.aligned(
