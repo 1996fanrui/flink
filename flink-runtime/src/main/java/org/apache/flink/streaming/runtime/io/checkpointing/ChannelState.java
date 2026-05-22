@@ -18,9 +18,16 @@
 
 package org.apache.flink.streaming.runtime.io.checkpointing;
 
+import org.apache.flink.runtime.checkpoint.CheckpointException;
+import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
+import org.apache.flink.runtime.checkpoint.channel.DiskSnapshot;
 import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
+import org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointTrigger;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
 import org.apache.flink.runtime.io.network.partition.consumer.CheckpointableInput;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.HashMap;
@@ -28,6 +35,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
+import static org.apache.flink.util.Preconditions.checkNotNull;
 import static org.apache.flink.util.Preconditions.checkState;
 
 /**
@@ -35,6 +43,9 @@ import static org.apache.flink.util.Preconditions.checkState;
  * and {@link AbstractAlternatingAlignedBarrierHandlerState}.
  */
 final class ChannelState {
+
+    private static final Logger LOG = LoggerFactory.getLogger(ChannelState.class);
+
     private final Map<InputChannelInfo, Integer> sequenceNumberInAnnouncedChannels =
             new HashMap<>();
 
@@ -47,8 +58,30 @@ final class ChannelState {
 
     private final CheckpointableInput[] inputs;
 
+    /**
+     * Resolved to the live {@code SpillFileReader} when the recovery-spill path is active; {@link
+     * RecoveryCheckpointTrigger#NO_OP} otherwise. The no-op returns the empty {@link DiskSnapshot}
+     * singleton and inserts no barriers, keeping the dispatcher branch-free.
+     */
+    private final RecoveryCheckpointTrigger recoveryCheckpointTrigger;
+
+    /**
+     * Channel-state writer for the unaligned-checkpoint path; {@link ChannelStateWriter#NO_OP} on
+     * the at-least-once / disabled UC path.
+     */
+    private final ChannelStateWriter channelStateWriter;
+
     public ChannelState(CheckpointableInput[] inputs) {
+        this(inputs, RecoveryCheckpointTrigger.NO_OP, ChannelStateWriter.NO_OP);
+    }
+
+    public ChannelState(
+            CheckpointableInput[] inputs,
+            RecoveryCheckpointTrigger recoveryCheckpointTrigger,
+            ChannelStateWriter channelStateWriter) {
         this.inputs = inputs;
+        this.recoveryCheckpointTrigger = checkNotNull(recoveryCheckpointTrigger);
+        this.channelStateWriter = checkNotNull(channelStateWriter);
     }
 
     public void blockChannel(InputChannelInfo channelInfo) {
@@ -97,5 +130,52 @@ final class ChannelState {
                 blockedChannels);
         sequenceNumberInAnnouncedChannels.clear();
         return this;
+    }
+
+    /**
+     * Coordinates checkpoint start across all inputs on the task thread:
+     *
+     * <ol>
+     *   <li>{@code recoveryCheckpointTrigger.snapshotAndInsertBarriers(cpId)} captures the on-disk
+     *       slice and inserts the {@code RecoveryCheckpointBarrier} sentinel into every channel
+     *       inside {@code SpillFileReader.lock}. {@link RecoveryCheckpointTrigger#NO_OP} returns
+     *       the empty {@link DiskSnapshot} when no recovery spill is active.
+     *   <li>Per-input {@code checkpointStarted(barrier)} fan-out. Channel implementations select
+     *       their in-recovery vs not-in-recovery branch inside their own monitor.
+     *   <li>{@code channelStateWriter.addInputDataFromSpill(cpId, snap)} hands the snapshot to the
+     *       writer for async demux. The writer takes ownership of {@code snap} and closes the
+     *       iterator on both success (its {@code finally}) and abort (its cancel callback),
+     *       releasing the SpillFile ref-count grant exactly once.
+     * </ol>
+     *
+     * <p>If a synchronous error happens before ownership is transferred to the writer, the
+     * dispatcher closes {@code snap} itself in {@code finally} so the grant is not leaked.
+     */
+    public void onCheckpointStartedForAllInputs(CheckpointBarrier barrier)
+            throws CheckpointException, IOException {
+        long cpId = barrier.getId();
+        DiskSnapshot snap = null;
+        try {
+            snap = recoveryCheckpointTrigger.snapshotAndInsertBarriers(cpId);
+
+            for (CheckpointableInput input : inputs) {
+                input.checkpointStarted(barrier);
+            }
+
+            channelStateWriter.addInputDataFromSpill(cpId, snap);
+            // Ownership transferred to the writer; it now closes the iterator.
+            snap = null;
+        } finally {
+            if (snap != null) {
+                try {
+                    snap.close();
+                } catch (Exception suppressed) {
+                    LOG.warn(
+                            "Failed to release DiskSnapshot after dispatcher error for checkpoint {}",
+                            cpId,
+                            suppressed);
+                }
+            }
+        }
     }
 }
