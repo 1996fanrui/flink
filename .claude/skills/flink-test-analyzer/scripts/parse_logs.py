@@ -16,29 +16,41 @@ import re
 import sys
 from pathlib import Path
 
+# Parameter block: greedy `.*` lets us match nested brackets like `[[1]]`
+# (JUnit5 Jupiter sometimes emits the param index wrapped in extra brackets).
+# Greediness is anchored by the required suffix, so it cannot over-consume.
+_PARAM_BLOCK = r"(?:\[(.*)\])?"
+
 # Regex for the "is running" marker.
 # Captures: method, optional [params], full.class.Name
-_RUNNING_RE = re.compile(
+# Two flavours: legacy `method[params](full.Class)` and Jupiter
+# `full.Class.method[params]`.
+_RUNNING_RE_LEGACY = re.compile(
     r"^Test\s+(\w+)"           # method name
-    r"(?:\[([^\]]*)\])?"       # optional [parameters]
-    r"\(([^)]+)\)"             # (full.class.Name)
-    r"\s+is running\.\s*$"
+    + _PARAM_BLOCK             # optional [parameters]
+    + r"\(([^)]+)\)"           # (full.class.Name)
+    + r"\s+is running\.\s*$"
+)
+_RUNNING_RE_JUPITER = re.compile(
+    r"^Test\s+([\w.]+?)\.(\w+)"  # full.class.Name . method
+    + _PARAM_BLOCK                # optional [parameters]
+    + r"\s+is running\.\s*$"
 )
 
 # Regex for the "successfully run" marker.
-_SUCCESS_RE = re.compile(
-    r"^Test\s+\w+"
-    r"(?:\[[^\]]*\])?"
-    r"\([^)]+\)"
-    r"\s+successfully run\.\s*$"
+_SUCCESS_RE_LEGACY = re.compile(
+    r"^Test\s+\w+" + _PARAM_BLOCK + r"\([^)]+\)\s+successfully run\.\s*$"
+)
+_SUCCESS_RE_JUPITER = re.compile(
+    r"^Test\s+[\w.]+?\.\w+" + _PARAM_BLOCK + r"\s+successfully run\.\s*$"
 )
 
 # Regex for the "failed with:" marker.
-_FAILED_RE = re.compile(
-    r"^Test\s+\w+"
-    r"(?:\[[^\]]*\])?"
-    r"\([^)]+\)"
-    r"\s+failed with:\s*$"
+_FAILED_RE_LEGACY = re.compile(
+    r"^Test\s+\w+" + _PARAM_BLOCK + r"\([^)]+\)\s+failed with:\s*$"
+)
+_FAILED_RE_JUPITER = re.compile(
+    r"^Test\s+[\w.]+?\.\w+" + _PARAM_BLOCK + r"\s+failed with:\s*$"
 )
 
 _SEPARATOR_RE = re.compile(r"^={60,}\s*$")
@@ -61,14 +73,19 @@ def parse_log_content(content: str) -> list[dict]:
 
     while i < len(lines):
         line = lines[i].strip()
-        m = _RUNNING_RE.match(line)
-        if not m:
-            i += 1
-            continue
-
-        method = m.group(1)
-        parameters = m.group(2)  # None when not parameterized
-        full_class_name = m.group(3)
+        m = _RUNNING_RE_LEGACY.match(line)
+        if m:
+            method = m.group(1)
+            parameters = m.group(2)
+            full_class_name = m.group(3)
+        else:
+            m = _RUNNING_RE_JUPITER.match(line)
+            if not m:
+                i += 1
+                continue
+            full_class_name = m.group(1)
+            method = m.group(2)
+            parameters = m.group(3)
         test_class = _short_class_name(full_class_name)
 
         # Scan forward to find the outcome marker
@@ -79,12 +96,12 @@ def parse_log_content(content: str) -> list[dict]:
         while i < len(lines):
             cur = lines[i].strip()
 
-            if _SUCCESS_RE.match(cur):
+            if _SUCCESS_RE_LEGACY.match(cur) or _SUCCESS_RE_JUPITER.match(cur):
                 status = "success"
                 i += 1
                 break
 
-            if _FAILED_RE.match(cur):
+            if _FAILED_RE_LEGACY.match(cur) or _FAILED_RE_JUPITER.match(cur):
                 status = "failed"
                 # Collect error lines until the next separator
                 error_lines: list[str] = []
