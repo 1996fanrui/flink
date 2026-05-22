@@ -175,6 +175,16 @@ public class InputGateWithMetrics extends IndexedInputGate {
         return inputGate.isCheckpointingDuringRecoveryEnabled();
     }
 
+    @Override
+    public void setNeedsRecovery(boolean enabled) {
+        inputGate.setNeedsRecovery(enabled);
+    }
+
+    @Override
+    public boolean needsRecovery() {
+        return inputGate.needsRecovery();
+    }
+
     private BufferOrEvent updateMetrics(BufferOrEvent bufferOrEvent) {
         int incomingDataSize = bufferOrEvent.getSize();
 

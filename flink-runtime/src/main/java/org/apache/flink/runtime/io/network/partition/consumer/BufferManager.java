@@ -70,13 +70,34 @@ public class BufferManager implements BufferListener, BufferRecycler {
     @GuardedBy("bufferQueue")
     private int numRequiredBuffers;
 
+    /**
+     * Whether buffers freed into {@code bufferQueue} may be propagated to the owning channel via
+     * {@link InputChannel#notifyBufferAvailable}. Disabled while a recovery drain is borrowing this
+     * channel's buffers to hold recovered data: a freed buffer is then consumed by the drain, not a
+     * net-new live slot, so propagating it would let the producer send live data the channel cannot
+     * yet receive.
+     *
+     * <p>This is the {@code bufferQueue}-monitor view of {@code RecoveredBufferQueue.allDelivered};
+     * the two flip together. The mirror exists because all three buffer-freeing paths live inside
+     * this class under {@code bufferQueue}, and reaching into the channel's {@code receivedBuffers}
+     * monitor (where {@code allDelivered} lives) would invert the lock order against the recycle
+     * path. {@link #enableNotify()} performs the one-shot flip plus the recovery-exit announcement
+     * under a single critical section.
+     */
+    @GuardedBy("bufferQueue")
+    private boolean notifyAvailable;
+
     public BufferManager(
-            MemorySegmentProvider globalPool, InputChannel inputChannel, int numRequiredBuffers) {
+            MemorySegmentProvider globalPool,
+            InputChannel inputChannel,
+            int numRequiredBuffers,
+            boolean notifyInitiallyEnabled) {
 
         this.globalPool = checkNotNull(globalPool);
         this.inputChannel = checkNotNull(inputChannel);
         checkArgument(numRequiredBuffers >= 0);
         this.numRequiredBuffers = numRequiredBuffers;
+        this.notifyAvailable = notifyInitiallyEnabled;
     }
 
     // ------------------------------------------------------------------------
@@ -158,23 +179,27 @@ public class BufferManager implements BufferListener, BufferRecycler {
 
     /**
      * Requests floating buffers from the buffer pool based on the given required amount, and
-     * returns the actual requested amount. If the required amount is not fully satisfied, it will
-     * register as a listener.
+     * returns the number of buffers that may be announced to the producer as credit. If the
+     * required amount is not fully satisfied, it will register as a listener.
+     *
+     * <p>While the credit gate is closed (recovery), the requested buffers are still added into the
+     * queue but the announceable count is zero: they are folded into the single aligned
+     * announcement at recovery exit (see {@link #enableNotify()}), so credit is never sent while
+     * the channel's exclusive buffers are on loan to the spill drain.
      */
     int requestFloatingBuffers(int numRequired) {
-        int numRequestedBuffers = 0;
         synchronized (bufferQueue) {
             // Similar to notifyBufferAvailable(), make sure that we never add a buffer after
             // channel
             // released all buffers via releaseAllResources().
             if (inputChannel.isReleased()) {
-                return numRequestedBuffers;
+                return 0;
             }
 
             numRequiredBuffers = numRequired;
-            numRequestedBuffers = tryRequestBuffers();
+            int numRequestedBuffers = tryRequestBuffers();
+            return notifyAvailable ? numRequestedBuffers : 0;
         }
-        return numRequestedBuffers;
     }
 
     private int tryRequestBuffers() {
@@ -209,6 +234,7 @@ public class BufferManager implements BufferListener, BufferRecycler {
     @Override
     public void recycle(MemorySegment segment) {
         @Nullable Buffer releasedFloatingBuffer = null;
+        boolean announceCredit = false;
         synchronized (bufferQueue) {
             try {
                 // Similar to notifyBufferAvailable(), make sure that we never add a buffer
@@ -226,11 +252,15 @@ public class BufferManager implements BufferListener, BufferRecycler {
             } finally {
                 bufferQueue.notifyAll();
             }
+            // Decide under the lock whether this freed buffer is propagated to the channel. While
+            // notify is disabled (recovery), the buffer is consumed by the recovery drain and is
+            // not a net-new live slot, so it must not be propagated.
+            announceCredit = releasedFloatingBuffer == null && notifyAvailable;
         }
 
         if (releasedFloatingBuffer != null) {
             releasedFloatingBuffer.recycleBuffer();
-        } else {
+        } else if (announceCredit) {
             try {
                 inputChannel.notifyBufferAvailable(1);
             } catch (Throwable t) {
@@ -344,6 +374,12 @@ public class BufferManager implements BufferListener, BufferRecycler {
                 isBufferUsed = true;
                 numBuffers += 1 + tryRequestBuffers();
                 bufferQueue.notifyAll();
+                // While notify is disabled (recovery), freed/acquired buffers must not be
+                // propagated; they are accounted for in a single aligned announcement at recovery
+                // exit (see enableNotify). The buffer is still accepted into the queue above.
+                if (!notifyAvailable) {
+                    numBuffers = 0;
+                }
             }
 
             inputChannel.notifyBufferAvailable(numBuffers);
@@ -357,6 +393,24 @@ public class BufferManager implements BufferListener, BufferRecycler {
     @Override
     public void notifyBufferDestroyed() {
         // Nothing to do actually.
+    }
+
+    /**
+     * Enables buffer-available notifications at recovery exit and announces, exactly once, the
+     * buffers currently back in the queue. The flip and the count read happen under a single {@code
+     * bufferQueue} critical section so they are atomic with respect to concurrent recycle/floating
+     * acquisitions: every buffer already back in the queue is reflected in the announced count, and
+     * every buffer freed after this call observes the enabled flag and is announced incrementally.
+     * The announcement is issued by this manager itself (outside the lock, like the other freeing
+     * paths) so the owning channel does not have to re-announce.
+     */
+    void enableNotify() throws IOException {
+        int available;
+        synchronized (bufferQueue) {
+            notifyAvailable = true;
+            available = bufferQueue.getAvailableBufferSize();
+        }
+        inputChannel.notifyBufferAvailable(available);
     }
 
     // ------------------------------------------------------------------------

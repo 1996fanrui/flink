@@ -245,6 +245,16 @@ public class SingleInputGate extends IndexedInputGate {
 
     private volatile boolean checkpointingDuringRecoveryEnabled = false;
 
+    /**
+     * Whether the physical channels converted out of this gate's {@link RecoveredInputChannel}s
+     * should start in-recovery (i.e. will receive recovered buffers from a SpillFileReader drain).
+     * Set on the channel-IO executor before {@code bufferFilteringCompleteFuture.complete()} so
+     * downstream mailbox tasks observe the final value. Read by {@link
+     * #convertRecoveredInputChannels()} and passed through {@code toInputChannel(needsRecovery)} to
+     * the physical channel constructor; channel constructors do NOT read this field directly.
+     */
+    private volatile boolean needsRecovery = false;
+
     public SingleInputGate(
             String owningTaskName,
             int gateIndex,
@@ -342,6 +352,16 @@ public class SingleInputGate extends IndexedInputGate {
     }
 
     @Override
+    public void setNeedsRecovery(boolean enabled) {
+        this.needsRecovery = enabled;
+    }
+
+    @Override
+    public boolean needsRecovery() {
+        return needsRecovery;
+    }
+
+    @Override
     public CompletableFuture<Void> getBufferFilteringCompleteFuture() {
         synchronized (requestLock) {
             List<CompletableFuture<?>> futures = new ArrayList<>(numberOfInputChannels);
@@ -407,17 +427,19 @@ public class SingleInputGate extends IndexedInputGate {
                     continue;
                 }
                 try {
-                    // Phase 1: Convert channel and release resources outside the lock.
-                    // These calls may acquire the receivedBuffers lock internally, so they
-                    // run outside inputChannelsWithData lock to maintain a consistent lock
-                    // order with onRecoveredStateBuffer() which acquires receivedBuffers
-                    // first and then inputChannelsWithData.
+                    // Convert channel and release resources outside the inputChannelsWithData
+                    // lock. These calls may acquire the receivedBuffers lock internally; running
+                    // them here keeps lock ordering consistent with onRecoveredStateBuffer(), which
+                    // takes receivedBuffers before inputChannelsWithData.
                     InputChannel realInputChannel =
-                            ((RecoveredInputChannel) inputChannel).toInputChannel();
+                            ((RecoveredInputChannel) inputChannel).toInputChannel(needsRecovery);
+                    // The drain allocates from the physical channel's own BufferManager, not the
+                    // RecoveredInputChannel's, so the recovery scaffolding can be released
+                    // unconditionally here.
                     inputChannel.releaseAllResources();
                     int buffersInUseCount = realInputChannel.getBuffersInUseCount();
 
-                    // Phase 2: Atomically update data structures under the lock.
+                    // Atomically update data structures under the lock.
                     synchronized (inputChannelsWithData) {
                         if (inputChannelsWithData.contains(inputChannel)) {
                             inputChannelsWithData.getAndRemove(ch -> ch == inputChannel);
