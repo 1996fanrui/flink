@@ -30,6 +30,8 @@ import org.apache.flink.runtime.state.ChannelStateHelper;
 import org.apache.flink.runtime.state.StreamStateHandle;
 import org.apache.flink.streaming.runtime.io.recovery.RecordFilterContext;
 
+import javax.annotation.Nullable;
+
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.Collection;
@@ -53,6 +55,12 @@ public class SequentialChannelStateReaderImpl implements SequentialChannelStateR
     private final ChannelStateSerializer serializer;
     private final ChannelStateChunkReader chunkReader;
 
+    /**
+     * Frozen handle to the produced spill file, or {@code null} when filtering was not enabled.
+     * Published by {@link #readInputData} after the input handler closes.
+     */
+    @Nullable private SpillFile producedSpillFile;
+
     public SequentialChannelStateReaderImpl(TaskStateSnapshot taskStateSnapshot) {
         this.taskStateSnapshot = taskStateSnapshot;
         serializer = new ChannelStateSerializerImpl();
@@ -63,36 +71,52 @@ public class SequentialChannelStateReaderImpl implements SequentialChannelStateR
     public void readInputData(InputGate[] inputGates, RecordFilterContext filterContext)
             throws IOException, InterruptedException {
 
-        // Create filtering handler if filtering is needed
         ChannelStateFilteringHandler filteringHandler =
                 filterContext.isCheckpointingDuringRecoveryEnabled()
                         ? ChannelStateFilteringHandler.createFromContext(filterContext, inputGates)
                         : null;
 
-        try (ChannelStateFilteringHandler ignored = filteringHandler;
-                InputChannelRecoveredStateHandler stateHandler =
-                        new InputChannelRecoveredStateHandler(
-                                inputGates,
-                                taskStateSnapshot.getInputRescalingDescriptor(),
-                                filteringHandler,
-                                filterContext.getMemorySegmentSize())) {
-            read(
-                    stateHandler,
-                    groupByDelegate(
-                            streamSubtaskStates(),
-                            ChannelStateHelper::extractUnmergedInputHandles));
-            read(
-                    stateHandler,
-                    groupByDelegate(
-                            streamSubtaskStates(),
-                            OperatorSubtaskState::getUpstreamOutputBufferState));
+        // Manual close ordering so the produced spill file can be published after
+        // stateHandler.close() flushes the filter writer.
+        InputChannelRecoveredStateHandler stateHandler =
+                new InputChannelRecoveredStateHandler(
+                        inputGates,
+                        taskStateSnapshot.getInputRescalingDescriptor(),
+                        filteringHandler,
+                        filterContext.isCheckpointingDuringRecoveryEnabled(),
+                        filterContext.getMemorySegmentSize(),
+                        filterContext.getTmpDirectories());
+        try (ChannelStateFilteringHandler ignored = filteringHandler) {
+            try {
+                read(
+                        stateHandler,
+                        groupByDelegate(
+                                streamSubtaskStates(),
+                                ChannelStateHelper::extractUnmergedInputHandles));
+                read(
+                        stateHandler,
+                        groupByDelegate(
+                                streamSubtaskStates(),
+                                OperatorSubtaskState::getUpstreamOutputBufferState));
 
-            if (filteringHandler != null) {
-                checkState(
-                        !filteringHandler.hasPartialData(),
-                        "Not all data has been fully consumed during filtering");
+                if (filteringHandler != null) {
+                    checkState(
+                            !filteringHandler.hasPartialData(),
+                            "Not all data has been fully consumed during filtering");
+                }
+            } finally {
+                stateHandler.close();
             }
+            // After handler close: filter writer is flushed and producedSpillFile is populated
+            // on the filter-on path (null otherwise). The drain consumes it from here.
+            this.producedSpillFile = stateHandler.getProducedSpillFile();
         }
+    }
+
+    @Override
+    @Nullable
+    public SpillFile getProducedSpillFile() {
+        return producedSpillFile;
     }
 
     @Override
@@ -159,9 +183,7 @@ public class SequentialChannelStateReaderImpl implements SequentialChannelStateR
     private static <Info, Handle extends AbstractChannelStateHandle<Info>>
             Consumer<Handle> validate() {
         Set<Tuple2<Info, Integer>> seen = new HashSet<>();
-        // expect each channel/subtask to be described only once; otherwise, buffers in channel
-        // could be
-        // re-ordered
+        // Each channel/subtask must be described only once; duplicates would re-order buffers.
         return handle -> {
             if (!seen.add(new Tuple2<>(handle.getInfo(), handle.getSubtaskIndex()))) {
                 throw new IllegalStateException("Duplicate channel info: " + handle);
