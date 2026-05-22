@@ -18,9 +18,17 @@
 
 package org.apache.flink.streaming.runtime.io.checkpointing;
 
+import org.apache.flink.runtime.checkpoint.CheckpointException;
+import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
 import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
+import org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointTrigger;
+import org.apache.flink.runtime.checkpoint.channel.SpillFileReader;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
 import org.apache.flink.runtime.io.network.partition.consumer.CheckpointableInput;
+import org.apache.flink.util.CloseableIterator;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.HashMap;
@@ -28,6 +36,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
+import static org.apache.flink.util.Preconditions.checkNotNull;
 import static org.apache.flink.util.Preconditions.checkState;
 
 /**
@@ -35,6 +44,9 @@ import static org.apache.flink.util.Preconditions.checkState;
  * and {@link AbstractAlternatingAlignedBarrierHandlerState}.
  */
 final class ChannelState {
+
+    private static final Logger LOG = LoggerFactory.getLogger(ChannelState.class);
+
     private final Map<InputChannelInfo, Integer> sequenceNumberInAnnouncedChannels =
             new HashMap<>();
 
@@ -47,8 +59,21 @@ final class ChannelState {
 
     private final CheckpointableInput[] inputs;
 
+    private final RecoveryCheckpointTrigger recoveryCheckpointTrigger;
+
+    private final ChannelStateWriter channelStateWriter;
+
     public ChannelState(CheckpointableInput[] inputs) {
+        this(inputs, RecoveryCheckpointTrigger.NO_OP, ChannelStateWriter.NO_OP);
+    }
+
+    public ChannelState(
+            CheckpointableInput[] inputs,
+            RecoveryCheckpointTrigger recoveryCheckpointTrigger,
+            ChannelStateWriter channelStateWriter) {
         this.inputs = inputs;
+        this.recoveryCheckpointTrigger = checkNotNull(recoveryCheckpointTrigger);
+        this.channelStateWriter = checkNotNull(channelStateWriter);
     }
 
     public void blockChannel(InputChannelInfo channelInfo) {
@@ -97,5 +122,35 @@ final class ChannelState {
                 blockedChannels);
         sequenceNumberInAnnouncedChannels.clear();
         return this;
+    }
+
+    /**
+     * Transfers spill-snapshot ownership to the writer after all inputs observe checkpoint start.
+     */
+    public void onCheckpointStartedForAllInputs(CheckpointBarrier barrier)
+            throws CheckpointException, IOException {
+        long cpId = barrier.getId();
+        CloseableIterator<SpillFileReader.Chunk> snap = null;
+        try {
+            snap = recoveryCheckpointTrigger.snapshotAndInsertBarriers(cpId);
+
+            for (CheckpointableInput input : inputs) {
+                input.checkpointStarted(barrier);
+            }
+
+            channelStateWriter.addInputDataFromSpill(cpId, snap);
+            snap = null;
+        } finally {
+            if (snap != null) {
+                try {
+                    snap.close();
+                } catch (Exception suppressed) {
+                    LOG.warn(
+                            "Failed to release spill iterator after dispatcher error for checkpoint {}",
+                            cpId,
+                            suppressed);
+                }
+            }
+        }
     }
 }

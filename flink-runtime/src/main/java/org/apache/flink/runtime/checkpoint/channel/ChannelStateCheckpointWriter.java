@@ -26,6 +26,7 @@ import org.apache.flink.runtime.state.AbstractChannelStateHandle.StateContentMet
 import org.apache.flink.runtime.state.CheckpointStateOutputStream;
 import org.apache.flink.runtime.state.CheckpointStreamFactory;
 import org.apache.flink.runtime.state.StreamStateHandle;
+import org.apache.flink.util.CloseableIterator;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.function.RunnableWithException;
 
@@ -159,6 +160,41 @@ class ChannelStateCheckpointWriter {
         } finally {
             buffer.recycleBuffer();
         }
+    }
+
+    void writeInputFromSpill(
+            JobVertexID jobVertexID,
+            int subtaskIndex,
+            CloseableIterator<SpillFileReader.Chunk> chunks) {
+        if (isDone()) {
+            try {
+                chunks.close();
+            } catch (Exception ignored) {
+            }
+            return;
+        }
+        ChannelStatePendingResult pendingResult =
+                getChannelStatePendingResult(jobVertexID, subtaskIndex);
+        runWithChecks(
+                () -> {
+                    checkState(!pendingResult.isAllInputsReceived());
+                    try {
+                        while (chunks.hasNext()) {
+                            SpillFileReader.Chunk chunk = chunks.next();
+                            long offset = checkpointStream.getPos();
+                            dataStream.writeInt(chunk.length);
+                            dataStream.write(chunk.data, 0, chunk.length);
+                            long size = checkpointStream.getPos() - offset;
+                            pendingResult
+                                    .getInputChannelOffsets()
+                                    .computeIfAbsent(
+                                            chunk.channelInfo, unused -> new StateContentMetaInfo())
+                                    .withDataAdded(offset, size);
+                        }
+                    } finally {
+                        chunks.close();
+                    }
+                });
     }
 
     void writeOutput(
