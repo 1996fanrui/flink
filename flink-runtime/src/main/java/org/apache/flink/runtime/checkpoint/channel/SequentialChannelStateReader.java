@@ -22,6 +22,8 @@ import org.apache.flink.runtime.io.network.api.writer.ResultPartitionWriter;
 import org.apache.flink.runtime.io.network.partition.consumer.InputGate;
 import org.apache.flink.streaming.runtime.io.recovery.RecordFilterContext;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 
 /** Reads channel state saved during checkpoint/savepoint. */
@@ -40,6 +42,13 @@ public interface SequentialChannelStateReader extends AutoCloseable {
     void readOutputData(ResultPartitionWriter[] writers, boolean notifyAndBlockOnCompletion)
             throws IOException, InterruptedException;
 
+    /**
+     * Returns the {@link SpillFile} produced by {@link #readInputData}, or {@code null} when no
+     * spill file was produced (filter-off path, or {@code readInputData} has not yet produced one).
+     */
+    @Nullable
+    SpillFile getProducedSpillFile();
+
     @Override
     void close() throws Exception;
 
@@ -53,6 +62,12 @@ public interface SequentialChannelStateReader extends AutoCloseable {
                 @Override
                 public void readOutputData(
                         ResultPartitionWriter[] writers, boolean notifyAndBlockOnCompletion) {}
+
+                @Nullable
+                @Override
+                public SpillFile getProducedSpillFile() {
+                    return null;
+                }
 
                 @Override
                 public void close() {}

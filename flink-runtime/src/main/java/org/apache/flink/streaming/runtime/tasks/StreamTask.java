@@ -44,7 +44,11 @@ import org.apache.flink.runtime.checkpoint.SnapshotType;
 import org.apache.flink.runtime.checkpoint.SubTaskInitializationMetricsBuilder;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
 import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
+import org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointTrigger;
 import org.apache.flink.runtime.checkpoint.channel.SequentialChannelStateReader;
+import org.apache.flink.runtime.checkpoint.channel.SpillFile;
+import org.apache.flink.runtime.checkpoint.channel.SpillFileDrainer;
+import org.apache.flink.runtime.checkpoint.channel.SpillFileReaderBootstrap;
 import org.apache.flink.runtime.checkpoint.filemerging.FileMergingSnapshotManager;
 import org.apache.flink.runtime.execution.CancelTaskException;
 import org.apache.flink.runtime.execution.Environment;
@@ -63,6 +67,7 @@ import org.apache.flink.runtime.io.network.partition.ChannelStateHolder;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionType;
 import org.apache.flink.runtime.io.network.partition.consumer.IndexedInputGate;
 import org.apache.flink.runtime.io.network.partition.consumer.InputGate;
+import org.apache.flink.runtime.io.network.partition.consumer.RecoverableInputChannel;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.jobgraph.tasks.CheckpointableTask;
 import org.apache.flink.runtime.jobgraph.tasks.CoordinatedTask;
@@ -149,6 +154,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.apache.flink.configuration.TaskManagerOptions.BUFFER_DEBLOAT_PERIOD;
 import static org.apache.flink.runtime.metrics.MetricNames.GATE_RESTORE_DURATION;
@@ -303,6 +309,14 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 
     /** TODO it might be replaced by the global IO executor on TaskManager level future. */
     private final ExecutorService channelIOExecutor;
+
+    /**
+     * Trigger that snapshots the spill file and inserts per-channel sentinels when a checkpoint
+     * fires during recovery. Published by {@code restoreStateAndGates} once the {@link
+     * SpillFileDrainer} has been constructed; {@code null} when no spill file was produced. Read
+     * from the task thread by the checkpoint dispatcher.
+     */
+    @Nullable private volatile RecoveryCheckpointTrigger recoveryCheckpointTrigger;
 
     // ========================================================
     //  Final  checkpoint / savepoint
@@ -890,6 +904,22 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
             inputGate.setCheckpointingDuringRecoveryEnabled(checkpointingDuringRecoveryEnabled);
         }
 
+        // Filter-on recovery flow:
+        //   I/O thread: readInputData -> compute needsRecovery -> setNeedsRecovery per
+        //     gate -> build SpillFileDrainer (holding physicalChannelsFuture) -> publish
+        //     recoveryCheckpointTrigger -> release the producer-side SpillFile grant.
+        //   Hand-off: finishReadRecoveredState on each gate; the mailbox then runs
+        //     convertRecoveredInputChannels + internalRequestPartitions per gate.
+        //   Back to I/O thread: the last gate completes physicalChannelsFuture with the
+        //     post-conversion channel set, then drain + close run on the I/O thread.
+        // Filter-off path: just readInputData + finishReadRecoveredState — no SpillFileDrainer,
+        // no drain, no physicalChannelsFuture.
+        final CompletableFuture<List<RecoverableInputChannel>> physicalChannelsFuture =
+                checkpointingDuringRecoveryEnabled ? new CompletableFuture<>() : null;
+        // Decremented at the end of every per-gate mailbox callback; the gate that reaches zero
+        // completes physicalChannelsFuture with the collected channels.
+        final AtomicInteger remainingGates =
+                checkpointingDuringRecoveryEnabled ? new AtomicInteger(inputGates.length) : null;
         channelIOExecutor.execute(
                 () -> {
                     try {
@@ -897,6 +927,86 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                     } catch (Exception e) {
                         asyncExceptionHandler.handleAsyncException(
                                 "Unable to read channel state", e);
+                        if (physicalChannelsFuture != null) {
+                            // Filter threw before finishReadRecoveredState ran, so the mailbox
+                            // will never complete this future — propagate the failure here so
+                            // any join() surfaces the exception. Also release any spill segments
+                            // the producer wrote before the throw.
+                            try {
+                                SpillFile leakedSpillFile = reader.getProducedSpillFile();
+                                if (leakedSpillFile != null) {
+                                    leakedSpillFile.release();
+                                }
+                            } catch (Throwable releaseError) {
+                                // Best-effort release on the error path.
+                            }
+                            physicalChannelsFuture.completeExceptionally(e);
+                        }
+                        return;
+                    }
+
+                    SpillFileDrainer drainer = null;
+                    if (checkpointingDuringRecoveryEnabled) {
+                        try {
+                            SpillFile producedSpillFile = reader.getProducedSpillFile();
+                            boolean needsRecovery = producedSpillFile != null;
+                            // Publish before any channel-construction callback runs, so
+                            // convertRecoveredInputChannels reads the final value.
+                            for (IndexedInputGate gate : inputGates) {
+                                gate.setNeedsRecovery(needsRecovery);
+                            }
+                            if (needsRecovery) {
+                                drainer =
+                                        SpillFileReaderBootstrap.buildDrainer(
+                                                producedSpillFile, physicalChannelsFuture);
+                                // Publish before finishReadRecoveredState, so the checkpoint
+                                // dispatcher sees the drainer instance and not null once the task
+                                // reaches RUNNING.
+                                this.recoveryCheckpointTrigger = drainer;
+                                // The drainer's root reader took its own grant; the producer
+                                // grant (held across the filter/drain handover) can now be
+                                // released.
+                                producedSpillFile.release();
+                            }
+                        } catch (Throwable t) {
+                            asyncExceptionHandler.handleAsyncException(
+                                    "Unable to wire SpillFileDrainer during recovery", t);
+                            physicalChannelsFuture.completeExceptionally(t);
+                            return;
+                        }
+                    }
+
+                    // Finishing the recovered state per gate must happen after the trigger field
+                    // and the per-gate needsRecovery flag have been published, so the
+                    // downstream mailbox callbacks observe consistent state.
+                    try {
+                        for (IndexedInputGate gate : inputGates) {
+                            gate.finishReadRecoveredState();
+                        }
+                    } catch (IOException e) {
+                        asyncExceptionHandler.handleAsyncException(
+                                "Unable to finish read recovered state", e);
+                        if (physicalChannelsFuture != null) {
+                            physicalChannelsFuture.completeExceptionally(e);
+                        }
+                        return;
+                    }
+
+                    if (drainer == null) {
+                        return;
+                    }
+                    try {
+                        drainer.drain();
+                    } catch (Throwable t) {
+                        asyncExceptionHandler.handleAsyncException(
+                                "Unable to drain recovered channel state", t);
+                    } finally {
+                        try {
+                            drainer.close();
+                        } catch (Throwable closeError) {
+                            asyncExceptionHandler.handleAsyncException(
+                                    "Unable to close SpillFileDrainer after drain", closeError);
+                        }
                     }
                 });
 
@@ -904,18 +1014,58 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
         // start checkpointing. If we implement incremental checkpointing of input channel state
         // we must make sure it supports CheckpointType#FULL_CHECKPOINT.
         List<CompletableFuture<?>> recoveredFutures = new ArrayList<>(inputGates.length);
+        // Gate the recovery mailbox loop on physical-channel conversion, not just on buffer
+        // filtering. The per-gate requestPartitions mail (which converts recovered channels and
+        // completes physicalChannelsFuture) is only submitted after filtering completes; if the
+        // loop suspended on filtering alone, a checkpoint barrier mail could be processed before
+        // those conversion mails and block in SpillFileDrainer.snapshotAndInsertBarriers /
+        // drain on resolvedChannelsFuture.join() — a future only completable by a conversion mail
+        // that the now-blocked single mailbox thread can no longer run. Waiting on
+        // physicalChannelsFuture keeps the loop running until conversion is done, so any barrier
+        // is processed only after the channels future is resolved.
+        // The inputGates.length > 0 guard is required: physicalChannelsFuture is completed by the
+        // last gate's requestPartitions mail (remainingGates reaches 0). A task with no input gates
+        // (e.g. a source) submits no such mail, so the future would never complete and the recovery
+        // loop would hang forever — only wait on it when there is at least one gate to complete it.
+        if (physicalChannelsFuture != null && inputGates.length > 0) {
+            recoveredFutures.add(physicalChannelsFuture);
+        }
         for (InputGate inputGate : inputGates) {
             CompletableFuture<?> requestPartitionsTrigger =
                     checkpointingDuringRecoveryEnabled
                             ? inputGate.getBufferFilteringCompleteFuture()
                             : inputGate.getStateConsumedFuture();
-
             recoveredFutures.add(requestPartitionsTrigger);
 
             requestPartitionsTrigger.thenRun(
                     () ->
                             mainMailboxExecutor.execute(
-                                    inputGate::requestPartitions, "Input gate request partitions"));
+                                    () -> {
+                                        try {
+                                            inputGate.requestPartitions();
+                                        } catch (Throwable t) {
+                                            if (physicalChannelsFuture != null) {
+                                                physicalChannelsFuture.completeExceptionally(t);
+                                            }
+                                            throw t;
+                                        }
+                                        // The last gate to finish conversion publishes the
+                                        // physical channel set into the future the
+                                        // SpillFileDrainer is already holding.
+                                        if (remainingGates != null
+                                                && remainingGates.decrementAndGet() == 0) {
+                                            try {
+                                                List<RecoverableInputChannel> physicalChannels =
+                                                        SpillFileReaderBootstrap
+                                                                .collectPhysicalChannels(
+                                                                        inputGates);
+                                                physicalChannelsFuture.complete(physicalChannels);
+                                            } catch (Throwable t) {
+                                                physicalChannelsFuture.completeExceptionally(t);
+                                            }
+                                        }
+                                    },
+                                    "Input gate request partitions"));
         }
 
         // Return allOf future instead of thenRun future. thenRun() returns a NEW future that
@@ -933,6 +1083,16 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                 CompletableFuture.allOf(recoveredFutures.toArray(new CompletableFuture[0]));
         allRecoveredFuture.thenRun(mailboxProcessor::suspend);
         return allRecoveredFuture;
+    }
+
+    /**
+     * Returns the {@link RecoveryCheckpointTrigger} published during recovery, or {@code null} when
+     * no spill file was produced (the dispatcher then falls back to the no-op singleton).
+     */
+    @VisibleForTesting
+    @Nullable
+    public RecoveryCheckpointTrigger getRecoveryCheckpointTrigger() {
+        return recoveryCheckpointTrigger;
     }
 
     private void ensureNotCanceled() {
