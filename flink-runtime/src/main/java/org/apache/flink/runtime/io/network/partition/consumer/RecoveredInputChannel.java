@@ -54,7 +54,8 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 import static org.apache.flink.util.Preconditions.checkState;
 
 /** An input channel reads recovered state from previous unaligned checkpoint snapshots. */
-public abstract class RecoveredInputChannel extends InputChannel implements ChannelStateHolder {
+public abstract class RecoveredInputChannel extends InputChannel
+        implements ChannelStateHolder, RecoverableInputChannel {
 
     private static final Logger LOG = LoggerFactory.getLogger(RecoveredInputChannel.class);
 
@@ -131,8 +132,23 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
             receivedBuffers.clear();
         }
 
-        final InputChannel inputChannel = toInputChannelInternal(remainingBuffers);
+        final InputChannel inputChannel = toInputChannelInternal();
         inputChannel.checkpointStopped(lastStoppedCheckpointId);
+
+        // Feed remaining buffers via the uniform push interface. This migration path has no
+        // SpillFileReader.lock (no spiller exists yet); delivery is single-threaded and sequential,
+        // occurring before the physical channel is exposed to any other thread.
+        if (inputChannel instanceof RecoverableInputChannel) {
+            RecoverableInputChannel rec = (RecoverableInputChannel) inputChannel;
+            for (Buffer buf : remainingBuffers) {
+                rec.onRecoveredStateBuffer(buf);
+            }
+            rec.finishReadRecoveredState();
+        } else {
+            throw new IllegalStateException(
+                    "Physical channel does not implement RecoverableInputChannel: "
+                            + inputChannel.getClass().getName());
+        }
         return inputChannel;
     }
 
@@ -142,14 +158,13 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     }
 
     /**
-     * Creates the physical InputChannel from this recovered channel.
+     * Creates the physical InputChannel from this recovered channel. The remaining buffers are
+     * delivered via {@link RecoverableInputChannel#onRecoveredStateBuffer} after this method
+     * returns.
      *
-     * @param remainingBuffers buffers that have been filtered but not yet consumed by the Task.
-     *     These buffers will be migrated to the new physical channel.
      * @return the physical InputChannel (LocalInputChannel or RemoteInputChannel)
      */
-    protected abstract InputChannel toInputChannelInternal(ArrayDeque<Buffer> remainingBuffers)
-            throws IOException;
+    protected abstract InputChannel toInputChannelInternal() throws IOException;
 
     /**
      * Returns the future that completes when buffer filtering is complete. This future completes
