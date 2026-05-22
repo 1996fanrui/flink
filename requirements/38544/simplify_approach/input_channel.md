@@ -94,7 +94,7 @@ Completed by the channel itself when both hold:
 - `allRecoveredBuffersDelivered == true`;
 - `recoveredBuffers` is empty.
 
-Whichever transition makes both true is the trigger — either `finishReadRecoveredState()` runs when `recoveredBuffers` is already empty, or the consumer polls the last entry off `recoveredBuffers` after the flag is already set. No EOICS sentinel is inserted into the queue.
+Whichever transition makes both true is the trigger — either `finishReadRecoveredState()` runs when `recoveredBuffers` is already empty, or the consumer polls the last entry off `recoveredBuffers` after the flag is already set. No EOICS sentinel is inserted into the queue, and no external "bootstrap" / "task close" path is allowed to complete the future — any such fallback would mask a missing `finishReadRecoveredState` upstream.
 
 ### 3.8 Extending `checkpointStarted` to snapshot `recoveredBuffers`
 

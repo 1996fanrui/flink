@@ -13,7 +13,7 @@ Covers the two periods of recovery, serially, all on the single-thread `channelI
 
 | Component | Role |
 |---|---|
-| `FilteredBufferWriter` | Accumulation before writing to disk during filter. One `prefilterBuffer` per task (used by filter to read source data) + one `postfilterBuffer` (accumulates filter output); when the latter is full, flush it to `SpillFile`. **Replaces the heap-fallback branch inside master's `RecoveredInputChannel.requestBufferBlocking`**, eliminating heap growth at the source. |
+| `FilteredBufferWriter` | Accumulation before writing to disk during filter. One `prefilterBuffer` per task (used by filter to read source data) + one `postfilterBuffer` (accumulates filter output); when the latter is full, flush it to `SpillFile`. **Replaces the heap-fallback branch inside master's `RecoveredInputChannel.requestBufferBlocking`**, eliminating heap growth at the source. **Single-channel-per-entry invariant**: each entry carries one channel's bytes; flush triggers are (i) channel switch in `beginChannel` and (ii) buffer full — no third trigger. |
 | `SpillFile` | The actual on-disk object. Multi-segment: rotates once a single file exceeds 64 MB; each entry carries `(channelInfo, offset, length)` metadata in an in-memory `entries` queue. `snapshot()` can clone the entries (independent of the frozen state), used for checkpoint snapshotting. |
 | `SpillFileWriter` | Phase 1 (filter) façade. Owns `SpillFile` during filter; appends `(channelInfo, length, payload)` records; closes after filter completes and hands `SpillFile` to a `SpillFileReader`. Task thread does not hold a reference. |
 | `SpillFileReader` main body | Phase 2 (drain) façade. drain loop + the global `Object lock` (used via `synchronized(lock)`) + advancing `(currentSegmentIndex, currentOffset)`. Implements `RecoveryCheckpointTrigger`; the task thread holds the reference. |
@@ -30,8 +30,13 @@ Covers the two periods of recovery, serially, all on the single-thread `channelI
 
 | Holder | Acquired at | Released at |
 |---|---|---|
+| producer (filter pipeline) | when the filter pipeline constructs the `SpillFile` (single producer side) | when the drain reader has taken its own grant (handoff transfer); see "producer hand-off" note below |
 | drain | `SpillFileReader` construction | drain loop exits (after §4 step (D)) |
 | each in-recovery cpId Step 3 reader | inside `snapshotAndInsertBarriers`, holding the lock, when the DiskSnapshot is built | callback chained onto `ChannelStateWriter.getAndRemoveWriteResult(cpId).getInputChannelStateHandles()` |
+
+**Producer hand-off (mandatory).** Producer holds the initial grant until the drain reader (constructed later on the task thread) has taken its own grant, then releases. The writer cannot itself hold the grant — writer release would run on the I/O thread *before* reader construction, drop refCount to zero, and let segments be deleted in that gap. Every failure path (filter / conversion / reader build throws) must still release the producer grant or segments leak.
+
+**`SpillFile.close()` is forced cleanup, not a release.** Reserved for shutdown / abort / tearDown — production filter→drain goes through `release()`.
 
 Counter reaches zero → SpillFile deletes all segments. Task abort drives the same path: `ChannelStateWriter.abort(cpId, cause, cleanup)` exceptionally completes the per-cpId future, the callback still fires, the ref is released.
 
@@ -140,6 +145,10 @@ public final class DiskSnapshot implements CloseableIterator<DiskSnapshot.Chunk>
     public static final class Chunk { InputChannelInfo channelInfo; byte[] data; int length; }
 }
 ```
+
+## 3a. `InputChannelInfo` direction: write NEW, look up NEW
+
+Filter writes `SpillFile` entries keyed by **NEW** (post-rescale, `mappedChannel.getChannelInfo()`) channelInfo — drain looks up physical channels by NEW too. Filter-internal addressing (`filterAndRewrite(gateIdx, oldSubtaskIndex, oldChannelIndex, ...)`) continues to use OLD, because the virtual channel registry is keyed by `(oldSubtask, oldChannel)`. Non-rescale runs have OLD == NEW so the distinction is invisible; rescale paths are where the wrong direction silently mis-routes drain output to the wrong physical channel.
 
 ## 4. Internal invariants
 
