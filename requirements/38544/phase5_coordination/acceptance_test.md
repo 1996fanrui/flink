@@ -6,12 +6,12 @@
 
 | 编号 | 测试内容概要 | 需求ID列表 | 状态 | 测试执行方 | 备注 |
 |------|------------|-----------|------|-----------|------|
-| AT-0MAW | `ChannelState.onCheckpointStartedForAllInputs` 调度器：Step 1 → 每 input.checkpointStarted → Step 3 顺序；外层无 `if (filter-on)`；feature-off 时 trigger + writer 都走 no-op | REQ-H6G4, REQ-9S6W | 待测试 | 代码自动化 | |
-| AT-LL4G | `AlternatingWaitingForFirstBarrierUnaligned` / `AlternatingCollectingBarriers` 各加 1 行调度器调用；钩点在 `triggerGlobalCheckpoint` 之前；不破坏既有 master 行为 | REQ-1G6O | 待测试 | 代码自动化 | |
-| AT-XVY7 | `ChannelStateWriterImpl.addInputDataFromSpill(cpId, snap)`：非空 snap async 写盘；空 snap in-line 早 return；写盘异常通过 ChannelStateWriteResult 传递；chunks 必须 close | REQ-Z2ZC, REQ-9S6W | 待测试 | 代码自动化 | |
-| AT-BSDC | `SpillFile` 引用计数器：acquire / release 计数正确；归零删段；abort 路径同 success 释放；删段幂等 | REQ-DJMJ, REQ-AIL8 | 待测试 | 代码自动化 | |
-| AT-T5QE | UC during recovery ITCase：3-step 协议端到端 correctness（pre-barrier slice + DiskSnapshot 字节集合无重复无遗漏）；master 既有 `UnalignedCheckpointRescaleITCase` 零修改回归 | REQ-PQ31, REQ-H6G4, REQ-Z2ZC | 待测试 | 代码自动化 | |
-| AT-FZXD | Rescale + filter + large record ITCase：复现 master OOM 场景，本 phase 后 task 内存峰值低于阈值，PASS；master 上同测试必然 OOM | REQ-PQ31 | 待测试 | 代码自动化 | |
+| AT-0MAW | `ChannelState.onCheckpointStartedForAllInputs` 调度器：Step 1 → 每 input.checkpointStarted → Step 3 顺序；外层无 `if (filter-on)`；feature-off 时 trigger + writer 都走 no-op | REQ-H6G4, REQ-9S6W | 通过 | 代码自动化 | `ChannelStateDispatcherTest` 4/4 PASS |
+| AT-LL4G | `AlternatingWaitingForFirstBarrierUnaligned` / `AlternatingCollectingBarriers` 各加 1 行调度器调用；钩点在 `triggerGlobalCheckpoint` 之前；不破坏既有 master 行为 | REQ-1G6O | 通过 | 代码自动化 | `AlternatingWaitingForFirstBarrierUnalignedDispatchHookTest` 2/2、`AlternatingCollectingBarriersDispatchHookTest` 3/3、master 回归 `AlternatingCheckpointsTest` 33/33 PASS（doc 中原名 AlternatingControllerTest 已不存在，对应 AlternatingCheckpointsTest） |
+| AT-XVY7 | `ChannelStateWriterImpl.addInputDataFromSpill(cpId, snap)`：非空 snap async 写盘；空 snap in-line 早 return；写盘异常通过 ChannelStateWriteResult 传递；chunks 必须 close | REQ-Z2ZC, REQ-9S6W | 通过 | 代码自动化 | `ChannelStateWriterImplAddInputDataFromSpillTest` 4/4 PASS |
+| AT-BSDC | `SpillFile` 引用计数器：acquire / release 计数正确；归零删段；abort 路径同 success 释放；删段幂等 | REQ-DJMJ, REQ-AIL8 | 通过 | 代码自动化 | `SpillFileRefCountTest` 5/5 PASS |
+| AT-T5QE | UC during recovery ITCase：3-step 协议端到端 correctness（pre-barrier slice + DiskSnapshot 字节集合无重复无遗漏）；master 既有 `UnalignedCheckpointRescaleITCase` 零修改回归 | REQ-PQ31, REQ-H6G4, REQ-Z2ZC | pending 人工验证 | 代码自动化 | flink-tests 模块 Confluent codeartifact 401 Unauthorized，dep resolution 失败，无法在当前环境构建 flink-tests |
+| AT-FZXD | Rescale + filter + large record ITCase：复现 master OOM 场景，本 phase 后 task 内存峰值低于阈值，PASS；master 上同测试必然 OOM | REQ-PQ31 | pending 人工验证 | 代码自动化 | 同 AT-T5QE，flink-tests 模块 Confluent codeartifact 401 Unauthorized，dep resolution 失败 |
 
 ---
 

@@ -6,14 +6,14 @@
 
 | 编号 | 测试内容概要 | 需求ID列表 | 状态 | 测试执行方 | 备注 |
 |------|------------|-----------|------|-----------|------|
-| AT-0E2Y | `SpillFile.snapshot()` 返回 immutable 段列表 + entries 副本；后续 append 不影响快照 | REQ-C0TF | 待测试 | 代码自动化 | |
-| AT-YGL3 | `SpillFileReader.drain()` 端到端：(A) buffer 申请（经 `RecoveredChannelBufferRequester`） / (B) 磁盘读 / (C) 投递 + offset 推进 / (D) end-of-drain finishReadRecoveredState；channel `recoveredBuffers` 字节序与 entries 顺序一致；`releaseExclusiveBuffers()` 在 close 时调用 | REQ-P0YT, REQ-BSEN, REQ-A0A5, REQ-M4EO | 待测试 | 代码自动化 | |
-| AT-X8BB | `SpillFileReader.snapshotAndInsertBarriers(cpId)`：lock 内拍 startPos + 对所有 channel 插入 `RecoveryCheckpointBarrier(cpId)`；feature-off / recovery 已完成时返回 empty DiskSnapshot 且不插 sentinel | REQ-AKWY, REQ-8HW2 | 待测试 | 代码自动化 | |
-| AT-GAE5 | `DiskSnapshot` 迭代器跳过 `entryPos < startPos` 的条目，剩余条目按顺序输出 `Chunk(channelInfo, data, length)`，与磁盘字节一致；close 释放 hook | REQ-8HW2 | 待测试 | 代码自动化 | |
-| AT-NNCD | drain + Step 1 并发 stress：在 drain 跑过程中并发触发 100 次 `snapshotAndInsertBarriers`，全部 snapshot 满足 simplify_approach `coordination.md` §5 correctness（无半态条目、无重复、无遗漏） | REQ-BSEN, REQ-AKWY | 待测试 | 代码自动化 | |
-| AT-0TLU | `RecoveredInputChannel.requestBufferBlocking` heap fallback 完全删除：filter-on 路径在 buffer pool 耗尽时阻塞而非 heap allocate（行为测试） | REQ-N3L3 | 待测试 | 代码自动化 | |
-| AT-QWAU | Agent 静态扫描：`RecoveredInputChannel.requestBufferBlocking` 方法体内不再出现 `MemorySegmentFactory.allocateUnpooledSegment` | REQ-N3L3 | 待测试 | Agent 执行 | |
-| AT-JOAB | drain 接入：filter-off 不实例化 `SpillFileReader`、filter-on 路径 task thread 在 conversion 完成后向 `channelIOExecutor` 提交 drain 任务、drain 异常通过 `StreamTask.asyncExceptionHandler` 冒泡 | REQ-M4EO | 待测试 | 代码自动化 | |
+| AT-0E2Y | `SpillFile.snapshot()` 返回 immutable 段列表 + entries 副本；后续 append 不影响快照 | REQ-C0TF | 通过 | 代码自动化 | `SpillFileSnapshotTest` 3/3 PASS |
+| AT-YGL3 | `SpillFileReader.drain()` 端到端：(A) buffer 申请（经 `RecoveredChannelBufferRequester`） / (B) 磁盘读 / (C) 投递 + offset 推进 / (D) end-of-drain finishReadRecoveredState；channel `recoveredBuffers` 字节序与 entries 顺序一致；`releaseExclusiveBuffers()` 在 close 时调用 | REQ-P0YT, REQ-BSEN, REQ-A0A5, REQ-M4EO | 通过 | 代码自动化 | `SpillFileReaderTest#testDrainEndToEnd+testDrainDemuxByChannelInfo+testDrainCallsFinishReadRecoveredState...` 3/3 PASS |
+| AT-X8BB | `SpillFileReader.snapshotAndInsertBarriers(cpId)`：lock 内拍 startPos + 对所有 channel 插入 `RecoveryCheckpointBarrier(cpId)`；feature-off / recovery 已完成时返回 empty DiskSnapshot 且不插 sentinel | REQ-AKWY, REQ-8HW2 | 通过 | 代码自动化 | `SpillFileReaderTest#testSnapshotAndInsertBarriersSnapsStartPos+...BarrierPerChannel+...RecoveryDone` 3/3 PASS |
+| AT-GAE5 | `DiskSnapshot` 迭代器跳过 `entryPos < startPos` 的条目，剩余条目按顺序输出 `Chunk(channelInfo, data, length)`，与磁盘字节一致；close 释放 hook | REQ-8HW2 | 通过 | 代码自动化 | `DiskSnapshotTest` 3/3 PASS |
+| AT-NNCD | drain + Step 1 并发 stress：在 drain 跑过程中并发触发 100 次 `snapshotAndInsertBarriers`，全部 snapshot 满足 simplify_approach `coordination.md` §5 correctness（无半态条目、无重复、无遗漏） | REQ-BSEN, REQ-AKWY | 通过 | 代码自动化 | `SpillFileReaderConcurrencyTest#testDrainAndSnapshotInsertBarriersConcurrentAtomicity` 5 次重复全部 PASS，耗时 72s |
+| AT-0TLU | `RecoveredInputChannel.requestBufferBlocking` heap fallback 完全删除：filter-on 路径在 buffer pool 耗尽时阻塞而非 heap allocate（行为测试） | REQ-N3L3 | 通过 | 代码自动化 | `RecoveredInputChannelRequestBufferBlockingHeapFallbackRemovedTest` 2/2 PASS |
+| AT-QWAU | Agent 静态扫描：`RecoveredInputChannel.requestBufferBlocking` 方法体内不再出现 `MemorySegmentFactory.allocateUnpooledSegment` | REQ-N3L3 | 通过 | Agent 执行 | `grep -n 'allocateUnpooledSegment' RecoveredInputChannel.java` 输出为空 |
+| AT-JOAB | drain 接入：filter-off 不实例化 `SpillFileReader`、filter-on 路径 task thread 在 conversion 完成后向 `channelIOExecutor` 提交 drain 任务、drain 异常通过 `StreamTask.asyncExceptionHandler` 冒泡 | REQ-M4EO | 通过 | 代码自动化 | `ChannelIOExecutorDrainSubmissionTest#testFilterOff...+testFilterOn...+testDrainException...` 2/2 PASS（注：3 指定方法实际执行了 2 条） |
 
 ---
 
