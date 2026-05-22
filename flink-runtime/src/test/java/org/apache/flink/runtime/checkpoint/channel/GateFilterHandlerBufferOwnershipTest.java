@@ -38,7 +38,6 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -53,6 +52,7 @@ class GateFilterHandlerBufferOwnershipTest {
 
     private static final int BUFFER_SIZE = 1024;
     private static final SubtaskConnectionDescriptor KEY = new SubtaskConnectionDescriptor(0, 0);
+    private static final InputChannelInfo NEW_CHANNEL = new InputChannelInfo(0, 0);
 
     @Test
     void testSourceBufferRecycledOnSuccess() throws Exception {
@@ -60,13 +60,10 @@ class GateFilterHandlerBufferOwnershipTest {
                 createHandler(RecordFilter.acceptAll());
 
         Buffer sourceBuffer = createBufferWithRecords(1L, 2L);
-        List<Buffer> result = handler.filterAndRewrite(0, 0, sourceBuffer, this::createEmptyBuffer);
+        handler.filterAndRewrite(0, 0, NEW_CHANNEL, sourceBuffer, info -> createEmptyBuffer());
 
         // sourceBuffer should be recycled by the deserializer after consumption
         assertThat(sourceBuffer.isRecycled()).isTrue();
-
-        // Clean up result buffers
-        result.forEach(Buffer::recycleBuffer);
     }
 
     @Test
@@ -75,9 +72,8 @@ class GateFilterHandlerBufferOwnershipTest {
         ChannelStateFilteringHandler.GateFilterHandler<Long> handler = createHandler(rejectAll);
 
         Buffer sourceBuffer = createBufferWithRecords(1L, 2L);
-        List<Buffer> result = handler.filterAndRewrite(0, 0, sourceBuffer, this::createEmptyBuffer);
+        handler.filterAndRewrite(0, 0, NEW_CHANNEL, sourceBuffer, info -> createEmptyBuffer());
 
-        assertThat(result).isEmpty();
         // sourceBuffer should still be recycled even though no output was produced
         assertThat(sourceBuffer.isRecycled()).isTrue();
     }
@@ -91,7 +87,13 @@ class GateFilterHandlerBufferOwnershipTest {
         Buffer sourceBuffer = createBufferWithRecords(1L);
 
         assertThatThrownBy(
-                        () -> handler.filterAndRewrite(1, 1, sourceBuffer, this::createEmptyBuffer))
+                        () ->
+                                handler.filterAndRewrite(
+                                        1,
+                                        1,
+                                        NEW_CHANNEL,
+                                        sourceBuffer,
+                                        info -> createEmptyBuffer()))
                 .isInstanceOf(IllegalStateException.class);
 
         // sourceBuffer must be recycled even when lookup fails before setNextBuffer
@@ -99,12 +101,12 @@ class GateFilterHandlerBufferOwnershipTest {
     }
 
     @Test
-    void testResultBuffersAndCurrentBufferRecycledOnSerializationError() throws Exception {
+    void testSourceBufferRecycledByClearOnSupplierFailure() throws Exception {
         // Use a small buffer so that records span multiple buffers. The supplier fails on the
-        // second request, after the first output buffer has been filled and added to resultBuffers.
+        // second request, after the first output buffer has been filled.
         AtomicInteger bufferRequestCount = new AtomicInteger(0);
         ChannelStateFilteringHandler.BufferSupplier failingSupplier =
-                () -> {
+                info -> {
                     if (bufferRequestCount.incrementAndGet() > 1) {
                         throw new IOException("Simulated buffer allocation failure");
                     }
@@ -116,9 +118,13 @@ class GateFilterHandlerBufferOwnershipTest {
 
         Buffer sourceBuffer = createBufferWithRecords(1L, 2L, 3L, 4L, 5L);
 
-        // The exception should propagate; no buffer leak (no IllegalReferenceCountException
-        // from double-recycle).
-        assertThatThrownBy(() -> handler.filterAndRewrite(0, 0, sourceBuffer, failingSupplier))
+        // The exception should propagate. Supplier-returned buffers are the supplier's
+        // responsibility; filter never calls recycleBuffer on them, so there is no risk of a
+        // double-recycle on this path.
+        assertThatThrownBy(
+                        () ->
+                                handler.filterAndRewrite(
+                                        0, 0, NEW_CHANNEL, sourceBuffer, failingSupplier))
                 .isInstanceOf(IOException.class)
                 .hasMessage("Simulated buffer allocation failure");
 
@@ -141,7 +147,7 @@ class GateFilterHandlerBufferOwnershipTest {
     void testCloseRecyclesDeserializerHeldBufferAfterError() throws Exception {
         AtomicInteger bufferRequestCount = new AtomicInteger(0);
         ChannelStateFilteringHandler.BufferSupplier failingSupplier =
-                () -> {
+                info -> {
                     if (bufferRequestCount.incrementAndGet() > 1) {
                         throw new IOException("Simulated buffer allocation failure");
                     }
@@ -162,7 +168,7 @@ class GateFilterHandlerBufferOwnershipTest {
                         () -> {
                             try (ChannelStateFilteringHandler ignored = filteringHandler) {
                                 filteringHandler.filterAndRewrite(
-                                        0, 0, 0, sourceBuffer, failingSupplier);
+                                        0, 0, 0, NEW_CHANNEL, sourceBuffer, failingSupplier);
                             }
                         })
                 .isInstanceOf(IOException.class)
