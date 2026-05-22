@@ -45,7 +45,7 @@ import static org.apache.flink.util.Preconditions.checkState;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** A mocked input channel. */
-public class TestInputChannel extends InputChannel {
+public class TestInputChannel extends InputChannel implements RecoverableInputChannel {
 
     private final Queue<BufferAndAvailabilityProvider> buffers = new ConcurrentLinkedQueue<>();
 
@@ -257,6 +257,27 @@ public class TestInputChannel extends InputChannel {
     @Override
     public void notifyRequiredSegmentId(int subpartitionId, int segmentId) {
         requiredSegmentIdFuture.complete(segmentId);
+    }
+
+    private final java.util.Deque<Buffer> recoveredBuffersSpy = new java.util.ArrayDeque<>();
+    private boolean finishReadRecoveredStateCalled = false;
+
+    @Override
+    public void onRecoveredStateBuffer(Buffer buffer) {
+        recoveredBuffersSpy.add(buffer);
+    }
+
+    @Override
+    public void finishReadRecoveredState() {
+        finishReadRecoveredStateCalled = true;
+    }
+
+    public java.util.Deque<Buffer> getRecoveredBuffersSpy() {
+        return recoveredBuffersSpy;
+    }
+
+    public boolean isFinishReadRecoveredStateCalled() {
+        return finishReadRecoveredStateCalled;
     }
 
     public void assertReturnedEventsAreRecycled() {
