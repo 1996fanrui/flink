@@ -42,6 +42,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.apache.flink.runtime.checkpoint.channel.ChannelStateWriteRequest.completeInput;
 import static org.apache.flink.runtime.checkpoint.channel.ChannelStateWriteRequest.completeOutput;
+import static org.apache.flink.runtime.checkpoint.channel.ChannelStateWriteRequest.replayInputDataFromSpill;
 import static org.apache.flink.runtime.checkpoint.channel.ChannelStateWriteRequest.write;
 
 /**
@@ -236,6 +237,42 @@ public class ChannelStateWriterImpl implements ChannelStateWriter {
     }
 
     @Override
+    public void addInputDataFromSpill(
+            long checkpointId, CloseableIterator<DiskSnapshot.Chunk> chunks) {
+        // Empty snapshot: no IO and no writer-thread submission. Closing the iterator releases
+        // the SpillFile ref-count grant via DiskSnapshot.close (or is a no-op for the empty
+        // singleton).
+        if (!chunks.hasNext()) {
+            try {
+                chunks.close();
+            } catch (Exception e) {
+                LOG.warn(
+                        "{} failed to close empty DiskSnapshot for checkpoint {}",
+                        taskName,
+                        checkpointId,
+                        e);
+            }
+            return;
+        }
+        LOG.trace("{} replaying input data from spill, checkpoint {}", taskName, checkpointId);
+        try {
+            enqueue(
+                    replayInputDataFromSpill(jobVertexID, subtaskIndex, checkpointId, chunks),
+                    false);
+        } catch (RuntimeException e) {
+            // enqueue's failure path already invoked request.cancel which closes the iterator
+            // (releasing the SpillFile ref-count grant). Fail the write result so the dispatcher-
+            // attached snapshot-release callback fires for any concurrent waiter as well; the
+            // double-close on DiskSnapshot is safe — it is idempotent.
+            ChannelStateWriteResult result = results.get(checkpointId);
+            if (result != null) {
+                result.fail(e);
+            }
+            throw e;
+        }
+    }
+
+    @Override
     public void abort(long checkpointId, Throwable cause, boolean cleanup) {
         LOG.debug("{} aborting, checkpoint {}", taskName, checkpointId);
         enqueue(
@@ -257,6 +294,17 @@ public class ChannelStateWriterImpl implements ChannelStateWriter {
                 result != null,
                 taskName + " channel state write result not found for checkpoint " + checkpointId);
         return result;
+    }
+
+    /**
+     * {@inheritDoc} — returns the live result without removing it; falls back to {@link
+     * ChannelStateWriteResult#EMPTY} so the dispatcher's snapshot-release callback fires
+     * immediately when the cpId is unknown (no UC for this checkpoint).
+     */
+    @Override
+    public ChannelStateWriteResult peekWriteResult(long checkpointId) {
+        ChannelStateWriteResult result = results.get(checkpointId);
+        return result != null ? result : ChannelStateWriteResult.EMPTY;
     }
 
     // just for test
