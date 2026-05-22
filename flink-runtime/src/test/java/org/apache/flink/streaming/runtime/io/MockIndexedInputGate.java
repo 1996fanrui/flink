@@ -150,4 +150,12 @@ public class MockIndexedInputGate extends IndexedInputGate {
     public boolean isCheckpointingDuringRecoveryEnabled() {
         return false;
     }
+
+    @Override
+    public void setNeedsRecovery(boolean enabled) {}
+
+    @Override
+    public boolean needsRecovery() {
+        return false;
+    }
 }

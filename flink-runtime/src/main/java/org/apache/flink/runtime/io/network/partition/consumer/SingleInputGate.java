@@ -245,6 +245,8 @@ public class SingleInputGate extends IndexedInputGate {
 
     private volatile boolean checkpointingDuringRecoveryEnabled = false;
 
+    private volatile boolean needsRecovery = false;
+
     public SingleInputGate(
             String owningTaskName,
             int gateIndex,
@@ -342,6 +344,16 @@ public class SingleInputGate extends IndexedInputGate {
     }
 
     @Override
+    public void setNeedsRecovery(boolean enabled) {
+        this.needsRecovery = enabled;
+    }
+
+    @Override
+    public boolean needsRecovery() {
+        return needsRecovery;
+    }
+
+    @Override
     public CompletableFuture<Void> getBufferFilteringCompleteFuture() {
         synchronized (requestLock) {
             List<CompletableFuture<?>> futures = new ArrayList<>(numberOfInputChannels);
@@ -407,17 +419,13 @@ public class SingleInputGate extends IndexedInputGate {
                     continue;
                 }
                 try {
-                    // Phase 1: Convert channel and release resources outside the lock.
-                    // These calls may acquire the receivedBuffers lock internally, so they
-                    // run outside inputChannelsWithData lock to maintain a consistent lock
-                    // order with onRecoveredStateBuffer() which acquires receivedBuffers
-                    // first and then inputChannelsWithData.
+                    // Keep conversion outside inputChannelsWithData to preserve lock order with
+                    // recovered-buffer delivery.
                     InputChannel realInputChannel =
-                            ((RecoveredInputChannel) inputChannel).toInputChannel();
+                            ((RecoveredInputChannel) inputChannel).toInputChannel(needsRecovery);
                     inputChannel.releaseAllResources();
                     int buffersInUseCount = realInputChannel.getBuffersInUseCount();
 
-                    // Phase 2: Atomically update data structures under the lock.
                     synchronized (inputChannelsWithData) {
                         if (inputChannelsWithData.contains(inputChannel)) {
                             inputChannelsWithData.getAndRemove(ch -> ch == inputChannel);
