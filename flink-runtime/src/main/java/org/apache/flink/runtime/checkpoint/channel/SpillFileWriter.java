@@ -48,17 +48,21 @@ public final class SpillFileWriter implements Closeable {
 
     /**
      * Package-private access to the underlying accumulator. The filter-phase wiring in {@code
-     * RecoveredChannelStateHandler} passes it directly as the filter's {@code BufferSupplier} and
-     * calls {@code beginChannel} before each filter invocation.
+     * RecoveredChannelStateHandler} passes it directly as the filter's {@code BufferSupplier}; the
+     * filter tags each {@code requestBufferBlocking} call with the destination channel so the
+     * accumulator flushes whenever the channel switches.
      */
     FilteredBufferWriter getAccumulator() {
         return accumulator;
     }
 
     /**
-     * Closes the accumulator first (flushing residual bytes and itself closing the spill file),
-     * then defensively closes the spill file again. The second call is a no-op because {@link
-     * SpillFile#close} is idempotent.
+     * Closes the accumulator (flushing residual bytes). Does not touch the {@link SpillFile}
+     * lifecycle: the producer (the handler that constructed this writer) holds the only initial
+     * ref-count grant on the SpillFile, and that grant must outlive this close — the drain runs
+     * later on a different thread and needs the on-disk segments to still exist. The producer grant
+     * is transferred to the {@code SpillFileReader} at handoff time; segments are deleted only when
+     * both the producer-transferred grant and the drain's grant have been released.
      */
     @Override
     public void close() throws IOException {
@@ -66,10 +70,6 @@ public final class SpillFileWriter implements Closeable {
             return;
         }
         closed = true;
-        try {
-            accumulator.close();
-        } finally {
-            spillFile.close();
-        }
+        accumulator.close();
     }
 }

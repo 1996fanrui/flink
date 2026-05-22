@@ -33,7 +33,6 @@ import org.apache.flink.runtime.io.network.ConnectionID;
 import org.apache.flink.runtime.io.network.ConnectionManager;
 import org.apache.flink.runtime.io.network.PartitionRequestClient;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
-import org.apache.flink.runtime.io.network.api.serialization.EventSerializer;
 import org.apache.flink.runtime.io.network.api.EventAnnouncement;
 import org.apache.flink.runtime.io.network.api.RecoveryMetadata;
 import org.apache.flink.runtime.io.network.api.serialization.EventSerializer;
@@ -47,7 +46,6 @@ import org.apache.flink.runtime.io.network.partition.PartitionNotFoundException;
 import org.apache.flink.runtime.io.network.partition.PrioritizedDeque;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 import org.apache.flink.runtime.io.network.partition.ResultSubpartitionIndexSet;
-import org.apache.flink.util.CloseableIterator;
 import org.apache.flink.util.ExceptionUtils;
 
 import org.apache.flink.shaded.guava33.com.google.common.collect.Iterators;
@@ -61,7 +59,6 @@ import javax.annotation.concurrent.GuardedBy;
 import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Deque;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
@@ -129,32 +126,24 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
     private final ChannelStatePersister channelStatePersister;
 
     /**
-     * Buffers delivered by the drain phase during recovery. Guarded by {@code
-     * synchronized(receivedBuffers)} (reusing the existing channel monitor).
+     * Recovery state for this channel: holds buffers delivered by the spill/drain producer, the
+     * producer-completion flag, and the recovery-sequence counter. Guarded by {@code
+     * synchronized(receivedBuffers)} (reusing master's existing channel monitor so the recovery and
+     * live upstream queues stay atomically observable). Assigned in the constructor once {@code
+     * channelInfo} is available.
      */
     @GuardedBy("receivedBuffers")
-    private final Deque<Buffer> recoveredBuffers = new ArrayDeque<>();
+    private final RecoveredBufferQueue recoveredQueue;
 
     /**
-     * True once the spill/drain producer has finished adding all recovered buffers into this
-     * channel. Guarded by {@code synchronized(receivedBuffers)}. Initialized to {@code false}
-     * because every {@code RemoteInputChannel} instance is expected to receive a closing {@link
-     * #finishReadRecoveredState()} call before it is exposed to consumers, regardless of whether
-     * any buffers were actually pushed (see {@code RecoveredInputChannel.toInputChannel()} and
-     * {@code UnknownInputChannel.toRemoteInputChannel()}).
-     *
-     * <p>Full recovery completion is {@code allRecoveredBuffersDelivered == true &&
-     * recoveredBuffers.isEmpty()}.
+     * Completed exactly once when {@link #requestSubpartitions()} has installed {@link
+     * #partitionRequestClient} and dispatched the upstream {@code requestSubpartition} call.
+     * Mirrors {@code LocalInputChannel.upstreamReady}: {@link #onRecoveredStateBuffer} and {@link
+     * #finishRecoveredBufferDelivery} await this before touching {@code recoveredQueue}, so any
+     * buffer reaching the queue is delivered only after the remote upstream request is underway.
+     * Completed exceptionally on release to unblock awaiters.
      */
-    @GuardedBy("receivedBuffers")
-    private boolean allRecoveredBuffersDelivered = false;
-
-    /**
-     * Sequence number counter for buffers emitted during recovery. Starts at {@link
-     * Integer#MIN_VALUE} for no collision with live upstream sequence numbers. Single-threaded
-     * (task thread only).
-     */
-    private int recoverySequenceNumber = Integer.MIN_VALUE;
+    private final CompletableFuture<Void> upstreamReady = new CompletableFuture<>();
 
     private long totalQueueSizeInBytes;
 
@@ -191,6 +180,9 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
         this.bufferManager = new BufferManager(inputGate.getMemorySegmentProvider(), this, 0);
         this.channelStatePersister =
                 new ChannelStatePersister(checkNotNull(stateWriter), getChannelInfo());
+        // See LocalInputChannel constructor for the rationale.
+        this.recoveredQueue =
+                new RecoveredBufferQueue(getChannelInfo(), !inputGate.isFinalDrainEnabled());
     }
 
     @VisibleForTesting
@@ -215,16 +207,7 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
     // RecoverableInputChannel implementation
     // ------------------------------------------------------------------------
 
-    /**
-     * Appends {@code buffer} to {@code recoveredBuffers}. If the channel has been released, the
-     * buffer is recycled silently. Wakes the consumer when the queue transitions from empty to
-     * non-empty.
-     *
-     * <p>Caller (drain thread or task thread at Step 1) MUST hold {@code SpillFileReader.lock}. The
-     * migration path in {@code RecoveredInputChannel.toInputChannel()} is an exception: it delivers
-     * buffers single-threaded before the channel is exposed to any other thread, so no {@code
-     * SpillFileReader.lock} exists at that point.
-     */
+    /** See {@code LocalInputChannel#onRecoveredStateBuffer}; mirrored for the Remote channel. */
     @Override
     public void onRecoveredStateBuffer(Buffer buffer) {
         boolean wasEmpty;
@@ -233,8 +216,7 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
                 buffer.recycleBuffer();
                 return;
             }
-            wasEmpty = recoveredBuffers.isEmpty();
-            recoveredBuffers.add(buffer);
+            wasEmpty = recoveredQueue.offer(buffer);
         }
         if (wasEmpty) {
             notifyChannelNonEmpty();
@@ -242,15 +224,29 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
     }
 
     /**
-     * Flips {@code allRecoveredBuffersDelivered} to true exactly once.
-     *
-     * <p>End-of-drain exception: caller does NOT need to hold {@code SpillFileReader.lock} because
-     * no more buffers are being added at this point.
+     * See {@code LocalInputChannel#finishRecoveredBufferDelivery}; mirrored for the Remote channel.
+     * No sentinel push — wake-up is delivered directly via {@code notifyChannelNonEmpty()}.
      */
     @Override
-    public void finishReadRecoveredState() throws IOException {
+    public void finishRecoveredBufferDelivery() {
         synchronized (receivedBuffers) {
-            allRecoveredBuffersDelivered = true;
+            recoveredQueue.finish();
+        }
+        notifyChannelNonEmpty();
+    }
+
+    @Override
+    public void awaitUpstreamReady() {
+        upstreamReady.join();
+    }
+
+    @Override
+    public boolean isInRecovery() {
+        // Lock matches the in-recovery read in getNextBuffer() so the value cannot flip while
+        // Step 1 of the snapshot trigger holds SpillFileReader.lock and is deciding whether to
+        // insert a RecoveryCheckpointBarrier into this channel.
+        synchronized (receivedBuffers) {
+            return recoveredQueue.isInRecovery();
         }
     }
 
@@ -281,6 +277,9 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
 
             partitionRequestClient.requestSubpartition(
                     partitionId, consumedSubpartitionIndexSet, this, 0);
+            // Upstream request is dispatched; any drain-side awaiter on upstreamReady can now
+            // safely push recovered buffers into recoveredQueue. See field javadoc.
+            upstreamReady.complete(null);
         }
     }
 
@@ -338,7 +337,7 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
 
         boolean inRecovery;
         synchronized (receivedBuffers) {
-            inRecovery = !allRecoveredBuffersDelivered || !recoveredBuffers.isEmpty();
+            inRecovery = recoveredQueue.isInRecovery();
         }
 
         if (inRecovery) {
@@ -348,7 +347,7 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
                 if (receivedBuffers.getNumPriorityElements() > 0) {
                     return pollReceivedBufferAsPriority();
                 }
-                if (recoveredBuffers.isEmpty()) {
+                if (recoveredQueue.isEmpty()) {
                     // Drain not finished yet; block normal upstream data.
                     if (isReleased.get()) {
                         throw new CancelTaskException(
@@ -356,15 +355,9 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
                     }
                     return Optional.empty();
                 }
-                Buffer buf = recoveredBuffers.poll();
-                DataType nextDataType =
-                        !recoveredBuffers.isEmpty()
-                                ? recoveredBuffers.peek().getDataType()
-                                : (!allRecoveredBuffersDelivered
-                                        ? DataType.NONE
-                                        : (receivedBuffers.peek() != null
-                                                ? receivedBuffers.peek().buffer.getDataType()
-                                                : DataType.NONE));
+                Buffer buf = recoveredQueue.poll();
+                DataType nextDataType = peekNextDataType();
+                int sequenceNumber = recoveredQueue.nextSequenceNumber();
                 numBytesIn.inc(buf.getSize());
                 numBuffersIn.inc();
                 NetworkActionsLogger.traceInput(
@@ -373,9 +366,8 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
                         inputGate.getOwningTaskName(),
                         channelInfo,
                         channelStatePersister,
-                        recoverySequenceNumber);
-                return Optional.of(
-                        new BufferAndAvailability(buf, nextDataType, 0, recoverySequenceNumber++));
+                        sequenceNumber);
+                return Optional.of(new BufferAndAvailability(buf, nextDataType, 0, sequenceNumber));
             }
         }
 
@@ -391,10 +383,7 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
             if (next != null) {
                 totalQueueSizeInBytes -= next.buffer.getSize();
             }
-            nextDataType =
-                    receivedBuffers.peek() != null
-                            ? receivedBuffers.peek().buffer.getDataType()
-                            : DataType.NONE;
+            nextDataType = peekNextDataType();
         }
 
         if (next == null) {
@@ -432,14 +421,7 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
             }
             return Optional.empty();
         }
-        DataType nextDataType;
-        if (!recoveredBuffers.isEmpty()) {
-            nextDataType = recoveredBuffers.peek().getDataType();
-        } else if (receivedBuffers.peek() != null) {
-            nextDataType = receivedBuffers.peek().buffer.getDataType();
-        } else {
-            nextDataType = DataType.NONE;
-        }
+        DataType nextDataType = peekNextDataType();
         numBytesIn.inc(next.buffer.getSize());
         numBuffersIn.inc();
         NetworkActionsLogger.traceInput(
@@ -451,6 +433,25 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
                 next.sequenceNumber);
         return Optional.of(
                 new BufferAndAvailability(next.buffer, nextDataType, 0, next.sequenceNumber));
+    }
+
+    /**
+     * Returns the {@code DataType} of the buffer the next {@link #getNextBuffer()} call will
+     * produce. Priority elements always win, then the recovery queue head, then the regular {@code
+     * receivedBuffers} head, then {@code NONE}. Caller must hold {@code
+     * synchronized(receivedBuffers)}.
+     */
+    @GuardedBy("receivedBuffers")
+    private DataType peekNextDataType() {
+        assert Thread.holdsLock(receivedBuffers);
+        if (receivedBuffers.getNumPriorityElements() > 0) {
+            return receivedBuffers.peek().buffer.getDataType();
+        }
+        if (!recoveredQueue.isEmpty()) {
+            return recoveredQueue.peek().getDataType();
+        }
+        SequenceBuffer head = receivedBuffers.peek();
+        return head != null ? head.buffer.getDataType() : DataType.NONE;
     }
 
     // ------------------------------------------------------------------------
@@ -480,6 +481,9 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
     @Override
     void releaseAllResources() throws IOException {
         if (isReleased.compareAndSet(false, true)) {
+            // Unblock any thread awaiting upstreamReady (drain still in flight) so it falls
+            // through to the synchronized block and recycles its buffer instead of deadlocking.
+            upstreamReady.completeExceptionally(new CancelTaskException("Channel released."));
 
             final ArrayDeque<Buffer> releasedBuffers;
             synchronized (receivedBuffers) {
@@ -489,10 +493,7 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
                                 .collect(Collectors.toCollection(ArrayDeque::new));
                 receivedBuffers.clear();
                 // Release any remaining recovered buffers that were not yet consumed.
-                for (Buffer buf : recoveredBuffers) {
-                    buf.recycleBuffer();
-                }
-                recoveredBuffers.clear();
+                recoveredQueue.releaseAll();
             }
             bufferManager.releaseAllBuffers(releasedBuffers);
 
@@ -850,28 +851,26 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
     }
 
     /**
-     * Spills queued buffers on checkpoint start. In recovery, scans {@code recoveredBuffers} up to
-     * the {@code RecoveryCheckpointBarrier} sentinel matching the given checkpoint id and persists
+     * Spills queued buffers on checkpoint start. In recovery, scans {@code recoveredQueue} up to
+     * the {@link RecoveryCheckpointBarrier} sentinel matching the given checkpoint id and persists
      * pre-barrier buffers. Outside recovery, follows the master existing path.
      */
     public void checkpointStarted(CheckpointBarrier barrier) throws CheckpointException {
         try {
             List<Buffer> toPersist;
             synchronized (receivedBuffers) {
-                boolean inRecovery =
-                        !allRecoveredBuffersDelivered || !recoveredBuffers.isEmpty();
-                if (inRecovery) {
+                if (recoveredQueue.isInRecovery()) {
                     // Defensive: during recovery, receivedBuffers must contain only
                     // priority/control buffers (no live data); the two flows are mutually
                     // exclusive.
                     assert receivedBuffersHasNoLiveDataBuffer()
                             : "live upstream data observed in receivedBuffers during recovery";
-                    toPersist = collectPreRecoveryBarrier(barrier.getId());
+                    toPersist = recoveredQueue.collectPreRecoveryBarrier(barrier.getId());
                 } else {
-                    // Defensive: outside recovery, recoveredBuffers must be empty so the two
+                    // Defensive: outside recovery, recoveredQueue must be empty so the two
                     // branches stay mutually exclusive.
-                    assert recoveredBuffers.isEmpty()
-                            : "recoveredBuffers must be empty when not in recovery";
+                    assert recoveredQueue.isEmpty()
+                            : "recoveredQueue must be empty when not in recovery";
                     if (barrier.getId() < lastBarrierId) {
                         throw new CheckpointException(
                                 String.format(
@@ -888,50 +887,9 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
         } catch (IOException e) {
             throw new CheckpointException(
                     "Failed to extract recovered buffers for checkpoint " + barrier.getId(),
-                    CheckpointFailureReason.CHECKPOINT_DECLINED, e);
+                    CheckpointFailureReason.CHECKPOINT_DECLINED,
+                    e);
         }
-    }
-
-    /**
-     * Walks {@code recoveredBuffers} up to the {@link RecoveryCheckpointBarrier} sentinel matching
-     * {@code checkpointId}, retaining each pre-barrier <b>data</b> buffer for the channel-state
-     * writer and removing the sentinel itself. Pre-barrier events (e.g. {@code
-     * EndOfInputChannelStateEvent} migrated by {@code RecoveredInputChannel.toInputChannel}) are
-     * left in the queue for normal consumption — the channel-state writer only accepts data
-     * buffers (master's {@code ChannelStatePersister.maybePersist} enforces the same
-     * {@code isBuffer()} guard).
-     *
-     * <p>Caller holds {@code synchronized(receivedBuffers)}.
-     */
-    @GuardedBy("receivedBuffers")
-    private List<Buffer> collectPreRecoveryBarrier(long checkpointId) throws IOException {
-        List<Buffer> retained = new ArrayList<>();
-        Iterator<Buffer> it = recoveredBuffers.iterator();
-        while (it.hasNext()) {
-            Buffer b = it.next();
-            if (isRecoveryCheckpointBarrier(b, checkpointId)) {
-                it.remove();
-                b.recycleBuffer();
-                return retained;
-            }
-            if (b.isBuffer()) {
-                retained.add(b.retainBuffer());
-            }
-        }
-        return retained;
-    }
-
-    private static boolean isRecoveryCheckpointBarrier(Buffer b, long checkpointId)
-            throws IOException {
-        if (b.isBuffer()) {
-            return false;
-        }
-        AbstractEvent event =
-                EventSerializer.fromBuffer(
-                        b, RecoveryCheckpointBarrier.class.getClassLoader());
-        b.setReaderIndex(0);
-        return event instanceof RecoveryCheckpointBarrier
-                && ((RecoveryCheckpointBarrier) event).getCheckpointId() == checkpointId;
     }
 
     /**
@@ -1120,14 +1078,13 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
     }
 
     /**
-     * When this channel is still in the recovery phase (recoveredBuffers non-empty or flag not yet
-     * set), it can be read before requestSubpartitions(). In that case only check for errors. Once
-     * recovery is done, require full client initialization check.
+     * When this channel is still in the recovery phase (recoveredQueue non-empty or producer flag
+     * not yet set), it can be read before requestSubpartitions(). In that case only check for
+     * errors. Once recovery is done, require full client initialization check.
      */
     private void checkReadability() throws IOException {
         assert Thread.holdsLock(receivedBuffers);
-        boolean inRecovery = !allRecoveredBuffersDelivered || !recoveredBuffers.isEmpty();
-        if (!inRecovery && receivedBuffers.isEmpty()) {
+        if (!recoveredQueue.isInRecovery() && receivedBuffers.isEmpty()) {
             checkPartitionRequestQueueInitialized();
         } else {
             checkError();

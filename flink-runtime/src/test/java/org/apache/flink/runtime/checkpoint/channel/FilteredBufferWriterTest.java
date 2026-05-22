@@ -43,26 +43,25 @@ class FilteredBufferWriterTest {
     @Test
     void testChannelSwitchFlushesAndKeepsEntryPerChannel() throws Exception {
         // Bug fix coverage: bytes from channel A and channel B must never end up under the same
-        // spill-file entry. The accumulator flushes whenever beginChannel sees a different channel
-        // and the previous channel still has pending bytes.
+        // spill-file entry. The accumulator flushes whenever requestBufferBlocking sees a
+        // different channel and the previous channel still has pending bytes.
         SpillFile spillFile = new SpillFile(tempDir);
         Buffer accumulator = newHeapBuffer(BUF_SIZE);
         try (FilteredBufferWriter writer = new FilteredBufferWriter(spillFile, accumulator)) {
             InputChannelInfo c0 = new InputChannelInfo(0, 0);
             InputChannelInfo c1 = new InputChannelInfo(0, 1);
 
-            writer.beginChannel(c0);
-            writeBytes(writer.requestBufferBlocking(), 100, (byte) 0x41);
+            writeBytes(writer.requestBufferBlocking(c0), 100, (byte) 0x41);
             // No flush yet — buffer not full, channel not changed.
             assertThat(spillFile.entries()).isEmpty();
 
-            // Channel switch: triggers a flush of channel 0's 100 bytes.
-            writer.beginChannel(c1);
+            // Channel switch: requesting a buffer for c1 flushes channel 0's 100 bytes first.
+            Buffer slotForC1 = writer.requestBufferBlocking(c1);
             assertThat(spillFile.entries()).hasSize(1);
             assertThat(spillFile.entries().get(0).channelInfo).isEqualTo(c0);
             assertThat(spillFile.entries().get(0).length).isEqualTo(100);
 
-            writeBytes(writer.requestBufferBlocking(), 50, (byte) 0x42);
+            writeBytes(slotForC1, 50, (byte) 0x42);
         }
 
         // close() flushes channel 1's 50 bytes as a separate entry.
@@ -80,14 +79,13 @@ class FilteredBufferWriterTest {
         Buffer accumulator = newHeapBuffer(BUF_SIZE);
         try (FilteredBufferWriter writer = new FilteredBufferWriter(spillFile, accumulator)) {
             InputChannelInfo c0 = new InputChannelInfo(0, 0);
-            writer.beginChannel(c0);
             // Fill the accumulator exactly to capacity.
-            writeBytes(writer.requestBufferBlocking(), BUF_SIZE, (byte) 0x55);
+            writeBytes(writer.requestBufferBlocking(c0), BUF_SIZE, (byte) 0x55);
             // No flush yet — buffer is full but no further requestBufferBlocking has been called.
             assertThat(spillFile.entries()).isEmpty();
 
             // Next requestBufferBlocking detects size == capacity and flushes before returning.
-            Buffer fresh = writer.requestBufferBlocking();
+            Buffer fresh = writer.requestBufferBlocking(c0);
             assertThat(spillFile.entries()).hasSize(1);
             assertThat(spillFile.entries().get(0).channelInfo).isEqualTo(c0);
             assertThat(spillFile.entries().get(0).length).isEqualTo(BUF_SIZE);
@@ -102,15 +100,14 @@ class FilteredBufferWriterTest {
         FilteredBufferWriter writer = new FilteredBufferWriter(spillFile, accumulator);
 
         InputChannelInfo c0 = new InputChannelInfo(0, 0);
-        writer.beginChannel(c0);
-        writeBytes(writer.requestBufferBlocking(), 7, (byte) 0x77);
+        writeBytes(writer.requestBufferBlocking(c0), 7, (byte) 0x77);
         assertThat(spillFile.entries()).isEmpty();
-        assertThat(spillFile.isClosed()).isFalse();
 
         writer.close();
         assertThat(spillFile.entries()).hasSize(1);
         assertThat(spillFile.entries().get(0).length).isEqualTo(7);
-        assertThat(spillFile.isClosed()).isTrue();
+        // SpillFile lifecycle is owned by SpillFileWriter (ref-count grant), not by the accumulator
+        // — FilteredBufferWriter.close only flushes residual bytes.
     }
 
     @Test
@@ -119,8 +116,7 @@ class FilteredBufferWriterTest {
         Buffer accumulator = newHeapBuffer(BUF_SIZE);
         FilteredBufferWriter writer = new FilteredBufferWriter(spillFile, accumulator);
 
-        writer.beginChannel(new InputChannelInfo(0, 0));
-        writeBytes(writer.requestBufferBlocking(), 5, (byte) 0x99);
+        writeBytes(writer.requestBufferBlocking(new InputChannelInfo(0, 0)), 5, (byte) 0x99);
         writer.close();
         int entriesAfterFirstClose = spillFile.entries().size();
         // Second close must not throw and must not produce extra entries.

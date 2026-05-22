@@ -49,8 +49,7 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 import static org.apache.flink.util.Preconditions.checkState;
 
 /** An input channel reads recovered state from previous unaligned checkpoint snapshots. */
-public abstract class RecoveredInputChannel extends InputChannel
-        implements ChannelStateHolder, RecoverableInputChannel {
+public abstract class RecoveredInputChannel extends InputChannel implements ChannelStateHolder {
 
     private static final Logger LOG = LoggerFactory.getLogger(RecoveredInputChannel.class);
 
@@ -119,31 +118,16 @@ public abstract class RecoveredInputChannel extends InputChannel
                     stateConsumedFuture.isDone(), "recovered state is not fully consumed");
         }
 
-        // Extract remaining buffers before conversion.
-        // These buffers have been filtered but not yet consumed by the Task.
-        final ArrayDeque<Buffer> remainingBuffers;
+        // Invariant: on the cpDuringRecovery=true path no caller pushes anything into
+        // receivedBuffers (filter writes to SpillFile, pass-through also writes to SpillFile); on
+        // the cpDuringRecovery=false legacy path the task's inner mailbox loop consumes everything
+        // out of receivedBuffers before requestPartitions runs.
         synchronized (receivedBuffers) {
-            remainingBuffers = new ArrayDeque<>(receivedBuffers);
-            receivedBuffers.clear();
+            Preconditions.checkState(receivedBuffers.isEmpty(), "Received buffer should be empty.");
         }
 
         final InputChannel inputChannel = toInputChannelInternal();
         inputChannel.checkpointStopped(lastStoppedCheckpointId);
-
-        // Feed remaining buffers via the uniform push interface. This migration path has no
-        // SpillFileReader.lock (no spiller exists yet); delivery is single-threaded and sequential,
-        // occurring before the physical channel is exposed to any other thread.
-        if (inputChannel instanceof RecoverableInputChannel) {
-            RecoverableInputChannel rec = (RecoverableInputChannel) inputChannel;
-            for (Buffer buf : remainingBuffers) {
-                rec.onRecoveredStateBuffer(buf);
-            }
-            rec.finishReadRecoveredState();
-        } else {
-            throw new IllegalStateException(
-                    "Physical channel does not implement RecoverableInputChannel: "
-                            + inputChannel.getClass().getName());
-        }
         return inputChannel;
     }
 
@@ -205,20 +189,14 @@ public abstract class RecoveredInputChannel extends InputChannel
     }
 
     public void finishReadRecoveredState() throws IOException {
-        // Adding the event and completing the future must be atomic under receivedBuffers lock.
-        // Without this, either ordering has a race:
-        // - event first: task thread consumes EndOfInputChannelStateEvent, which completes
-        //   stateConsumedFuture. When checkpointing during recovery is disabled,
-        //   stateConsumedFuture triggers requestPartitions -> toInputChannel(), which
-        //   fails because bufferFilteringCompleteFuture is not yet done.
-        // - future first: toInputChannel() extracts buffers before the event is added,
-        //   losing the EndOfInputChannelStateEvent.
-        // Both toInputChannel() and getNextRecoveredStateBuffer() synchronize on
-        // receivedBuffers, so holding the same lock here guarantees
-        // bufferFilteringCompleteFuture is always done before stateConsumedFuture.
+        // The legacy path waits for stateConsumedFuture, which is completed by consuming this
+        // sentinel. The checkpointing-during-recovery path waits only for filtering completion and
+        // later delivers its sentinel through the physical channel's recoveredQueue.
         synchronized (receivedBuffers) {
-            onRecoveredStateBuffer(
-                    EventSerializer.toBuffer(EndOfInputChannelStateEvent.INSTANCE, false));
+            if (!inputGate.isCheckpointingDuringRecoveryEnabled()) {
+                onRecoveredStateBuffer(
+                        EventSerializer.toBuffer(EndOfInputChannelStateEvent.INSTANCE, false));
+            }
             bufferFilteringCompleteFuture.complete(null);
         }
         bufferManager.releaseFloatingBuffers();

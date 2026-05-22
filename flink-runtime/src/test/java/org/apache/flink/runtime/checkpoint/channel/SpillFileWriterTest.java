@@ -39,17 +39,16 @@ class SpillFileWriterTest {
     private static final int BUF_SIZE = MemoryManager.DEFAULT_PAGE_SIZE;
 
     @Test
-    void testCloseFlushesResidualBytesBeforeSpillFileClose() throws Exception {
-        // close() must call FilteredBufferWriter.close() BEFORE SpillFile.close(): the
-        // accumulator flushes residual bytes, which requires the spill file's FileChannels to
-        // still be open. If the order were swapped (SpillFile.close before accumulator.close), the
-        // accumulator would attempt to write to a closed FileChannel and throw.
+    void testCloseFlushesResidualBytes() throws Exception {
+        // writer.close() must flush residual bytes from the accumulator into the spill file. The
+        // SpillFile lifecycle itself (acquire/release/close) is NOT the writer's concern — that is
+        // owned by the producer (RecoveredChannelStateHandler) and the handoff path that transfers
+        // the grant to the drain reader.
         SpillFile spillFile = new SpillFile(tempDir);
         FilteredBufferWriter accumulator = newAccumulator(spillFile);
         SpillFileWriter writer = new SpillFileWriter(spillFile, accumulator);
 
-        accumulator.beginChannel(new InputChannelInfo(0, 0));
-        Buffer slot = accumulator.requestBufferBlocking();
+        Buffer slot = accumulator.requestBufferBlocking(new InputChannelInfo(0, 0));
         writeBytes(slot, 7, (byte) 0x33);
         assertThat(spillFile.entries()).isEmpty();
 
@@ -57,7 +56,6 @@ class SpillFileWriterTest {
 
         assertThat(spillFile.entries()).hasSize(1);
         assertThat(spillFile.entries().get(0).length).isEqualTo(7);
-        assertThat(spillFile.isClosed()).isTrue();
     }
 
     @Test
@@ -67,10 +65,10 @@ class SpillFileWriterTest {
         SpillFileWriter writer = new SpillFileWriter(spillFile, accumulator);
 
         writer.close();
-        // Second close must not throw and must not produce extra entries.
+        // Repeated close must not throw and must not produce extra entries.
         writer.close();
         writer.close();
-        assertThat(spillFile.isClosed()).isTrue();
+        assertThat(spillFile.entries()).isEmpty();
     }
 
     @Test

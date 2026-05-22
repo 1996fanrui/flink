@@ -39,6 +39,7 @@ import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -119,6 +120,14 @@ class InputChannelRecoveredStateHandler
     private boolean preFilterBufferInUse;
 
     /**
+     * Unpooled heap segment backing the post0filter accumulator. Lazily allocated on the first
+     * filter call, reused for the whole filter phase, and freed in {@link #close()}. Sized to one
+     * network buffer (the post-filter byte stream is flushed to {@link SpillFile} every time the
+     * accumulator fills, so a single buffer is sufficient).
+     */
+    @Nullable private MemorySegment postFilterSegment;
+
+    /**
      * Lazily constructed on the first filter-phase call so that the buffers backing the accumulator
      * can be drawn from a real {@link RecoveredInputChannel}'s pool. {@code null} on the filter-off
      * path. Stays alive for the duration of the filter phase; closed (and the underlying {@link
@@ -129,15 +138,34 @@ class InputChannelRecoveredStateHandler
     /** Frozen handle to the produced {@link SpillFile}, populated by {@link #close()}. */
     @Nullable private SpillFile producedSpillFile;
 
+    /**
+     * True iff the job has unaligned checkpointing-during-recovery enabled. Drives the {@code
+     * recover} dispatch:
+     *
+     * <ul>
+     *   <li>{@code true} + {@link #filteringHandler} != null — rescale path; bytes are filtered and
+     *       the surviving records are written to the {@link SpillFile} via the accumulator.
+     *   <li>{@code true} + {@link #filteringHandler} == null — non-rescale path; bytes still go to
+     *       the {@link SpillFile} (no filter, just pass-through), so the drain phase has a single
+     *       uniform source on this path.
+     *   <li>{@code false} — legacy path; bytes are pushed directly into the {@link
+     *       RecoveredInputChannel}'s {@code receivedBuffers} for in-line consumption by the task's
+     *       inner mailbox loop.
+     * </ul>
+     */
+    private final boolean checkpointingDuringRecoveryEnabled;
+
     InputChannelRecoveredStateHandler(
             InputGate[] inputGates,
             InflightDataRescalingDescriptor channelMapping,
             @Nullable ChannelStateFilteringHandler filteringHandler,
+            boolean checkpointingDuringRecoveryEnabled,
             int memorySegmentSize,
             @Nullable String[] spillTmpDirectories) {
         this.inputGates = inputGates;
         this.channelMapping = channelMapping;
         this.filteringHandler = filteringHandler;
+        this.checkpointingDuringRecoveryEnabled = checkpointingDuringRecoveryEnabled;
         checkArgument(
                 memorySegmentSize > 0, "memorySegmentSize must be positive: %s", memorySegmentSize);
         this.memorySegmentSize = memorySegmentSize;
@@ -210,9 +238,13 @@ class InputChannelRecoveredStateHandler
             if (buffer.readableBytes() > 0) {
                 RecoveredInputChannel channel = getMappedChannels(channelInfo);
 
-                if (filteringHandler != null) {
-                    recoverWithFiltering(
-                            channel, channelInfo, oldSubtaskIndex, buffer.retainBuffer());
+                if (checkpointingDuringRecoveryEnabled) {
+                    if (filteringHandler != null) {
+                        recoverWithFiltering(
+                                channel, channelInfo, oldSubtaskIndex, buffer.retainBuffer());
+                    } else {
+                        recoverPassThroughToSpill(channel.getChannelInfo(), buffer);
+                    }
                 } else {
                     channel.onRecoveredStateBuffer(
                             EventSerializer.toBuffer(
@@ -227,6 +259,31 @@ class InputChannelRecoveredStateHandler
         }
     }
 
+    /**
+     * Pass-through path: copies the source buffer's raw bytes into the spill-file accumulator,
+     * unchanged. Used when checkpointing-during-recovery is on but no rescale-driven filtering is
+     * needed; mirrors how {@link #recoverWithFiltering} funnels post-filter bytes through the
+     * accumulator, so the drain phase has a single uniform source. Copies in chunks bounded by the
+     * accumulator's writable capacity; each {@code requestBufferBlocking} call flushes the
+     * accumulator if the channel switched or it is full, so a single source buffer may produce
+     * multiple {@link SpillFile} entries for the same channel.
+     */
+    private void recoverPassThroughToSpill(InputChannelInfo channelInfo, Buffer source)
+            throws IOException, InterruptedException {
+        FilteredBufferWriter accumulator = ensureSpillFileWriter().getAccumulator();
+        ByteBuffer src = source.getNioBufferReadable();
+        while (src.hasRemaining()) {
+            Buffer dst = accumulator.requestBufferBlocking(channelInfo);
+            int writable = dst.getMaxCapacity() - dst.getSize();
+            int toCopy = Math.min(writable, src.remaining());
+            ByteBuffer slice = src.slice();
+            slice.limit(toCopy);
+            dst.getMemorySegment().put(dst.getSize(), slice, toCopy);
+            dst.setSize(dst.getSize() + toCopy);
+            src.position(src.position() + toCopy);
+        }
+    }
+
     private void recoverWithFiltering(
             RecoveredInputChannel channel,
             InputChannelInfo channelInfo,
@@ -234,64 +291,52 @@ class InputChannelRecoveredStateHandler
             Buffer retainedBuffer)
             throws IOException, InterruptedException {
         checkState(filteringHandler != null, "filtering handler not set.");
-        SpillFileWriter writer = ensureSpillFileWriter(channel);
+        SpillFileWriter writer = ensureSpillFileWriter();
         FilteredBufferWriter accumulator = writer.getAccumulator();
 
-        // Declare the channel BEFORE filtering — flushes any residual bytes left by the previous
-        // filter call (different channel) so the next entry on disk carries exactly one channel's
-        // bytes.
-        accumulator.beginChannel(channelInfo);
-
-        List<Buffer> filteredBuffers =
-                filteringHandler.filterAndRewrite(
-                        channelInfo.getGateIdx(),
-                        oldSubtaskIndex,
-                        channelInfo.getInputChannelIdx(),
-                        retainedBuffer,
-                        accumulator);
-
-        // filteredBuffers are all retained references to the accumulator buffer; the no-op
-        // recycler wrapping the pool segment ensures recycleBuffer here just balances the
-        // retainBuffer() bump from accumulator.requestBufferBlocking and never returns the
-        // segment to the pool.
-        for (Buffer filtered : filteredBuffers) {
-            filtered.recycleBuffer();
-        }
+        // Pass the mapped (post-rescale) channel's InputChannelInfo to the filter chain so each
+        // filter-internal bufferSupplier.requestBufferBlocking(...) call tags the accumulator with
+        // the NEW channel — switching NEW channels triggers a flush so each spill file entry
+        // carries exactly one channel's bytes. The incoming `channelInfo` argument carries the OLD
+        // (pre-rescale) channel index from the checkpoint metadata and only matches the post-
+        // rescale physical channel when parallelism is unchanged.
+        filteringHandler.filterAndRewrite(
+                channelInfo.getGateIdx(),
+                oldSubtaskIndex,
+                channelInfo.getInputChannelIdx(),
+                channel.getChannelInfo(),
+                retainedBuffer,
+                accumulator);
     }
 
     /**
-     * Pool-backed buffer owned by this handler, retained across the filter phase so the
-     * accumulator's segment survives any intermediate {@code recycleBuffer()} calls from the
-     * filter. The handler wraps it in a no-op-recycler {@link NetworkBuffer} for the accumulator;
-     * the underlying pooled buffer is recycled (returning the segment to the pool) in {@link
-     * #close()}.
+     * Lazily constructs the spill-file pipeline on the first filter call. The accumulator's backing
+     * memory is an unpooled heap segment owned by the handler — same pattern as {@link
+     * #preFilterSegment} — so this method has no dependency on any particular channel's buffer
+     * pool. {@code channel switch} and {@code buffer full} are the two flush triggers; the segment
+     * is freed in {@link #close()}.
      */
-    @Nullable private Buffer filterOutputPooledBuffer;
-
-    /**
-     * Lazily constructs the spill-file pipeline on the first filter call. Sources a single pool
-     * buffer from the source channel's exclusive pool and wraps its {@link MemorySegment} in a
-     * no-op-recycler {@link NetworkBuffer} for the accumulator. {@code channel switch} and {@code
-     * buffer full} are the two flush triggers; the buffer survives the whole filter phase and is
-     * recycled back to the pool in {@link #close()}.
-     */
-    private SpillFileWriter ensureSpillFileWriter(RecoveredInputChannel channel)
-            throws IOException, InterruptedException {
+    private SpillFileWriter ensureSpillFileWriter() throws IOException {
         if (spillFileWriter != null) {
             return spillFileWriter;
         }
         Path baseDir = resolveSpillBaseDir();
         SpillFile spillFile = new SpillFile(baseDir);
+        // Producer-side ref-count grant. Held by the handler from filter-pipeline construction
+        // until SpillFileReader is built in stage 1 of the recovery filter wind-down (which takes
+        // its own grant on construction); StreamTask releases this producer grant right after the
+        // reader is built. Without this grant the SpillFile would be cleaned up between filter
+        // end and drain start, because nothing else holds the file alive in that window.
+        spillFile.acquire();
 
-        filterOutputPooledBuffer = channel.requestBufferBlocking();
-        MemorySegment outputSegment = filterOutputPooledBuffer.getMemorySegment();
+        postFilterSegment = MemorySegmentFactory.allocateUnpooledSegment(memorySegmentSize);
 
         BufferRecycler noOpRecycler =
                 segment -> {
-                    // No-op: handler retains ownership of the pooled segment for the duration of
-                    // the filter phase. The underlying pooled buffer is recycled in close().
+                    // No-op: handler retains ownership of the segment for the duration of the
+                    // filter phase. The segment is freed in close().
                 };
-        Buffer outputBuffer = new NetworkBuffer(outputSegment, noOpRecycler);
+        Buffer outputBuffer = new NetworkBuffer(postFilterSegment, noOpRecycler);
 
         FilteredBufferWriter accumulator = new FilteredBufferWriter(spillFile, outputBuffer);
         spillFileWriter = new SpillFileWriter(spillFile, accumulator);
@@ -335,9 +380,11 @@ class InputChannelRecoveredStateHandler
 
     @Override
     public void close() throws IOException {
-        // Filter-phase spill file must be frozen before any channel sees finishReadRecoveredState
-        // — the latter completes bufferFilteringCompleteFuture on every channel, and the drain
-        // is allowed to assume the spill file is closed by the time that future fires.
+        // Filter-phase spill file must be frozen here so the producedSpillFile handle is
+        // available to callers right after close. finishReadRecoveredState() is no longer called
+        // from here — the caller (StreamTask filter runnable) invokes it explicitly after stage 1
+        // work (computing finalDrainEnabled, building SpillFileReader, publishing the trigger
+        // field) so the resulting F1 completion observes a stable trigger reference.
         if (spillFileWriter != null) {
             SpillFile produced = spillFileWriter.getSpillFile();
             try {
@@ -347,13 +394,9 @@ class InputChannelRecoveredStateHandler
                 spillFileWriter = null;
             }
         }
-        if (filterOutputPooledBuffer != null) {
-            filterOutputPooledBuffer.recycleBuffer();
-            filterOutputPooledBuffer = null;
-        }
-        // note that we need to finish all RecoveredInputChannels, not just those with state
-        for (final InputGate inputGate : inputGates) {
-            inputGate.finishReadRecoveredState();
+        if (postFilterSegment != null) {
+            postFilterSegment.free();
+            postFilterSegment = null;
         }
         if (preFilterSegment != null) {
             preFilterSegment.free();

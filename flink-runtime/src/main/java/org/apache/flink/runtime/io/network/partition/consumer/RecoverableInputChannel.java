@@ -24,9 +24,9 @@ import org.apache.flink.runtime.io.network.buffer.Buffer;
 import java.io.IOException;
 
 /**
- * Implemented by {@code RecoveredInputChannel}, {@code LocalInputChannel}, and {@code
- * RemoteInputChannel}. The drain (SpillFileReader) holds channel references typed as this interface
- * and never casts down; method names mirror the existing {@code RecoveredInputChannel} API.
+ * Implemented by physical input channels that can receive recovered buffers from the spill/drain
+ * producer. The drain (SpillFileReader) holds channel references typed as this interface and never
+ * casts down.
  */
 @Internal
 public interface RecoverableInputChannel {
@@ -55,7 +55,7 @@ public interface RecoverableInputChannel {
     void onRecoveredStateBuffer(Buffer buffer);
 
     /**
-     * Signals that the spill/drain producer has finished adding recovered buffers into this
+     * Signals that the spill/drain producer has finished delivering recovered buffers into this
      * channel. Flips {@code allRecoveredBuffersDelivered} from {@code false} to {@code true}
      * exactly once (producer-side completion only). The consumer may still have leftover buffers
      * queued in {@code recoveredBuffers}. The channel completes {@code stateConsumedFuture} once
@@ -67,5 +67,35 @@ public interface RecoverableInputChannel {
      *
      * @throws IOException if an error occurs while finalising the channel state
      */
-    void finishReadRecoveredState() throws IOException;
+    void finishRecoveredBufferDelivery() throws IOException;
+
+    /**
+     * Reports whether the channel's recovery queue is still active. Returns {@code true} when the
+     * producer has not yet signalled completion OR the consumer has not yet drained every queued
+     * recovery buffer. The {@link SpillFileReader} Step 1 trigger uses this predicate to decide,
+     * per channel, whether to insert a {@code RecoveryCheckpointBarrier} into the channel queue:
+     * the per-channel predicate keeps Step 1 symmetric with the {@code checkpointStarted} path,
+     * which gates {@code collectPreRecoveryBarrier(...)} on the same condition.
+     *
+     * <p>Implementations must take the channel's own queue monitor (the same one that protects
+     * {@code onRecoveredStateBuffer} and {@code getNextBuffer}'s recovery branch) so the value
+     * cannot flip mid-decision.
+     */
+    boolean isInRecovery();
+
+    /**
+     * Blocks until the channel's upstream connection (Local {@code subpartitionView} / Remote
+     * {@code partitionRequestClient}) is published. Surfaces release as a {@link
+     * java.util.concurrent.CompletionException} / {@link
+     * java.util.concurrent.CancellationException} so the caller can recycle in-flight buffers and
+     * terminate gracefully.
+     *
+     * <p>Called <b>only</b> by {@code SpillFileReader.drain} on {@code channelIOExecutor}, before
+     * the per-entry push and outside the {@code SpillFileReader.lock} critical section. This
+     * placement is load-bearing: if a task-thread caller (Step 1 barrier insert, mailbox-driven
+     * conversion) awaited inside the channel's push path it would block its own mailbox — the
+     * PartitionNotFoundException retrigger that completes {@code upstreamReady} is itself a
+     * mailbox-scheduled mail, so the await would deadlock against the future it is waiting on.
+     */
+    void awaitUpstreamReady();
 }

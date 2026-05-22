@@ -35,6 +35,7 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -85,7 +86,10 @@ class SpillFileReaderConcurrencyTest {
         all.add(chan1);
 
         SpillFileReader reader =
-                new SpillFileReader(spillFile, all, new ThreadSafeBufferRequester());
+                new SpillFileReader(
+                        spillFile,
+                        CompletableFuture.completedFuture(all),
+                        new ThreadSafeBufferRequester());
 
         ExecutorService io = Executors.newSingleThreadExecutor();
         AtomicReference<Throwable> drainError = new AtomicReference<>();
@@ -195,9 +199,19 @@ class SpillFileReaderConcurrencyTest {
         }
 
         @Override
-        public synchronized void finishReadRecoveredState() {
+        public synchronized void finishRecoveredBufferDelivery() {
             // No-op for the stress test.
         }
+
+        @Override
+        public synchronized boolean isInRecovery() {
+            // Stress test races Step 1 against drain; treating the channel as always in-recovery
+            // exercises the per-channel barrier-insert path under contention.
+            return true;
+        }
+
+        @Override
+        public void awaitUpstreamReady() {}
 
         synchronized int dataCount() {
             return data.size();

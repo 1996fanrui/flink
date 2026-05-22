@@ -245,6 +245,17 @@ public class SingleInputGate extends IndexedInputGate {
 
     private volatile boolean checkpointingDuringRecoveryEnabled = false;
 
+    /**
+     * Final decision on whether this gate will see a SpillFileReader-driven drain phase. Computed
+     * in the filter wind-down ({@code channelIOExecutor}) as {@code
+     * checkpointingDuringRecoveryEnabled && spillFile != null}, set before {@code
+     * bufferFilteringCompleteFuture.complete()} so any downstream mailbox task observes the final
+     * value. Channels read this in their constructor (during {@code convertRecoveredInputChannels})
+     * to decide the initial {@code RecoveredBufferQueue.allDelivered} state, keeping the "channel
+     * is in-recovery iff trigger is SpillFileReader" invariant.
+     */
+    private volatile boolean finalDrainEnabled = false;
+
     public SingleInputGate(
             String owningTaskName,
             int gateIndex,
@@ -342,6 +353,16 @@ public class SingleInputGate extends IndexedInputGate {
     }
 
     @Override
+    public void setFinalDrainEnabled(boolean enabled) {
+        this.finalDrainEnabled = enabled;
+    }
+
+    @Override
+    public boolean isFinalDrainEnabled() {
+        return finalDrainEnabled;
+    }
+
+    @Override
     public CompletableFuture<Void> getBufferFilteringCompleteFuture() {
         synchronized (requestLock) {
             List<CompletableFuture<?>> futures = new ArrayList<>(numberOfInputChannels);
@@ -414,7 +435,11 @@ public class SingleInputGate extends IndexedInputGate {
                     // first and then inputChannelsWithData.
                     InputChannel realInputChannel =
                             ((RecoveredInputChannel) inputChannel).toInputChannel();
-                    inputChannel.releaseAllResources();
+                    if (!checkpointingDuringRecoveryEnabled) {
+                        // Filter-on path: the drain still needs to allocate from this channel's
+                        // BufferManager; SpillFileReader.close() releases it later.
+                        inputChannel.releaseAllResources();
+                    }
                     int buffersInUseCount = realInputChannel.getBuffersInUseCount();
 
                     // Phase 2: Atomically update data structures under the lock.

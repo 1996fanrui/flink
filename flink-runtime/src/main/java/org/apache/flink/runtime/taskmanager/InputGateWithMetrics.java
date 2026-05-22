@@ -175,6 +175,16 @@ public class InputGateWithMetrics extends IndexedInputGate {
         return inputGate.isCheckpointingDuringRecoveryEnabled();
     }
 
+    @Override
+    public void setFinalDrainEnabled(boolean enabled) {
+        inputGate.setFinalDrainEnabled(enabled);
+    }
+
+    @Override
+    public boolean isFinalDrainEnabled() {
+        return inputGate.isFinalDrainEnabled();
+    }
+
     private BufferOrEvent updateMetrics(BufferOrEvent bufferOrEvent) {
         int incomingDataSize = bufferOrEvent.getSize();
 

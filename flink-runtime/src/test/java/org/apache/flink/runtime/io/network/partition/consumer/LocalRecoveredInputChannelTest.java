@@ -24,23 +24,13 @@ import org.apache.flink.runtime.io.network.util.TestBufferFactory;
 
 import org.junit.jupiter.api.Test;
 
-import java.util.Optional;
-
-import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link LocalRecoveredInputChannel}. */
 class LocalRecoveredInputChannelTest {
 
-    /**
-     * Verifies that the migration path inside {@code RecoveredInputChannel.toInputChannel()} now
-     * uses {@link RecoverableInputChannel#onRecoveredStateBuffer} followed by {@link
-     * RecoverableInputChannel#finishReadRecoveredState()}: every remaining buffer is delivered in
-     * order to the physical {@link LocalInputChannel}, and the resulting channel can be consumed
-     * via {@code getNextBuffer()}.
-     */
     @Test
-    void testToInputChannelUsesOnRecoveredStateBufferAndFinishReadRecoveredState()
-            throws Exception {
+    void testToInputChannelRequiresEmptyRecoveredBuffers() throws Exception {
         SingleInputGate inputGate =
                 new SingleInputGateBuilder().setCheckpointingDuringRecoveryEnabled(true).build();
         LocalRecoveredInputChannel recoveredChannel =
@@ -48,30 +38,16 @@ class LocalRecoveredInputChannelTest {
                         .setStateWriter(ChannelStateWriter.NO_OP)
                         .buildLocalRecoveredChannel(inputGate);
 
-        Buffer b1 = TestBufferFactory.createBuffer(11);
-        Buffer b2 = TestBufferFactory.createBuffer(22);
-        recoveredChannel.onRecoveredStateBuffer(b1);
-        recoveredChannel.onRecoveredStateBuffer(b2);
-        recoveredChannel.finishReadRecoveredState();
+        Buffer buffer = TestBufferFactory.createBuffer(11);
+        recoveredChannel.onRecoveredStateBuffer(buffer);
 
-        InputChannel converted = recoveredChannel.toInputChannel();
-        assertThat(converted).isInstanceOf(LocalInputChannel.class);
-        LocalInputChannel localChannel = (LocalInputChannel) converted;
-        inputGate.setInputChannels(localChannel);
-
-        // Both buffers were migrated through the push interface and remain consumable in order.
-        Optional<InputChannel.BufferAndAvailability> first = localChannel.getNextBuffer();
-        assertThat(first).isPresent();
-        assertThat(first.get().buffer().getSize()).isEqualTo(11);
-
-        Optional<InputChannel.BufferAndAvailability> second = localChannel.getNextBuffer();
-        assertThat(second).isPresent();
-        assertThat(second.get().buffer().getSize()).isEqualTo(22);
-
-        // RecoveredInputChannel.finishReadRecoveredState appends an EndOfInputChannelStateEvent
-        // sentinel into receivedBuffers, which is also migrated into the new channel's
-        // recoveredBuffers queue. Drain it to fully complete the recovery phase.
-        Optional<InputChannel.BufferAndAvailability> tail = localChannel.getNextBuffer();
-        assertThat(tail).isPresent();
+        try {
+            recoveredChannel.finishReadRecoveredState();
+            assertThatThrownBy(recoveredChannel::toInputChannel)
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("Received buffer should be empty");
+        } finally {
+            recoveredChannel.releaseAllResources();
+        }
     }
 }

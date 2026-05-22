@@ -27,6 +27,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Helpers that wire a {@link SpillFileReader} onto the existing {@code channelIOExecutor} once
@@ -81,17 +82,19 @@ public final class SpillFileReaderBootstrap {
     }
 
     /**
-     * Constructs a {@link SpillFileReader} from a frozen {@link SpillFile} and the
-     * before/after-conversion channel sets. Used by the task thread after conversion. The {@code
-     * InputChannelInfo}-keyed map is derived internally from {@code physicalChannels}.
+     * Constructs a {@link SpillFileReader} from a frozen {@link SpillFile}, the snapshotted source
+     * (pre-conversion) channel set, and a future that will be completed with the physical
+     * (post-conversion) channel set once {@code convertRecoveredInputChannels} runs on the mailbox.
+     * Used by the filter wind-down on {@code channelIOExecutor} before mail #A runs, so the trigger
+     * field can be published in stage 1.
      */
     public static SpillFileReader buildReader(
             SpillFile spillFile,
             Map<InputChannelInfo, RecoveredInputChannel> sourceChannels,
-            List<RecoverableInputChannel> physicalChannels) {
+            CompletableFuture<List<RecoverableInputChannel>> physicalChannelsFuture) {
         return new SpillFileReader(
                 spillFile,
-                physicalChannels,
+                physicalChannelsFuture,
                 new RecoveredChannelBufferRequester(new HashMap<>(sourceChannels)));
     }
 }
