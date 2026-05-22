@@ -37,7 +37,7 @@ log_dir="log"
 
 # Default timeout in seconds (30 minutes = 1800 seconds)
 # TIMEOUT=${TIMEOUT:-1800}
-TIMEOUT=${TIMEOUT:-21600}   # 6 hours
+TIMEOUT=${TIMEOUT:-600}   # 10 minutes
 
 # ./mvnw -T 20 clean install -U -Pfast -DskipTests -Dmaven.javadoc.skip=true -Drat.skip=true -Dcheckstyle.skip=true -Denforcer.skip=true -P java11-target -P java11 -pl flink-tests -am
 
@@ -47,10 +47,38 @@ cleanup() {
     exit 1
 }
 
+# Capture jstack + heap dump for every live surefire fork JVM before killing.
+# Writes to log/dumps/<timestamp>/ so the dumps are co-located with the failing run's log
+# and survive past the kill. Must run BEFORE kill_child_processes; once the JVM is gone,
+# attaching is impossible.
+dump_surefire_jvms() {
+    local dump_dir="$log_dir/dumps/$(date +%Y%m%d_%H%M%S)"
+    mkdir -p "$dump_dir"
+    local jpids
+    jpids=$(pgrep -f "surefirebooter-.*\.jar" 2>/dev/null || true)
+    if [ -z "$jpids" ]; then
+        echo "[dump] no surefire JVMs found"
+        return
+    fi
+    for jpid in $jpids; do
+        echo "[dump] capturing jstack+heap for surefire JVM pid=$jpid -> $dump_dir/"
+        # jstack first (cheap); 2 captures 5s apart so we can tell deadlock vs slow
+        jstack -l "$jpid" > "$dump_dir/jstack_${jpid}_1.txt" 2>&1 || echo "[dump] jstack #1 failed for $jpid"
+        sleep 5
+        jstack -l "$jpid" > "$dump_dir/jstack_${jpid}_2.txt" 2>&1 || echo "[dump] jstack #2 failed for $jpid"
+        # heap dump second (expensive). dump=live skips unreachable objects to keep size manageable.
+        jmap -dump:live,format=b,file="$dump_dir/heap_${jpid}.hprof" "$jpid" 2>&1 \
+            | tee "$dump_dir/jmap_${jpid}.log" || echo "[dump] jmap failed for $jpid"
+    done
+    echo "[dump] done; artifacts under $dump_dir"
+}
+
 # Function to kill child process and its subprocesses
 kill_child_processes() {
     local pid=$1
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        # Capture diagnostics BEFORE killing so the hang state is preserved.
+        dump_surefire_jvms
         echo "Killing process $pid and its children..."
         # Kill the process group to ensure all child processes are terminated
         pkill -TERM -P "$pid" 2>/dev/null || true
