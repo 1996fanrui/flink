@@ -42,6 +42,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.apache.flink.runtime.checkpoint.channel.ChannelStateWriteRequest.completeInput;
 import static org.apache.flink.runtime.checkpoint.channel.ChannelStateWriteRequest.completeOutput;
+import static org.apache.flink.runtime.checkpoint.channel.ChannelStateWriteRequest.replayInputDataFromSpill;
 import static org.apache.flink.runtime.checkpoint.channel.ChannelStateWriteRequest.write;
 
 /**
@@ -233,6 +234,42 @@ public class ChannelStateWriterImpl implements ChannelStateWriter {
     public void finishOutput(long checkpointId) {
         LOG.debug("{} finishing output data, checkpoint {}", taskName, checkpointId);
         enqueue(completeOutput(jobVertexID, subtaskIndex, checkpointId), false);
+    }
+
+    @Override
+    public void addInputDataFromSpill(
+            long checkpointId, CloseableIterator<DiskSnapshot.Chunk> chunks) {
+        // Empty snapshot: no IO and no writer-thread submission. Closing the iterator releases
+        // the SpillFile ref-count grant via DiskSnapshot.close (or is a no-op for the empty
+        // singleton).
+        if (!chunks.hasNext()) {
+            try {
+                chunks.close();
+            } catch (Exception e) {
+                LOG.warn(
+                        "{} failed to close empty DiskSnapshot for checkpoint {}",
+                        taskName,
+                        checkpointId,
+                        e);
+            }
+            return;
+        }
+        LOG.trace("{} replaying input data from spill, checkpoint {}", taskName, checkpointId);
+        try {
+            enqueue(
+                    replayInputDataFromSpill(jobVertexID, subtaskIndex, checkpointId, chunks),
+                    false);
+        } catch (RuntimeException e) {
+            // enqueue's failure path already invoked request.cancel which closes the iterator
+            // (releasing the SpillFile ref-count grant). Fail the write result so the dispatcher-
+            // attached snapshot-release callback fires for any concurrent waiter as well; the
+            // double-close on DiskSnapshot is safe — it is idempotent.
+            ChannelStateWriteResult result = results.get(checkpointId);
+            if (result != null) {
+                result.fail(e);
+            }
+            throw e;
+        }
     }
 
     @Override
