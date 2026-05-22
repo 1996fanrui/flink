@@ -85,8 +85,8 @@ public final class FilteredBufferWriter implements Closeable, BufferSupplier {
     /**
      * {@link BufferSupplier} entry. Returns the single accumulator buffer to the filter; if the
      * accumulator is already at capacity, flushes its bytes to the spill file first so the filter
-     * receives a buffer with writable space. Callers must invoke {@link #beginChannel} first so
-     * the flush has a channel tag.
+     * receives a buffer with writable space. Callers must invoke {@link #beginChannel} first so the
+     * flush has a channel tag.
      *
      * <p>The returned buffer is {@code retainBuffer()}-bumped so the filter's {@code
      * recycleBuffer()} after writing does not push the accumulator's refCount to zero.
@@ -120,9 +120,10 @@ public final class FilteredBufferWriter implements Closeable, BufferSupplier {
     }
 
     /**
-     * Flushes any residual bytes, then closes the underlying {@link SpillFile}. Idempotent. Does
-     * not recycle the pool buffer backing {@link #outputBuffer} — the owning handler holds that
-     * pool buffer and returns it to the pool on its own close path.
+     * Flushes any residual bytes. SpillFile lifecycle is not managed here — the owning {@link
+     * SpillFileWriter} releases the writer's ref-count grant on its own close. Idempotent. Does not
+     * recycle the pool buffer backing {@link #outputBuffer} — the owning handler holds that pool
+     * buffer and returns it to the pool on its own close path.
      */
     @Override
     public void close() throws IOException {
@@ -130,10 +131,6 @@ public final class FilteredBufferWriter implements Closeable, BufferSupplier {
             return;
         }
         closed = true;
-        try {
-            flush();
-        } finally {
-            spillFile.close();
-        }
+        flush();
     }
 }

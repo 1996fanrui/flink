@@ -105,12 +105,12 @@ class FilteredBufferWriterTest {
         writer.beginChannel(c0);
         writeBytes(writer.requestBufferBlocking(), 7, (byte) 0x77);
         assertThat(spillFile.entries()).isEmpty();
-        assertThat(spillFile.isClosed()).isFalse();
 
         writer.close();
         assertThat(spillFile.entries()).hasSize(1);
         assertThat(spillFile.entries().get(0).length).isEqualTo(7);
-        assertThat(spillFile.isClosed()).isTrue();
+        // SpillFile lifecycle is owned by SpillFileWriter (ref-count grant), not by the accumulator
+        // — FilteredBufferWriter.close only flushes residual bytes.
     }
 
     @Test
