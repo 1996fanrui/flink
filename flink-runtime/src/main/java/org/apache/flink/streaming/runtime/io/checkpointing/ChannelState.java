@@ -18,9 +18,16 @@
 
 package org.apache.flink.streaming.runtime.io.checkpointing;
 
+import org.apache.flink.runtime.checkpoint.CheckpointException;
+import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
+import org.apache.flink.runtime.checkpoint.channel.DiskSnapshot;
 import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
+import org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointTrigger;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
 import org.apache.flink.runtime.io.network.partition.consumer.CheckpointableInput;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.HashMap;
@@ -28,6 +35,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
+import static org.apache.flink.util.Preconditions.checkNotNull;
 import static org.apache.flink.util.Preconditions.checkState;
 
 /**
@@ -35,6 +43,9 @@ import static org.apache.flink.util.Preconditions.checkState;
  * and {@link AbstractAlternatingAlignedBarrierHandlerState}.
  */
 final class ChannelState {
+
+    private static final Logger LOG = LoggerFactory.getLogger(ChannelState.class);
+
     private final Map<InputChannelInfo, Integer> sequenceNumberInAnnouncedChannels =
             new HashMap<>();
 
@@ -47,8 +58,32 @@ final class ChannelState {
 
     private final CheckpointableInput[] inputs;
 
+    /**
+     * Trigger for Step 1 of the recovery-checkpoint 3-step protocol. Resolved to the live {@code
+     * SpillFileReader} when the filter-on recovery path is active; {@link
+     * RecoveryCheckpointTrigger#NO_OP} otherwise. Branch-free at the dispatcher layer — the no-op
+     * returns the empty {@link DiskSnapshot} singleton and inserts no barriers.
+     */
+    private final RecoveryCheckpointTrigger recoveryCheckpointTrigger;
+
+    /**
+     * Writer for Step 3 of the recovery-checkpoint 3-step protocol. Resolved to the same {@link
+     * ChannelStateWriter} instance master uses for live checkpoints; {@link
+     * ChannelStateWriter#NO_OP} on the at-least-once / disabled UC path.
+     */
+    private final ChannelStateWriter channelStateWriter;
+
     public ChannelState(CheckpointableInput[] inputs) {
+        this(inputs, RecoveryCheckpointTrigger.NO_OP, ChannelStateWriter.NO_OP);
+    }
+
+    public ChannelState(
+            CheckpointableInput[] inputs,
+            RecoveryCheckpointTrigger recoveryCheckpointTrigger,
+            ChannelStateWriter channelStateWriter) {
         this.inputs = inputs;
+        this.recoveryCheckpointTrigger = checkNotNull(recoveryCheckpointTrigger);
+        this.channelStateWriter = checkNotNull(channelStateWriter);
     }
 
     public void blockChannel(InputChannelInfo channelInfo) {
@@ -97,5 +132,54 @@ final class ChannelState {
                 blockedChannels);
         sequenceNumberInAnnouncedChannels.clear();
         return this;
+    }
+
+    /**
+     * Runs the recovery-checkpoint 3-step dispatcher on the task thread.
+     *
+     * <ol>
+     *   <li>Step 1: {@code recoveryCheckpointTrigger.snapshotAndInsertBarriers(cpId)} — captures
+     *       the on-disk slice and inserts the {@code RecoveryCheckpointBarrier} sentinel into every
+     *       channel inside {@code SpillFileReader.lock}. The {@link
+     *       RecoveryCheckpointTrigger#NO_OP} singleton returns the empty {@link DiskSnapshot}
+     *       branch-free when the feature is off or recovery has completed.
+     *   <li>Step 2: master's existing per-input iteration of {@code checkpointStarted(barrier)}.
+     *       Channel implementations pick mutually exclusive in-recovery / not-in-recovery branches
+     *       inside their own monitor; see the channel-side documentation for details.
+     *   <li>Step 3: {@code channelStateWriter.addInputDataFromSpill(cpId, snap)} — writer-side
+     *       async demux. The writer takes ownership of {@code snap}: it closes the iterator on both
+     *       the success path (its finally block) and the abort path (its cancel callback),
+     *       releasing the SpillFile ref-count grant exactly once.
+     * </ol>
+     *
+     * <p>On the synchronous exception path (Step 1 / Step 2 / before Step 3 submission), the
+     * dispatcher closes {@code snap} itself in {@code finally} so the grant is not leaked.
+     */
+    public void onCheckpointStartedForAllInputs(CheckpointBarrier barrier)
+            throws CheckpointException, IOException {
+        long cpId = barrier.getId();
+        DiskSnapshot snap = null;
+        try {
+            snap = recoveryCheckpointTrigger.snapshotAndInsertBarriers(cpId);
+
+            for (CheckpointableInput input : inputs) {
+                input.checkpointStarted(barrier);
+            }
+
+            channelStateWriter.addInputDataFromSpill(cpId, snap);
+            // Ownership transferred to the writer (it closes the iterator on success / abort).
+            snap = null;
+        } finally {
+            if (snap != null) {
+                try {
+                    snap.close();
+                } catch (Exception suppressed) {
+                    LOG.warn(
+                            "Failed to release DiskSnapshot after dispatcher error for checkpoint {}",
+                            cpId,
+                            suppressed);
+                }
+            }
+        }
     }
 }
