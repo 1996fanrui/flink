@@ -6,13 +6,13 @@
 
 | 编号 | 测试内容概要 | 需求ID列表 | 状态 | 测试执行方 | 备注 |
 |------|------------|-----------|------|-----------|------|
-| AT-32IM | `LocalInputChannel` / `RemoteInputChannel` 实现 `RecoverableInputChannel`：`onRecoveredStateBuffer` 投递 + `finishReadRecoveredState` 翻转 flag + `notifyChannelNonEmpty` 在队列由空变非空时触发 | REQ-Y6OP, REQ-D62D, REQ-GVDT | 待测试 | 代码自动化 | |
-| AT-LA74 | `getNextBuffer()` 的 `inRecovery` 4 种边界（flag×queue 各组合）行为正确：阻塞普通 upstream、消费 recovery 数据、退出 recovery、退回 master 路径 | REQ-IQDA, REQ-Y6OP | 待测试 | 代码自动化 | |
-| AT-V7CW | `checkpointStarted` 在 in-recovery 分支按 cpId-bounded 扫描 `recoveredBuffers`：捕获 `RecoveryCheckpointBarrier(cpId)` 后停止、pre-barrier buffer 全部 `retainBuffer()` 后交给 `addInputData`、sentinel 自身被队列移除 | REQ-G319 | 待测试 | 代码自动化 | |
-| AT-LX1M | `checkpointStarted` 在非 in-recovery 分支保留 master 既有行为（Remote 走 `channelStatePersister.startPersisting + maybePersist`；Local 走 `startPersisting(barrier.getId(), Collections.emptyList())`）；in-recovery 时 `receivedBuffersHasNoLiveDataBuffer()` 断言守护通过/不通过案例覆盖 | REQ-G319 | 待测试 | 代码自动化 | |
-| AT-W4N5 | `stateConsumedFuture` 完成路径两种触发顺序：(a) `finishReadRecoveredState` 时 `recoveredBuffers` 已为空、(b) 标志已 true、`getNextBuffer` 弹出最后一项；均完成唯一一次 | REQ-RYGK | 待测试 | 代码自动化 | |
-| AT-AEVL | `RecoveredInputChannel.toInputChannel()` migration 改走 `onRecoveredStateBuffer` + `finishReadRecoveredState`：顺序投递、构造器不再接 `initialRecoveredBuffers`、迁移完成后下游 channel 可正常被消费 | REQ-Y4RX, REQ-TWEE, REQ-YW7I | 待测试 | 代码自动化 | |
-| AT-OOXP | FLINK-39018 系列 9 个回归测试按新形态（构造 channel → `onRecoveredStateBuffer` 顺序投递 → `finishReadRecoveredState`）改写后继续通过；FullyFilledBuffer 拆分热路径无 recovery-aware 逻辑残留 | REQ-Y6OP, REQ-D62D, REQ-IQDA, REQ-TWEE, REQ-YW7I | 待测试 | 代码自动化 | |
+| AT-32IM | `LocalInputChannel` / `RemoteInputChannel` 实现 `RecoverableInputChannel`：`onRecoveredStateBuffer` 投递 + `finishReadRecoveredState` 翻转 flag + `notifyChannelNonEmpty` 在队列由空变非空时触发 | REQ-Y6OP, REQ-D62D, REQ-GVDT | 通过 | 代码自动化 | LocalInputChannelTest + RemoteInputChannelTest 8/8 PASS（prior session） |
+| AT-LA74 | `getNextBuffer()` 的 `inRecovery` 4 种边界（flag×queue 各组合）行为正确：阻塞普通 upstream、消费 recovery 数据、退出 recovery、退回 master 路径 | REQ-IQDA, REQ-Y6OP | 通过 | 代码自动化 | 11 个方法全部 PASS（prior session） |
+| AT-V7CW | `checkpointStarted` 在 in-recovery 分支按 cpId-bounded 扫描 `recoveredBuffers`：捕获 `RecoveryCheckpointBarrier(cpId)` 后停止、pre-barrier buffer 全部 `retainBuffer()` 后交给 `addInputData`、sentinel 自身被队列移除 | REQ-G319 | 通过 | 代码自动化 | Local + Remote 各 4 项，共 8/8 PASS（prior session） |
+| AT-LX1M | `checkpointStarted` 在非 in-recovery 分支保留 master 既有行为（Remote 走 `channelStatePersister.startPersisting + maybePersist`；Local 走 `startPersisting(barrier.getId(), Collections.emptyList())`）；in-recovery 时 `receivedBuffersHasNoLiveDataBuffer()` 断言守护通过/不通过案例覆盖 | REQ-G319 | 通过 | 代码自动化 | 5/5 PASS（prior session） |
+| AT-W4N5 | `stateConsumedFuture` 完成路径两种触发顺序：(a) `finishReadRecoveredState` 时 `recoveredBuffers` 已为空、(b) 标志已 true、`getNextBuffer` 弹出最后一项；均完成唯一一次 | REQ-RYGK | 通过 | 代码自动化 | Local + Remote 各 3 项，共 6/6 PASS（prior session） |
+| AT-AEVL | `RecoveredInputChannel.toInputChannel()` migration 改走 `onRecoveredStateBuffer` + `finishReadRecoveredState`：顺序投递、构造器不再接 `initialRecoveredBuffers`、迁移完成后下游 channel 可正常被消费 | REQ-Y4RX, REQ-TWEE, REQ-YW7I | 通过 | 代码自动化 | 3/3 PASS（prior session） |
+| AT-OOXP | FLINK-39018 系列 9 个回归测试按新形态（构造 channel → `onRecoveredStateBuffer` 顺序投递 → `finishReadRecoveredState`）改写后继续通过；FullyFilledBuffer 拆分热路径无 recovery-aware 逻辑残留 | REQ-Y6OP, REQ-D62D, REQ-IQDA, REQ-TWEE, REQ-YW7I | 通过 | 代码自动化 | LocalInputChannelTest 9/9 PASS（prior session） |
 
 ---
 

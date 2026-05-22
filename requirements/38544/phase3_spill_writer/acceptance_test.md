@@ -6,11 +6,11 @@
 
 | 编号 | 测试内容概要 | 需求ID列表 | 状态 | 测试执行方 | 备注 |
 |------|------------|-----------|------|-----------|------|
-| AT-M4Z1 | `SpillFile` 单元测试：append → byte 级回读、段轮转跨 64 MiB 边界正确、close 后 append 抛 `IllegalStateException`、entries 与磁盘 offset 一致 | REQ-3P7A, REQ-9JHL | 待测试 | 代码自动化 | |
-| AT-E3L9 | `FilteredBufferWriter` 单元测试：累加 / flush 边界、prefilter buffer 始终为同一实例、close 把剩余 flush、close 后 write 抛 `IllegalStateException` | REQ-OY79, REQ-9JHL | 待测试 | 代码自动化 | |
-| AT-1V57 | `SpillFileWriter` facade 单元测试：write 委托、close 委托链路（先 accumulator.close 后 spillFile.close）、close 幂等 | REQ-GQHL, REQ-9JHL | 待测试 | 代码自动化 | |
-| AT-5IG4 | filter 路径集成：filter-on 时输出全部进入 SpillFile（channel 的 `recoveredBuffers` 期间无投递）；filter-off 时不实例化 SpillFile，行为与 master 完全一致 | REQ-JSGX, REQ-8C3Y, REQ-9JHL | 待测试 | 代码自动化 | |
-| AT-VM5E | `bufferFilteringCompleteFuture` 完成前 `SpillFileWriter.close()` 已被调用（filter 完成时 SpillFile 已冻结） | REQ-8C3Y, REQ-9JHL | 待测试 | 代码自动化 | |
+| AT-M4Z1 | `SpillFile` 单元测试：append → byte 级回读、段轮转跨 64 MiB 边界正确、close 后 append 抛 `IllegalStateException`、entries 与磁盘 offset 一致 | REQ-3P7A, REQ-9JHL | 通过 | 代码自动化 | `SpillFileTest` 5/5 PASS |
+| AT-E3L9 | `FilteredBufferWriter` 单元测试：累加 / flush 边界、prefilter buffer 始终为同一实例、close 把剩余 flush、close 后 write 抛 `IllegalStateException` | REQ-OY79, REQ-9JHL | 通过 | 代码自动化 | `FilteredBufferWriterTest` 6/6 PASS |
+| AT-1V57 | `SpillFileWriter` facade 单元测试：write 委托、close 委托链路（先 accumulator.close 后 spillFile.close）、close 幂等 | REQ-GQHL, REQ-9JHL | 通过 | 代码自动化 | `SpillFileWriterTest` 4/4 PASS |
+| AT-5IG4 | filter 路径集成：filter-on 时输出全部进入 SpillFile（channel 的 `recoveredBuffers` 期间无投递）；filter-off 时不实例化 SpillFile，行为与 master 完全一致 | REQ-JSGX, REQ-8C3Y, REQ-9JHL | 通过 | 代码自动化 | `RecoveredChannelStateHandlerFilterRoutingTest` 6/6 PASS |
+| AT-VM5E | `bufferFilteringCompleteFuture` 完成前 `SpillFileWriter.close()` 已被调用（filter 完成时 SpillFile 已冻结） | REQ-8C3Y, REQ-9JHL | 通过 | 代码自动化 | `RecoveredChannelStateHandlerFilterRoutingTest#testBufferFilteringCompleteFutureCompletesAfterSpillFileClosed` 1/1 PASS |
 
 ---
 

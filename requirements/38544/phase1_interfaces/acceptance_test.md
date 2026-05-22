@@ -6,9 +6,9 @@
 
 | 编号 | 测试内容概要 | 需求ID列表 | 状态 | 测试执行方 | 备注 |
 |------|------------|-----------|------|-----------|------|
-| AT-PF3Z | flink-runtime 模块整体编译通过（接口、骨架、可见性提升全部纳入） | REQ-AYII, REQ-43Q8, REQ-KDF1, REQ-9FMG, REQ-9MCR, REQ-GYJN, REQ-KX4N | 待测试 | 代码自动化 | |
-| AT-HREU | flink-runtime 现有 `o.a.f.runtime.io.network.partition.consumer.*` 与 `o.a.f.runtime.checkpoint.channel.*` 测试包零修改全部通过 | REQ-AYII, REQ-43Q8, REQ-KDF1, REQ-9FMG, REQ-9MCR, REQ-GYJN, REQ-KX4N | 待测试 | 代码自动化 | |
-| AT-Y49R | Agent 静态确认 Phase 1 新增文件与可见性变更点真实落地（grep 比对 5 个新建文件 + `ChannelStateWriter` 的 default no-op + `RecoveredInputChannel.releaseAllResources` 已为 `public`） | REQ-AYII, REQ-43Q8, REQ-KDF1, REQ-9FMG, REQ-9MCR, REQ-GYJN, REQ-KX4N | 待测试 | Agent 执行 | |
+| AT-PF3Z | flink-runtime 模块整体编译通过（接口、骨架、可见性提升全部纳入） | REQ-AYII, REQ-43Q8, REQ-KDF1, REQ-9FMG, REQ-9MCR, REQ-GYJN, REQ-KX4N | 通过 | 代码自动化 | `./mvnw -pl flink-runtime -am -DskipTests clean install`，BUILD SUCCESS（prior session） |
+| AT-HREU | flink-runtime 现有 `o.a.f.runtime.io.network.partition.consumer.*` 与 `o.a.f.runtime.checkpoint.channel.*` 测试包零修改全部通过 | REQ-AYII, REQ-43Q8, REQ-KDF1, REQ-9FMG, REQ-9MCR, REQ-GYJN, REQ-KX4N | 通过 | 代码自动化 | 6 test classes all PASS（prior session） |
+| AT-Y49R | Agent 静态确认 Phase 1 新增文件与可见性变更点真实落地（grep 比对 5 个新建文件 + `ChannelStateWriter` 的 default no-op + `RecoveredInputChannel.releaseAllResources` 已为 `public`） | REQ-AYII, REQ-43Q8, REQ-KDF1, REQ-9FMG, REQ-9MCR, REQ-GYJN, REQ-KX4N | 通过 | Agent 执行 | ls 确认 5 个文件存在；addInputDataFromSpill grep 2 处命中（声明+no-op）；releaseAllResources 第 320 行含 public 修饰符 |
 
 ---
 
