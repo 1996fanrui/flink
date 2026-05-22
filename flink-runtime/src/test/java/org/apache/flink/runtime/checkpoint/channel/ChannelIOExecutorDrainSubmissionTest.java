@@ -35,25 +35,21 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Submission-path tests for the drain task. The full {@code StreamTask} wiring is exercised in
- * Phase 5 integration tests; here we verify the contract that the wiring depends on:
+ * Drain-task tests. The full {@code StreamTask} wiring (single submit containing filter + wait +
+ * drain) is exercised in Phase 5 integration tests; here we verify the building blocks the wiring
+ * depends on:
  *
  * <ul>
- *   <li>Filter-off path leaves the trigger unset: no spill file → no {@link SpillFileReader} is
- *       built.
- *   <li>Filter-on path builds a reader and submits a runnable to the channelIOExecutor that runs
- *       the drain.
- *   <li>Exceptions thrown by {@code drain()} are propagated by the submission wrapper.
+ *   <li>Drain run on the channelIOExecutor delivers buffers to the converted channels.
+ *   <li>Exceptions thrown by {@code drain()} are propagated by the wrapping runnable.
  * </ul>
  */
 class ChannelIOExecutorDrainSubmissionTest {
@@ -61,54 +57,10 @@ class ChannelIOExecutorDrainSubmissionTest {
     @TempDir Path tempDir;
 
     @Test
-    void testFilterOffDoesNotSubmitDrain() throws IOException {
-        // Filter-off contract: when no SpillFile was produced, the submission helper must not
-        // submit any task to the channelIOExecutor. Mirror the early-return shape of
-        // StreamTask#submitDrainIfFilterOn so the test fails if anyone removes that guard.
-        CountingExecutor executor = new CountingExecutor();
-        runSubmitDrainIfFilterOnMirror(/* producedSpillFile */ null, executor);
-
-        assertThat(executor.submitCount.get())
-                .as("filter-off path must not submit any drain task to the executor")
-                .isEqualTo(0);
-    }
-
-    @Test
-    void testFilterOnSubmitsExactlyOneTask() throws Exception {
-        // Filter-on contract: a produced spill file triggers exactly one submission.
-        InputChannelInfo cInfo = new InputChannelInfo(0, 0);
-        SpillFile spillFile = new SpillFile(tempDir);
-        try {
-            spillFile.append(cInfo, ByteBuffer.wrap(new byte[] {7}));
-
-            CountingExecutor executor = new CountingExecutor();
-            runSubmitDrainIfFilterOnMirror(spillFile, executor);
-
-            assertThat(executor.submitCount.get())
-                    .as("filter-on path must submit exactly one drain task")
-                    .isEqualTo(1);
-        } finally {
-            spillFile.close();
-        }
-    }
-
-    /**
-     * Mirrors the body of {@code StreamTask#submitDrainIfFilterOn} for the early-return guard
-     * verification — when {@code producedSpillFile == null}, no executor submission must happen.
-     * Tests assert {@code executor.submitCount} after this returns.
-     */
-    private static void runSubmitDrainIfFilterOnMirror(SpillFile producedSpillFile, Executor exec) {
-        if (producedSpillFile == null) {
-            return;
-        }
-        exec.execute(() -> {});
-    }
-
-    @Test
     void testFilterOnSubmitsDrainAfterConversion() throws Exception {
         // Construct a SpillFile with one entry on a single channel, then wire up a real reader
-        // and submit the drain to a single-thread executor (mirroring StreamTask's
-        // channelIOExecutor).
+        // and run the drain on a single-thread executor (mirroring the channelIOExecutor inside
+        // StreamTask's unified filter+drain runnable).
         InputChannelInfo cInfo = new InputChannelInfo(0, 0);
         SpillFile spillFile = new SpillFile(tempDir);
         spillFile.append(cInfo, ByteBuffer.wrap(new byte[] {1, 2, 3}));
@@ -120,7 +72,9 @@ class ChannelIOExecutorDrainSubmissionTest {
 
         ExecutorService channelIOExecutor = Executors.newSingleThreadExecutor();
         try {
-            // Same pattern as StreamTask.submitDrainIfFilterOn — single submit on the executor.
+            // Drain stage of the unified runnable in StreamTask.restoreStateAndGates: after the
+            // task thread hands the reader off via drainHandoff, the I/O thread calls
+            // reader.drain() and then closes.
             CompletableFuture<Void> done = new CompletableFuture<>();
             channelIOExecutor.execute(
                     () -> {
@@ -248,16 +202,5 @@ class ChannelIOExecutorDrainSubmissionTest {
 
         @Override
         public void releaseExclusiveBuffers() {}
-    }
-
-    /** Executor that counts how many runnables it received without running them. */
-    private static final class CountingExecutor implements Executor {
-        final AtomicInteger submitCount = new AtomicInteger(0);
-
-        @Override
-        public void execute(Runnable command) {
-            submitCount.incrementAndGet();
-            // Do not run; submission count is what the test asserts on.
-        }
     }
 }

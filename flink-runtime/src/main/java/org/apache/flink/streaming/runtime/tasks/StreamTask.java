@@ -148,6 +148,7 @@ import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -905,6 +906,13 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
             inputGate.setCheckpointingDuringRecoveryEnabled(checkpointingDuringRecoveryEnabled);
         }
 
+        // Single submit to channelIOExecutor: filter -> wait for drain handoff -> drain -> close.
+        // Keeping filter and drain inside one runnable avoids re-submitting drain after
+        // channelIOExecutor.shutdown() may have already run (shutdown() does not interrupt the
+        // currently running task, it only forbids new submits). On the filter-off path the
+        // runnable returns immediately after readInputData, matching master behavior.
+        final CompletableFuture<SpillFileReader> drainHandoff =
+                checkpointingDuringRecoveryEnabled ? new CompletableFuture<>() : null;
         channelIOExecutor.execute(
                 () -> {
                     try {
@@ -912,6 +920,41 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                     } catch (Exception e) {
                         asyncExceptionHandler.handleAsyncException(
                                 "Unable to read channel state", e);
+                        if (drainHandoff != null) {
+                            drainHandoff.completeExceptionally(e);
+                        }
+                        return;
+                    }
+                    if (drainHandoff == null) {
+                        return;
+                    }
+                    SpillFileReader spillReader;
+                    try {
+                        spillReader = drainHandoff.get();
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    } catch (ExecutionException ee) {
+                        asyncExceptionHandler.handleAsyncException(
+                                "Unable to build SpillFileReader during recovery",
+                                ee.getCause());
+                        return;
+                    }
+                    if (spillReader == null) {
+                        return;
+                    }
+                    try {
+                        spillReader.drain();
+                    } catch (Throwable t) {
+                        asyncExceptionHandler.handleAsyncException(
+                                "Unable to drain recovered channel state", t);
+                    } finally {
+                        try {
+                            spillReader.close();
+                        } catch (Throwable closeError) {
+                            asyncExceptionHandler.handleAsyncException(
+                                    "Unable to close SpillFileReader after drain", closeError);
+                        }
                     }
                 });
 
@@ -946,11 +989,12 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
         }
 
         // Filter-on path: after every gate finishes converting recovered channels to their
-        // physical forms, build the SpillFileReader and submit drain to the existing
-        // channelIOExecutor. The source RecoveredInputChannel set must be snapshotted before
-        // conversion (those channels no longer exist after requestPartitions returns); the
-        // physical RecoverableInputChannel set is collected post-conversion. Both are captured
-        // on the task thread inside a mailbox tick so no other thread can observe a half-converted
+        // physical forms, build the SpillFileReader on the task thread and hand it off to the
+        // I/O thread that is blocked on drainHandoff inside the single-submit runnable above.
+        // The source RecoveredInputChannel set must be snapshotted before conversion (those
+        // channels no longer exist after requestPartitions returns); the physical
+        // RecoverableInputChannel set is collected post-conversion. Both are captured on the
+        // task thread inside a mailbox tick so no other thread can observe a half-converted
         // state.
         if (checkpointingDuringRecoveryEnabled) {
             Map<InputChannelInfo, RecoveredInputChannel> sourceChannels =
@@ -958,11 +1002,21 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
             CompletableFuture<Void> allConverted =
                     CompletableFuture.allOf(
                             conversionDoneFutures.toArray(new CompletableFuture[0]));
-            allConverted.thenRun(
-                    () ->
-                            mainMailboxExecutor.execute(
-                                    () -> submitDrainIfFilterOn(reader, inputGates, sourceChannels),
-                                    "Submit recovery drain"));
+            allConverted.whenComplete(
+                    (v, err) -> {
+                        if (err != null) {
+                            drainHandoff.completeExceptionally(err);
+                            return;
+                        }
+                        mainMailboxExecutor.execute(
+                                () ->
+                                        handoffSpillReaderToDrain(
+                                                reader,
+                                                inputGates,
+                                                sourceChannels,
+                                                drainHandoff),
+                                "Build SpillFileReader for drain");
+                    });
         }
 
         // Return allOf future instead of thenRun future. thenRun() returns a NEW future that
@@ -983,48 +1037,40 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
     }
 
     /**
-     * Builds the {@link SpillFileReader} after conversion and submits the drain to {@link
-     * #channelIOExecutor}. No-op on the filter-off path (no spill file was produced). Runs on the
-     * task thread (mailbox). Drain exceptions bubble through {@link #asyncExceptionHandler} — the
-     * same path used for the existing {@code readInputData} async failures.
+     * Builds the {@link SpillFileReader} after conversion and hands it off to the I/O thread that
+     * is blocked on {@code drainHandoff} inside the single-submit runnable. No spill file means
+     * filter produced no output (e.g. no in-flight buffers) — complete the handoff with null so
+     * the I/O thread exits cleanly. Runs on the task thread (mailbox). Build-time exceptions
+     * propagate through {@code drainHandoff.completeExceptionally}.
      */
-    private void submitDrainIfFilterOn(
+    private void handoffSpillReaderToDrain(
             SequentialChannelStateReader reader,
             InputGate[] inputGates,
-            Map<InputChannelInfo, RecoveredInputChannel> sourceChannels) {
-        SpillFile spillFile = reader.getProducedSpillFile();
-        if (spillFile == null) {
-            // Filter-off path: nothing was spilled to disk during recovery. The existing
-            // master code path (data delivered straight to channel queues) handles drain.
-            return;
+            Map<InputChannelInfo, RecoveredInputChannel> sourceChannels,
+            CompletableFuture<SpillFileReader> drainHandoff) {
+        try {
+            SpillFile spillFile = reader.getProducedSpillFile();
+            if (spillFile == null) {
+                drainHandoff.complete(null);
+                return;
+            }
+            List<RecoverableInputChannel> physicalChannels =
+                    SpillFileReaderBootstrap.collectPhysicalChannels(inputGates);
+            SpillFileReader spillReader =
+                    SpillFileReaderBootstrap.buildReader(
+                            spillFile, sourceChannels, physicalChannels);
+            // Stash the trigger so the checkpoint dispatcher can call Step 1 from the task thread.
+            this.recoveryCheckpointTrigger = spillReader;
+            drainHandoff.complete(spillReader);
+        } catch (Throwable t) {
+            drainHandoff.completeExceptionally(t);
+            throw t;
         }
-        List<RecoverableInputChannel> physicalChannels =
-                SpillFileReaderBootstrap.collectPhysicalChannels(inputGates);
-        SpillFileReader spillReader =
-                SpillFileReaderBootstrap.buildReader(spillFile, sourceChannels, physicalChannels);
-        // Stash the trigger so the checkpoint dispatcher can call Step 1 from the task thread.
-        this.recoveryCheckpointTrigger = spillReader;
-        channelIOExecutor.execute(
-                () -> {
-                    try {
-                        spillReader.drain();
-                    } catch (Throwable t) {
-                        asyncExceptionHandler.handleAsyncException(
-                                "Unable to drain recovered channel state", t);
-                    } finally {
-                        try {
-                            spillReader.close();
-                        } catch (Throwable closeError) {
-                            asyncExceptionHandler.handleAsyncException(
-                                    "Unable to close SpillFileReader after drain", closeError);
-                        }
-                    }
-                });
     }
 
     /**
      * Test/dispatcher hook returning the {@link RecoveryCheckpointTrigger} stashed by {@link
-     * #submitDrainIfFilterOn}. Null on the filter-off path and before drain is wired.
+     * #handoffSpillReaderToDrain}. Null on the filter-off path and before drain is wired.
      */
     @VisibleForTesting
     @Nullable
