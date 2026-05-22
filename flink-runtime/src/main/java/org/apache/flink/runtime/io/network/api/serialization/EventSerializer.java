@@ -27,6 +27,7 @@ import org.apache.flink.runtime.checkpoint.CheckpointOptions;
 import org.apache.flink.runtime.checkpoint.CheckpointType;
 import org.apache.flink.runtime.checkpoint.SavepointType;
 import org.apache.flink.runtime.checkpoint.SnapshotType;
+import org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointBarrier;
 import org.apache.flink.runtime.event.AbstractEvent;
 import org.apache.flink.runtime.event.WatermarkEvent;
 import org.apache.flink.runtime.io.network.api.CancelCheckpointMarker;
@@ -86,6 +87,8 @@ public class EventSerializer {
     private static final int GENERALIZED_WATERMARK_EVENT = 11;
 
     private static final int END_OF_INPUT_CHANNEL_STATE_EVENT = 12;
+
+    private static final int RECOVERY_CHECKPOINT_BARRIER_EVENT = 13;
 
     private static final byte CHECKPOINT_TYPE_CHECKPOINT = 0;
 
@@ -162,6 +165,13 @@ public class EventSerializer {
             buf.putInt(0, RECOVERY_METADATA);
             buf.putInt(4, recoveryMetadata.getFinalBufferSubpartitionId());
             return buf;
+        } else if (eventClass == RecoveryCheckpointBarrier.class) {
+            RecoveryCheckpointBarrier barrier = (RecoveryCheckpointBarrier) event;
+
+            ByteBuffer buf = ByteBuffer.allocate(12);
+            buf.putInt(0, RECOVERY_CHECKPOINT_BARRIER_EVENT);
+            buf.putLong(4, barrier.getCheckpointId());
+            return buf;
         } else if (eventClass == WatermarkEvent.class) {
             try {
                 final DataOutputSerializer serializer = new DataOutputSerializer(128);
@@ -222,6 +232,9 @@ public class EventSerializer {
             } else if (type == RECOVERY_METADATA) {
                 int subpartitionId = buffer.getInt();
                 return new RecoveryMetadata(subpartitionId);
+            } else if (type == RECOVERY_CHECKPOINT_BARRIER_EVENT) {
+                long checkpointId = buffer.getLong();
+                return new RecoveryCheckpointBarrier(checkpointId);
             } else if (type == GENERALIZED_WATERMARK_EVENT) {
                 final DataInputDeserializer deserializer = new DataInputDeserializer(buffer);
                 WatermarkEvent watermarkEvent = new WatermarkEvent();
