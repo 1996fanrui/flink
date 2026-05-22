@@ -22,7 +22,9 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.runtime.checkpoint.CheckpointException;
 import org.apache.flink.runtime.checkpoint.CheckpointFailureReason;
+import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
 import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
+import org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointTrigger;
 import org.apache.flink.runtime.io.network.api.CancelCheckpointMarker;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
 import org.apache.flink.runtime.io.network.partition.consumer.CheckpointableInput;
@@ -119,6 +121,8 @@ public class SingleCheckpointBarrierHandler extends CheckpointBarrierHandler {
                             "Strictly unaligned checkpoints should never register any callbacks");
                 },
                 enableCheckpointsAfterTasksFinish,
+                RecoveryCheckpointTrigger.NO_OP,
+                ChannelStateWriter.NO_OP,
                 inputs);
     }
 
@@ -130,6 +134,8 @@ public class SingleCheckpointBarrierHandler extends CheckpointBarrierHandler {
             int numOpenChannels,
             DelayableTimer registerTimer,
             boolean enableCheckpointAfterTasksFinished,
+            RecoveryCheckpointTrigger recoveryCheckpointTrigger,
+            ChannelStateWriter channelStateWriter,
             CheckpointableInput... inputs) {
         return new SingleCheckpointBarrierHandler(
                 taskName,
@@ -137,7 +143,9 @@ public class SingleCheckpointBarrierHandler extends CheckpointBarrierHandler {
                 checkpointCoordinator,
                 clock,
                 numOpenChannels,
-                new AlternatingWaitingForFirstBarrierUnaligned(false, new ChannelState(inputs)),
+                new AlternatingWaitingForFirstBarrierUnaligned(
+                        false,
+                        new ChannelState(inputs, recoveryCheckpointTrigger, channelStateWriter)),
                 false,
                 registerTimer,
                 inputs,
@@ -152,6 +160,8 @@ public class SingleCheckpointBarrierHandler extends CheckpointBarrierHandler {
             DelayableTimer registerTimer,
             boolean enableCheckpointAfterTasksFinished,
             CheckpointableInput... inputs) {
+        // Aligned-only path never enters the UC dispatcher (AbstractAlignedBarrierHandlerState has
+        // no UC entry), so ChannelState uses the null-object trigger / writer.
         return new SingleCheckpointBarrierHandler(
                 taskName,
                 toNotifyOnCheckpoint,
@@ -173,6 +183,8 @@ public class SingleCheckpointBarrierHandler extends CheckpointBarrierHandler {
             int numOpenChannels,
             DelayableTimer registerTimer,
             boolean enableCheckpointAfterTasksFinished,
+            RecoveryCheckpointTrigger recoveryCheckpointTrigger,
+            ChannelStateWriter channelStateWriter,
             CheckpointableInput... inputs) {
         return new SingleCheckpointBarrierHandler(
                 taskName,
@@ -180,7 +192,8 @@ public class SingleCheckpointBarrierHandler extends CheckpointBarrierHandler {
                 checkpointCoordinator,
                 clock,
                 numOpenChannels,
-                new AlternatingWaitingForFirstBarrier(new ChannelState(inputs)),
+                new AlternatingWaitingForFirstBarrier(
+                        new ChannelState(inputs, recoveryCheckpointTrigger, channelStateWriter)),
                 true,
                 registerTimer,
                 inputs,

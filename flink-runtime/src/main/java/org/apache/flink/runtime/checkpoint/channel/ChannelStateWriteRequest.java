@@ -258,6 +258,26 @@ abstract class ChannelStateWriteRequest {
         return new CheckpointAbortRequest(jobVertexID, subtaskIndex, checkpointId, cause);
     }
 
+    /**
+     * Factory for the spill-replay request. The writer thread iterates {@code chunks} via {@link
+     * ChannelStateCheckpointWriter#writeInputFromSpill}, appending each chunk's raw bytes to the
+     * cpId's checkpoint stream demuxed by {@code chunk.channelInfo}. The iterator is closed on both
+     * the success path (writer's {@code finally}) and the abort path (the discard callback).
+     */
+    static ChannelStateWriteRequest replayInputDataFromSpill(
+            JobVertexID jobVertexID,
+            int subtaskIndex,
+            long checkpointId,
+            CloseableIterator<SpillFileReader.Chunk> chunks) {
+        return new CheckpointInProgressRequest(
+                "writeInputFromSpill",
+                jobVertexID,
+                subtaskIndex,
+                checkpointId,
+                writer -> writer.writeInputFromSpill(jobVertexID, subtaskIndex, chunks),
+                throwable -> chunks.close());
+    }
+
     static ChannelStateWriteRequest registerSubtask(JobVertexID jobVertexID, int subtaskIndex) {
         return new SubtaskRegisterRequest(jobVertexID, subtaskIndex);
     }
