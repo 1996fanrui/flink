@@ -17,10 +17,8 @@
  * under the License.
  */
 
-package org.apache.flink.test.checkpointing;
+package org.apache.flink.runtime.checkpoint.channel;
 
-import org.apache.flink.runtime.checkpoint.channel.DiskSnapshot;
-import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.util.CloseableIterator;
 
 import org.junit.jupiter.api.Test;
@@ -95,7 +93,7 @@ class UnalignedCheckpointDuringRecoveryITCase {
     }
 
     @Test
-    void testEmptyDiskSnapshotIsConsumedOnceByStep3() {
+    void testEmptyDiskSnapshotIsConsumedOnceByStep3() throws Exception {
         AtomicBoolean closed = new AtomicBoolean(false);
         CloseableIterator<DiskSnapshot.Chunk> empty =
                 new CloseableIterator<DiskSnapshot.Chunk>() {
