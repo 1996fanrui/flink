@@ -921,6 +921,17 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                         asyncExceptionHandler.handleAsyncException(
                                 "Unable to read channel state", e);
                         if (drainHandoff != null) {
+                            // Filter threw mid-way. Conversion futures may never complete, so
+                            // handoff/whenComplete may never release the producer-side SpillFile
+                            // grant. Release here so segments are cleaned up rather than leaked.
+                            try {
+                                SpillFile leakedSpillFile = reader.getProducedSpillFile();
+                                if (leakedSpillFile != null) {
+                                    leakedSpillFile.release();
+                                }
+                            } catch (Throwable releaseError) {
+                                // Already on an error path — best-effort release only.
+                            }
                             drainHandoff.completeExceptionally(e);
                         }
                         return;
@@ -1004,6 +1015,18 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
             allConverted.whenComplete(
                     (v, err) -> {
                         if (err != null) {
+                            // Conversion failed for at least one gate. The drain reader will never
+                            // be built, so the producer-side SpillFile ref-count grant taken in
+                            // RecoveredChannelStateHandler#ensureSpillFileWriter would otherwise
+                            // leak. Release it explicitly to allow segments to be cleaned up.
+                            try {
+                                SpillFile leakedSpillFile = reader.getProducedSpillFile();
+                                if (leakedSpillFile != null) {
+                                    leakedSpillFile.release();
+                                }
+                            } catch (Throwable releaseError) {
+                                // Already on an error path — best-effort release only.
+                            }
                             drainHandoff.completeExceptionally(err);
                             return;
                         }
@@ -1044,15 +1067,17 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
             InputGate[] inputGates,
             Map<InputChannelInfo, RecoveredInputChannel> sourceChannels,
             CompletableFuture<SpillFileReader> drainHandoff) {
+        SpillFile spillFile = null;
+        SpillFileReader spillReader = null;
         try {
-            SpillFile spillFile = reader.getProducedSpillFile();
+            spillFile = reader.getProducedSpillFile();
             if (spillFile == null) {
                 drainHandoff.complete(null);
                 return;
             }
             List<RecoverableInputChannel> physicalChannels =
                     SpillFileReaderBootstrap.collectPhysicalChannels(inputGates);
-            SpillFileReader spillReader =
+            spillReader =
                     SpillFileReaderBootstrap.buildReader(
                             spillFile, sourceChannels, physicalChannels);
             // Stash the trigger so the checkpoint dispatcher can call Step 1 from the task thread.
@@ -1061,6 +1086,21 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
         } catch (Throwable t) {
             drainHandoff.completeExceptionally(t);
             throw t;
+        } finally {
+            // The producer (RecoveredChannelStateHandler#ensureSpillFileWriter) took a ref-count
+            // grant on the SpillFile that kept the on-disk segments alive across the
+            // end-of-filter / start-of-drain gap. Once SpillFileReader has been built it takes its
+            // own grant, so we release the producer's grant here. On the failure path (reader
+            // build threw before acquiring) we still release so segments are not leaked.
+            if (spillFile != null) {
+                try {
+                    spillFile.release();
+                } catch (Throwable releaseError) {
+                    LOG.warn(
+                            "Failed to release producer-side SpillFile grant after handoff",
+                            releaseError);
+                }
+            }
         }
     }
 

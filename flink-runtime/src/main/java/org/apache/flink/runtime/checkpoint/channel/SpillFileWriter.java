@@ -39,11 +39,6 @@ public final class SpillFileWriter implements Closeable {
     public SpillFileWriter(SpillFile spillFile, FilteredBufferWriter accumulator) {
         this.spillFile = checkNotNull(spillFile);
         this.accumulator = checkNotNull(accumulator);
-        // Writer holds a ref-count grant for the lifetime of the filter phase. Paired with the
-        // release in close(); segments only get deleted once both this grant and the drain's grant
-        // (taken by SpillFileReader's constructor) have been released, so drain can still read the
-        // on-disk segments after filter completes.
-        spillFile.acquire();
     }
 
     /** Returns the underlying {@link SpillFile} so the drain can read it post-close. */
@@ -61,10 +56,12 @@ public final class SpillFileWriter implements Closeable {
     }
 
     /**
-     * Closes the accumulator (flushing residual bytes) and releases the writer's ref-count grant on
-     * the spill file. Segments are actually deleted only once the drain has also released its grant
-     * — calling {@link SpillFile#release} instead of the forced {@link SpillFile#close} keeps the
-     * on-disk segments alive for drain to read.
+     * Closes the accumulator (flushing residual bytes). Does not touch the {@link SpillFile}
+     * lifecycle: the producer (the handler that constructed this writer) holds the only initial
+     * ref-count grant on the SpillFile, and that grant must outlive this close — the drain runs
+     * later on a different thread and needs the on-disk segments to still exist. The producer grant
+     * is transferred to the {@code SpillFileReader} at handoff time; segments are deleted only when
+     * both the producer-transferred grant and the drain's grant have been released.
      */
     @Override
     public void close() throws IOException {
@@ -72,10 +69,6 @@ public final class SpillFileWriter implements Closeable {
             return;
         }
         closed = true;
-        try {
-            accumulator.close();
-        } finally {
-            spillFile.release();
-        }
+        accumulator.close();
     }
 }
