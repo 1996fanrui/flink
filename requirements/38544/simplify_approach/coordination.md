@@ -236,6 +236,7 @@ public void checkpointStarted(CheckpointBarrier barrier) throws CheckpointExcept
 Key points:
 
 - **Mutually exclusive branches.** During recovery, only the new branch runs; master's body is skipped (it has nothing to do — `receivedBuffers` has no live data, only priority events handled separately by the barrier-arrival mechanism that triggered this checkpoint). Outside recovery, only master's body runs — `recoveredBuffers` is empty, no walk needed.
+- **Must find the cpId-matched barrier.** End-of-queue without a match is a bug — throw, don't silently return an empty retained list.
 - **Recovery-phase predicate uses BOTH fields** — `!allRecoveredBuffersDelivered || !recoveredBuffers.isEmpty()`. This catches every moment the channel still has work to do recovery-side, including the boundary cases where the producer hasn't yet started delivering (`recoveredBuffers` empty but flag false) and where the producer finished but the consumer hasn't drained (flag true but `recoveredBuffers` non-empty). It is the **negation** of the `stateConsumedFuture` completion predicate ([`input_channel.md`](./input_channel.md) §3.7).
 - **`receivedBuffersHasNoLiveDataBuffer()`** — channel-internal helper. On `RemoteInputChannel`: iterate `receivedBuffers` and verify every buffer has `!Buffer.isBuffer()` (priority events / control buffers only, no data). On `LocalInputChannel`: trivially `true` (no `receivedBuffers` field; live data arrives via `subpartitionView` which is consulted only after `recoveredBuffers` is empty per §3.6).
 - **`channelMonitor()`** — same monitor used by `onRecoveredStateBuffer` (Remote: `synchronized(receivedBuffers)`, Local: `synchronized(recoveredBuffers)`). See §1 lock order.
@@ -292,3 +293,15 @@ On master, listener switching on `RecoveredInputChannel` (the channel reference 
 - conversion completes **before** drain starts (filter → conversion → drain is strictly serial; see [`overview.md`](./overview.md) §2);
 - `SpillFileReader.allChannels` is captured with physical channel references at construction time and is never switched again during drain;
 - there is no listener-switching window; no possibility of stale-enqueue.
+
+## 7. Defensive invariants — fail loud, not silent
+
+Where the design guarantees "X is reachable / present / acquirable at this point", the implementation must throw on the negative — never silent skip or default. Concrete sites:
+
+- `channel.checkpointStarted` in-recovery branch: must find the cpId-matched `RecoveryCheckpointBarrier` (§3.3).
+- `SpillFileReader.drain`: must find the physical channel via `channelByInfo.get(entry.channelInfo)`.
+- `ChannelStateFilteringHandler.filterAndRewrite`: must find the `VirtualChannel` for `(oldSubtask, oldChannel)`.
+- `RecoveredChannelStateHandler.recover`: `getMappedChannels` must not return null.
+- Filter-path buffer pool exhaustion: must park, never fall back to heap allocation.
+- Every cross-thread future (`bufferFilteringCompleteFuture`, `conversionDoneFutures`, `drainHandoff`, `stateConsumedFuture`): must be completed (success or exceptional) on every reachable terminal path.
+- Every `SpillFile.acquire()` must pair with a `release()`; every drain exit must call `finishReadRecoveredState()` for every channel.
