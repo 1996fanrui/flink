@@ -936,8 +936,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                         return;
                     } catch (ExecutionException ee) {
                         asyncExceptionHandler.handleAsyncException(
-                                "Unable to build SpillFileReader during recovery",
-                                ee.getCause());
+                                "Unable to build SpillFileReader during recovery", ee.getCause());
                         return;
                     }
                     if (spillReader == null) {
@@ -1011,10 +1010,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                         mainMailboxExecutor.execute(
                                 () ->
                                         handoffSpillReaderToDrain(
-                                                reader,
-                                                inputGates,
-                                                sourceChannels,
-                                                drainHandoff),
+                                                reader, inputGates, sourceChannels, drainHandoff),
                                 "Build SpillFileReader for drain");
                     });
         }
@@ -1039,9 +1035,9 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
     /**
      * Builds the {@link SpillFileReader} after conversion and hands it off to the I/O thread that
      * is blocked on {@code drainHandoff} inside the single-submit runnable. No spill file means
-     * filter produced no output (e.g. no in-flight buffers) — complete the handoff with null so
-     * the I/O thread exits cleanly. Runs on the task thread (mailbox). Build-time exceptions
-     * propagate through {@code drainHandoff.completeExceptionally}.
+     * filter produced no output (e.g. no in-flight buffers) — complete the handoff with null so the
+     * I/O thread exits cleanly. Runs on the task thread (mailbox). Build-time exceptions propagate
+     * through {@code drainHandoff.completeExceptionally}.
      */
     private void handoffSpillReaderToDrain(
             SequentialChannelStateReader reader,

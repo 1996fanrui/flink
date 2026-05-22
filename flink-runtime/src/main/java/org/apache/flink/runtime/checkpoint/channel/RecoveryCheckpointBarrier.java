@@ -25,10 +25,10 @@ import org.apache.flink.runtime.event.RuntimeEvent;
 import java.io.IOException;
 
 /**
- * Task-local sentinel event carrying the checkpoint id that triggered it. Wrapped into a Buffer
- * via {@code EventSerializer.toBuffer(...)} and inserted into each channel's {@code
- * recoveredBuffers} queue at Step 1 of the recovery-checkpoint protocol; consumers deserialize via
- * {@code EventSerializer.fromBuffer(...)} and match by {@link #getCheckpointId()}.
+ * Task-local sentinel event carrying the checkpoint id that triggered it. Wrapped into a Buffer via
+ * {@code EventSerializer.toBuffer(...)} and inserted into each channel's {@code recoveredBuffers}
+ * queue at Step 1 of the recovery-checkpoint protocol; consumers deserialize via {@code
+ * EventSerializer.fromBuffer(...)} and match by {@link #getCheckpointId()}.
  *
  * <p>This event never travels across the network. It is created and consumed within a single task,
  * but goes through serialize/deserialize because the channel queue carries {@code Buffer} only.

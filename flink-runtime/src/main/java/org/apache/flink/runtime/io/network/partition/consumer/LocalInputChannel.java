@@ -26,10 +26,10 @@ import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
 import org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointBarrier;
 import org.apache.flink.runtime.event.AbstractEvent;
 import org.apache.flink.runtime.event.TaskEvent;
-import org.apache.flink.runtime.io.network.api.serialization.EventSerializer;
 import org.apache.flink.runtime.execution.CancelTaskException;
 import org.apache.flink.runtime.io.network.TaskEventPublisher;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
+import org.apache.flink.runtime.io.network.api.serialization.EventSerializer;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.CompositeBuffer;
 import org.apache.flink.runtime.io.network.buffer.FileRegionBuffer;
@@ -42,7 +42,6 @@ import org.apache.flink.runtime.io.network.partition.ResultPartitionManager;
 import org.apache.flink.runtime.io.network.partition.ResultSubpartition.BufferAndBacklog;
 import org.apache.flink.runtime.io.network.partition.ResultSubpartitionIndexSet;
 import org.apache.flink.runtime.io.network.partition.ResultSubpartitionView;
-import org.apache.flink.util.CloseableIterator;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -59,7 +58,6 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Timer;
 import java.util.TimerTask;
-import java.util.concurrent.CompletableFuture;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 import static org.apache.flink.util.Preconditions.checkState;
@@ -204,8 +202,7 @@ public class LocalInputChannel extends InputChannel
         try {
             List<Buffer> toPersist;
             synchronized (recoveredBuffers) {
-                boolean inRecovery =
-                        !allRecoveredBuffersDelivered || !recoveredBuffers.isEmpty();
+                boolean inRecovery = !allRecoveredBuffersDelivered || !recoveredBuffers.isEmpty();
                 if (inRecovery) {
                     toPersist = collectPreRecoveryBarrier(barrier.getId());
                 } else {
@@ -222,7 +219,8 @@ public class LocalInputChannel extends InputChannel
         } catch (IOException e) {
             throw new CheckpointException(
                     "Failed to extract recovered buffers for checkpoint " + barrier.getId(),
-                    CheckpointFailureReason.CHECKPOINT_DECLINED, e);
+                    CheckpointFailureReason.CHECKPOINT_DECLINED,
+                    e);
         }
     }
 
@@ -231,9 +229,9 @@ public class LocalInputChannel extends InputChannel
      * {@code checkpointId}, retaining each pre-barrier <b>data</b> buffer for the channel-state
      * writer and removing the sentinel itself. Pre-barrier events (e.g. {@code
      * EndOfInputChannelStateEvent} migrated by {@code RecoveredInputChannel.toInputChannel}) are
-     * left in the queue for normal consumption — the channel-state writer only accepts data
-     * buffers (master's {@code ChannelStatePersister.maybePersist} enforces the same
-     * {@code isBuffer()} guard).
+     * left in the queue for normal consumption — the channel-state writer only accepts data buffers
+     * (master's {@code ChannelStatePersister.maybePersist} enforces the same {@code isBuffer()}
+     * guard).
      *
      * <p>Caller holds {@code synchronized(recoveredBuffers)}.
      */
@@ -260,8 +258,7 @@ public class LocalInputChannel extends InputChannel
             return false;
         }
         AbstractEvent event =
-                EventSerializer.fromBuffer(
-                        b, RecoveryCheckpointBarrier.class.getClassLoader());
+                EventSerializer.fromBuffer(b, RecoveryCheckpointBarrier.class.getClassLoader());
         b.setReaderIndex(0);
         return event instanceof RecoveryCheckpointBarrier
                 && ((RecoveryCheckpointBarrier) event).getCheckpointId() == checkpointId;
@@ -739,5 +736,4 @@ public class LocalInputChannel extends InputChannel
     ResultSubpartitionView getSubpartitionView() {
         return subpartitionView;
     }
-
 }

@@ -1155,7 +1155,10 @@ class LocalInputChannelTest {
         channel.onRecoveredStateBuffer(b1);
         channel.onRecoveredStateBuffer(b2);
         channel.onRecoveredStateBuffer(
-                org.apache.flink.runtime.io.network.api.serialization.EventSerializer.toBuffer(new org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointBarrier(1L), false));
+                org.apache.flink.runtime.io.network.api.serialization.EventSerializer.toBuffer(
+                        new org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointBarrier(
+                                1L),
+                        false));
         channel.onRecoveredStateBuffer(b3);
 
         CheckpointOptions options =
@@ -1178,7 +1181,10 @@ class LocalInputChannelTest {
         Buffer b1 = TestBufferFactory.createBuffer(1);
         channel.onRecoveredStateBuffer(b1);
         channel.onRecoveredStateBuffer(
-                org.apache.flink.runtime.io.network.api.serialization.EventSerializer.toBuffer(new org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointBarrier(1L), false));
+                org.apache.flink.runtime.io.network.api.serialization.EventSerializer.toBuffer(
+                        new org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointBarrier(
+                                1L),
+                        false));
 
         int before = b1.refCnt();
         CheckpointOptions options =
@@ -1199,7 +1205,10 @@ class LocalInputChannelTest {
 
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(1));
         channel.onRecoveredStateBuffer(
-                org.apache.flink.runtime.io.network.api.serialization.EventSerializer.toBuffer(new org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointBarrier(1L), false));
+                org.apache.flink.runtime.io.network.api.serialization.EventSerializer.toBuffer(
+                        new org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointBarrier(
+                                1L),
+                        false));
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(2));
 
         CheckpointOptions options =
@@ -1225,10 +1234,16 @@ class LocalInputChannelTest {
 
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(1));
         channel.onRecoveredStateBuffer(
-                org.apache.flink.runtime.io.network.api.serialization.EventSerializer.toBuffer(new org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointBarrier(1L), false));
+                org.apache.flink.runtime.io.network.api.serialization.EventSerializer.toBuffer(
+                        new org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointBarrier(
+                                1L),
+                        false));
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(2));
         channel.onRecoveredStateBuffer(
-                org.apache.flink.runtime.io.network.api.serialization.EventSerializer.toBuffer(new org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointBarrier(2L), false));
+                org.apache.flink.runtime.io.network.api.serialization.EventSerializer.toBuffer(
+                        new org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointBarrier(
+                                2L),
+                        false));
 
         CheckpointOptions options =
                 CheckpointOptions.unaligned(CheckpointType.CHECKPOINT, getDefault());
@@ -1269,7 +1284,10 @@ class LocalInputChannelTest {
 
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(1));
         channel.onRecoveredStateBuffer(
-                org.apache.flink.runtime.io.network.api.serialization.EventSerializer.toBuffer(new org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointBarrier(1L), false));
+                org.apache.flink.runtime.io.network.api.serialization.EventSerializer.toBuffer(
+                        new org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointBarrier(
+                                1L),
+                        false));
 
         CheckpointOptions options =
                 CheckpointOptions.unaligned(CheckpointType.CHECKPOINT, getDefault());
