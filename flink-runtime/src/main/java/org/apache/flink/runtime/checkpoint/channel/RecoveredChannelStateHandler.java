@@ -239,8 +239,12 @@ class InputChannelRecoveredStateHandler
 
         // Declare the channel BEFORE filtering — flushes any residual bytes left by the previous
         // filter call (different channel) so the next entry on disk carries exactly one channel's
-        // bytes.
-        accumulator.beginChannel(channelInfo);
+        // bytes. Use the mapped (post-rescale) channel's InputChannelInfo so the spill file entries
+        // are keyed by the same channelInfo that drain looks up via the physical channel set; the
+        // incoming `channelInfo` argument carries the OLD (pre-rescale) channel index from the
+        // checkpoint metadata and only matches the post-rescale physical channel when parallelism
+        // is unchanged.
+        accumulator.beginChannel(channel.getChannelInfo());
 
         List<Buffer> filteredBuffers =
                 filteringHandler.filterAndRewrite(
