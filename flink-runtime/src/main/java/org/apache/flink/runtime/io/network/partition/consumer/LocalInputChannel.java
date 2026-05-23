@@ -127,7 +127,13 @@ public class LocalInputChannel extends InputChannel
         this.taskEventPublisher = checkNotNull(taskEventPublisher);
         this.channelStatePersister =
                 new ChannelStatePersister(checkNotNull(stateWriter), getChannelInfo());
-        this.recoveredQueue = new RecoveredBufferQueue(getChannelInfo());
+        // cpDuringRecovery=false: this channel has no SpillFileReader drain ahead of it, so
+        // mark allDelivered=true at construction. isInRecovery stays false from the start and
+        // the channel goes straight to the master normal path — no sentinel-driven wake-up,
+        // no true→false flip that could race with a PartitionNotFoundException retrigger.
+        this.recoveredQueue =
+                new RecoveredBufferQueue(
+                        getChannelInfo(), !inputGate.isCheckpointingDuringRecoveryEnabled());
     }
 
     // ------------------------------------------------------------------------
@@ -154,7 +160,15 @@ public class LocalInputChannel extends InputChannel
             }
             wasEmpty = recoveredQueue.offer(buffer);
         }
-        if (wasEmpty) {
+        // Conditional wake — same invariant as finishRecoveredBufferDelivery: no recovered buffer
+        // (data or sentinel) may be consumed before requestSubpartitions has published
+        // subpartitionView. If we wake while subpartitionView is null, the consumer may drain the
+        // queue, see isInRecovery flip to false on the final buffer, fall into the normal path
+        // and hit "Queried for a buffer before requesting the subpartition." Skipping the wake is
+        // safe: requestSubpartitions's success path (or the channel's notifyDataAvailable
+        // callback) will fire notifyChannelNonEmpty() once subpartitionView is published, by
+        // which time the buffer is already in the queue.
+        if (wasEmpty && subpartitionView != null) {
             notifyChannelNonEmpty();
         }
     }
@@ -182,7 +196,15 @@ public class LocalInputChannel extends InputChannel
                             EventSerializer.toBuffer(EndOfInputChannelStateEvent.INSTANCE, false));
             recoveredQueue.finish();
         }
-        if (wasEmpty) {
+        // Conditional wake: only fire when subpartitionView is already published. If it is still
+        // null (requestSubpartitions hit PartitionNotFoundException and is on its Timer-driven
+        // retrigger), waking now would let the consumer poll the sentinel, flip isInRecovery to
+        // false, and enter the normal path against a null subpartitionView. Skipping the wake is
+        // safe because the eventual successful retrigger calls notifyDataAvailable(view) →
+        // notifyChannelNonEmpty(), at which point the sentinel is already in the queue and the
+        // consumer will pick it up. subpartitionView is volatile, so a non-null read here
+        // happens-after the writer's publication inside requestLock.
+        if (wasEmpty && subpartitionView != null) {
             notifyChannelNonEmpty();
         }
     }

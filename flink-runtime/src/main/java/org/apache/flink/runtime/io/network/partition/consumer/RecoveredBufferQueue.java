@@ -54,17 +54,21 @@ class RecoveredBufferQueue {
 
     private final Deque<Buffer> buffers = new ArrayDeque<>();
 
-    RecoveredBufferQueue(InputChannelInfo channelInfo) {
+    RecoveredBufferQueue(InputChannelInfo channelInfo, boolean initiallyDelivered) {
         this.channelInfo = channelInfo;
+        this.allDelivered = initiallyDelivered;
     }
 
     /**
      * True once the drain/spill producer has finished pushing recovered buffers into this queue.
-     * Producer-side completion only; the consumer may still have buffers queued. Initialized to
-     * false because every channel instance is expected to receive a closing finish() call before
-     * the channel becomes consumable, regardless of whether any buffers were pushed.
+     * Producer-side completion only; the consumer may still have buffers queued. May be initialized
+     * to {@code true} when the owning channel has no SpillFileReader-driven drain phase ahead of
+     * it (cpDuringRecovery=false / migration path): in that case {@code isInRecovery} starts false
+     * and the channel goes straight to the master normal path, avoiding the {@code true → false}
+     * flip that would otherwise let a consumer race past an in-flight {@code requestSubpartitions}
+     * retrigger and observe a null {@code subpartitionView}.
      */
-    private boolean allDelivered = false;
+    private boolean allDelivered;
 
     /**
      * Sequence-number counter for buffers emitted during recovery. Starts at {@link
