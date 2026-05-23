@@ -50,6 +50,7 @@ class GateFilterHandlerTest {
 
     private static final int BUFFER_SIZE = 1024;
     private static final SubtaskConnectionDescriptor KEY = new SubtaskConnectionDescriptor(0, 0);
+    private static final InputChannelInfo NEW_CHANNEL = new InputChannelInfo(0, 0);
 
     @Test
     void testAllRecordsPassFilter() throws Exception {
@@ -57,10 +58,11 @@ class GateFilterHandlerTest {
                 createHandler(RecordFilter.acceptAll());
 
         Buffer sourceBuffer = createBufferWithRecords(1L, 2L, 3L);
-        List<Buffer> result = handler.filterAndRewrite(0, 0, sourceBuffer, this::createEmptyBuffer);
+        CollectingSupplier supplier = new CollectingSupplier(() -> createEmptyBuffer());
+        handler.filterAndRewrite(0, 0, NEW_CHANNEL, sourceBuffer, supplier);
 
         // deserializeBuffers consumes (recycles) each buffer via the deserializer
-        List<Long> values = deserializeBuffers(result);
+        List<Long> values = deserializeBuffers(supplier.collected);
         assertThat(values).containsExactly(1L, 2L, 3L);
     }
 
@@ -70,9 +72,11 @@ class GateFilterHandlerTest {
         ChannelStateFilteringHandler.GateFilterHandler<Long> handler = createHandler(rejectAll);
 
         Buffer sourceBuffer = createBufferWithRecords(1L, 2L, 3L);
-        List<Buffer> result = handler.filterAndRewrite(0, 0, sourceBuffer, this::createEmptyBuffer);
+        CollectingSupplier supplier = new CollectingSupplier(() -> createEmptyBuffer());
+        handler.filterAndRewrite(0, 0, NEW_CHANNEL, sourceBuffer, supplier);
 
-        assertThat(result).isEmpty();
+        // No record passed the filter, supplier must never have been asked for a buffer.
+        assertThat(supplier.collected).isEmpty();
     }
 
     @Test
@@ -81,9 +85,10 @@ class GateFilterHandlerTest {
         ChannelStateFilteringHandler.GateFilterHandler<Long> handler = createHandler(keepEven);
 
         Buffer sourceBuffer = createBufferWithRecords(1L, 2L, 3L, 4L, 5L);
-        List<Buffer> result = handler.filterAndRewrite(0, 0, sourceBuffer, this::createEmptyBuffer);
+        CollectingSupplier supplier = new CollectingSupplier(() -> createEmptyBuffer());
+        handler.filterAndRewrite(0, 0, NEW_CHANNEL, sourceBuffer, supplier);
 
-        List<Long> values = deserializeBuffers(result);
+        List<Long> values = deserializeBuffers(supplier.collected);
         assertThat(values).containsExactly(2L, 4L);
     }
 
@@ -95,14 +100,14 @@ class GateFilterHandlerTest {
                 createHandler(RecordFilter.acceptAll());
 
         Buffer sourceBuffer = createBufferWithRecords(1L, 2L, 3L);
-        List<Buffer> result =
-                handler.filterAndRewrite(
-                        0, 0, sourceBuffer, () -> createEmptyBuffer(smallBufferSize));
+        CollectingSupplier supplier =
+                new CollectingSupplier(() -> createEmptyBuffer(smallBufferSize));
+        handler.filterAndRewrite(0, 0, NEW_CHANNEL, sourceBuffer, supplier);
 
         // Each Long record needs 4 bytes length + ~9 bytes data > 8-byte buffer
-        assertThat(result.size()).isGreaterThan(1);
+        assertThat(supplier.collected.size()).isGreaterThan(1);
 
-        List<Long> values = deserializeBuffers(result);
+        List<Long> values = deserializeBuffers(supplier.collected);
         assertThat(values).containsExactly(1L, 2L, 3L);
     }
 
@@ -114,9 +119,32 @@ class GateFilterHandlerTest {
         Buffer emptyBuffer = createEmptyBuffer();
         emptyBuffer.setSize(0);
 
-        List<Buffer> result = handler.filterAndRewrite(0, 0, emptyBuffer, this::createEmptyBuffer);
+        CollectingSupplier supplier = new CollectingSupplier(() -> createEmptyBuffer());
+        handler.filterAndRewrite(0, 0, NEW_CHANNEL, emptyBuffer, supplier);
 
-        assertThat(result).isEmpty();
+        // No records, so the supplier was never invoked.
+        assertThat(supplier.collected).isEmpty();
+    }
+
+    /**
+     * Test-only {@link ChannelStateFilteringHandler.BufferSupplier} that records every buffer it
+     * hands out so the test can inspect the filter's accumulated output.
+     */
+    private static final class CollectingSupplier
+            implements ChannelStateFilteringHandler.BufferSupplier {
+        final List<Buffer> collected = new ArrayList<>();
+        private final java.util.function.Supplier<Buffer> bufferFactory;
+
+        CollectingSupplier(java.util.function.Supplier<Buffer> bufferFactory) {
+            this.bufferFactory = bufferFactory;
+        }
+
+        @Override
+        public Buffer requestBufferBlocking(InputChannelInfo channelInfo) {
+            Buffer b = bufferFactory.get();
+            collected.add(b);
+            return b;
+        }
     }
 
     // -------------------------------------------------------------------------------------------
