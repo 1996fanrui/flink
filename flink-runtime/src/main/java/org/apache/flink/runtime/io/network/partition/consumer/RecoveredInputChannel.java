@@ -137,9 +137,11 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
             for (Buffer buf : remainingBuffers) {
                 rec.onRecoveredStateBuffer(buf);
             }
-            if (!inputGate.isCheckpointingDuringRecoveryEnabled()) {
-                rec.finishRecoveredBufferDelivery();
-            }
+            // cpDuringRecovery=false path no longer needs an explicit finishRecoveredBufferDelivery
+            // call: the physical channel's RecoveredBufferQueue is constructed with
+            // allDelivered=true on that path, so isInRecovery is already false (unless
+            // remainingBuffers above pushed something, in which case it falls to false as soon as
+            // those buffers are consumed — no sentinel, no extra wake-up).
         } else {
             throw new IllegalStateException(
                     "Physical channel does not implement RecoverableInputChannel: "

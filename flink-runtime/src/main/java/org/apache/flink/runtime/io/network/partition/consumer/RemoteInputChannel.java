@@ -169,7 +169,10 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
         this.bufferManager = new BufferManager(inputGate.getMemorySegmentProvider(), this, 0);
         this.channelStatePersister =
                 new ChannelStatePersister(checkNotNull(stateWriter), getChannelInfo());
-        this.recoveredQueue = new RecoveredBufferQueue(getChannelInfo());
+        // See LocalInputChannel constructor for the rationale on the cpDuringRecovery split.
+        this.recoveredQueue =
+                new RecoveredBufferQueue(
+                        getChannelInfo(), !inputGate.isCheckpointingDuringRecoveryEnabled());
     }
 
     @VisibleForTesting
@@ -214,7 +217,10 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
             }
             wasEmpty = recoveredQueue.offer(buffer);
         }
-        if (wasEmpty) {
+        // Conditional wake — see LocalInputChannel.onRecoveredStateBuffer for the full rationale.
+        // Remote's "upstream is ready" handle is partitionRequestClient (volatile, one-shot
+        // publish), so we mirror the same condition.
+        if (wasEmpty && partitionRequestClient != null) {
             notifyChannelNonEmpty();
         }
     }
@@ -239,7 +245,14 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
                             EventSerializer.toBuffer(EndOfInputChannelStateEvent.INSTANCE, false));
             recoveredQueue.finish();
         }
-        if (wasEmpty) {
+        // Conditional wake: see LocalInputChannel.finishRecoveredBufferDelivery for the full
+        // rationale. partitionRequestClient is volatile and is the Remote-side equivalent of
+        // LocalInputChannel.subpartitionView — both fields publish "upstream is ready" once,
+        // monotonically (modulo release). Skipping the wake while it is null is safe because
+        // requestSubpartitions / the partition-creation listener path will fire its own
+        // notifyChannelNonEmpty once the upstream becomes available; the sentinel is by then
+        // already in the queue and will be consumed on that wake.
+        if (wasEmpty && partitionRequestClient != null) {
             notifyChannelNonEmpty();
         }
     }
