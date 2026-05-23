@@ -123,6 +123,11 @@ class ChannelIOExecutorDrainSubmissionTest {
 
                     @Override
                     public void finishRecoveredBufferDelivery() {}
+
+                    @Override
+                    public boolean isInRecovery() {
+                        return true;
+                    }
                 };
 
         List<RecoverableInputChannel> all = new ArrayList<>();
@@ -190,6 +195,11 @@ class ChannelIOExecutorDrainSubmissionTest {
         @Override
         public void finishRecoveredBufferDelivery() {
             finishCalled = true;
+        }
+
+        @Override
+        public boolean isInRecovery() {
+            return !finishCalled;
         }
     }
 

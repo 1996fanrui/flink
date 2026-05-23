@@ -144,17 +144,37 @@ public final class SpillFileReader implements RecoveryCheckpointTrigger, Closeab
         SpillFile.Snapshot diskSnap;
         int startSegmentIndex;
         long startOffset;
+        boolean diskSliceEmpty;
 
         synchronized (lock) {
             diskSnap = spillFile.snapshot();
             startSegmentIndex = currentSegmentIndex;
             startOffset = currentOffset;
+            diskSliceEmpty = recoveryAlreadyDone(diskSnap, startSegmentIndex, startOffset);
 
-            // Recovery already done: every entry in the snapshot has been drained
-            // (lexicographic (segmentIndex, offset) < (currentSegmentIndex, currentOffset)).
-            // No barrier needs inserting; readers see an empty disk slice and we MUST NOT take
-            // a ref-count grant — the empty singleton's close() is a no-op.
-            if (recoveryAlreadyDone(diskSnap, startSegmentIndex, startOffset)) {
+            // Per-channel barrier insert: a channel needs a RecoveryCheckpointBarrier iff its
+            // recovery queue is still in-recovery (allDelivered=false OR queue non-empty).
+            // Using the global drain cursor here would diverge from the checkpointStarted path
+            // (which decides per channel) and produce "Missing RecoveryCheckpointBarrier" when
+            // the cursor reaches end-of-spill before a channel has flipped allDelivered or while
+            // a sentinel still sits in its queue.
+            //
+            // The barrier-insert path takes ch.isInRecovery() under the channel's own monitor
+            // and onRecoveredStateBuffer under the same monitor; lock order stays
+            // SpillFileReader.lock → channel-internal queue monitor, identical to the drain main
+            // path, so no new lock-order edge is introduced.
+            for (RecoverableInputChannel ch : allChannels) {
+                if (ch.isInRecovery()) {
+                    ch.onRecoveredStateBuffer(
+                            EventSerializer.toBuffer(
+                                    new RecoveryCheckpointBarrier(checkpointId), false));
+                }
+            }
+
+            if (diskSliceEmpty) {
+                // Empty disk slice: no channel-state data needs persisting and the empty
+                // singleton's close() is a no-op, so we MUST NOT take a ref-count grant — doing
+                // so would leak one grant per checkpoint.
                 return DiskSnapshot.empty();
             }
 
@@ -162,11 +182,6 @@ public final class SpillFileReader implements RecoveryCheckpointTrigger, Closeab
             // attached by the dispatcher (success path) and the abort path both close the
             // snapshot, releasing the grant exactly once.
             spillFile.acquire();
-            for (RecoverableInputChannel ch : allChannels) {
-                ch.onRecoveredStateBuffer(
-                        EventSerializer.toBuffer(
-                                new RecoveryCheckpointBarrier(checkpointId), false));
-            }
         }
 
         return new DiskSnapshot(

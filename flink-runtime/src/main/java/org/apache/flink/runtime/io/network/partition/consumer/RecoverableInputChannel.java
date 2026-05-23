@@ -68,4 +68,18 @@ public interface RecoverableInputChannel {
      * @throws IOException if an error occurs while finalising the channel state
      */
     void finishRecoveredBufferDelivery() throws IOException;
+
+    /**
+     * Reports whether the channel's recovery queue is still active. Returns {@code true} when the
+     * producer has not yet signalled completion OR the consumer has not yet drained every queued
+     * recovery buffer. The {@link SpillFileReader} Step 1 trigger uses this predicate to decide,
+     * per channel, whether to insert a {@code RecoveryCheckpointBarrier} into the channel queue:
+     * the per-channel predicate keeps Step 1 symmetric with the {@code checkpointStarted} path,
+     * which gates {@code collectPreRecoveryBarrier(...)} on the same condition.
+     *
+     * <p>Implementations must take the channel's own queue monitor (the same one that protects
+     * {@code onRecoveredStateBuffer} and {@code getNextBuffer}'s recovery branch) so the value
+     * cannot flip mid-decision.
+     */
+    boolean isInRecovery();
 }

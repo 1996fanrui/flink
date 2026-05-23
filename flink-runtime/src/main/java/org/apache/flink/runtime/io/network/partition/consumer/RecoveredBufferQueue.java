@@ -42,10 +42,10 @@ import java.util.List;
  * && isEmpty()}.
  *
  * <p>All methods are <b>unsafe</b>: callers must hold the channel's monitor (Local: the queue
- * instance itself; Remote: {@code receivedBuffers}, sharing the existing master monitor so
- * recovery and live upstream queues can be inspected atomically). The queue intentionally does
- * not own a lock to preserve the master locking topology and to allow Remote to inspect both
- * queues under a single critical section.
+ * instance itself; Remote: {@code receivedBuffers}, sharing the existing master monitor so recovery
+ * and live upstream queues can be inspected atomically). The queue intentionally does not own a
+ * lock to preserve the master locking topology and to allow Remote to inspect both queues under a
+ * single critical section.
  */
 @Internal
 class RecoveredBufferQueue {
@@ -115,7 +115,9 @@ class RecoveredBufferQueue {
         return buffers.poll();
     }
 
-    /** Post-increment counter; returned value is the sequence number for the buffer just emitted. */
+    /**
+     * Post-increment counter; returned value is the sequence number for the buffer just emitted.
+     */
     int nextSequenceNumber() {
         return sequenceNumber++;
     }
@@ -123,12 +125,12 @@ class RecoveredBufferQueue {
     /**
      * Walks the queue up to the {@link RecoveryCheckpointBarrier} sentinel matching {@code
      * checkpointId}, retaining each pre-barrier data buffer for the channel-state writer and
-     * removing the sentinel itself. Pre-barrier events are left in the queue for normal
-     * consumption — the channel-state writer only accepts data buffers.
+     * removing the sentinel itself. Pre-barrier events are left in the queue for normal consumption
+     * — the channel-state writer only accepts data buffers.
      *
      * @throws IOException if no sentinel matching {@code checkpointId} is found (the snapshot
-     *     protocol guarantees one must be present); retained buffers are released before
-     *     throwing so the caller does not have to clean up.
+     *     protocol guarantees one must be present); retained buffers are released before throwing
+     *     so the caller does not have to clean up.
      */
     List<Buffer> collectPreRecoveryBarrier(long checkpointId) throws IOException {
         List<Buffer> retained = new ArrayList<>();

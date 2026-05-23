@@ -160,18 +160,18 @@ public class LocalInputChannel extends InputChannel
     }
 
     /**
-     * Flips the producer-completion flag to true exactly once and delivers the
-     * {@link EndOfInputChannelStateEvent} sentinel into {@code recoveredQueue}.
+     * Flips the producer-completion flag to true exactly once and delivers the {@link
+     * EndOfInputChannelStateEvent} sentinel into {@code recoveredQueue}.
      *
      * <p>The sentinel ensures the consumer has at least one buffer to consume on the
-     * checkpointing-during-recovery path; when it is wrapped, the empty-queue +
-     * allDelivered branch probes {@code subpartitionView} for the next data type, which
-     * gives the gate a {@code moreAvailable=true} signal and re-enqueues the channel.
-     * Without this, fresh-start sinks (no recovered state, no spill drain push) would
-     * sit forever with an empty {@code recoveredQueue} and no wake-up.
+     * checkpointing-during-recovery path; when it is wrapped, the empty-queue + allDelivered branch
+     * probes {@code subpartitionView} for the next data type, which gives the gate a {@code
+     * moreAvailable=true} signal and re-enqueues the channel. Without this, fresh-start sinks (no
+     * recovered state, no spill drain push) would sit forever with an empty {@code recoveredQueue}
+     * and no wake-up.
      *
-     * <p>End-of-drain exception: caller does NOT need to hold {@code SpillFileReader.lock}
-     * because no more buffers are being added at this point.
+     * <p>End-of-drain exception: caller does NOT need to hold {@code SpillFileReader.lock} because
+     * no more buffers are being added at this point.
      */
     @Override
     public void finishRecoveredBufferDelivery() throws IOException {
@@ -179,12 +179,21 @@ public class LocalInputChannel extends InputChannel
         synchronized (recoveredQueue) {
             wasEmpty =
                     recoveredQueue.offer(
-                            EventSerializer.toBuffer(
-                                    EndOfInputChannelStateEvent.INSTANCE, false));
+                            EventSerializer.toBuffer(EndOfInputChannelStateEvent.INSTANCE, false));
             recoveredQueue.finish();
         }
         if (wasEmpty) {
             notifyChannelNonEmpty();
+        }
+    }
+
+    @Override
+    public boolean isInRecovery() {
+        // Lock matches the in-recovery read in getNextBuffer() so the value cannot flip while
+        // Step 1 of the snapshot trigger holds SpillFileReader.lock and is deciding whether to
+        // insert a RecoveryCheckpointBarrier into this channel.
+        synchronized (recoveredQueue) {
+            return recoveredQueue.isInRecovery();
         }
     }
 
@@ -501,8 +510,8 @@ public class LocalInputChannel extends InputChannel
      *   <li>Recovery queue non-empty → head's {@code DataType}.
      *   <li>Drain producer not finished yet → {@code NONE} (block; subpartitionView may have live
      *       data that must not be exposed during recovery).
-     *   <li>Otherwise (post-recovery) → {@code nextDataTypeOnUpstream}, supplied by the caller
-     *       with its own authoritative source ({@code BufferAndBacklog.getNextDataType()} for the
+     *   <li>Otherwise (post-recovery) → {@code nextDataTypeOnUpstream}, supplied by the caller with
+     *       its own authoritative source ({@code BufferAndBacklog.getNextDataType()} for the
      *       priority pull fallback, or a lossy {@code subpartitionView} probe for the recovery
      *       buffer wrap).
      * </ol>

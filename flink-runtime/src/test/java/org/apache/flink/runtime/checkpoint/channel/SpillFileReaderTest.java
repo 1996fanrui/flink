@@ -162,6 +162,75 @@ class SpillFileReaderTest {
         }
     }
 
+    /**
+     * Race window: the drain cursor has advanced past the last entry (disk slice empty), but the
+     * channel's queue still reports {@code isInRecovery()} — either because {@code
+     * finishRecoveredBufferDelivery} hasn't yet flipped the {@code allDelivered} flag, or because
+     * the queue still holds buffers (e.g. the {@code EndOfInputChannelStateEvent} sentinel) the
+     * consumer hasn't drained. Step 1 must still insert the {@code RecoveryCheckpointBarrier} so
+     * Step 2's {@code collectPreRecoveryBarrier} can find it.
+     */
+    @Test
+    void testSnapshotInsertsBarrierWhenChannelInRecoveryEvenIfDiskSliceEmpty() throws Exception {
+        InputChannelInfo cInfo = new InputChannelInfo(0, 0);
+        try (SpillFile spillFile = new SpillFile(tempDir)) {
+            spillFile.append(cInfo, ByteBuffer.wrap(payload(1)));
+
+            RecordingChannel chan = new RecordingChannel(cInfo);
+            SpillFileReader reader =
+                    newReader(spillFile, new RecordingBufferRequester(), cInfo, chan);
+
+            reader.drain();
+            // Drain has advanced cursor past the last entry. Simulate the race window: the
+            // channel queue is still in recovery (allDelivered not yet observed by Step 1, or
+            // sentinel still queued).
+            chan.inRecovery = true;
+            int recoveredBefore = chan.recovered.size();
+
+            long cpId = 6L;
+            DiskSnapshot snap = reader.snapshotAndInsertBarriers(cpId);
+            assertThat(snap.hasNext()).isFalse();
+            snap.close();
+
+            // Barrier must be appended even though the disk slice is empty.
+            assertThat(chan.recovered).hasSize(recoveredBefore + 1);
+            assertThat(extractRecoveryBarrierCheckpointId(chan.recovered.get(recoveredBefore)))
+                    .isEqualTo(cpId);
+            reader.close();
+        }
+    }
+
+    /**
+     * Per-channel insert: only the channels still in recovery receive a barrier; the channel that
+     * has already exited recovery must not be pulled back in. Verifies that barrier insertion is
+     * driven by per-channel {@code isInRecovery()}, not the global drain cursor.
+     */
+    @Test
+    void testSnapshotInsertsBarrierOnlyForChannelsStillInRecovery() throws Exception {
+        InputChannelInfo c0 = new InputChannelInfo(0, 0);
+        InputChannelInfo c1 = new InputChannelInfo(0, 1);
+        try (SpillFile spillFile = new SpillFile(tempDir)) {
+            spillFile.append(c0, ByteBuffer.wrap(payload(1)));
+
+            RecordingChannel chan0 = new RecordingChannel(c0);
+            RecordingChannel chan1 = new RecordingChannel(c1);
+            // chan1 has already exited recovery (consumer drained the sentinel and everything).
+            chan1.inRecovery = false;
+
+            SpillFileReader reader =
+                    newReader(spillFile, new RecordingBufferRequester(), c0, chan0, c1, chan1);
+
+            long cpId = 11L;
+            DiskSnapshot snap = reader.snapshotAndInsertBarriers(cpId);
+            snap.close();
+
+            assertThat(chan0.recovered).hasSize(1);
+            assertThat(extractRecoveryBarrierCheckpointId(chan0.recovered.get(0))).isEqualTo(cpId);
+            // chan1 must not receive a barrier — it had already exited recovery.
+            assertThat(chan1.recovered).isEmpty();
+        }
+    }
+
     private static long extractRecoveryBarrierCheckpointId(
             org.apache.flink.runtime.io.network.buffer.Buffer buffer) throws IOException {
         org.apache.flink.runtime.event.AbstractEvent event =
@@ -173,7 +242,7 @@ class SpillFileReaderTest {
     }
 
     @Test
-    void testSnapshotAndInsertBarriersReturnsEmptyWhenRecoveryDone() throws Exception {
+    void testSnapshotReturnsEmptyDiskSliceWhenCursorPastEnd() throws Exception {
         InputChannelInfo cInfo = new InputChannelInfo(0, 0);
         try (SpillFile spillFile = new SpillFile(tempDir)) {
             spillFile.append(cInfo, ByteBuffer.wrap(payload(1)));
@@ -184,13 +253,15 @@ class SpillFileReaderTest {
                     newReader(spillFile, new RecordingBufferRequester(), cInfo, chan);
 
             reader.drain();
+            // Simulate the consumer having fully drained the recovery queue, so the channel has
+            // exited recovery — Step 1 must skip the barrier insert for this channel.
+            chan.inRecovery = false;
             int recoveredBefore = chan.recovered.size();
 
             DiskSnapshot snap = reader.snapshotAndInsertBarriers(99L);
             assertThat(snap.hasNext()).isFalse();
             snap.close();
 
-            // No barrier inserted — channel buffer count is unchanged from post-drain state.
             assertThat(chan.recovered).hasSize(recoveredBefore);
             reader.close();
         }
@@ -215,6 +286,11 @@ class SpillFileReaderTest {
         private final int[] sequence;
         int maxDataSeq = Integer.MIN_VALUE;
         int finishSeq = -1;
+
+        // Decoupled from the recorded-buffer list because the stub has no real consumer to model
+        // queue drainage. Defaults to true (pre-drain state); tests flip to false to simulate the
+        // channel having exited recovery.
+        boolean inRecovery = true;
 
         RecordingChannel(InputChannelInfo channelInfo) {
             this.channelInfo = channelInfo;
@@ -245,6 +321,11 @@ class SpillFileReaderTest {
             if (sequence != null) {
                 finishSeq = ++sequence[0];
             }
+        }
+
+        @Override
+        public boolean isInRecovery() {
+            return inRecovery;
         }
     }
 
