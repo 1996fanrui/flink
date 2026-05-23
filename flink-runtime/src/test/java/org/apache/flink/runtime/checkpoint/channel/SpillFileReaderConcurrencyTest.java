@@ -199,6 +199,13 @@ class SpillFileReaderConcurrencyTest {
             // No-op for the stress test.
         }
 
+        @Override
+        public synchronized boolean isInRecovery() {
+            // Stress test races Step 1 against drain; treating the channel as always in-recovery
+            // exercises the per-channel barrier-insert path under contention.
+            return true;
+        }
+
         synchronized int dataCount() {
             return data.size();
         }

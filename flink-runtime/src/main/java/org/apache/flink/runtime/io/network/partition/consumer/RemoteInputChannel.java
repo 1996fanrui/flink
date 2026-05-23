@@ -59,7 +59,6 @@ import javax.annotation.concurrent.GuardedBy;
 import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Deque;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
@@ -128,9 +127,9 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
     /**
      * Recovery state for this channel: holds buffers delivered by the spill/drain producer, the
      * producer-completion flag, and the recovery-sequence counter. Guarded by {@code
-     * synchronized(receivedBuffers)} (reusing master's existing channel monitor so the recovery
-     * and live upstream queues stay atomically observable). Assigned in the constructor once
-     * {@code channelInfo} is available.
+     * synchronized(receivedBuffers)} (reusing master's existing channel monitor so the recovery and
+     * live upstream queues stay atomically observable). Assigned in the constructor once {@code
+     * channelInfo} is available.
      */
     @GuardedBy("receivedBuffers")
     private final RecoveredBufferQueue recoveredQueue;
@@ -221,16 +220,15 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
     }
 
     /**
-     * Flips the producer-completion flag to true exactly once and delivers the
-     * {@link EndOfInputChannelStateEvent} sentinel into {@code recoveredQueue}.
+     * Flips the producer-completion flag to true exactly once and delivers the {@link
+     * EndOfInputChannelStateEvent} sentinel into {@code recoveredQueue}.
      *
-     * <p>See {@code LocalInputChannel#finishRecoveredBufferDelivery} for the rationale —
-     * without the sentinel the consumer has no buffer to trigger the "queue empty +
-     * delivered → probe upstream" branch and the gate never gets re-notified for
-     * fresh-start sinks.
+     * <p>See {@code LocalInputChannel#finishRecoveredBufferDelivery} for the rationale — without
+     * the sentinel the consumer has no buffer to trigger the "queue empty + delivered → probe
+     * upstream" branch and the gate never gets re-notified for fresh-start sinks.
      *
-     * <p>End-of-drain exception: caller does NOT need to hold {@code SpillFileReader.lock}
-     * because no more buffers are being added at this point.
+     * <p>End-of-drain exception: caller does NOT need to hold {@code SpillFileReader.lock} because
+     * no more buffers are being added at this point.
      */
     @Override
     public void finishRecoveredBufferDelivery() throws IOException {
@@ -238,12 +236,21 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
         synchronized (receivedBuffers) {
             wasEmpty =
                     recoveredQueue.offer(
-                            EventSerializer.toBuffer(
-                                    EndOfInputChannelStateEvent.INSTANCE, false));
+                            EventSerializer.toBuffer(EndOfInputChannelStateEvent.INSTANCE, false));
             recoveredQueue.finish();
         }
         if (wasEmpty) {
             notifyChannelNonEmpty();
+        }
+    }
+
+    @Override
+    public boolean isInRecovery() {
+        // Lock matches the in-recovery read in getNextBuffer() so the value cannot flip while
+        // Step 1 of the snapshot trigger holds SpillFileReader.lock and is deciding whether to
+        // insert a RecoveryCheckpointBarrier into this channel.
+        synchronized (receivedBuffers) {
+            return recoveredQueue.isInRecovery();
         }
     }
 
@@ -431,8 +438,8 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
 
     /**
      * Returns the {@code DataType} of the buffer the next {@link #getNextBuffer()} call will
-     * produce. Priority elements always win, then the recovery queue head, then the regular
-     * {@code receivedBuffers} head, then {@code NONE}. Caller must hold {@code
+     * produce. Priority elements always win, then the recovery queue head, then the regular {@code
+     * receivedBuffers} head, then {@code NONE}. Caller must hold {@code
      * synchronized(receivedBuffers)}.
      */
     @GuardedBy("receivedBuffers")
