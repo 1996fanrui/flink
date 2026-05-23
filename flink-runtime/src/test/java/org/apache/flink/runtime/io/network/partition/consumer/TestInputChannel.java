@@ -260,7 +260,7 @@ public class TestInputChannel extends InputChannel implements RecoverableInputCh
     }
 
     private final java.util.Deque<Buffer> recoveredBuffersSpy = new java.util.ArrayDeque<>();
-    private boolean finishReadRecoveredStateCalled = false;
+    private boolean finishRecoveredBufferDeliveryCalled = false;
 
     @Override
     public void onRecoveredStateBuffer(Buffer buffer) {
@@ -268,16 +268,16 @@ public class TestInputChannel extends InputChannel implements RecoverableInputCh
     }
 
     @Override
-    public void finishReadRecoveredState() {
-        finishReadRecoveredStateCalled = true;
+    public void finishRecoveredBufferDelivery() {
+        finishRecoveredBufferDeliveryCalled = true;
     }
 
     public java.util.Deque<Buffer> getRecoveredBuffersSpy() {
         return recoveredBuffersSpy;
     }
 
-    public boolean isFinishReadRecoveredStateCalled() {
-        return finishReadRecoveredStateCalled;
+    public boolean isFinishRecoveredBufferDeliveryCalled() {
+        return finishRecoveredBufferDeliveryCalled;
     }
 
     public void assertReturnedEventsAreRecycled() {

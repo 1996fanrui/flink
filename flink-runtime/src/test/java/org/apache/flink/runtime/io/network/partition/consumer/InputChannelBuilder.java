@@ -238,7 +238,7 @@ public class InputChannelBuilder {
      */
     private static void markNoRecovery(RecoverableInputChannel channel) {
         try {
-            channel.finishReadRecoveredState();
+            channel.finishRecoveredBufferDelivery();
         } catch (java.io.IOException e) {
             throw new IllegalStateException(e);
         }

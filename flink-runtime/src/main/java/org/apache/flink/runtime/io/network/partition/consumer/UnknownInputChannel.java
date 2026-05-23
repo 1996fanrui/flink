@@ -215,7 +215,7 @@ class UnknownInputChannel extends InputChannel implements ChannelStateHolder {
      */
     private static void markNoRecovery(RecoverableInputChannel channel) {
         try {
-            channel.finishReadRecoveredState();
+            channel.finishRecoveredBufferDelivery();
         } catch (IOException e) {
             throw new IllegalStateException(
                     "Failed to mark non-recovery channel as recovery-complete", e);

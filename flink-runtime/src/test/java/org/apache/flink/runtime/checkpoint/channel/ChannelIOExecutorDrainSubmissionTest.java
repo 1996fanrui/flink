@@ -122,7 +122,7 @@ class ChannelIOExecutorDrainSubmissionTest {
                     }
 
                     @Override
-                    public void finishReadRecoveredState() {}
+                    public void finishRecoveredBufferDelivery() {}
                 };
 
         List<RecoverableInputChannel> all = new ArrayList<>();
@@ -188,7 +188,7 @@ class ChannelIOExecutorDrainSubmissionTest {
         }
 
         @Override
-        public void finishReadRecoveredState() {
+        public void finishRecoveredBufferDelivery() {
             finishCalled = true;
         }
     }

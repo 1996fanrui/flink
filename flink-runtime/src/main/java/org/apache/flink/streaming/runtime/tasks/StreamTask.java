@@ -1072,6 +1072,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
         try {
             spillFile = reader.getProducedSpillFile();
             if (spillFile == null) {
+                finishPhysicalRecoveredChannels(inputGates);
                 drainHandoff.complete(null);
                 return;
             }
@@ -1085,7 +1086,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
             drainHandoff.complete(spillReader);
         } catch (Throwable t) {
             drainHandoff.completeExceptionally(t);
-            throw t;
+            ExceptionUtils.rethrow(t);
         } finally {
             // The producer (RecoveredChannelStateHandler#ensureSpillFileWriter) took a ref-count
             // grant on the SpillFile that kept the on-disk segments alive across the
@@ -1101,6 +1102,13 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                             releaseError);
                 }
             }
+        }
+    }
+
+    private static void finishPhysicalRecoveredChannels(InputGate[] inputGates) throws IOException {
+        for (RecoverableInputChannel channel :
+                SpillFileReaderBootstrap.collectPhysicalChannels(inputGates)) {
+            channel.finishRecoveredBufferDelivery();
         }
     }
 
