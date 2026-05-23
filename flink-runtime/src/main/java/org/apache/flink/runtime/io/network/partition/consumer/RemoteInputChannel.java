@@ -136,9 +136,9 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
      * True once the spill/drain producer has finished adding all recovered buffers into this
      * channel. Guarded by {@code synchronized(receivedBuffers)}. Initialized to {@code false}
      * because every {@code RemoteInputChannel} instance is expected to receive a closing {@link
-     * #finishReadRecoveredState()} call before it is exposed to consumers, regardless of whether
-     * any buffers were actually pushed (see {@code RecoveredInputChannel.toInputChannel()} and
-     * {@code UnknownInputChannel.toRemoteInputChannel()}).
+     * #finishRecoveredBufferDelivery()} call before it is exposed to consumers, regardless of
+     * whether any buffers were actually pushed (see {@code RecoveredInputChannel.toInputChannel()}
+     * and {@code UnknownInputChannel.toRemoteInputChannel()}).
      *
      * <p>Full recovery completion is {@code allRecoveredBuffersDelivered == true &&
      * recoveredBuffers.isEmpty()}.
@@ -245,7 +245,7 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
      * no more buffers are being added at this point.
      */
     @Override
-    public void finishReadRecoveredState() throws IOException {
+    public void finishRecoveredBufferDelivery() throws IOException {
         synchronized (receivedBuffers) {
             allRecoveredBuffersDelivered = true;
         }
@@ -903,19 +903,35 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
     @GuardedBy("receivedBuffers")
     private List<Buffer> collectPreRecoveryBarrier(long checkpointId) throws IOException {
         List<Buffer> retained = new ArrayList<>();
-        Iterator<Buffer> it = recoveredBuffers.iterator();
-        while (it.hasNext()) {
-            Buffer b = it.next();
-            if (isRecoveryCheckpointBarrier(b, checkpointId)) {
-                it.remove();
-                b.recycleBuffer();
-                return retained;
+        try {
+            Iterator<Buffer> it = recoveredBuffers.iterator();
+            while (it.hasNext()) {
+                Buffer b = it.next();
+                if (isRecoveryCheckpointBarrier(b, checkpointId)) {
+                    it.remove();
+                    b.recycleBuffer();
+                    return retained;
+                }
+                if (b.isBuffer()) {
+                    retained.add(b.retainBuffer());
+                }
             }
-            if (b.isBuffer()) {
-                retained.add(b.retainBuffer());
-            }
+        } catch (IOException e) {
+            releaseRetainedBuffers(retained);
+            throw e;
         }
-        return retained;
+        releaseRetainedBuffers(retained);
+        throw new IOException(
+                "Missing RecoveryCheckpointBarrier for checkpoint "
+                        + checkpointId
+                        + " in recoveredBuffers for channel "
+                        + getChannelInfo());
+    }
+
+    private static void releaseRetainedBuffers(List<Buffer> retained) {
+        for (Buffer buffer : retained) {
+            buffer.recycleBuffer();
+        }
     }
 
     private static boolean isRecoveryCheckpointBarrier(Buffer b, long checkpointId)

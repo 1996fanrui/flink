@@ -49,8 +49,7 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 import static org.apache.flink.util.Preconditions.checkState;
 
 /** An input channel reads recovered state from previous unaligned checkpoint snapshots. */
-public abstract class RecoveredInputChannel extends InputChannel
-        implements ChannelStateHolder, RecoverableInputChannel {
+public abstract class RecoveredInputChannel extends InputChannel implements ChannelStateHolder {
 
     private static final Logger LOG = LoggerFactory.getLogger(RecoveredInputChannel.class);
 
@@ -138,7 +137,9 @@ public abstract class RecoveredInputChannel extends InputChannel
             for (Buffer buf : remainingBuffers) {
                 rec.onRecoveredStateBuffer(buf);
             }
-            rec.finishReadRecoveredState();
+            if (!inputGate.isCheckpointingDuringRecoveryEnabled()) {
+                rec.finishRecoveredBufferDelivery();
+            }
         } else {
             throw new IllegalStateException(
                     "Physical channel does not implement RecoverableInputChannel: "

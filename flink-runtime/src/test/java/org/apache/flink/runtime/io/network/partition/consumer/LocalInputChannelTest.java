@@ -19,6 +19,7 @@
 package org.apache.flink.runtime.io.network.partition.consumer;
 
 import org.apache.flink.metrics.SimpleCounter;
+import org.apache.flink.runtime.checkpoint.CheckpointException;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
 import org.apache.flink.runtime.checkpoint.CheckpointType;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
@@ -733,7 +734,7 @@ class LocalInputChannelTest {
 
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(10));
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(20));
-        channel.finishReadRecoveredState();
+        channel.finishRecoveredBufferDelivery();
 
         // then: Can read recovered buffers even before requestSubpartitions()
         Optional<InputChannel.BufferAndAvailability> first = channel.getNextBuffer();
@@ -1060,7 +1061,7 @@ class LocalInputChannelTest {
 
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(1));
         channel.getNextBuffer();
-        // Queue is empty; no finishReadRecoveredState was called. Without the subpartitionView
+        // Queue is empty; no finishRecoveredBufferDelivery was called. Without the subpartitionView
         // active, the channel returns empty.
         Optional<InputChannel.BufferAndAvailability> result = channel.getNextBuffer();
         assertThat(result).isNotPresent();
@@ -1083,7 +1084,7 @@ class LocalInputChannelTest {
         LocalInputChannel channel = newPushOnlyLocalChannel(inputGate, ChannelStateWriter.NO_OP);
         inputGate.setInputChannels(channel);
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(8));
-        channel.finishReadRecoveredState();
+        channel.finishRecoveredBufferDelivery();
         Optional<InputChannel.BufferAndAvailability> r = channel.getNextBuffer();
         assertThat(r).isPresent();
         assertThat(r.get().buffer().getSize()).isEqualTo(8);
@@ -1098,7 +1099,7 @@ class LocalInputChannelTest {
         SingleInputGate inputGate = new SingleInputGateBuilder().build();
         LocalInputChannel channel = newPushOnlyLocalChannel(inputGate, ChannelStateWriter.NO_OP);
         inputGate.setInputChannels(channel);
-        channel.finishReadRecoveredState();
+        channel.finishRecoveredBufferDelivery();
         assertThatThrownBy(channel::getNextBuffer)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("Queried for a buffer before requesting the subpartition");
@@ -1169,6 +1170,31 @@ class LocalInputChannelTest {
         List<Buffer> persisted = stateWriter.getAddedInput().get(channel.getChannelInfo());
         assertThat(persisted).hasSize(2);
         assertThat(persisted.stream().mapToInt(Buffer::getSize).toArray()).containsExactly(1, 2);
+    }
+
+    @Test
+    void testCheckpointStartedFailsWhenRecoveryBarrierIsMissing() throws Exception {
+        SingleInputGate inputGate = new SingleInputGateBuilder().build();
+        RecordingChannelStateWriter stateWriter = new RecordingChannelStateWriter();
+        LocalInputChannel channel = newPushOnlyLocalChannel(inputGate, stateWriter);
+        inputGate.setInputChannels(channel);
+
+        Buffer b1 = TestBufferFactory.createBuffer(1);
+        channel.onRecoveredStateBuffer(b1);
+        int refCntBefore = b1.refCnt();
+
+        CheckpointOptions options =
+                CheckpointOptions.unaligned(CheckpointType.CHECKPOINT, getDefault());
+        stateWriter.start(1L, options);
+
+        assertThatThrownBy(() -> channel.checkpointStarted(new CheckpointBarrier(1L, 0L, options)))
+                .isInstanceOf(CheckpointException.class)
+                .hasMessageContaining("Failed to extract recovered buffers for checkpoint 1")
+                .hasRootCauseMessage(
+                        "Missing RecoveryCheckpointBarrier for checkpoint 1 in recoveredBuffers for channel "
+                                + channel.getChannelInfo());
+        assertThat(b1.refCnt()).isEqualTo(refCntBefore);
+        assertThat(stateWriter.getAddedInput().get(channel.getChannelInfo())).isEmpty();
     }
 
     @Test

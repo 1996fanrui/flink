@@ -32,15 +32,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 class RemoteRecoveredInputChannelTest {
 
     /**
-     * Verifies that the migration path inside {@code RecoveredInputChannel.toInputChannel()} now
-     * uses {@link RecoverableInputChannel#onRecoveredStateBuffer} followed by {@link
-     * RecoverableInputChannel#finishReadRecoveredState()}: every remaining buffer is delivered in
-     * order to the physical {@link RemoteInputChannel}, and the resulting channel can be consumed
-     * via {@code getNextBuffer()}.
+     * Verifies that the migration path inside {@code RecoveredInputChannel.toInputChannel()}
+     * delivers every remaining buffer in order to the physical {@link RemoteInputChannel}. With
+     * checkpointing during recovery enabled, the spill drain is responsible for the final {@link
+     * RecoverableInputChannel#finishRecoveredBufferDelivery()} call.
      */
     @Test
-    void testToInputChannelUsesOnRecoveredStateBufferAndFinishReadRecoveredState()
-            throws Exception {
+    void testToInputChannelMigratesBuffersWithoutFinishingRecoveredState() throws Exception {
         SingleInputGate inputGate =
                 new SingleInputGateBuilder().setCheckpointingDuringRecoveryEnabled(true).build();
         RemoteRecoveredInputChannel recoveredChannel =
@@ -70,8 +68,11 @@ class RemoteRecoveredInputChannelTest {
 
         // RecoveredInputChannel.finishReadRecoveredState appends an EndOfInputChannelStateEvent
         // sentinel into receivedBuffers, which is also migrated into the new channel's
-        // recoveredBuffers queue. Drain it to fully complete the recovery phase.
+        // recoveredBuffers queue.
         Optional<InputChannel.BufferAndAvailability> tail = remoteChannel.getNextBuffer();
         assertThat(tail).isPresent();
+
+        // The physical channel is still in recovery until SpillFileReader.drain() finishes it.
+        assertThat(remoteChannel.getNextBuffer()).isNotPresent();
     }
 }

@@ -202,9 +202,9 @@ class SpillFileReaderTest {
 
     /**
      * Lightweight {@link RecoverableInputChannel} stub. Records every buffer pushed via {@code
-     * onRecoveredStateBuffer} and counts {@code finishReadRecoveredState} calls. Optionally tracks
-     * a shared monotonic counter across multiple instances so tests can prove finish ordering
-     * relative to data delivery.
+     * onRecoveredStateBuffer} and counts {@code finishRecoveredBufferDelivery} calls. Optionally
+     * tracks a shared monotonic counter across multiple instances so tests can prove finish
+     * ordering relative to data delivery.
      */
     private static final class RecordingChannel implements RecoverableInputChannel {
         private final InputChannelInfo channelInfo;
@@ -240,7 +240,7 @@ class SpillFileReaderTest {
         }
 
         @Override
-        public void finishReadRecoveredState() {
+        public void finishRecoveredBufferDelivery() {
             finishCalls++;
             if (sequence != null) {
                 finishSeq = ++sequence[0];

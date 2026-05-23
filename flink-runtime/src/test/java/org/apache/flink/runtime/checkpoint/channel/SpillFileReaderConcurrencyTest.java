@@ -195,7 +195,7 @@ class SpillFileReaderConcurrencyTest {
         }
 
         @Override
-        public synchronized void finishReadRecoveredState() {
+        public synchronized void finishRecoveredBufferDelivery() {
             // No-op for the stress test.
         }
 

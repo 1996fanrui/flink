@@ -138,8 +138,8 @@ class RecoveredInputChannelTest {
     @Test
     void testToInputChannelMigrationOrder() throws IOException {
         // Pre-load recovered buffers into the channel, then convert.
-        // The migration path must call onRecoveredStateBuffer in order, then
-        // finishReadRecoveredState on the downstream channel.
+        // The migration path must call onRecoveredStateBuffer in order. When checkpointing during
+        // recovery is enabled, the downstream channel is finished only by the spill drain.
         TestableRecoveredInputChannel channel = buildTestableChannel(true);
 
         Buffer b1 = TestBufferFactory.createBuffer(1);
@@ -164,7 +164,7 @@ class RecoveredInputChannelTest {
             }
         }
         assertThat(dataBuffers).containsExactly(b1, b2, b3);
-        assertThat(spy.isFinishReadRecoveredStateCalled()).isTrue();
+        assertThat(spy.isFinishRecoveredBufferDeliveryCalled()).isFalse();
     }
 
     @Test

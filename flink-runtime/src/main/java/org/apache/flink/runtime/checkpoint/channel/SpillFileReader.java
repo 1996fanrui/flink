@@ -42,8 +42,8 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  * currentSegmentIndex} / {@code currentOffset}; (c) the Step 1 disk snapshot plus per-channel
  * barrier insert. Inside drain, buffer allocation and the disk read run OUTSIDE the lock — the lock
  * is only taken to deliver the buffer into the channel and update the drain progress fields in a
- * single atomic action. End-of-drain {@code finishReadRecoveredState} runs outside the lock; at
- * that point no more buffers are being added so the (queue, offset) atomicity does not apply.
+ * single atomic action. End-of-drain {@code finishRecoveredBufferDelivery} runs outside the lock;
+ * at that point no more buffers are being added so the (queue, offset) atomicity does not apply.
  */
 @Internal
 public final class SpillFileReader implements RecoveryCheckpointTrigger, Closeable {
@@ -92,9 +92,9 @@ public final class SpillFileReader implements RecoveryCheckpointTrigger, Closeab
      * Drains every entry in the underlying spill file sequentially. Called by the {@code
      * channelIOExecutor} after conversion completes. Buffer allocation (A) and disk read (B) happen
      * outside the lock. Only the two-statement critical section (C) — channel deliver plus
-     * drain-progress advance — is inside the lock. End-of-drain {@code finishReadRecoveredState}
-     * (D) is outside the lock: no more buffers are being added at that point, so the (queue,
-     * offset) atomicity that the lock protects does not apply.
+     * drain-progress advance — is inside the lock. End-of-drain {@code
+     * finishRecoveredBufferDelivery} (D) is outside the lock: no more buffers are being added at
+     * that point, so the (queue, offset) atomicity that the lock protects does not apply.
      */
     public void drain() throws IOException, InterruptedException {
         for (SpillFile.SpillFileSegment seg : spillFile.segments()) {
@@ -132,9 +132,10 @@ public final class SpillFileReader implements RecoveryCheckpointTrigger, Closeab
             }
         }
         // (D) End-of-drain: signal producer completion to every channel. The flag is published
-        //     through the channel's internal monitor that finishReadRecoveredState already takes.
+        //     through the channel's internal monitor that finishRecoveredBufferDelivery already
+        //     takes.
         for (RecoverableInputChannel ch : allChannels) {
-            ch.finishReadRecoveredState();
+            ch.finishRecoveredBufferDelivery();
         }
     }
 
