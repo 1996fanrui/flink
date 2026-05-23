@@ -190,7 +190,15 @@ Delegate to a sub agent with the following instructions:
      --output-dir {LOG_DIR}/split_failures \
      {LOG_DIR}/*.log
 
-   # Step 3: Generate the Markdown report
+   # Step 3: Build the by-exception summary from the split failures.
+   # MANDATORY: this step must run before Phase 6.5 root-cause analysis.
+   # It must run even when there are zero failures (writes empty summary files).
+   python .claude/skills/flink-test-analyzer/scripts/extract_exception_summary.py \
+     --split-dir {LOG_DIR}/split_failures \
+     --output-dir {LOG_DIR} \
+     --source-log "{LOG_DIR}"
+
+   # Step 4: Generate the Markdown report
    cat {LOG_DIR}/parse_results.json | python .claude/skills/flink-test-analyzer/scripts/generate_report.py \
      --commit-hash {COMMIT_HASH} \
      --branch-name {BRANCH_NAME} \
@@ -204,13 +212,14 @@ Delegate to a sub agent with the following instructions:
 **Checklist before proceeding:**
 - [ ] `parse_results.json` generated
 - [ ] `split_failures/` directory created (may be empty if no failures)
+- [ ] `exception_summary.md` and `exception_summary.json` generated
 - [ ] `report.md` generated
 - [ ] `failure_details.md` generated
 
 **Verification**: Delegate to a SEPARATE verification sub agent:
-1. Verify that `parse_results.json`, `report.md`, and `failure_details.md` exist in `{LOG_DIR}`
+1. Verify that `parse_results.json`, `exception_summary.md`, `exception_summary.json`, `report.md`, and `failure_details.md` exist in `{LOG_DIR}`
 2. Compare actual test case counts from `parse_results.json` against expectations from Phase 4
-3. Verify `report.md` and `failure_details.md` were generated and are non-empty
+3. Verify `report.md`, `failure_details.md`, and `exception_summary.md` were generated and are non-empty
 4. If any check fails, report the failure and re-run the execution sub agent above
 5. Only proceed to the next phase when all checks pass
 
@@ -218,7 +227,21 @@ Delegate to a sub agent with the following instructions:
 
 **Skip this phase entirely if there are no failed tests (all tests passed in Phase 6).**
 
+**Prerequisite (MANDATORY)**: `{LOG_DIR}/exception_summary.md` and
+`{LOG_DIR}/exception_summary.json` from Phase 6 must already exist. Do not
+start any root-cause analysis before reading the summary — it is the
+entry point for understanding which exception classes the failures fall
+into and how many tests each class affects. If the summary files are
+missing, return to Phase 6 and produce them first.
+
 Delegate to a sub agent with the following instructions:
+
+0. **Read the exception summary first**: Read `{LOG_DIR}/exception_summary.md`
+   (and optionally `exception_summary.json` for the structured form) to
+   establish the top-level exception classes and root-cause classes (deepest
+   `Caused by:`) plus the per-class failure counts. All downstream analysis
+   in this phase must reference these classes/counts rather than re-deriving
+   them from raw logs.
 
 1. **Deduplicate failures**: Run the deduplication script to group failures by root cause:
    ```bash
@@ -289,6 +312,11 @@ Delegate to a sub agent with the following instructions:
      ```
      sed -i '' "s|{LOG_DIR}/split_failures|{ARCHIVE_DIR}/split_failures|g" {ARCHIVE_DIR}/failure_details.md
      ```
+   - The exception summary:
+     ```
+     cp {LOG_DIR}/exception_summary.md {ARCHIVE_DIR}/ 2>/dev/null || true
+     cp {LOG_DIR}/exception_summary.json {ARCHIVE_DIR}/ 2>/dev/null || true
+     ```
    - The root cause report (if it exists):
      ```
      cp {LOG_DIR}/root_cause_report.md {ARCHIVE_DIR}/ 2>/dev/null || true
@@ -302,12 +330,13 @@ Delegate to a sub agent with the following instructions:
 - [ ] Archive directory exists at `{ARCHIVE_DIR}`
 - [ ] `report.md` copied
 - [ ] `failure_details.md` copied
+- [ ] `exception_summary.md` and `exception_summary.json` copied
 - [ ] Failure logs and split failures copied (if any)
 - [ ] `root_cause_report.md` copied (if failures existed)
 - [ ] `deduplicated_failures.json` copied (if failures existed)
 
 **Verification**: Delegate to a SEPARATE verification sub agent:
-1. Verify the archive directory exists and contains `report.md` and `failure_details.md`
+1. Verify the archive directory exists and contains `report.md`, `failure_details.md`, `exception_summary.md`, and `exception_summary.json`
 2. If failures existed, verify that `root_cause_report.md` and `deduplicated_failures.json` are also in the archive
 3. Verify that paths inside the archived files reference `{ARCHIVE_DIR}` instead of `{LOG_DIR}`
 4. If any check fails, report the failure and re-run the execution sub agent above
