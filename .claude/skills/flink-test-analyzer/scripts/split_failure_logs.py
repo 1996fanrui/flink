@@ -18,33 +18,39 @@ import re
 import sys
 from pathlib import Path
 
+# Parameter block: greedy `.*` lets us match nested brackets like `[[1]]`
+# (JUnit5 Jupiter sometimes emits the param index wrapped in extra brackets).
+# Greediness is anchored by the required suffix ("is running.", "failed with:",
+# "successfully run."), so we cannot over-consume.
+_PARAM_BLOCK = r"(?:\[(.*)\])?"
+
 # JUnit4 / Surefire style: Test method[params](full.class.Name) is running.
 _RUNNING_RE_LEGACY = re.compile(
     r"^Test\s+(\w+)"           # method
-    r"(?:\[([^\]]*)\])?"       # optional [params]
-    r"\(([^)]+)\)"             # (full.class.Name)
-    r"\s+is running\.\s*$"
+    + _PARAM_BLOCK             # optional [params]
+    + r"\(([^)]+)\)"           # (full.class.Name)
+    + r"\s+is running\.\s*$"
 )
 
 # JUnit5 / Jupiter style: Test full.class.Name.method[params] is running.
 _RUNNING_RE_JUPITER = re.compile(
     r"^Test\s+([\w.]+?)\.(\w+)"  # full.class.Name . method
-    r"(?:\[([^\]]*)\])?"          # optional [params]
-    r"\s+is running\.\s*$"
+    + _PARAM_BLOCK                # optional [params]
+    + r"\s+is running\.\s*$"
 )
 
 _SUCCESS_RE_LEGACY = re.compile(
-    r"^Test\s+\w+(?:\[[^\]]*\])?\([^)]+\)\s+successfully run\.\s*$"
+    r"^Test\s+\w+" + _PARAM_BLOCK + r"\([^)]+\)\s+successfully run\.\s*$"
 )
 _SUCCESS_RE_JUPITER = re.compile(
-    r"^Test\s+[\w.]+?\.\w+(?:\[[^\]]*\])?\s+successfully run\.\s*$"
+    r"^Test\s+[\w.]+?\.\w+" + _PARAM_BLOCK + r"\s+successfully run\.\s*$"
 )
 
 _FAILED_RE_LEGACY = re.compile(
-    r"^Test\s+\w+(?:\[[^\]]*\])?\([^)]+\)\s+failed with:\s*$"
+    r"^Test\s+\w+" + _PARAM_BLOCK + r"\([^)]+\)\s+failed with:\s*$"
 )
 _FAILED_RE_JUPITER = re.compile(
-    r"^Test\s+[\w.]+?\.\w+(?:\[[^\]]*\])?\s+failed with:\s*$"
+    r"^Test\s+[\w.]+?\.\w+" + _PARAM_BLOCK + r"\s+failed with:\s*$"
 )
 
 
