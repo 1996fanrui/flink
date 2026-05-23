@@ -30,7 +30,8 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 /**
  * Accumulates filter-phase output bytes for one input channel at a time and flushes to a {@link
  * SpillFile} on two triggers: (a) the input channel switches, or (b) the accumulator buffer fills
- * up. {@link #close()} flushes any residual bytes before delegating to the spill file.
+ * up. Both triggers are detected inside {@link #requestBufferBlocking(InputChannelInfo)}. {@link
+ * #close()} flushes any residual bytes before delegating to the spill file.
  *
  * <p>The accumulator implements {@link BufferSupplier}: filter callers pass {@code this} as the
  * supplier so that filter output bytes land directly in the accumulator — no intermediate buffer
@@ -56,7 +57,8 @@ public final class FilteredBufferWriter implements Closeable, BufferSupplier {
     /**
      * The input channel that owns the bytes currently sitting in {@link #outputBuffer}. {@code
      * null} when the accumulator is empty (after a flush or before the first {@link
-     * #beginChannel}). Set by {@link #beginChannel}; consumed and reset by {@link #flush()}.
+     * #requestBufferBlocking}). Updated by {@link #requestBufferBlocking}; consumed and reset to
+     * {@code null} by {@link #flush()}.
      */
     private InputChannelInfo currentChannel;
 
@@ -68,38 +70,29 @@ public final class FilteredBufferWriter implements Closeable, BufferSupplier {
     }
 
     /**
-     * Declares the input channel that will own the next batch of filter output bytes. Flushes the
-     * accumulator first if the previous channel was different — every {@link SpillFile} entry
-     * carries exactly one channel's bytes.
+     * {@link BufferSupplier} entry. Returns the single accumulator buffer to the filter, tagged
+     * with the destination channel. Flushes the accumulator first if either (a) the previous
+     * channel was different — every {@link SpillFile} entry carries exactly one channel's bytes —
+     * or (b) the accumulator is already at capacity, so the filter receives a buffer with writable
+     * space. After any flush, {@code currentChannel} is set to the supplied {@code channelInfo}.
+     *
+     * <p>The returned buffer is the accumulator itself — the filter writes into it but does NOT own
+     * it. The handler that constructed this writer (and holds the underlying pool buffer) is
+     * responsible for recycling. Callers must not call {@code recycleBuffer()} on the returned
+     * value.
      */
-    public void beginChannel(InputChannelInfo channelInfo) throws IOException {
+    @Override
+    public Buffer requestBufferBlocking(InputChannelInfo channelInfo) throws IOException {
         checkNotNull(channelInfo);
-        if (currentChannel != null
-                && !currentChannel.equals(channelInfo)
-                && outputBuffer.getSize() > 0) {
+        boolean channelSwitch = currentChannel != null && !currentChannel.equals(channelInfo);
+        boolean bufferFull = outputBuffer.getSize() == outputBuffer.getMaxCapacity();
+        if ((channelSwitch || bufferFull) && outputBuffer.getSize() > 0) {
+            // flush() resets currentChannel to null; the assignment below re-tags the accumulator
+            // with the caller-supplied channelInfo before returning.
             flush();
         }
         currentChannel = channelInfo;
-    }
-
-    /**
-     * {@link BufferSupplier} entry. Returns the single accumulator buffer to the filter; if the
-     * accumulator is already at capacity, flushes its bytes to the spill file first so the filter
-     * receives a buffer with writable space. Callers must invoke {@link #beginChannel} first so the
-     * flush has a channel tag.
-     *
-     * <p>The returned buffer is {@code retainBuffer()}-bumped so the filter's {@code
-     * recycleBuffer()} after writing does not push the accumulator's refCount to zero.
-     */
-    @Override
-    public Buffer requestBufferBlocking() throws IOException {
-        assert currentChannel != null : "beginChannel must be called before requestBufferBlocking";
-        if (outputBuffer.getSize() == outputBuffer.getMaxCapacity()) {
-            InputChannelInfo saved = currentChannel;
-            flush();
-            currentChannel = saved;
-        }
-        return outputBuffer.retainBuffer();
+        return outputBuffer;
     }
 
     /**

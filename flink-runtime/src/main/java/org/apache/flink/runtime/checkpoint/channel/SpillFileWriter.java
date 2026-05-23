@@ -48,8 +48,9 @@ public final class SpillFileWriter implements Closeable {
 
     /**
      * Package-private access to the underlying accumulator. The filter-phase wiring in {@code
-     * RecoveredChannelStateHandler} passes it directly as the filter's {@code BufferSupplier} and
-     * calls {@code beginChannel} before each filter invocation.
+     * RecoveredChannelStateHandler} passes it directly as the filter's {@code BufferSupplier}; the
+     * filter tags each {@code requestBufferBlocking} call with the destination channel so the
+     * accumulator flushes whenever the channel switches.
      */
     FilteredBufferWriter getAccumulator() {
         return accumulator;

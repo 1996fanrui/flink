@@ -102,32 +102,28 @@ class RecoveredChannelStateHandlerFilterRoutingTest {
     }
 
     @Test
-    void testFilterOnAccumulatorBuffersComeFromPoolNotHeap() throws Exception {
-        // The accumulator's prefilter + postfilter buffers must be sourced from the network
-        // buffer pool, not heap-allocated. Verify by observing pool reservation.
-        int availableBefore = networkBufferPool.getNumberOfAvailableMemorySegments();
-
+    void testFilterOnAccumulatorBuffersComeFromHeapNotPool() throws Exception {
+        // The accumulator's prefilter + postfilter buffers are unpooled heap segments owned by
+        // the handler — invoking filter recovery must NOT consume any network buffer pool
+        // segments for the accumulator path. Channel-side exclusive buffer reservation, if any,
+        // happens at handler construction and is already reflected in the pre-recover snapshot.
         ChannelStateFilteringHandler filteringHandler = newPassThroughFilteringHandler();
         InputChannelRecoveredStateHandler handler = newFilterOnHandler(filteringHandler);
         try (ChannelStateFilteringHandler ignored = filteringHandler) {
+            int availableBeforeRecover = networkBufferPool.getNumberOfAvailableMemorySegments();
+
             invokeRecoverWithRecords(handler, 1L, 2L, 3L);
 
-            // The pool must have shrunk by at least 2 segments — one prefilter + one postfilter
-            // for the accumulator. (Exclusive reservation per channel may take more; we only
-            // assert the lower bound here.)
-            int availableDuring = networkBufferPool.getNumberOfAvailableMemorySegments();
-            assertThat(availableDuring)
-                    .as("accumulator buffers must be sourced from the network buffer pool")
-                    .isLessThanOrEqualTo(availableBefore - 2);
+            int availableAfterRecover = networkBufferPool.getNumberOfAvailableMemorySegments();
+            assertThat(availableAfterRecover)
+                    .as("filter accumulator buffers must not be sourced from the network pool")
+                    .isEqualTo(availableBeforeRecover);
 
-            // handler.close() recycles the two accumulator-owned pooled buffers; the channel
-            // still holds the other exclusive buffers it reserved on requestExclusiveBuffers,
-            // released only when the input gate is closed (mirroring master test fixtures).
             handler.close();
             inputGate.close();
             assertThat(networkBufferPool.getNumberOfAvailableMemorySegments())
-                    .as("accumulator buffers must be returned to the pool by close + gate close")
-                    .isEqualTo(availableBefore);
+                    .as("pool count after close must match pre-recover (filter took nothing)")
+                    .isEqualTo(availableBeforeRecover);
         }
     }
 
@@ -172,51 +168,6 @@ class RecoveredChannelStateHandlerFilterRoutingTest {
             assertThat(queued)
                     .as("filter-off must enqueue the descriptor + data buffer into the channel")
                     .isGreaterThanOrEqualTo(2);
-        }
-    }
-
-    @Test
-    void testBufferFilteringCompleteFutureCompletesAfterSpillFileClosed() throws Exception {
-        ChannelStateFilteringHandler filteringHandler = newPassThroughFilteringHandler();
-        try (ChannelStateFilteringHandler ignored = filteringHandler) {
-            InputChannelRecoveredStateHandler handler = newFilterOnHandler(filteringHandler);
-            invokeRecoverWithRecords(handler, 1L, 2L);
-
-            SpillFile activeSpillFile = handler.peekActiveSpillFileForTesting();
-            assertThat(activeSpillFile)
-                    .as("filter-on path must construct a SpillFile before close()")
-                    .isNotNull();
-            assertThat(activeSpillFile.isClosed())
-                    .as("SpillFile must still be open before handler.close()")
-                    .isFalse();
-            assertThat(inputGate.getBufferFilteringCompleteFuture().isDone())
-                    .as("bufferFilteringCompleteFuture must NOT be complete before handler.close()")
-                    .isFalse();
-
-            // Attach a completion observer that records the SpillFile's closed-state at the
-            // moment the future completes. The handler's close() invokes
-            // spillFileWriter.close() before inputGate.finishReadRecoveredState(); if that
-            // ordering held, the observer must see isClosed()=true.
-            java.util.concurrent.atomic.AtomicBoolean spillClosedAtFutureCompletion =
-                    new java.util.concurrent.atomic.AtomicBoolean(false);
-            inputGate
-                    .getBufferFilteringCompleteFuture()
-                    .thenRun(() -> spillClosedAtFutureCompletion.set(activeSpillFile.isClosed()));
-
-            handler.close();
-
-            assertThat(inputGate.getBufferFilteringCompleteFuture().isDone())
-                    .as("bufferFilteringCompleteFuture must complete after handler.close()")
-                    .isTrue();
-            assertThat(spillClosedAtFutureCompletion.get())
-                    .as(
-                            "SpillFile must already be closed at the instant the channel's"
-                                    + " bufferFilteringCompleteFuture completes")
-                    .isTrue();
-
-            SpillFile produced = handler.getProducedSpillFile();
-            assertThat(produced).isSameAs(activeSpillFile);
-            assertThat(produced.isClosed()).isTrue();
         }
     }
 

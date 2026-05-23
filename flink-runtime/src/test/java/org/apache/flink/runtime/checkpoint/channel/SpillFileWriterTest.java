@@ -48,8 +48,7 @@ class SpillFileWriterTest {
         FilteredBufferWriter accumulator = newAccumulator(spillFile);
         SpillFileWriter writer = new SpillFileWriter(spillFile, accumulator);
 
-        accumulator.beginChannel(new InputChannelInfo(0, 0));
-        Buffer slot = accumulator.requestBufferBlocking();
+        Buffer slot = accumulator.requestBufferBlocking(new InputChannelInfo(0, 0));
         writeBytes(slot, 7, (byte) 0x33);
         assertThat(spillFile.entries()).isEmpty();
 
