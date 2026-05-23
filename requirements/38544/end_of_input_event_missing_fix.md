@@ -80,3 +80,99 @@ master 的 `getNextRecoveredBuffer`（`master/.../LocalInputChannel.java:377-396
 2. 跑 `rui_tools/loop.sh`（fresh-start case [1] 之前 100% 复现 hang）
 3. 预期：测试不再卡死，case [1] 通过或失败但**不挂**
 4. 若仍 hang：抓 heap，按 hang_evidence.md §5.1 流程对照检查 `recoveredQueue.size`、`enqueuedBitSet`、`availFut` 状态——理论上 `recoveredQueue.size` 应该至少出现过 1 个 sentinel，gate 的 availFut 应该被完成过
+
+## 7. Follow-up：§4 修复在 cpDuringRecovery=false 路径上过度扩散，引入新 race（2026-05-24）
+
+`loop.sh 20260523_222057` 跑里出现 4 个 `UnalignedCheckpointRescaleWithMixedExchangesITCase.testRescaleFromUnalignedCheckpoint[[1]] / [[2]] / [[4]] / [[5]]` 失败，栈一致：
+
+```
+java.lang.IllegalStateException: Queried for a buffer before requesting the subpartition.
+    at LocalInputChannel.checkAndWaitForSubpartitionView(LocalInputChannel.java:575)
+    at LocalInputChannel.getNextBuffer(LocalInputChannel.java:379)
+    at SingleInputGate.readBufferFromInputChannel(...)
+```
+
+4 个失败 case 的 `execution.checkpointing.during-recovery.enabled` 全部是 `false`（log 里 `PseudoRandomValueSelector` 行可证）。也就是说 §4 引入的"无差别推 sentinel + notify"在 cpDuringRecovery=false 路径上也跑了，但那条路径上**根本不需要它**。
+
+### 7.1 为什么 cpDuringRecovery=false 不需要 sentinel
+
+§4 的 sentinel 解决的是 cpDuringRecovery=true 路径上独有的"`isInRecovery=true` 阻塞期跨越"问题：drain 完成时上游的 `notifyDataAvailable` 早被消化、没人再 wake task。cpDuringRecovery=false 路径上**不存在这个阻塞期**：
+
+- `RecoveredInputChannel.toInputChannel` 在 cpDuringRecovery=false 路径下被调用时，`RecoveredInputChannel.receivedBuffers` 上的 recovered state 已经全部被 task 消费完了（`stateConsumedFuture` 就是这么 complete 的）
+- 物理 channel 一被构造出来，`recoveredQueue` 是空的，没有 SpillFileReader 会再来 push
+- 此时只要 `allDelivered=true`，`isInRecovery` 立刻就是 false，channel 进入 master 等价的 normal mode
+- wake-up 完全靠 master 协议：`LocalInputChannel.requestSubpartitions` 成功后主动 `notifyDataAvailable(view) → notifyChannelNonEmpty()`、或上游后续 `view.notifyDataAvailable` 回调（master 几年来都这么 work）
+
+### 7.2 §4 在 cpDuringRecovery=false 路径上为什么有害
+
+`LocalInputChannel.requestSubpartitions` 在上游 `ResultPartition` 还没注册时抛 `PartitionNotFoundException`，被 catch 后设 `retriggerRequest=true` 走 Timer 异步重试（master 一直如此）。`subpartitionView` 保持 null 直到某次 retrigger 成功。这本来是良性的：master 路径上 channel 不在 `inputChannelsWithData` 里，task 不会调它的 `getNextBuffer`，等 retrigger 成功的那一刻 channel 自己 `notifyChannelNonEmpty()` 才 wake task。
+
+§4 修复在 cpDuringRecovery=false 路径上**也**推一个 sentinel：
+
+1. sentinel 入 `recoveredQueue` → `notifyChannelNonEmpty()` → channel 被 enqueue
+2. task wake → `getNextBuffer` → `isInRecovery=true`（buffers 非空）→ 走 recovery 分支 → poll 走 sentinel
+3. buffers 空 + `allDelivered=true` → 下一次 `getNextBuffer` `isInRecovery=false` → 走 normal path → `checkAndWaitForSubpartitionView` 撞上 `subpartitionView==null`（Timer 还在重试中）→ 抛
+
+也就是 §4 的 sentinel 把 task **提前**推进了 normal path，而上游 retrigger 还没成功——这是 §4 之前根本不存在的窗口。
+
+### 7.3 落地修复（已实施 2026-05-24）
+
+最小改动：让 cpDuringRecovery=false 路径上的物理 channel 在**构造时**就把 `allDelivered=true`，根本不再依赖任何后续的 `finishRecoveredBufferDelivery()` 调用。
+
+- `RecoveredBufferQueue`：构造器加 `boolean initiallyDelivered` 参数，初始化字段 `allDelivered = initiallyDelivered`
+- `LocalInputChannel` / `RemoteInputChannel` 构造器：`new RecoveredBufferQueue(channelInfo, !inputGate.isCheckpointingDuringRecoveryEnabled())`
+- `RecoveredInputChannel.toInputChannel`：删除 cpDuringRecovery=false 分支对 `rec.finishRecoveredBufferDelivery()` 的调用（注释里说明）
+- `LocalInputChannel.finishRecoveredBufferDelivery` / `RemoteInputChannel.finishRecoveredBufferDelivery` 方法**保留不动**——`SpillFileReader.drain()` 在 cpDuringRecovery=true 路径上仍然调它，那里的 sentinel + notify 仍是必需的
+
+### 7.4 cpDuringRecovery=true 路径上的残余 race（已实施 2026-05-24）
+
+§4 的"推 sentinel"在 cpDuringRecovery=true 路径上仍然必要（跨越阻塞期 wake 一次），但 push sentinel 跟 wake 之间存在一段窗口：drain 完成推 sentinel 时如果 `requestSubpartitions` 仍在 `PartitionNotFoundException` Timer 重试中（`subpartitionView==null` / `partitionRequestClient==null`），无条件 wake 会让 task 消费 sentinel 翻 `isInRecovery=false` 后走 normal path 撞 `Queried before request`。本次 loop 里这条路径上的 4 个 case `[[3]]` 因为先撞了 Group 1（`Missing RecoveryCheckpointBarrier`，已由 SpillFileReader per-channel barrier 修复）没暴露 Group 2，但 race 客观存在，需要从根上封死。
+
+#### 7.4.1 思路
+
+让 sentinel 的入队跟 master 的 retrigger wake 协议对齐：所有恢复 buffer（含 sentinel）即便提前到了也不消费，必须等 `requestSubpartitions` 真正把 `subpartitionView` / `partitionRequestClient` publish 之后才允许 task 走 normal path。落地两个动作：
+
+1. **`finishRecoveredBufferDelivery` 条件 wake**：sentinel 入队跟 `allDelivered=true` 仍在锁内一起做（保持原有原子性），但出锁后只有 `wasEmpty && (上游字段已 publish)` 才 `notifyChannelNonEmpty()`。`subpartitionView` 为 null 时跳过 wake 是安全的——`requestSubpartitions` 的 retrigger 路径自带 `notifyDataAvailable(view) → notifyChannelNonEmpty()`，那时 sentinel 已经在队列里，task 一来就能消费。
+2. **依赖 `volatile` 而非额外锁**：`LocalInputChannel.subpartitionView` 字段（`:78`）和 `RemoteInputChannel.partitionRequestClient` 字段（`:103`）都已经是 `volatile`，且都是"一次性 publish"语义（release 路径置回 null 是终态），单读、不 check-then-act，JMM 保证读到的 null/非 null 跟 wall-clock 顺序一致——这条 wake 决定路径 volatile 就够，不必引 `requestLock` 增加 lock-order 负担。
+
+#### 7.4.2 落地代码
+
+统一原则：**任何进 `recoveredQueue` 的 buffer 都必须等上游 publish 后才允许触发消费**，所以 `onRecoveredStateBuffer`（data buffer / RecoveryCheckpointBarrier）和 `finishRecoveredBufferDelivery`（sentinel）的 wake 路径都加同一条件 wake——避免依赖"现有 caller 都满足 `allDelivered=false` 假设"这种脆弱 invariant。
+
+```java
+// LocalInputChannel.onRecoveredStateBuffer / finishRecoveredBufferDelivery
+synchronized (recoveredQueue) {
+    wasEmpty = recoveredQueue.offer(buffer);   // 或 sentinel + recoveredQueue.finish()
+}
+if (wasEmpty && subpartitionView != null) {    // 条件 wake，两处一致
+    notifyChannelNonEmpty();
+}
+
+// RemoteInputChannel.onRecoveredStateBuffer / finishRecoveredBufferDelivery
+synchronized (receivedBuffers) {
+    wasEmpty = recoveredQueue.offer(buffer);   // 或 sentinel + recoveredQueue.finish()
+}
+if (wasEmpty && partitionRequestClient != null) {   // 条件 wake，两处一致
+    notifyChannelNonEmpty();
+}
+```
+
+#### 7.4.3 happens-before 论证
+
+记 A = `finishRecoveredBufferDelivery` 线程（cpDuringRecovery=true 路径上是 channelIOExecutor / drain），B = `requestSubpartitions` 成功线程（mailbox），列出所有交错：
+
+- B 写 `subpartitionView` 早于 A 读：volatile 保证 A 读到非 null，A 自己 wake，B 后续 `notifyDataAvailable` 是重复 wake（无害）；
+- B 写在 A 读之后：A 读到 null 不 wake，B 之后 `notifyDataAvailable(view)` 自己 wake，task 来 poll 时 sentinel 已经在队列里被消费；
+- B 已 wake、task 已 poll empty 退队、A 之后才 push sentinel：A 读 `subpartitionView` 必看到 B 已 publish 的非 null，A wake 兜底，channel 重新入队、消费 sentinel。
+
+没有 lost wake-up 窗口。前提是 `subpartitionView` / `partitionRequestClient` 的 publish 满足"一次性、单调"：master 现状满足（release 终态置 null 不会再翻回非 null），代码 invariant 一致。
+
+#### 7.4.4 跟 §7.3 的关系
+
+§7.3 让 cpDuringRecovery=false 路径压根不调 `finishRecoveredBufferDelivery`、靠"构造即 `allDelivered=true`"避开 sentinel 翻转；§7.4 让 cpDuringRecovery=true 路径上仍然要调的 `finishRecoveredBufferDelivery` 改成条件 wake、对齐 master 的 retrigger wake 协议。两条路径合起来彻底封死 Group 2 的两类窗口（构造期 race + drain 期 race）。
+
+#### 7.4.5 验证
+
+- 已修：编译通过（`finishRecoveredBufferDelivery` 仅改 wake 条件，字段无需新增）
+- 跑 `rui_tools/loop.sh` 至少 100 轮，确认 `Queried for a buffer before requesting the subpartition.` 不再复现
+- 单元测试视后续讨论补加（典型场景：mock channelIOExecutor 推 sentinel 时 `subpartitionView=null`，要求 task 不被 wake；再触发 `requestSubpartitions` 成功，确认 task 被 wake 并消费 sentinel）
