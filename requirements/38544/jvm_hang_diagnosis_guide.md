@@ -144,6 +144,131 @@ GUI 同时支持右键 → "List objects" → "with incoming references" / "with
 5. **持续验证状态稳定**：隔 5-10 秒再抓一份 dump，对比两份的 stack 与字段是否完全一致——一致才说明真死锁。
 6. **不要相信你脑补的事件序列**。heap 只能证明"卡死时刻的状态"，不能证明"如何走到这个状态"。要证明事件顺序，得加 log + 重跑。
 
+## 5.1 Flink 消费/checkpoint 卡死专项流程
+
+这是 §5 的专项展开，针对「下游 sink/operator 不再消费、上游有数据堆着」这类 hang。**严格按顺序、不要跳步**。
+
+### Step 1: 定位「应该消费但卡住的 InputChannel」
+
+从 thread dump 找到所有阻塞在 mailbox 的 operator 线程，对每个对应的 `SingleInputGate` 检查：
+
+```sql
+SELECT g.@objectAddress AS gate, g.gateIndex, g.requestedPartitionsFlag,
+       g.hasReceivedAllEndOfPartitionEvents,
+       g.enqueuedInputChannelsWithData,
+       g.inputChannelsWithData,
+       g.availabilityHelper.availableFuture.result AS availFut
+FROM org.apache.flink.runtime.io.network.partition.consumer.SingleInputGate g
+```
+
+**判定"卡住"的硬性条件**（同时成立）：
+- `requestedPartitionsFlag = true`（已经请求过 partitions，进入消费阶段）
+- `hasReceivedAllEndOfPartitionEvents = false`（还没收到所有 EOP，逻辑上还该消费）
+- `availFut = null`（availability future 未完成，consumer 在等待）
+- `enqueuedInputChannelsWithData` 的 BitSet `words[0] = 0x0`（没有任何 channel 在 queue 里）
+
+四个全中 = **gate 在等数据，但它认为自己没数据可拉**——这就是要排查的 gate。
+
+### Step 2: 找出该 gate 下"应该有数据"的 channel
+
+枚举 `channels` 数组里的每个 `InputChannel`，按类型分别查它的"有数据的迹象"：
+
+```sql
+-- LocalInputChannel：查 recovery 队列 / view 引用
+SELECT c.@objectAddress, c.channelInfo.gateIdx AS g, c.channelInfo.inputChannelIdx AS ci,
+       c.allRecoveredBuffersDelivered AS delivered,
+       c.recoveredBuffers AS recQ,
+       c.subpartitionView AS view,
+       c.hasPendingPriorityEvent AS pri
+FROM org.apache.flink.runtime.io.network.partition.consumer.LocalInputChannel c
+
+-- RemoteInputChannel：查 receivedBuffers + recoveredBuffers
+SELECT c.@objectAddress, c.channelInfo.gateIdx AS g, c.channelInfo.inputChannelIdx AS ci,
+       c.allRecoveredBuffersDelivered AS delivered,
+       c.recoveredBuffers AS recQ,
+       c.receivedBuffers AS recvQ
+FROM org.apache.flink.runtime.io.network.partition.consumer.RemoteInputChannel c
+```
+
+**"应该消费但被忽略"的判定**：
+- `delivered = true` 且 `recQ.size = 0` 且 `recvQ.size = 0`（如果是 Remote）——本地真的没数据
+- 但下面 Step 3 会发现上游有数据 → 矛盾 → 这个 channel 就是卡住的
+
+### Step 3: 顺着 channel **直接找到对应的上游 subpartition**
+
+**关键纪律**：必须通过引用关系找到**这个 channel 对应的那个 subpartition**，不能随便抓一个 `PipelinedSubpartition` 看。
+
+- **LocalInputChannel**：`channel.subpartitionView.parent` 就是上游 subpartition。
+  - 双向校验：`subpartition.readView == channel.subpartitionView` 必须成立。
+- **RemoteInputChannel**：上游在远端 TM。本地 heap 拿不到。改去查 `receivedBuffers` 本身（netty push 后就在这里）。
+
+OQL：
+```sql
+-- Local: 顺着 view 找到上游
+SELECT c.@objectAddress AS chan,
+       c.subpartitionView AS view,
+       c.subpartitionView.parent AS upSub
+FROM org.apache.flink.runtime.io.network.partition.consumer.LocalInputChannel c
+```
+
+GUI 里：右键 channel 实例 → "List objects" → "with outgoing references"，跟着 `subpartitionView` → `parent` 走。
+
+### Step 4: 检查匹配上的 upstream subpartition 状态
+
+对**Step 3 找到的那个 subpartition**（不是随便一个）查：
+
+```sql
+SELECT p.@objectAddress AS sub,
+       p.readView,
+       p.isFinished,
+       p.isBlocked,
+       p.flushRequested,
+       p.buffers.numPriorityElements AS pri,
+       p.totalNumberOfBuffers AS total,
+       p.buffersInBacklog AS backlog
+FROM org.apache.flink.runtime.io.network.partition.PipelinedSubpartition p
+```
+
+**异常判定矩阵**（结合业务期望）：
+
+| 字段 | 异常组合 | 含义 |
+|---|---|---|
+| `readView = null` | 任意 | 下游没 subscribe 上来，通知链路从头就断了 |
+| `readView != null` + `flushRequested = true` + `total > 0` | 下游 gate 不知道有数据 | **典型 race：source emit 时 view 未建或者后续 notify 漏了** |
+| `isBlocked = true` | 业务没主动 block | **可疑**——只有 alignment 等明确语义会 block，没原因的 block 是 bug |
+| `isFinished = true` + 下游还在等 | 永远等不到了 | upstream 已结束，但 EOP 没传递成功 |
+| `pri > 0` | 下游 channel `hasPendingPriorityEvent = false` | priority 通知漏掉 |
+| `total = 0` | 全空 | 上游真没数据；问题在上游再上游 |
+
+### Step 5: 多 subpartition 时按"业务期望"对照
+
+如果同一 task 的多个 subpartition 状态不一致（比如我们这次：3 个 `isBlocked=false buffers=14`、6 个 `isBlocked=true buffers=2`），**必须问清楚业务期望**：
+- 这些 blocked 是 unaligned 模式下某些 edge 不支持回退到 aligned 导致的预期 block，还是没有理由的 block？
+- 卡住的 channel 对应的 subpartition 是 blocked 还是 not blocked？只有那个才是 root cause 的关键。
+
+不要把"看起来不正常的 subpartition"和"卡住 channel 对应的 subpartition"混为一谈。
+
+### Step 6: 找通知漏掉的位置
+
+确认了「下游 gate 不知道上游有数据」+「上游 readView 已建」之后，问题一定在以下一条通知链中的某一节漏了：
+
+```
+source emit → PipelinedSubpartition.add → notifyDataAvailable (if readView != null)
+            → readView.notifyDataAvailable
+            → channel.notifyDataAvailable(view)
+            → notifyChannelNonEmpty
+            → gate.notifyChannelNonEmpty(channel)
+            → queueChannel → queueChannelUnsafe
+            → 如果 size 变 1，notification.notifyDataAvailable() 完成 availableFuture
+```
+
+可能的漏点：
+- `subpartition.add` 时 `readView == null`（下游还没 subscribe）→ 通知丢；后续 add 因 `flushRequested == true` 不再 notify
+- `queueChannelUnsafe` 因 `channelsWithEndOfPartitionEvents` bit 已设、或 `alreadyEnqueued && !priority` 返回 false → 没真正 enqueue
+- channel 被 enqueue 过又被 `pollNext` 清掉，但 channel.getNextBuffer 返回了 `Optional.empty()` 或 `nextDataType=NONE` → gate 不 re-enqueue，再没人唤醒
+
+逐条用 OQL/GUI 验证字段状态、用 log 验证事件顺序。**不要靠"我觉得应该"，要靠"heap 字段证明"。**
+
 ## 6. 排查中给用户的报告里要分清楚
 
 - **heap 直接证明的事实**（"这个字段值是 X"）— 这是硬证据。
