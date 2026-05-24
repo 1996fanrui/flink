@@ -160,20 +160,15 @@ public class LocalInputChannel extends InputChannel
     // ------------------------------------------------------------------------
 
     /**
-     * Appends {@code buffer} to {@code recoveredQueue} after the upstream subpartition view is
-     * published. If the channel has been released (either when the awaiter unparks via the
-     * exceptional completion of {@link #upstreamReady}, or by the time we enter the synchronized
-     * block), the buffer is recycled silently. Wakes the consumer when the queue transitions from
-     * empty to non-empty.
+     * Appends {@code buffer} to {@code recoveredQueue}. Pure push + maybe-wake; the upstream-ready
+     * wait is performed externally by the drain (see {@link #awaitUpstreamReady}). If the channel
+     * has been released by the time we enter the synchronized block, the buffer is recycled
+     * silently. Wakes the consumer when the queue transitions from empty to non-empty.
      *
-     * <p>Caller (drain thread or task thread at Step 1) MUST hold {@code SpillFileReader.lock}. The
-     * migration path in {@code RecoveredInputChannel.toInputChannel()} is an exception: it delivers
-     * buffers single-threaded before the channel is exposed to any other thread, so no {@code
-     * SpillFileReader.lock} exists at that point.
+     * <p>Caller (drain thread or task thread at Step 1) MUST hold {@code SpillFileReader.lock}.
      */
     @Override
     public void onRecoveredStateBuffer(Buffer buffer) {
-        upstreamReady.join();
         boolean wasEmpty;
         synchronized (recoveredQueue) {
             if (isReleased) {
@@ -189,24 +184,27 @@ public class LocalInputChannel extends InputChannel
 
     /**
      * Flips the producer-completion flag to true exactly once and fires an unconditional drain-end
-     * wake-up so the consumer re-checks the channel after the upstream subpartition view is
-     * published. <b>Does not push any sentinel buffer</b> — the old {@code
-     * EndOfInputChannelStateEvent} sentinel was only useful to provide this wake-up, which {@code
-     * notifyChannelNonEmpty()} now delivers directly without leaving a "phantom in-recovery" entry
-     * in {@code recoveredQueue}.
+     * wake-up so the consumer re-checks the channel. <b>Does not push any sentinel buffer</b> —
+     * the old {@code EndOfInputChannelStateEvent} sentinel was only useful to provide this
+     * wake-up, which {@code notifyChannelNonEmpty()} now delivers directly without leaving a
+     * "phantom in-recovery" entry in {@code recoveredQueue}.
      *
      * <p>End-of-drain exception: caller does NOT need to hold {@code SpillFileReader.lock} because
      * no more buffers are being added at this point.
      */
     @Override
     public void finishRecoveredBufferDelivery() {
-        upstreamReady.join();
         synchronized (recoveredQueue) {
             recoveredQueue.finish();
         }
         // Unconditional drain-end wake-up: any upstream notifyDataAvailable that was absorbed
         // while the channel was in-recovery would otherwise leave buffered data unread.
         notifyChannelNonEmpty();
+    }
+
+    @Override
+    public void awaitUpstreamReady() {
+        upstreamReady.join();
     }
 
     @Override

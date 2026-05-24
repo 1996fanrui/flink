@@ -210,7 +210,6 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
     /** See {@code LocalInputChannel#onRecoveredStateBuffer}; mirrored for the Remote channel. */
     @Override
     public void onRecoveredStateBuffer(Buffer buffer) {
-        upstreamReady.join();
         boolean wasEmpty;
         synchronized (receivedBuffers) {
             if (isReleased.get()) {
@@ -230,11 +229,15 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
      */
     @Override
     public void finishRecoveredBufferDelivery() {
-        upstreamReady.join();
         synchronized (receivedBuffers) {
             recoveredQueue.finish();
         }
         notifyChannelNonEmpty();
+    }
+
+    @Override
+    public void awaitUpstreamReady() {
+        upstreamReady.join();
     }
 
     @Override

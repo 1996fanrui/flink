@@ -82,4 +82,19 @@ public interface RecoverableInputChannel {
      * cannot flip mid-decision.
      */
     boolean isInRecovery();
+
+    /**
+     * Blocks until the channel's upstream connection (Local {@code subpartitionView} / Remote
+     * {@code partitionRequestClient}) is published. Surfaces release as a {@link
+     * java.util.concurrent.CompletionException} / {@link java.util.concurrent.CancellationException}
+     * so the caller can recycle in-flight buffers and terminate gracefully.
+     *
+     * <p>Called <b>only</b> by {@code SpillFileReader.drain} on {@code channelIOExecutor}, before
+     * the per-entry push and outside the {@code SpillFileReader.lock} critical section. This
+     * placement is load-bearing: if a task-thread caller (Step 1 barrier insert, mailbox-driven
+     * conversion) awaited inside the channel's push path it would block its own mailbox — the
+     * PartitionNotFoundException retrigger that completes {@code upstreamReady} is itself a
+     * mailbox-scheduled mail, so the await would deadlock against the future it is waiting on.
+     */
+    void awaitUpstreamReady();
 }
