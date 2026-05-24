@@ -27,7 +27,6 @@ import org.apache.flink.runtime.event.TaskEvent;
 import org.apache.flink.runtime.execution.CancelTaskException;
 import org.apache.flink.runtime.io.network.TaskEventPublisher;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
-import org.apache.flink.runtime.io.network.api.serialization.EventSerializer;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.CompositeBuffer;
 import org.apache.flink.runtime.io.network.buffer.FileRegionBuffer;
@@ -54,6 +53,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.concurrent.CompletableFuture;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 import static org.apache.flink.util.Preconditions.checkState;
@@ -100,6 +100,22 @@ public class LocalInputChannel extends InputChannel
      */
     private volatile boolean hasPendingPriorityEvent = false;
 
+    /**
+     * Completed exactly once when {@link #requestSubpartitions()} successfully publishes {@link
+     * #subpartitionView}. {@link #onRecoveredStateBuffer} and {@link
+     * #finishRecoveredBufferDelivery} await this before pushing anything into {@code
+     * recoveredQueue}, guaranteeing the invariant: any buffer (data, RecoveryCheckpointBarrier, or
+     * end-sentinel) that reaches {@code recoveredQueue} is delivered with the upstream view already
+     * published. That collapses the "isInRecovery=true → false" flip safety into a single
+     * happens-before edge, removing the Step 1 (NO_OP) / Step 2 (channel-state) signal- source
+     * races that otherwise surface as "Missing RecoveryCheckpointBarrier" / "Queried for a buffer
+     * before requesting the subpartition.".
+     *
+     * <p>Completed exceptionally on release so any task-side awaiter unparks instead of dead-
+     * locking. The future is single-write, single-resolution.
+     */
+    private final CompletableFuture<Void> upstreamReady = new CompletableFuture<>();
+
     public LocalInputChannel(
             SingleInputGate inputGate,
             int channelIndex,
@@ -141,9 +157,11 @@ public class LocalInputChannel extends InputChannel
     // ------------------------------------------------------------------------
 
     /**
-     * Appends {@code buffer} to {@code recoveredQueue}. If the channel has been released, the
-     * buffer is recycled silently. Wakes the consumer when the queue transitions from empty to
-     * non-empty.
+     * Appends {@code buffer} to {@code recoveredQueue} after the upstream subpartition view is
+     * published. If the channel has been released (either when the awaiter unparks via the
+     * exceptional completion of {@link #upstreamReady}, or by the time we enter the synchronized
+     * block), the buffer is recycled silently. Wakes the consumer when the queue transitions from
+     * empty to non-empty.
      *
      * <p>Caller (drain thread or task thread at Step 1) MUST hold {@code SpillFileReader.lock}. The
      * migration path in {@code RecoveredInputChannel.toInputChannel()} is an exception: it delivers
@@ -152,6 +170,7 @@ public class LocalInputChannel extends InputChannel
      */
     @Override
     public void onRecoveredStateBuffer(Buffer buffer) {
+        upstreamReady.join();
         boolean wasEmpty;
         synchronized (recoveredQueue) {
             if (isReleased) {
@@ -160,53 +179,31 @@ public class LocalInputChannel extends InputChannel
             }
             wasEmpty = recoveredQueue.offer(buffer);
         }
-        // Conditional wake — same invariant as finishRecoveredBufferDelivery: no recovered buffer
-        // (data or sentinel) may be consumed before requestSubpartitions has published
-        // subpartitionView. If we wake while subpartitionView is null, the consumer may drain the
-        // queue, see isInRecovery flip to false on the final buffer, fall into the normal path
-        // and hit "Queried for a buffer before requesting the subpartition." Skipping the wake is
-        // safe: requestSubpartitions's success path (or the channel's notifyDataAvailable
-        // callback) will fire notifyChannelNonEmpty() once subpartitionView is published, by
-        // which time the buffer is already in the queue.
-        if (wasEmpty && subpartitionView != null) {
+        if (wasEmpty) {
             notifyChannelNonEmpty();
         }
     }
 
     /**
-     * Flips the producer-completion flag to true exactly once and delivers the {@link
-     * EndOfInputChannelStateEvent} sentinel into {@code recoveredQueue}.
-     *
-     * <p>The sentinel ensures the consumer has at least one buffer to consume on the
-     * checkpointing-during-recovery path; when it is wrapped, the empty-queue + allDelivered branch
-     * probes {@code subpartitionView} for the next data type, which gives the gate a {@code
-     * moreAvailable=true} signal and re-enqueues the channel. Without this, fresh-start sinks (no
-     * recovered state, no spill drain push) would sit forever with an empty {@code recoveredQueue}
-     * and no wake-up.
+     * Flips the producer-completion flag to true exactly once and fires an unconditional drain-end
+     * wake-up so the consumer re-checks the channel after the upstream subpartition view is
+     * published. <b>Does not push any sentinel buffer</b> — the old {@code
+     * EndOfInputChannelStateEvent} sentinel was only useful to provide this wake-up, which {@code
+     * notifyChannelNonEmpty()} now delivers directly without leaving a "phantom in-recovery" entry
+     * in {@code recoveredQueue}.
      *
      * <p>End-of-drain exception: caller does NOT need to hold {@code SpillFileReader.lock} because
      * no more buffers are being added at this point.
      */
     @Override
-    public void finishRecoveredBufferDelivery() throws IOException {
-        boolean wasEmpty;
+    public void finishRecoveredBufferDelivery() {
+        upstreamReady.join();
         synchronized (recoveredQueue) {
-            wasEmpty =
-                    recoveredQueue.offer(
-                            EventSerializer.toBuffer(EndOfInputChannelStateEvent.INSTANCE, false));
             recoveredQueue.finish();
         }
-        // Conditional wake: only fire when subpartitionView is already published. If it is still
-        // null (requestSubpartitions hit PartitionNotFoundException and is on its Timer-driven
-        // retrigger), waking now would let the consumer poll the sentinel, flip isInRecovery to
-        // false, and enter the normal path against a null subpartitionView. Skipping the wake is
-        // safe because the eventual successful retrigger calls notifyDataAvailable(view) →
-        // notifyChannelNonEmpty(), at which point the sentinel is already in the queue and the
-        // consumer will pick it up. subpartitionView is volatile, so a non-null read here
-        // happens-after the writer's publication inside requestLock.
-        if (wasEmpty && subpartitionView != null) {
-            notifyChannelNonEmpty();
-        }
+        // Unconditional drain-end wake-up: any upstream notifyDataAvailable that was absorbed
+        // while the channel was in-recovery would otherwise leave buffered data unread.
+        notifyChannelNonEmpty();
     }
 
     @Override
@@ -286,6 +283,11 @@ public class LocalInputChannel extends InputChannel
                         this.subpartitionView = null;
                     } else {
                         notifyDataAvailable = true;
+                        // Unblock any recovered-buffer producer that is awaiting the upstream
+                        // view: from this point on, the consumer can safely walk recoveredQueue
+                        // all the way to the isInRecovery=false transition without hitting
+                        // checkAndWaitForSubpartitionView with a null view.
+                        upstreamReady.complete(null);
                     }
                 } catch (PartitionNotFoundException notFound) {
                     if (increaseBackoff()) {
@@ -662,6 +664,11 @@ public class LocalInputChannel extends InputChannel
     void releaseAllResources() throws IOException {
         if (!isReleased) {
             isReleased = true;
+
+            // Unblock any thread awaiting upstreamReady so it does not deadlock during shutdown;
+            // the awaiter falls through to the synchronized block and recycles its buffer because
+            // isReleased is now true.
+            upstreamReady.completeExceptionally(new CancelTaskException("Channel released."));
 
             ResultSubpartitionView view = subpartitionView;
             if (view != null) {

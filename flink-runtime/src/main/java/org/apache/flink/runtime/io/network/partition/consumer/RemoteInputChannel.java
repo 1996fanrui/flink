@@ -63,6 +63,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -134,6 +135,16 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
     @GuardedBy("receivedBuffers")
     private final RecoveredBufferQueue recoveredQueue;
 
+    /**
+     * Completed exactly once when {@link #requestSubpartitions()} has installed {@link
+     * #partitionRequestClient} and dispatched the upstream {@code requestSubpartition} call.
+     * Mirrors {@code LocalInputChannel.upstreamReady}: {@link #onRecoveredStateBuffer} and {@link
+     * #finishRecoveredBufferDelivery} await this before touching {@code recoveredQueue}, so any
+     * buffer reaching the queue is delivered only after the remote upstream request is underway.
+     * Completed exceptionally on release to unblock awaiters.
+     */
+    private final CompletableFuture<Void> upstreamReady = new CompletableFuture<>();
+
     private long totalQueueSizeInBytes;
 
     public RemoteInputChannel(
@@ -197,18 +208,10 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
     // RecoverableInputChannel implementation
     // ------------------------------------------------------------------------
 
-    /**
-     * Appends {@code buffer} to {@code recoveredQueue}. If the channel has been released, the
-     * buffer is recycled silently. Wakes the consumer when the queue transitions from empty to
-     * non-empty.
-     *
-     * <p>Caller (drain thread or task thread at Step 1) MUST hold {@code SpillFileReader.lock}. The
-     * migration path in {@code RecoveredInputChannel.toInputChannel()} is an exception: it delivers
-     * buffers single-threaded before the channel is exposed to any other thread, so no {@code
-     * SpillFileReader.lock} exists at that point.
-     */
+    /** See {@code LocalInputChannel#onRecoveredStateBuffer}; mirrored for the Remote channel. */
     @Override
     public void onRecoveredStateBuffer(Buffer buffer) {
+        upstreamReady.join();
         boolean wasEmpty;
         synchronized (receivedBuffers) {
             if (isReleased.get()) {
@@ -217,44 +220,22 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
             }
             wasEmpty = recoveredQueue.offer(buffer);
         }
-        // Conditional wake — see LocalInputChannel.onRecoveredStateBuffer for the full rationale.
-        // Remote's "upstream is ready" handle is partitionRequestClient (volatile, one-shot
-        // publish), so we mirror the same condition.
-        if (wasEmpty && partitionRequestClient != null) {
+        if (wasEmpty) {
             notifyChannelNonEmpty();
         }
     }
 
     /**
-     * Flips the producer-completion flag to true exactly once and delivers the {@link
-     * EndOfInputChannelStateEvent} sentinel into {@code recoveredQueue}.
-     *
-     * <p>See {@code LocalInputChannel#finishRecoveredBufferDelivery} for the rationale — without
-     * the sentinel the consumer has no buffer to trigger the "queue empty + delivered → probe
-     * upstream" branch and the gate never gets re-notified for fresh-start sinks.
-     *
-     * <p>End-of-drain exception: caller does NOT need to hold {@code SpillFileReader.lock} because
-     * no more buffers are being added at this point.
+     * See {@code LocalInputChannel#finishRecoveredBufferDelivery}; mirrored for the Remote channel.
+     * No sentinel push — wake-up is delivered directly via {@code notifyChannelNonEmpty()}.
      */
     @Override
-    public void finishRecoveredBufferDelivery() throws IOException {
-        boolean wasEmpty;
+    public void finishRecoveredBufferDelivery() {
+        upstreamReady.join();
         synchronized (receivedBuffers) {
-            wasEmpty =
-                    recoveredQueue.offer(
-                            EventSerializer.toBuffer(EndOfInputChannelStateEvent.INSTANCE, false));
             recoveredQueue.finish();
         }
-        // Conditional wake: see LocalInputChannel.finishRecoveredBufferDelivery for the full
-        // rationale. partitionRequestClient is volatile and is the Remote-side equivalent of
-        // LocalInputChannel.subpartitionView — both fields publish "upstream is ready" once,
-        // monotonically (modulo release). Skipping the wake while it is null is safe because
-        // requestSubpartitions / the partition-creation listener path will fire its own
-        // notifyChannelNonEmpty once the upstream becomes available; the sentinel is by then
-        // already in the queue and will be consumed on that wake.
-        if (wasEmpty && partitionRequestClient != null) {
-            notifyChannelNonEmpty();
-        }
+        notifyChannelNonEmpty();
     }
 
     @Override
@@ -294,6 +275,9 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
 
             partitionRequestClient.requestSubpartition(
                     partitionId, consumedSubpartitionIndexSet, this, 0);
+            // Upstream request is dispatched; any drain-side awaiter on upstreamReady can now
+            // safely push recovered buffers into recoveredQueue. See field javadoc.
+            upstreamReady.complete(null);
         }
     }
 
@@ -495,6 +479,9 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
     @Override
     void releaseAllResources() throws IOException {
         if (isReleased.compareAndSet(false, true)) {
+            // Unblock any thread awaiting upstreamReady (drain still in flight) so it falls
+            // through to the synchronized block and recycles its buffer instead of deadlocking.
+            upstreamReady.completeExceptionally(new CancelTaskException("Channel released."));
 
             final ArrayDeque<Buffer> releasedBuffers;
             synchronized (receivedBuffers) {
