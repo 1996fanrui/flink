@@ -2,21 +2,16 @@
 
 记录已被讨论但暂未落地的设计点，按需后续再决定。
 
-## 1. `RecoverableInputChannel` push 入口合一
+## 1. `RecoverableInputChannel` push 入口合一（已收敛，留作历史记录）
 
-当前接口对外有两个 push 方法（语义清晰但实现高度重叠）：
+接口当前对外保持双入口：
 
-- `void onRecoveredStateBuffer(Buffer buffer)` — push a data buffer / barrier
-- `void finishRecoveredBufferDelivery() throws IOException` — push end-of-stream sentinel + flip `allDelivered=true`
+- `void onRecoveredStateBuffer(Buffer buffer)` — push a data buffer / RecoveryCheckpointBarrier
+- `void finishRecoveredBufferDelivery()` — flip `allDelivered=true` + unconditional `notifyChannelNonEmpty()`（不再 push sentinel，见 `fix_rounds/recovery_in_recovery_flag_unification.md §9.2` 的删除决定）
 
-`fix_rounds/recovery_in_recovery_flag_unification.md §9.4` 已经把内部实现合并为 `deliverRecoveredInternal(Buffer buffer, boolean finish)`，两个对外入口都 delegate 给它。可能的进一步简化：把对外入口也合并成一个 `deliverRecovered(Buffer buffer, boolean finish)`。
+由于 `finishRecoveredBufferDelivery` 已经不携带任何 buffer/sentinel 参数（只是个"宣告 delivery 结束 + drain-end wake"信号），跟 `onRecoveredStateBuffer` 也不再有"buffer + finish=true/false" 这种共用签名的诱因；保留双入口最自然，不需要再讨论合一。
 
-**目前决定保留双入口**，理由：
-- 合一会迫使 caller 自己构造 `EndOfInputChannelStateEvent` sentinel buffer——把 sentinel 类型泄漏给 SpillFileReader / fresh-job fallback / Step 1 等所有 caller，调用 site 不再"声明语义"而是"摆弄实现细节"
-- 双入口语义读者一眼就能区分"我推数据" vs "我宣告 delivery 结束"，比 `(buffer, true/false)` 更显式
-- 内部实现合并已经达到代码去重目标，外部接口大小不再是收益的关键
-
-**何时回头考虑合一**：如果未来出现第三种 push 入口、或者 caller 普遍都要 import sentinel 类型（场景演变让"声明语义"变成噪声），再统一为单入口；目前没必要。
+`fix_rounds/recovery_in_recovery_flag_unification.md §9.4` 仍把内部抽成 `deliverRecoveredInternal(Buffer, boolean finish)` 共享代码，是实现细节。
 
 ## 2. SpillFileReader 实例化时机
 
