@@ -200,3 +200,18 @@ if (wasEmpty && partitionRequestClient != null) {   // 条件 wake，两处一�
 | cpDuringRecovery=true，fresh job (`spillFile==null`) fallback | fallback push sentinel + 条件 wake | fallback push sentinel 入口也等 upstream ready（粒度 per-channel；fresh job 这条慢一点也无所谓） |
 
 实施进入下一个 commit；本文档保留作为方案演进的历史记录。
+
+## 9. Follow-up（续）：`EndOfInputChannelStateEvent` sentinel 彻底删除（2026-05-24）
+
+§8 仍假定 sentinel 留在队尾、由 channel-side per-channel future 抑制其副作用。后续推演发现 sentinel 本身已经没用，**整个删除**更干净（详见 [`recovery_in_recovery_flag_unification.md §9.2`](./recovery_in_recovery_flag_unification.md)）：
+
+- sentinel 在 §4 的唯一价值是"drain 完成给 task 一次 wake"，跨越 `notifyDataAvailable` 是 edge-trigger 在 in-recovery 阻塞期被消化的窗口；
+- 但这次 wake 不需要靠"sentinel 进队"实现——`finishRecoveredBufferDelivery` 直接无条件调 `notifyChannelNonEmpty()` 即可，task wake 后走 normal path 检查 `subpartitionView`、有数据就读、没有就退队（白 wake 一次的代价跟旧 sentinel 路径基本等价）；
+- 删 sentinel 后 `buffers=[] && allDelivered=true → isInRecovery=false`（正确），而不是旧的 `buffers=[sentinel] → isInRecovery=true`（假性 in-recovery、误导 Step 2 进 collect 找 barrier）。
+
+副作用：路径 2（fresh-job + cpDuringRecovery=true）下 trigger=NO_OP、Step 2 现在看 `isInRecovery=false` 不进 collect、自然不会抛 `Missing RecoveryCheckpointBarrier`。`collectPreRecoveryBarrier` 维持严格契约"找不到 barrier 一律抛"，不需要任何 corner-case 容忍。
+
+最终接口形态（单接口、双入口对外语义清晰、内部共享 `deliverRecoveredInternal` 简化代码）：
+
+- `onRecoveredStateBuffer(Buffer)`：push data buffer 进 `recoveredQueue`，await upstreamReady + 条件 wake（保持原契约）
+- `finishRecoveredBufferDelivery()`：await upstreamReady → `recoveredQueue.finish()` → **无条件** `notifyChannelNonEmpty()`；**不 push sentinel**

@@ -205,7 +205,7 @@ SpillFileReader 的 drain 路径需要"每个物理 channel 的引用"才能 pus
 - **Local**：`LocalInputChannel.requestSubpartitions()` 成功把 `subpartitionView` 写上去（line 250 `this.subpartitionView = subpartitionView;` 之后、释放 requestLock 之前）→ `upstreamReady.complete(null)`。如果走 PartitionNotFoundException 的 Timer retrigger 路径，future 保持未完成，直到某次 retrigger 真正成功才 complete。
 - **Remote**：对称做法——`partitionRequestClient` 真正设上的那一刻 complete。
 
-`onRecoveredStateBuffer(buffer)` 和 `finishRecoveredBufferDelivery()` 在入口先 `upstreamReady.get()` 阻塞等：
+`onRecoveredStateBuffer(buffer)` 和 `finishRecoveredBufferDelivery()` 在入口先 `upstreamReady` 阻塞等。后者只 `recoveredQueue.finish()` 翻 `allDelivered=true`、**不再 push `EndOfInputChannelStateEvent` sentinel**，然后**无条件**调 `notifyChannelNonEmpty()` 给 task 一次"drain 完成"的 wake-up（详见 §9.2 为什么这一 wake 必须保留、为什么 sentinel 可以删）。
 
 ```java
 public void onRecoveredStateBuffer(Buffer buffer) {
@@ -213,82 +213,83 @@ public void onRecoveredStateBuffer(Buffer buffer) {
     // 原有 push 逻辑：synchronized (recoveredQueue) { offer; }; notify if was empty
 }
 
-public void finishRecoveredBufferDelivery() throws IOException {
+public void finishRecoveredBufferDelivery() {
     awaitUpstreamReadyUninterruptibly();
-    // 原有 sentinel push + finish
+    synchronized (recoveredQueue) {        // Remote: receivedBuffers
+        recoveredQueue.finish();           // 翻 allDelivered=true；不 push sentinel
+    }
+    notifyChannelNonEmpty();               // 无条件 drain-end wake
 }
 ```
 
 drain 在 channelIOExecutor 上 per-channel 调这些方法——慢 channel（PartitionNotFoundException retrigger 中）会阻塞它自己的 push、不影响其他 channel；快 channel push 完立刻进 recoveredQueue、task 可立即消费。
 
-### 9.2 一致性论证
+### 9.2 一致性论证 + 为什么 sentinel 可以删
 
-任何 buffer / sentinel 进入 `recoveredQueue` 时，subpartitionView/partitionRequestClient **必然**已经 publish。所以：
+**不变量**：任何 buffer 进入 `recoveredQueue` 时，subpartitionView/partitionRequestClient **必然**已 publish。所以 `isInRecovery` 从 true 翻 false 那一刻（task 消费完所有 recovered buffer）走 normal path 读上游 handle 必非 null、永远不撞 ISE。
 
-- `isInRecovery` 从 true 翻 false 那一刻（task 消费完所有 recovered buffer + sentinel）→ 走 normal path 读 subpartitionView/partitionRequestClient → **必非 null** → 永远不撞 ISE。
-- Step 1 / Step 2 信号源不一致那条问题被"上游 ready"这条更严格的前置条件吸收掉：`recoveredQueue` 非空 → 上游必 ready；上游不 ready → `recoveredQueue` 必空 → `isInRecovery=true && buffers.isEmpty()=true` 时 Step 2 仍 `isInRecovery=true`（`allDelivered=false`，drain 还没真正完成）→ collect 走 buffers 拿不到 barrier、抛 Missing 吗？**不会**——这条 case 在新设计下 drain 还没 push 任何 buffer 进队，`allDelivered` 仍 false，但 `collect` 也不会被调，因为 task 的 cp 触发要求 task 接到 cp barrier，而 cp barrier 来自 upstream，上游没 ready 就不会送 cp barrier……需要进一步推（见 §9.4 风险点）。
+**为什么 sentinel 可以彻底删**：原 §4 的 sentinel 唯一价值不是"翻 isInRecovery"，而是**给 task 一次 drain-end 的 wake**——`subpartitionView.notifyDataAvailable` 是 edge-trigger（数据从无到有时触发一次），上游在 in-recovery 阻塞期投递的 wake 全被消化掉（task wake → poll → `isInRecovery=true` 空队列 → return empty 退队），drain 完成后 subpartitionView 里可能仍堆着上游已投递的数据但没人来读 → hang。
+
+这次 wake **跟 sentinel 是否进队无关**——直接 `notifyChannelNonEmpty()` 就够：
+
+| 旧（push sentinel） | 新（只 finish + 无条件 wake） |
+| --- | --- |
+| `buffers=[sentinel] && allDelivered=true → isInRecovery=true`（假性 in-recovery） | `buffers=[] && allDelivered=true → isInRecovery=false`（正确反映"已退出 recovery"） |
+| task wake → poll sentinel → recovery 分支拿到 sentinel → buffers 空 → 下次 `isInRecovery=false` → normal path | task wake → poll → 直接 normal path 读 `subpartitionView` |
+| Step 2 进 collect 找 barrier（fresh-job 路径 trigger=NO_OP 时找不到 → Missing） | Step 2 看 `isInRecovery=false` 跳过 collect → 没有 Missing |
+| 偶尔白 wake 一次（sentinel 到 task 之间的延迟） | 同样偶尔白 wake 一次（drain-end → task 之间）；代价相同 |
+
+**Missing race 同时消失**：fresh-job fallback (`spillFile==null` + cpDuringRecovery=true) 路径上 trigger 永远 NO_OP，旧设计下 sentinel 进队让 `isInRecovery=true` → Step 2 误进 collect → 抛 Missing；新设计下 `finishRecoveredBufferDelivery` 不 push sentinel、`isInRecovery=false` → Step 2 跳过 collect → 不抛。`collectPreRecoveryBarrier` 维持严格契约（找不到 barrier 一律抛），不需要 `retained.isEmpty()` corner-case 补丁。
 
 ### 9.3 跟之前方案的对比
 
-| 维度 | §3 `finalDrainEnabled` flag + 改时序 | §9 per-channel `upstreamReady` future |
+| 维度 | §3 `finalDrainEnabled` flag + 改时序 | §9 per-channel `upstreamReady` future（含本节最终方案） |
 | --- | --- | --- |
 | 阻塞粒度 | task 级（整个 drainHandoff 等所有 channel ready） | per-channel（慢 channel 自己等，快的不受影响） |
 | 改动面 | `SingleInputGate` 加字段 + 重排 filter 收尾 + 删 `finishPhysicalRecoveredChannels` fallback | channel 加一个 future + 入口两处 await；几乎不动外层时序 |
 | 是否还需要 §7.4 条件 wake | 不需要（drain 启动时上游已 ready） | 不需要（push 时上游已 ready） |
-| 是否还需要 fresh-job fallback | 删除 | 保留语义不变（spillFile==null 时仍调 finishRecoveredBufferDelivery，只是 sentinel push 会等 upstreamReady） |
+| 是否还需要 sentinel | — | **不需要**（无条件 `notifyChannelNonEmpty()` 提供 drain-end wake，sentinel 彻底删除） |
+| 是否还需要 fresh-job fallback (`finishPhysicalRecoveredChannels`) | 删除 | 保留——调同一个 `finishRecoveredBufferDelivery`，因为现在它只翻 allDelivered + 无条件 wake、不会让 isInRecovery 假性翻 true，所以跟真 drain 路径共享同一个方法、单接口干净 |
 
-§9 改动量更小、表达更直接——"buffer 进 recoveredQueue ⇒ 上游必 ready" 是个简单清晰的不变量，比 §3 时序重排更易理解维护。
+### 9.4 实施细节：单方法接口、内部抽出统一的 deliver
 
-### 9.4 实施细节：内部抽象一个统一的 deliver 方法
-
-`onRecoveredStateBuffer` 和 `finishRecoveredBufferDelivery` 加上 upstreamReady await 之后步骤 90% 重叠（await → 持锁 push → 条件 finish → 条件 wake），唯一差别在"推 sentinel + set allDelivered"。Local / Remote 各自抽一个内部方法把两条入口合并：
+接口保持双入口（`onRecoveredStateBuffer` + `finishRecoveredBufferDelivery`）；内部抽 `deliverRecoveredInternal(buffer, finish)` 共享代码。Local 实现：
 
 ```java
-// LocalInputChannel:
-private void deliverRecoveredInternal(Buffer buffer, boolean finish) {
-    awaitUpstreamReadyUninterruptibly();         // 阻塞直到 subpartitionView publish
-    boolean wasEmpty;
-    synchronized (recoveredQueue) {              // Remote 这里换 receivedBuffers
-        if (isReleased) {                        // Remote: isReleased.get()
-            buffer.recycleBuffer();
-            return;
-        }
-        wasEmpty = recoveredQueue.offer(buffer);
-        if (finish) {
-            recoveredQueue.finish();
-        }
-    }
-    if (wasEmpty) {
-        notifyChannelNonEmpty();                 // 无条件 wake（push 时 upstream 已 ready）
-    }
-}
-
-@Override
+// onRecoveredStateBuffer: push data buffer / RecoveryCheckpointBarrier
 public void onRecoveredStateBuffer(Buffer buffer) {
-    deliverRecoveredInternal(buffer, false);
+    awaitUpstreamReadyUninterruptibly();
+    boolean wasEmpty;
+    synchronized (recoveredQueue) {
+        if (isReleased) { buffer.recycleBuffer(); return; }
+        wasEmpty = recoveredQueue.offer(buffer);
+    }
+    if (wasEmpty) notifyChannelNonEmpty();
 }
 
-@Override
-public void finishRecoveredBufferDelivery() throws IOException {
-    deliverRecoveredInternal(
-        EventSerializer.toBuffer(EndOfInputChannelStateEvent.INSTANCE, false),
-        true);
+// finishRecoveredBufferDelivery: NO sentinel; only flip + unconditional wake
+public void finishRecoveredBufferDelivery() {
+    awaitUpstreamReadyUninterruptibly();
+    synchronized (recoveredQueue) {
+        recoveredQueue.finish();
+    }
+    notifyChannelNonEmpty();
 }
 ```
 
-Remote 完全对称——只是锁对象（`receivedBuffers`）和 `isReleased.get()` 写法不同。这一抽象的好处：
+Remote 完全对称——只是锁对象（`receivedBuffers`）和 `isReleased.get()` 写法不同。这一设计的好处：
 
+- 单接口、单语义入口；不再需要 `markRecoveredBufferDeliveryDone` 之类的二号方法
+- `collectPreRecoveryBarrier` 维持严格契约"找不到 barrier 抛 Missing"，不引入 corner-case 容忍补丁
 - `awaitUpstreamReadyUninterruptibly()` 只写一处、容易 review
-- 未来如果还有第三种 delivery 类型（比如 Step 1 的 RecoveryCheckpointBarrier 也走同一入口）能复用
-- §7.3 / §7.4 散落在两处的条件 wake 残留可以一次性清掉，因为新方案下 wake 是无条件的
-
-注：Step 1 当前还是直接调 `onRecoveredStateBuffer(barrier buffer)` 推 RecoveryCheckpointBarrier、不调 `finishRecoveredBufferDelivery`——抽出 deliverRecoveredInternal 之后 Step 1 这条路径自然也走同一份 await + push 逻辑、不再需要单独处理。
+- §7.3 / §7.4 散落在两处的条件 wake 残留全部清掉
 
 ### 9.5 风险点 / 待 verify
 
 - `awaitUpstreamReadyUninterruptibly()` 在 channelIOExecutor 上阻塞——确认 channelIOExecutor 这条线程上阻塞不会拖死别的 task（每个 task 有自己的 channelIOExecutor？还是全局共享？要 verify）。
-- fresh-job fallback (`spillFile==null` 时 `finishPhysicalRecoveredChannels` 给每 channel 调 `finishRecoveredBufferDelivery`) 跟 per-channel future 的交互：fallback 也走 await，等所有 channel upstream ready 后才 push sentinel——OK，但 fallback 是在 task 启动早期跑的，那时 `requestSubpartitions` 才刚被 schedule，`upstreamReady` 大概率未 complete，要等较久；但因为 fallback 本来就是给 fresh-job、慢一点不影响正确性。
-- Local `subpartitionView==null` + `isReleased=true` 释放路径：要确保 `upstreamReady` 在 release 时也被 completeExceptionally / cancel，否则 channelIOExecutor 死等。
+- fresh-job fallback (`spillFile==null` 时 `finishPhysicalRecoveredChannels` 给每 channel 调 `finishRecoveredBufferDelivery`) 跟 per-channel future 的交互：fallback 也走 await，等 `requestSubpartitions` 真正成功才返回——fresh-job 路径在 task 启动早期跑、`upstreamReady` 大概率未 complete、要等几秒；但因为 fallback 本来就是给 fresh-job、慢一点不影响正确性。
+- Local `subpartitionView==null` + `isReleased=true` 释放路径：要确保 `upstreamReady` 在 release 时也被 completeExceptionally / cancel，否则 channelIOExecutor 死等（已实现）。
+- "drain 完成后总是 wake 一次但 channel 没东西"的白 wake：task 来 poll 拿 empty 退队，跟旧设计下 sentinel wake 之后 poll sentinel 的开销基本等价，可接受。
 
 ## 10. 不在本次范围
 
