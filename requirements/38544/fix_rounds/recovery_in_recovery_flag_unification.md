@@ -259,20 +259,135 @@ drain 在 channelIOExecutor 上 per-channel 调这些方法——慢 channel（P
 
 ### 9.4 实施细节
 
-#### 9.4.1 主流程（机制 A）—— filter 收尾原地装 trigger，删 mail #B
+#### 9.4.1 主流程（机制 A）—— 两线程的两次通信
 
-`StreamTask` 当前的两-mail 结构：
+##### 9.4.1.1 参与方与术语
 
-- mail #A (`requestPartitions`)：`convertRecoveredInputChannels` 内构造物理 channel（依赖 `!cpDuringRecovery` 设 `allDelivered`）+ `internalRequestPartitions`
-- mail #B (`handoffSpillReaderToDrain`)：`reader.getProducedSpillFile()` → 构造 `SpillFileReader` → **写 `recoveryCheckpointTrigger = spillReader`** → `drainHandoff.complete(spillReader)`
+启动阶段两条参与线程：
 
-机制 A 落地：
+- **A 线程 = `channelIOExecutor`**：单条提交的 filter runnable，串行做 `readInputData` → 构造 `SpillFileReader` 并写 trigger → F1 → `drain` → `close`
+- **B 线程 = mailbox**：task 主线程的 mailbox loop，处理 per-gate mail #A（`convertRecoveredInputChannels` + `internalRequestPartitions`）
 
-- channelIOExecutor 的 filter runnable 在 `reader.readInputData(...)` 返回之后、`bufferFilteringCompleteFuture.complete(null)` 之前**同步**做完原 mail #B 的工作：算 `finalDrainEnabled = cpDuringRecovery && spillFile != null`、构造 `SpillFileReader`（如果 true）、写 `recoveryCheckpointTrigger` 字段、`gate.setFinalDrainEnabled(finalDrainEnabled)`、`drainHandoff.complete(spillReader 或 null)`
-- 删除 `handoffSpillReaderToDrain` 及其 mail；`conversionDoneFutures` 那条 `whenComplete` 链彻底退役
-- channel 构造时改读 `!inputGate.isFinalDrainEnabled()` 设 `RecoveredBufferQueue` 的初始 `allDelivered`
+两线程被两次通信分成**三个阶段**：
 
-这样 mail #A 跑 `requestPartitions` 时，trigger 字段已经稳态、channel 构造时拿到的 `finalDrainEnabled` 跟 trigger 类型严格一致——race 整类消失。
+```
+阶段 1 (A 线程独占)  ──通信 1 (F1)──►  阶段 2 (B 线程独占)  ──通信 2 (F2)──►  阶段 3 (A 线程独占)
+```
+
+##### 9.4.1.2 通信原则
+
+**两条线程总共只通信两次，方向相反，各对应一个 future。两次通信都不只是"信号"，都顺带交付下游阶段需要的实体；不引入第三个 future。**
+
+| # | Future | 方向 | 交付内容 |
+| --- | --- | --- | --- |
+| 通信 1 | `bufferFilteringCompleteFuture` (F1) | A → B | 信号 + 共享态：`finalDrainEnabled` 已设到 gate；`recoveryCheckpointTrigger` 字段已写好 |
+| 通信 2 | `physicalChannelsFuture` (F2) | B → A | 物理 channel 集合（`Map<InputChannelInfo, RecoverableInputChannel>`），直接交付给阶段 1 已构造好的 `SpillFileReader` 内部 |
+
+> F2 不再用旧的 `conversionDoneFutures + allOf` 表达"全部 convert 完了"这个抽象信号——直接用 `CompletableFuture<Map<InputChannelInfo, RecoverableInputChannel>>` 当通信通道、F2.complete 的 payload 就是 channels 集合本身。这样 F2 既是同步原语、也是数据交付。
+
+##### 9.4.1.3 阶段 1：A 线程独占
+
+A 线程在 F1 complete 之前**全部做完**：
+
+1. `readInputData()`——filter 数据到 spillFile
+2. 算 `finalDrainEnabled = cpDuringRecovery && spillFile != null`
+3. 对每个 gate: `gate.setFinalDrainEnabled(finalDrainEnabled)`
+4. 如果 `finalDrainEnabled`：
+   - 构造 `SpillFileReader(spillFile, sourceChannels, physicalChannelsFuture)`——`physicalChannelsFuture` 是阶段 2 末才 complete 的 future，SpillFileReader 内部持有
+   - 写 `this.recoveryCheckpointTrigger = spillReader`
+5. `F1.complete()`
+
+这一步完成后，**trigger 字段已经稳态**——后续 task 进 RUNNING、cp barrier handler 读这个字段都看到正确值。
+
+##### 9.4.1.4 通信 1：A → B（`bufferFilteringCompleteFuture`）
+
+**A 在 complete 之前已写好的共享态**：
+
+| 共享态 | 接收方在阶段 2 怎么用 |
+| --- | --- |
+| 每个 gate 的 `finalDrainEnabled` | mail #A 内 channel 构造时调 `inputGate.isFinalDrainEnabled()` 决定 `RecoveredBufferQueue.allDelivered` 初值 |
+| `recoveryCheckpointTrigger` 字段 | task 进 RUNNING 后 cp barrier handler 读 |
+
+##### 9.4.1.5 阶段 2：B 线程独占
+
+per-gate mail #A 串行跑：
+
+```
+mail #A (gate[i]):
+   convertRecoveredInputChannels(gate[i])
+       └─ new RecoveredBufferQueue(!gate.isFinalDrainEnabled())  ← 读阶段 1 写的共享态
+   internalRequestPartitions(gate[i])
+   collect gate[i] 物理 channels → 累积到 task 字段 collectedPhysicalChannels
+```
+
+最后一个 gate 跑完时：`physicalChannelsFuture.complete(collectedPhysicalChannels)`——通信 2 的 payload 装好、发出。
+
+##### 9.4.1.6 通信 2：B → A（`physicalChannelsFuture`）
+
+**这次通信只交付一件东西：物理 channel 集合本身**——不再有"全部 convert 完了"的中间抽象信号。SpillFileReader 在阶段 1 构造时已经持有了这个 future、在阶段 3 的 drain 内部消费。
+
+##### 9.4.1.7 阶段 3：A 线程独占
+
+```
+spillReader.drain()        ← drain 内部 await physicalChannelsFuture
+                              拿到 channels 后按 InputChannelInfo 路由 push
+close()
+```
+
+A 线程**不需要 explicit `allConverted.get()`**——drain 入口处内部 await 那个 future 就好。
+
+##### 9.4.1.8 完整时序图
+
+```
+A 线程 (channelIOExecutor)              B 线程 (mailbox)
+─────────────────────────────           ─────────────────────────────
+readInputData()
+算 finalDrainEnabled
+gate.setFinalDrainEnabled(...)
+if (finalDrainEnabled):
+  spillReader = new SpillFileReader(
+      spillFile, src, physicalChannelsFuture)
+  recoveryCheckpointTrigger = spillReader
+F1.complete()  ────────────────────►  mail #A (per gate):
+                                        convertRecoveredInputChannels
+                                          └─ new RecoveredBufferQueue(
+                                               !gate.isFinalDrainEnabled())
+                                        internalRequestPartitions
+                                        accumulate channels
+                                      (last gate):
+                                        physicalChannelsFuture.complete(channels)
+if (finalDrainEnabled):              ◄──── (F2 由阶段 1 构造时已传入 spillReader)
+  spillReader.drain()
+    └─ 内部 await physicalChannelsFuture
+       push buffers to channels
+close()
+```
+
+##### 9.4.1.9 为什么 trigger 字段在阶段 1 写、不在阶段 2 写
+
+`recoveryCheckpointTrigger` 必须在 task 进 RUNNING 之前写好（否则 cp barrier handler 读到 null fallback NO_OP，路径 3 race）。task 进 RUNNING 的触发链：
+
+```
+F1.complete() 时挂两条 callback：
+  ├─ mainMailbox.execute(mail #A)        ← 入队
+  └─ mailboxProcessor::suspend            ← 入队（在 mail #A 之后）
+mailbox 串行：mail #A → suspend → task 进 RUNNING
+```
+
+阶段 1（A 线程上）写 trigger → F1.complete()——`CompletableFuture.complete` 提供 happens-before，A 写的 trigger 字段对所有 F1 之后触发的 callback（mail #A 跟 suspend mail）可见。volatile 二保。**所以阶段 1 写 trigger 是最稳的选择，跨线程语义最干净**。
+
+##### 9.4.1.10 落地清单
+
+新增/改动：
+- A 线程 filter runnable 内 inline：算 `finalDrainEnabled` + `gate.setFinalDrainEnabled` + 构造 `SpillFileReader`（带 `physicalChannelsFuture`）+ 写 `recoveryCheckpointTrigger` + `F1.complete()` + `drain()` + `close()`
+- mail #A 末尾累积 `physicalChannels`，最后一个 gate 跑完时 `physicalChannelsFuture.complete(channels)`
+- `SpillFileReader` 构造签名改成接收 `CompletableFuture<Map<InputChannelInfo, RecoverableInputChannel>>`，drain 入口内部 await
+
+删除：
+- `drainHandoff` 字段
+- `handoffSpillReaderToDrain` 方法跟它派生的 mail #B
+- `conversionDoneFutures` 数组 + `allConverted = allOf(...)` 链（被 `physicalChannelsFuture` 单 future 取代）
+- 旧的"channel 构造时按 `!cpDuringRecovery` 设 allDelivered" → 改成 `!inputGate.isFinalDrainEnabled()`
 
 #### 9.4.2 channel 端（机制 B）—— upstreamReady future、双入口、不抽 helper
 
