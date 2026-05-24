@@ -1,5 +1,16 @@
 # Overview
 
+> **Follow-up (2026-05-24):** subsequent rounds of fixes refined the recovery handoff. See
+> [`../fix_rounds/`](../fix_rounds/) — in particular
+> [`recovery_in_recovery_flag_unification.md §9`](../fix_rounds/recovery_in_recovery_flag_unification.md)
+> for the final per-channel `upstreamReady` future design and
+> [`end_of_input_event_missing_fix.md §8`](../fix_rounds/end_of_input_event_missing_fix.md)
+> for why §7.4 conditional wake was superseded. This document captures the original direction;
+> §2 below has been updated to match current code (`single submit + drainHandoff`).
+> Naming under `simplify_approach/` (`recoveredBuffers`, `allRecoveredBuffersDelivered`,
+> `finishReadRecoveredState`, …) lags the implementation (`recoveredQueue.buffers`,
+> `allDelivered`, `finishRecoveredBufferDelivery`); structurally equivalent.
+
 > Entry point to the overall design. The detailed landing is split into three docs by direction:
 >
 > - [`input_channel.md`](./input_channel.md) — InputChannel-side changes (the task-thread consumer side)
@@ -33,38 +44,40 @@ filter and drain reuse the same `channelIOExecutor`; conversion runs on the mail
 ```mermaid
 sequenceDiagram
     autonumber
-    participant CIO as channelIOExecutor (existing master thread)
+    participant CIO as channelIOExecutor<br/>(single submitted runnable)
     participant MB  as mailbox (task thread)
-    participant DISK as spill file
-    participant PC  as physical InputChannel
+    participant PC  as physical InputChannel<br/>(per-channel upstreamReady future)
+
     rect rgb(245,245,255)
-      Note over CIO: filter phase (new behavior when filter is on)
-      CIO->>CIO: read state handle → filter
-      CIO->>DISK: write spill file (replaces master's heap fallback)
+      Note over CIO: filter phase
+      CIO->>CIO: read state handle → filter → write spill file
       CIO->>MB: bufferFilteringCompleteFuture.complete()
     end
     rect rgb(245,255,245)
-      Note over MB: conversion phase (inherits master)
-      MB->>MB: requestPartitions() → toInputChannel()
-      MB->>CIO: submit drain task
+      Note over MB: conversion phase (mailbox)
+      MB->>PC: convertRecoveredInputChannels → new LocalInput/RemoteInputChannel
+      MB->>PC: requestSubpartitions() — on real success, PC.upstreamReady.complete()<br/>(may stay pending if PartitionNotFoundException + Timer retrigger)
+      MB->>CIO: drainHandoff.complete(physicalChannels or null)
     end
     rect rgb(255,250,240)
-      Note over CIO: drain phase (new behavior when filter is on)
+      Note over CIO: drain phase (same runnable, resumes after drainHandoff)
       loop per spill entry
-        CIO->>PC: requestBufferBlocking()
-        DISK-->>CIO: read entry
-        CIO->>PC: onRecoveredStateBuffer(buf) (inside SpillFileReader.lock)
+        CIO->>PC: deliverRecoveredInternal(buf, finish=false)
+        Note right of PC: awaits PC.upstreamReady<br/>before pushing into recoveredQueue
       end
-      CIO->>PC: finishReadRecoveredState() (outside the lock — end-of-drain exception)
-      Note right of PC: channel completes stateConsumedFuture<br/>once recoveredBuffers is drained
+      CIO->>PC: deliverRecoveredInternal(sentinel, finish=true)
+      Note right of PC: still awaits upstreamReady<br/>so isInRecovery flip is always safe
     end
 ```
 
-The hand-off points all use futures that already exist on master; this design introduces no new future:
+The hand-off uses two futures plus one new per-channel future for upstream readiness; the original "submit a second drain task" is replaced by a `drainHandoff` future that the single runnable blocks on:
 
 - `bufferFilteringCompleteFuture`: filter completes → wakes mailbox to run conversion;
-- after conversion completes, mailbox submits the drain task back to `channelIOExecutor`;
-- after drain finishes, `finishReadRecoveredState()` is called on each channel; the channel completes `stateConsumedFuture` itself once its `recoveredBuffers` has been fully consumed.
+- `drainHandoff`: mailbox completes it after `convertRecoveredInputChannels` + `internalRequestPartitions` finish; channelIOExecutor's single runnable, which had been blocking on it, resumes and starts drain;
+- `PC.upstreamReady` (new, per-channel): completed by `requestSubpartitions` success path (Local: `subpartitionView` published; Remote: `partitionRequestClient` published). Every entry into `deliverRecoveredInternal` first awaits this future, guaranteeing that any buffer / sentinel reaching `recoveredQueue` is delivered with upstream already connected — so the `isInRecovery=true → false` flip is always safe (no `Queried for a buffer before requesting the subpartition.`-class race).
+- after drain finishes, the channel completes `stateConsumedFuture` itself once its `recoveredBuffers` has been fully consumed.
+
+See [`fix_rounds/`](../fix_rounds/) for the round-by-round evolution that arrived at the per-channel `upstreamReady` design (`recovery_in_recovery_flag_unification.md §9` is the final landing point).
 
 ## 3. Responsibilities of the two threads
 
@@ -82,7 +95,7 @@ flowchart LR
       CN["normal channel buffer consumption"]
     end
     F -.->|bufferFilteringCompleteFuture| C
-    C -.->|submit drain task| D
+    C -.->|drainHandoff.complete<br/>(same runnable resumes)| D
     D -.->|finishReadRecoveredState → stateConsumedFuture| CN
     CP -.->|only at checkpoint moment| CIO
 ```

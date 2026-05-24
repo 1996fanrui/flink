@@ -1,5 +1,12 @@
 # Task Breakdown
 
+> **Follow-up (2026-05-24):** 后续若干轮 fix 已落地，见 [`../fix_rounds/`](../fix_rounds/)：
+> per-channel `isInRecovery()` 修了 Step 1/Step 2 谓词、cpDuringRecovery=false 路径
+> 构造时 `allDelivered=true`、per-channel `upstreamReady` future 取代了之前的 conditional
+> wake 修补。本 breakdown 反映的是原始阶段切分，不再单独列上述 fix；待开发任务以
+> [`recovery_in_recovery_flag_unification.md §9.4`](../fix_rounds/recovery_in_recovery_flag_unification.md)
+> 给出的 `deliverRecoveredInternal` 抽象为最新落地参照。
+
 > 基于 simplify_approach 设计文档拆分的后续开发阶段。当前分支已完成 `LocalInputChannel` 的 `recoveredBuffers` / `toBeConsumedBuffers` 解耦（commit `292cc4b9e2d`，FLINK-39018 的 pull 迁移路径仍保留），此处只列尚未落地的工作。
 
 ## 依赖图

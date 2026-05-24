@@ -1,5 +1,15 @@
 # Cross-thread cooperation: lock principles and the checkpoint protocol
 
+> **Follow-up (2026-05-24):** later rounds of fixes (see [`../fix_rounds/`](../fix_rounds/))
+> superseded parts of this doc. In particular: §7.4 of
+> [`end_of_input_event_missing_fix.md`](../fix_rounds/end_of_input_event_missing_fix.md)'s
+> conditional wake is now replaced by the per-channel `upstreamReady` future described in
+> [`recovery_in_recovery_flag_unification.md §9`](../fix_rounds/recovery_in_recovery_flag_unification.md);
+> the Step 1 / Step 2 `isInRecovery` predicate is enforced per channel
+> ([`missing_recovery_checkpoint_barrier_fix.md`](../fix_rounds/missing_recovery_checkpoint_barrier_fix.md)).
+> Lock principles and the 3-step skeleton below remain valid; the §3.2 dispatcher diagram does not
+> yet show the new `upstreamReady` await before each `onRecoveredStateBuffer` / sentinel push.
+
 > Scope: the cooperation mechanism between `channelIOExecutor` (the async thread, described in [`unspiller.md`](./unspiller.md)) and the task thread (mailbox; the consumer side is described in [`input_channel.md`](./input_channel.md)). This doc is the contract that the other two docs both adhere to.
 
 ## 1. The lock
