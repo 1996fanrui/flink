@@ -11,11 +11,11 @@
 
 由于 `finishRecoveredBufferDelivery` 已经不携带任何 buffer/sentinel 参数（只是个"宣告 delivery 结束 + drain-end wake"信号），跟 `onRecoveredStateBuffer` 也不再有"buffer + finish=true/false" 这种共用签名的诱因；保留双入口最自然，不需要再讨论合一。
 
-`fix_rounds/recovery_in_recovery_flag_unification.md §9.4` 仍把内部抽成 `deliverRecoveredInternal(Buffer, boolean finish)` 共享代码，是实现细节。
+`fix_rounds/recovery_in_recovery_flag_unification.md §9.4` 现在让两个入口各自直接落地（不再共享 `deliverRecoveredInternal` helper），因为 `finishRecoveredBufferDelivery` 退化成无 buffer 入参，跟 `onRecoveredStateBuffer` 不再有共用形状。
 
-## 2. SpillFileReader 实例化时机
+## 2. SpillFileReader 实例化时机（已收敛）
 
-`fix_rounds/recovery_in_recovery_flag_unification.md §4.2` 留了一个小 trade-off：SpillFileReader 实例化可以放在 filter 收尾时（早；trigger 字段一并写好）或推迟到 drain handoff 时（晚；channel 已 publish 才绑定）。两种都对，差别在初始化的微秒级时序，未落地代码前暂留意。
+`fix_rounds/recovery_in_recovery_flag_unification.md §9.4.1` 已经定了：filter 收尾在 channelIOExecutor runnable 内**同步**构造 SpillFileReader 实例 + 写 `recoveryCheckpointTrigger` 字段 + `setFinalDrainEnabled`，再 `bufferFilteringCompleteFuture.complete(null)`——保证下游 mail #A 跑 `requestPartitions` 时 trigger 字段稳态、channel 构造时拿到的 `finalDrainEnabled` 跟 trigger 类型严格一致。
 
 ## 3. `finishPhysicalRecoveredChannels` fresh-job fallback 在 per-channel future 方案下的语义
 

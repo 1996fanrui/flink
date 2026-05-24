@@ -211,7 +211,9 @@ if (wasEmpty && partitionRequestClient != null) {   // 条件 wake，两处一�
 
 副作用：路径 2（fresh-job + cpDuringRecovery=true）下 trigger=NO_OP、Step 2 现在看 `isInRecovery=false` 不进 collect、自然不会抛 `Missing RecoveryCheckpointBarrier`。`collectPreRecoveryBarrier` 维持严格契约"找不到 barrier 一律抛"，不需要任何 corner-case 容忍。
 
-最终接口形态（单接口、双入口对外语义清晰、内部共享 `deliverRecoveredInternal` 简化代码）：
+最终接口形态（单接口、双入口对外语义清晰；两个入口各自落地、不抽 helper）：
 
-- `onRecoveredStateBuffer(Buffer)`：push data buffer 进 `recoveredQueue`，await upstreamReady + 条件 wake（保持原契约）
-- `finishRecoveredBufferDelivery()`：await upstreamReady → `recoveredQueue.finish()` → **无条件** `notifyChannelNonEmpty()`；**不 push sentinel**
+- `onRecoveredStateBuffer(Buffer)`：`upstreamReady.join()` → push data buffer 进 `recoveredQueue` + 条件 wake（保持原契约）
+- `finishRecoveredBufferDelivery()`：`upstreamReady.join()` → `recoveredQueue.finish()` → **无条件** `notifyChannelNonEmpty()`；**不 push sentinel**
+
+**注意**：channel 端 `upstreamReady.join()` 跟 §9 主流程的 `finalDrainEnabled` 时序重排是**两个并存的机制**、不是替代关系——前者守"上游 handle 真正 publish"约束（应对 `requestSubpartitions` Timer retrigger），后者守"trigger 字段已装上"约束（应对 mail #A → mail #B 间隙）。详情见 [`recovery_in_recovery_flag_unification.md §9.3`](./recovery_in_recovery_flag_unification.md)。
