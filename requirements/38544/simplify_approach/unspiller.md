@@ -1,5 +1,15 @@
 # Spill pipeline: `SpillFileWriter` / `SpillFileReader` (async-thread side)
 
+> **Follow-up (2026-05-24):** the runnable on `channelIOExecutor` is now a **single submit**
+> (filter → wait `drainHandoff` future → drain → close), not "filter then submit a second
+> drain task" — see [`overview.md §2`](./overview.md) updated diagram and
+> [`../fix_rounds/recovery_in_recovery_flag_unification.md`](../fix_rounds/recovery_in_recovery_flag_unification.md).
+> Additionally, before each `ch.onRecoveredStateBuffer(buf)` / `ch.finishRecoveredBufferDelivery()`
+> the channel internally awaits its per-channel `upstreamReady` future (handled by the
+> channel itself; the drain loop sees no API change), so any buffer / sentinel reaching
+> `recoveredQueue` is delivered only after `requestSubpartitions` has truly published the
+> upstream handle.
+
 > Scope: all new behavior that runs on the existing master `channelIOExecutor` when filter is on. When the feature is off, this thread follows the master path unchanged.
 
 ## 1. Responsibilities

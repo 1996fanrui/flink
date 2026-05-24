@@ -176,3 +176,27 @@ if (wasEmpty && partitionRequestClient != null) {   // 条件 wake，两处一�
 - 已修：编译通过（`finishRecoveredBufferDelivery` 仅改 wake 条件，字段无需新增）
 - 跑 `rui_tools/loop.sh` 至少 100 轮，确认 `Queried for a buffer before requesting the subpartition.` 不再复现
 - 单元测试视后续讨论补加（典型场景：mock channelIOExecutor 推 sentinel 时 `subpartitionView=null`，要求 task 不被 wake；再触发 `requestSubpartitions` 成功，确认 task 被 wake 并消费 sentinel）
+
+## 8. Follow-up：§7.4 的条件 wake 由 per-channel `upstreamReady` future 取代（2026-05-24）
+
+§7.4 落地的"条件 wake"是 race 修补型方案：buffer/sentinel 仍可在 `subpartitionView==null` 时进 `recoveredQueue`，只是 wake 不发，靠 `requestSubpartitions` 重试成功的 `notifyDataAvailable` 兜底。`loop.sh 20260524_134921` 又复现了 `Missing RecoveryCheckpointBarrier`，定位到根因不是 wake 时序，而是更上游的"Step 1 / Step 2 in-recovery 信号源不一致"——详见 [recovery_in_recovery_flag_unification.md](./recovery_in_recovery_flag_unification.md)。
+
+新方案（per-channel `upstreamReady` future，见 `recovery_in_recovery_flag_unification.md §9`）把"等上游 ready" 下沉到 channel 内部：`onRecoveredStateBuffer` / `finishRecoveredBufferDelivery` 入口先 `upstreamReady.get()`，等到 `requestSubpartitions` 真正成功设上 `subpartitionView` / `partitionRequestClient` 才放行 push。语义不变量：**任何 buffer 或 sentinel 进入 `recoveredQueue` 时，subpartitionView/partitionRequestClient 必已 publish**——`isInRecovery` 翻 false 后走 normal path 必然安全。
+
+由此 §7.4 的条件 wake 可以删除：
+
+- 不再需要"`wasEmpty && subpartitionView != null`"这种判断
+- `notifyChannelNonEmpty()` 恢复无条件触发——因为 push 时上游必已 ready、wake 总是合法的
+- 删除 §7.4 §7.4.2 §7.4.3 §7.4.5 提到的 Local/Remote 两端 `subpartitionView/partitionRequestClient` 条件分支
+
+§7.3（cpDuringRecovery=false 路径构造时 `allDelivered=true`）保留——它解决的是 cpDuringRecovery=false 路径下根本不该进 recovery 阶段的根因，跟 per-channel future 正交。
+
+时序上的整体走向：
+
+| 路径 | 旧 §7.4 行为 | 新（per-channel future）行为 |
+| --- | --- | --- |
+| cpDuringRecovery=false | channel 直接 allDelivered=true、不进 recovery、无 sentinel push | 不变（§7.3 保留） |
+| cpDuringRecovery=true，真 drain | drain 中途 push 可能在 upstream 未 ready 时入队、靠条件 wake 等回 | drain 在 push 入口就阻塞等 upstream ready；快 channel 不阻塞慢 channel |
+| cpDuringRecovery=true，fresh job (`spillFile==null`) fallback | fallback push sentinel + 条件 wake | fallback push sentinel 入口也等 upstream ready（粒度 per-channel；fresh job 这条慢一点也无所谓） |
+
+实施进入下一个 commit；本文档保留作为方案演进的历史记录。

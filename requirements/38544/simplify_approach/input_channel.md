@@ -1,5 +1,15 @@
 # InputChannel-side changes
 
+> **Follow-up (2026-05-24):** see [`../fix_rounds/`](../fix_rounds/). The channel now also
+> holds a per-channel `upstreamReady` `CompletableFuture` (completed when
+> `requestSubpartitions` truly publishes `subpartitionView` / `partitionRequestClient`); both
+> `onRecoveredStateBuffer` and `finishRecoveredBufferDelivery` await it before pushing into
+> `recoveredQueue` —
+> see [`recovery_in_recovery_flag_unification.md §9`](../fix_rounds/recovery_in_recovery_flag_unification.md).
+> Naming in this doc (`recoveredBuffers`, `allRecoveredBuffersDelivered`,
+> `finishReadRecoveredState`) is the original design vocabulary; current code uses
+> `recoveredQueue.buffers`, `allDelivered`, `finishRecoveredBufferDelivery`.
+
 > Scope: when `checkpointingDuringRecoveryEnabled=true` + filter is on, this doc covers the entry through which the drain phase delivers a recovered buffer into a physical `InputChannel` and how that channel coordinates consumption with concurrently-arriving upstream data. When the feature is off, master is not touched.
 
 ## 1. Design principles

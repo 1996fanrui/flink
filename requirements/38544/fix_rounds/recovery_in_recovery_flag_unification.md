@@ -1,0 +1,297 @@
+# Recovery in-recovery 信号源统一：引入 `finalDrainEnabled` flag
+
+> 关联：[end_of_input_event_missing_fix.md](./end_of_input_event_missing_fix.md)（§4 的 sentinel 修复在 cpDuringRecovery=false 路径上的过度扩散）、[missing_recovery_checkpoint_barrier_fix.md](./missing_recovery_checkpoint_barrier_fix.md)（per-channel `isInRecovery()` 修了 Step 1/Step 2 谓词、但没修信号源不一致）。本文档**只描述方案**，不改代码。
+
+## 1. 当前 `Missing RecoveryCheckpointBarrier` race 的根因（实证）
+
+`loop.sh 20260524_134921` 的 `[HANG-DIAG]` 日志直接定位：抛 Missing 时 channel 状态是 `allDelivered=true, buffers=[#0:EVENT(EndOfInputChannelStateEvent)]` —— **队列里只有 sentinel、没有任何 `RecoveryCheckpointBarrier`**，Step 1 从来没插过。该 task 同时跑了 `finishPhysicalRecoveredChannels (fresh-job fallback)` 全程 4786 次（即 `spillFile == null`、根本没装 SpillFileReader）。
+
+不变量被破坏在两个独立信号上：
+
+| 信号 | 取值规则 | 当前判定来源 |
+| --- | --- | --- |
+| **Step 1 是否插 barrier** | trigger 是真 SpillFileReader → 按 channel 逐个判 isInRecovery；trigger 是 NO_OP → 永不插 | `StreamTask.recoveryCheckpointTrigger` 字段（null/SpillFileReader），dispatcher 经 supplier 取，null 时 fallback NO_OP |
+| **Step 2 是否找 barrier** | `recoveredQueue.isInRecovery() = !allDelivered \|\| !buffers.isEmpty()` | channel 自家的 `RecoveredBufferQueue` 状态 |
+
+两侧目前没有约束，能交叉出三种组合（"路径"对应另一个 agent 的术语）：
+
+- **路径 1（feature off，cpDuringRecovery=false）**：trigger 永远 NO_OP；channel 构造时 §7.3 修过 `allDelivered=true` → isInRecovery=false。两侧一致、安全。**不在本方案修复范围**。
+- **路径 2（feature on + fresh job，spillFile==null）**：trigger 仍 NO_OP（`StreamTask` 走 `finishPhysicalRecoveredChannels` fallback、根本不装 SpillFileReader）；但 channel 构造时按 `!cpDuringRecovery` → `allDelivered=false`，又被 fallback 推一个 sentinel + 翻 `allDelivered=true`，**isInRecovery 由 buffers 非空仍判 true**。Step 2 找 barrier → Missing。**本方案修复目标**。
+- **路径 3（feature on + 真有 spillFile，startup race）**：cp barrier 在 `handoffSpillReaderToDrain` mail 跑完之前到达，trigger 字段仍 null → dispatcher fallback NO_OP；channel 已构造、`allDelivered=false`、Step 2 找 barrier → Missing。**本方案同步修复**。
+
+## 2. 不一致的根因：两件事被拆到两个 mailbox tick
+
+`StreamTask` 当前在 cpDuringRecovery=true 路径的时序：
+
+```
+filter 完成 (channelIOExecutor)
+   ↓ complete bufferFilteringCompleteFuture
+   ↓
+mail #A: requestPartitions ← thenRun(mainMailbox.execute(...))
+   - convertRecoveredInputChannels
+       - 物理 channel 构造：new RecoveredBufferQueue(channelInfo, !cpDuringRecovery)
+         ← 此时 spillFile 是否为 null 是 *已知的*（filter 已经决定了）
+           但 channel 构造拿不到这条信息，只能拿 cpDuringRecovery flag 作为代理 ← 不一致来源
+   - internalRequestPartitions
+   ↓ conversionDoneFutures 全部 complete
+   ↓ allConverted.whenComplete
+   ↓
+mail #B: handoffSpillReaderToDrain ← mainMailbox.execute(...)
+   - reader.getProducedSpillFile()  ← 这才查 spillFile==null 与否
+   - spillFile == null  → finishPhysicalRecoveredChannels (fresh-job fallback)
+   - spillFile != null  → 装 recoveryCheckpointTrigger = spillReader; 触发 drain
+```
+
+mail #A 决定 channel 的 `allDelivered`（基于 cpDuringRecovery flag），mail #B 才查实际 spillFile 状态 + 装 trigger。这中间的窗口里：
+- cp barrier 一旦到达 → dispatcher 拿到 null trigger → fallback NO_OP → Step 1 不插
+- 但 channel 已 in-recovery → Step 2 要找 barrier → Missing
+
+filter 阶段已经产出 spillFile（或确认为 null），所以**"是否真要 drain"这个信号在 filter 完成那一刻就已经确定**——只是当前代码没把它传给 channel 构造，channel 只能用 cpDuringRecovery flag 代理。
+
+## 3. 设计：引入 `finalDrainEnabled` 单一 flag
+
+定义一个**组合 flag**作为 "in-recovery 信号" 的唯一权威源：
+
+```
+finalDrainEnabled = isCheckpointingDuringRecoveryEnabled()  // feature 是否开启
+                    AND  (filterProducedSpillFile != null)  // filter 是否真产出 spill state
+```
+
+语义：**该 task 是否真的需要走 SpillFileReader-driven drain 阶段**。
+
+`finalDrainEnabled` 一旦在 filter 完成时算出，**整个 task 生命周期单调不变**，作为 Step 1 / Step 2 两侧判定的共同输入：
+
+| 信号 | 旧来源 | 新来源 |
+| --- | --- | --- |
+| trigger 字段值 | null（直到 mail #B 装 SpillFileReader） | `finalDrainEnabled` 时构造 SpillFileReader 实例；否则保持 NO_OP（不再依赖 mail #B 异步设置） |
+| channel `RecoveredBufferQueue.allDelivered` 初值 | `!cpDuringRecovery` | `!finalDrainEnabled`（真要 drain → false；其他都 true） |
+
+约束：**channel 构造（包括 allDelivered 初值的写入）必须晚于 `finalDrainEnabled` 算出 + trigger 字段设置**。详见 §4 时序重排。
+
+## 4. 新时序：filter 收尾原地完成、不引入新 mail
+
+修复思路是**把"算 flag + 装 trigger 字段"塞进 filter 当前的 channelIOExecutor runnable 里**，作为 filter 的同步收尾步骤——**不**额外起 mailbox 任务。`bufferFilteringCompleteFuture.complete(null)` 是 filter runnable 的最后一个动作，前置步骤同步完成意味着：任何 `thenRun(mainMailbox.execute(...))` 触发的下游 mail（如现有的 `requestPartitions`）跑起来时，trigger 字段和 `finalDrainEnabled` 都已经是稳态。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant IO as channelIOExecutor<br/>(single submitted runnable)
+    participant MB as mainMailbox
+
+    Note over IO: filter 写完所有 spill / 收完 receivedBuffers
+    IO->>IO: 算 finalDrainEnabled =<br/>cpDuringRecovery && (spillFile != null)
+    alt finalDrainEnabled == true
+        IO->>IO: new SpillFileReader(...)
+        IO->>IO: gate.recoveryCheckpointTrigger = spillReader<br/>(volatile write)
+    else finalDrainEnabled == false
+        Note right of IO: gate.recoveryCheckpointTrigger 保持 null<br/>(dispatcher fallback NO_OP)
+    end
+    IO->>IO: gate.setFinalDrainEnabled(finalDrainEnabled)<br/>(volatile write)
+    IO->>IO: bufferFilteringCompleteFuture.complete(null)
+    Note right of IO: thenRun(mainMailbox.execute(requestPartitions))<br/>→ mailbox 一个 mail 入队
+
+    MB->>MB: mail: inputGate.requestPartitions()
+    MB->>MB: convertRecoveredInputChannels
+    MB->>MB: 读 gate.isFinalDrainEnabled()
+    MB->>MB: 物理 channel 构造<br/>new RecoveredBufferQueue(info, !finalDrainEnabled)<br/>true  → allDelivered=false<br/>false → allDelivered=true
+    MB->>MB: internalRequestPartitions()
+    MB-->>IO: drainHandoff.complete(physicalChannels)<br/>(仅 finalDrainEnabled=true 时<br/>传 channel 列表；否则 complete(null))
+
+    Note over IO: 同一个 runnable 在 drainHandoff 上阻塞等待
+    alt finalDrainEnabled == true
+        IO->>IO: SpillFileReader.drain()<br/>push buffers + finishRecoveredBufferDelivery
+    end
+    IO->>IO: spillReader.close() / cleanup
+```
+
+要点（与图对应）：
+
+- **只有两个 actor**：`channelIOExecutor`（单个 submitted runnable，从头到尾就这一个）和 `mainMailbox`。runnable 内顺序是 `filter → 算 flag + 装 trigger → complete future → 阻塞等 drainHandoff → drain → close`（对应 `StreamTask:909` 注释 "Single submit to channelIOExecutor: filter → wait for drain handoff → drain → close"）。
+- **filter 收尾的所有"算 flag / 装 trigger / set gate.finalDrainEnabled"全部在 filter 结束的同一个时点同步完成**（图中步骤 1–6），不引入任何新 mail；`bufferFilteringCompleteFuture.complete(null)` 是这段收尾的最后一步，保证下游 thenRun 触发的 mail 一定能看到稳态值（`volatile` 写 + `CompletableFuture.complete` 内存语义共同保证 happens-before）。
+- **mailbox 端也只一个 mail**（原来的 `requestPartitions`，时序里不变），完成 convert + requestSubpartitions 之后 `drainHandoff.complete(...)` 把控制权传回 channelIOExecutor 继续 drain；`finalDrainEnabled=false` 时也 `complete(null)`，让 runnable 跳过 drain 直接走 close。
+- **`finshPhysicalRecoveredChannels` fresh-job fallback 整段删除**——`finalDrainEnabled=false` 时 channel 一开始就 allDelivered=true，没有 sentinel 需要推、没有 wake 需要触发。
+
+要点：
+
+- **不引入新 mail**——原本的"算 spillFile / 装 trigger" 这件事就是 filter 产物的紧接动作，逻辑上属于 filter，不该跨 mailbox tick
+- channelIOExecutor 在写 `recoveryCheckpointTrigger` 字段时**必须先于** `bufferFilteringCompleteFuture.complete(null)`；happens-before 由 `volatile` 字段的写 + `CompletableFuture.complete` 的内存语义保证（后续读 future 的下游观察到 trigger 写）
+- `finalDrainEnabled=false` 的分支彻底不再调 `finishPhysicalRecoveredChannels` fallback push sentinel——channel 一开始就 allDelivered=true，没必要
+
+### 4.1 把 `finalDrainEnabled` 暴露给 channel 构造
+
+mail #A 里 channel 构造时需要拿到这个 flag。两个选项：
+
+- **(a)** 在 `SingleInputGate` 加一个字段 `private volatile boolean finalDrainEnabled`，channelIOExecutor 在 filter 收尾时 `gate.setFinalDrainEnabled(...)` 写、channel 构造时 `inputGate.isFinalDrainEnabled()` 读，取代当前 `inputGate.isCheckpointingDuringRecoveryEnabled()` 那一处
+- **(b)** 把 flag 通过参数链路传到 `convertRecoveredInputChannels` 内部，再传给 `RecoveredBufferQueue`
+
+倾向 **(a)**——跟现有 `setCheckpointingDuringRecoveryEnabled` 的字段访问语义对称，改动局限在 `SingleInputGate` 字段 + 一处构造调用。`volatile` 保证 mail #A 读到收尾阶段写入的值。
+
+### 4.2 SpillFileReader 实例化
+
+SpillFileReader 的 drain 路径需要"每个物理 channel 的引用"才能 push buffer——但**实例化本身**不需要 channel 在场。filter 收尾时实例化 SpillFileReader（暂不绑定 channels）、写进 trigger 字段；drain handoff 阶段（mail #B）再 inject 物理 channel list 完成绑定。也可以让 SpillFileReader 实例化继续推迟到 mail #B、filter 收尾只写一个"占位 SpillFileReader / 标记"——实现层 trade-off，但必须保证 **trigger 字段在 `bufferFilteringCompleteFuture.complete` 之前已经写好**，否则 mail #A channel 构造时仍可能拿到 stale null。
+
+## 5. 两侧一致性保证
+
+定义不变量：**`recoveryCheckpointTrigger` 字段最终值 ⇔ task 所有 channel 的 `recoveredQueue` 初始 `allDelivered` 值**。具体：
+
+| `finalDrainEnabled` | trigger 字段最终值 | channel `allDelivered` 初值 | Step 1 行为 | Step 2 行为 | 结果 |
+| --- | --- | --- | --- | --- | --- |
+| `false` | null（fallback NO_OP） | `true` | NO_OP 不插任何 barrier | `isInRecovery=false` → 跳过 collect | **一致** |
+| `true` | SpillFileReader 实例 | `false` | 真 trigger 按 per-channel `isInRecovery()` 决定插（drain 期间为 true 必插） | `isInRecovery=true` 时去 collect、必能找到 barrier | **一致** |
+
+两个交叉态（`false × in-recovery` 或 `true × not-in-recovery`）在新方案下都不能出现——因为 channel 构造**晚于** trigger 字段 publish，两者读的是同一个 `finalDrainEnabled` 源、单调一致。
+
+## 6. 路径 2 / 路径 3 验证
+
+### 路径 2（feature on + fresh job）
+
+- filter 完成 → mail #A' 算出 `finalDrainEnabled = true && (null != null) = false`
+- trigger 字段保持 null
+- mail #B' channel 构造：`new RecoveredBufferQueue(_, !false) = (_, true)` → `allDelivered=true`
+- 任何 cp 触发：Step 1 NO_OP 不插；Step 2 `isInRecovery=false` 跳过 collect → **不抛 Missing**
+
+### 路径 3（feature on + 真有 spillFile + startup race）
+
+- filter 完成 → mail #A' 算出 `finalDrainEnabled = true && (non-null != null) = true`，立即装 trigger 字段为 SpillFileReader
+- mail #B' channel 构造：`allDelivered=false`
+- 任何 cp 触发**必发生在 mail #A' 完成之后**（mail 顺序保证）：trigger 已是 SpillFileReader；Step 1 per-channel 插 barrier；Step 2 找到 → **不抛 Missing**
+
+### 路径 1（feature off）
+
+- mail #A' 不跑（`if (checkpointingDuringRecoveryEnabled)` 外面那条路径完全不变）
+- channel 构造继续按现行 `!cpDuringRecovery=true` 设 `allDelivered=true`（与 `finalDrainEnabled=false` 等价）
+- 行为不变
+
+## 7. fresh-job fallback 的命运
+
+新方案下 `finishPhysicalRecoveredChannels` 这条 fresh-job fallback **完全不需要**：
+
+- 它的目的本来是给"没有 SpillFileReader-driven drain"的 channel 一个 wake-up（push sentinel + 翻 allDelivered=true）
+- 但在新方案里这条路径下 channel 一开始就 `allDelivered=true`，不需要被翻
+- 也不需要 sentinel——`isInRecovery` 一直 false，不存在"跨越 in-recovery 阻塞期"的 wake 需求
+
+可以直接删除 `finishPhysicalRecoveredChannels` 这个方法 + 调用点；或保留作为 defensive no-op。
+
+## 8. 跟之前 fix 的关系
+
+- **§7.3 `RecoveredBufferQueue` 加 `initiallyDelivered` 构造参数**：保留，本方案在此基础上把 caller 从 `!isCheckpointingDuringRecoveryEnabled()` 换成 `!finalDrainEnabled`
+- **§7.4 conditional wake (`subpartitionView != null` / `partitionRequestClient != null`)**：保留，本方案不动 wake 逻辑；新方案让"真 drain 路径"下的 sentinel 仍由 `SpillFileReader.drain()` 末尾的 `finishRecoveredBufferDelivery` 推（保留跨阻塞期 wake 的设计），但路径 2/3 这种"没有 drain"的场景下根本不再调 `finishRecoveredBufferDelivery`，也就不会触发那个 wake 路径
+- **per-channel `isInRecovery()` (`f6fb3b95fff`)**：保留，Step 1 持 SpillFileReader.lock 期间 per-channel 判定仍然必要（drain 中途某些 channel 已经把队列消费空，跳过插 barrier 是正确的）
+
+## 9. 选定方案：per-channel `upstreamReady` future
+
+### 9.0 为什么必须等：两类 race 的根因
+
+`deliverRecoveredInternal` 入口先 await `upstreamReady` 这条同步**不是性能优化、是正确性必需**。如果不等、buffer / sentinel 可以在 upstream 还没 publish 时就进 `recoveredQueue`，会撞两类 race（即 §1 表格中归类为路径 2 / 路径 3 的 case，下面把根因再列一遍方便后续 reviewer）：
+
+**路径 2 — fresh job + cpDuringRecovery=true（`spillFile==null` fresh-job fallback）**：
+- channel 构造按 `!cpDuringRecovery` → `allDelivered=false` 进 in-recovery 态
+- task 没装 SpillFileReader（spillFile==null），`recoveryCheckpointTrigger` 字段保持 null → dispatcher fallback NO_OP
+- fresh-job fallback `finishPhysicalRecoveredChannels` 给每 channel push 一个 sentinel + 翻 `allDelivered=true`
+- sentinel 入队 → `isInRecovery=true`（`!allDelivered=false || buffers 非空=true`）→ Step 2 走 collect → 队列里只有 sentinel、没有 RecoveryCheckpointBarrier → 抛 `Missing RecoveryCheckpointBarrier`
+- task 消费完 sentinel → `isInRecovery=false` → normal path 读 `subpartitionView==null`（PartitionNotFoundException Timer retrigger 中）→ 抛 `Queried for a buffer before requesting the subpartition.`
+
+**路径 3 — cpDuringRecovery=true + 真有 spill + startup race**：
+- physical channel 已构造、`allDelivered=false`、task 进 RUNNING 开始接 cp barrier
+- 但 `handoffSpillReaderToDrain` mailbox 任务还没跑完、`recoveryCheckpointTrigger` 字段仍 null → dispatcher fallback NO_OP
+- Step 1 NO_OP 不插 barrier；Step 2 看 `isInRecovery=true` → 找 barrier → 抛 Missing
+
+两类 race 的共同根因是 **channel 的 in-recovery 状态跟 upstream 是否 publish 之间没有 happens-before 约束**，让两个独立信号能交叉出冲突态。Per-channel `upstreamReady` future 把这条约束显式建立成 "**任何 buffer / sentinel 入 `recoveredQueue` ⇒ upstream 已 publish**" —— 路径 2 / 路径 3 同时消失。
+
+### 9.1 设计
+
+每个物理 channel 内部持有一个 `CompletableFuture<Void> upstreamReady`：
+
+- **Local**：`LocalInputChannel.requestSubpartitions()` 成功把 `subpartitionView` 写上去（line 250 `this.subpartitionView = subpartitionView;` 之后、释放 requestLock 之前）→ `upstreamReady.complete(null)`。如果走 PartitionNotFoundException 的 Timer retrigger 路径，future 保持未完成，直到某次 retrigger 真正成功才 complete。
+- **Remote**：对称做法——`partitionRequestClient` 真正设上的那一刻 complete。
+
+`onRecoveredStateBuffer(buffer)` 和 `finishRecoveredBufferDelivery()` 在入口先 `upstreamReady.get()` 阻塞等：
+
+```java
+public void onRecoveredStateBuffer(Buffer buffer) {
+    awaitUpstreamReadyUninterruptibly();   // 阻塞直到 subpartitionView publish
+    // 原有 push 逻辑：synchronized (recoveredQueue) { offer; }; notify if was empty
+}
+
+public void finishRecoveredBufferDelivery() throws IOException {
+    awaitUpstreamReadyUninterruptibly();
+    // 原有 sentinel push + finish
+}
+```
+
+drain 在 channelIOExecutor 上 per-channel 调这些方法——慢 channel（PartitionNotFoundException retrigger 中）会阻塞它自己的 push、不影响其他 channel；快 channel push 完立刻进 recoveredQueue、task 可立即消费。
+
+### 9.2 一致性论证
+
+任何 buffer / sentinel 进入 `recoveredQueue` 时，subpartitionView/partitionRequestClient **必然**已经 publish。所以：
+
+- `isInRecovery` 从 true 翻 false 那一刻（task 消费完所有 recovered buffer + sentinel）→ 走 normal path 读 subpartitionView/partitionRequestClient → **必非 null** → 永远不撞 ISE。
+- Step 1 / Step 2 信号源不一致那条问题被"上游 ready"这条更严格的前置条件吸收掉：`recoveredQueue` 非空 → 上游必 ready；上游不 ready → `recoveredQueue` 必空 → `isInRecovery=true && buffers.isEmpty()=true` 时 Step 2 仍 `isInRecovery=true`（`allDelivered=false`，drain 还没真正完成）→ collect 走 buffers 拿不到 barrier、抛 Missing 吗？**不会**——这条 case 在新设计下 drain 还没 push 任何 buffer 进队，`allDelivered` 仍 false，但 `collect` 也不会被调，因为 task 的 cp 触发要求 task 接到 cp barrier，而 cp barrier 来自 upstream，上游没 ready 就不会送 cp barrier……需要进一步推（见 §9.4 风险点）。
+
+### 9.3 跟之前方案的对比
+
+| 维度 | §3 `finalDrainEnabled` flag + 改时序 | §9 per-channel `upstreamReady` future |
+| --- | --- | --- |
+| 阻塞粒度 | task 级（整个 drainHandoff 等所有 channel ready） | per-channel（慢 channel 自己等，快的不受影响） |
+| 改动面 | `SingleInputGate` 加字段 + 重排 filter 收尾 + 删 `finishPhysicalRecoveredChannels` fallback | channel 加一个 future + 入口两处 await；几乎不动外层时序 |
+| 是否还需要 §7.4 条件 wake | 不需要（drain 启动时上游已 ready） | 不需要（push 时上游已 ready） |
+| 是否还需要 fresh-job fallback | 删除 | 保留语义不变（spillFile==null 时仍调 finishRecoveredBufferDelivery，只是 sentinel push 会等 upstreamReady） |
+
+§9 改动量更小、表达更直接——"buffer 进 recoveredQueue ⇒ 上游必 ready" 是个简单清晰的不变量，比 §3 时序重排更易理解维护。
+
+### 9.4 实施细节：内部抽象一个统一的 deliver 方法
+
+`onRecoveredStateBuffer` 和 `finishRecoveredBufferDelivery` 加上 upstreamReady await 之后步骤 90% 重叠（await → 持锁 push → 条件 finish → 条件 wake），唯一差别在"推 sentinel + set allDelivered"。Local / Remote 各自抽一个内部方法把两条入口合并：
+
+```java
+// LocalInputChannel:
+private void deliverRecoveredInternal(Buffer buffer, boolean finish) {
+    awaitUpstreamReadyUninterruptibly();         // 阻塞直到 subpartitionView publish
+    boolean wasEmpty;
+    synchronized (recoveredQueue) {              // Remote 这里换 receivedBuffers
+        if (isReleased) {                        // Remote: isReleased.get()
+            buffer.recycleBuffer();
+            return;
+        }
+        wasEmpty = recoveredQueue.offer(buffer);
+        if (finish) {
+            recoveredQueue.finish();
+        }
+    }
+    if (wasEmpty) {
+        notifyChannelNonEmpty();                 // 无条件 wake（push 时 upstream 已 ready）
+    }
+}
+
+@Override
+public void onRecoveredStateBuffer(Buffer buffer) {
+    deliverRecoveredInternal(buffer, false);
+}
+
+@Override
+public void finishRecoveredBufferDelivery() throws IOException {
+    deliverRecoveredInternal(
+        EventSerializer.toBuffer(EndOfInputChannelStateEvent.INSTANCE, false),
+        true);
+}
+```
+
+Remote 完全对称——只是锁对象（`receivedBuffers`）和 `isReleased.get()` 写法不同。这一抽象的好处：
+
+- `awaitUpstreamReadyUninterruptibly()` 只写一处、容易 review
+- 未来如果还有第三种 delivery 类型（比如 Step 1 的 RecoveryCheckpointBarrier 也走同一入口）能复用
+- §7.3 / §7.4 散落在两处的条件 wake 残留可以一次性清掉，因为新方案下 wake 是无条件的
+
+注：Step 1 当前还是直接调 `onRecoveredStateBuffer(barrier buffer)` 推 RecoveryCheckpointBarrier、不调 `finishRecoveredBufferDelivery`——抽出 deliverRecoveredInternal 之后 Step 1 这条路径自然也走同一份 await + push 逻辑、不再需要单独处理。
+
+### 9.5 风险点 / 待 verify
+
+- `awaitUpstreamReadyUninterruptibly()` 在 channelIOExecutor 上阻塞——确认 channelIOExecutor 这条线程上阻塞不会拖死别的 task（每个 task 有自己的 channelIOExecutor？还是全局共享？要 verify）。
+- fresh-job fallback (`spillFile==null` 时 `finishPhysicalRecoveredChannels` 给每 channel 调 `finishRecoveredBufferDelivery`) 跟 per-channel future 的交互：fallback 也走 await，等所有 channel upstream ready 后才 push sentinel——OK，但 fallback 是在 task 启动早期跑的，那时 `requestSubpartitions` 才刚被 schedule，`upstreamReady` 大概率未 complete，要等较久；但因为 fallback 本来就是给 fresh-job、慢一点不影响正确性。
+- Local `subpartitionView==null` + `isReleased=true` 释放路径：要确保 `upstreamReady` 在 release 时也被 completeExceptionally / cancel，否则 channelIOExecutor 死等。
+
+## 10. 不在本次范围
+
+- 跨 task / cross-gate 的 in-recovery 协调（本方案只解决 single-task 内的不一致）
+- `SpillFileReader.drain()` 内部 `finishRecoveredBufferDelivery` 在 lock 外调的 wake 时序（§7.4 已修，不动）
+- master 路径（cpDuringRecovery=false）的任何改动
