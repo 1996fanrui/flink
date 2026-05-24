@@ -154,37 +154,45 @@ public final class SpillFileReader implements RecoveryCheckpointTrigger, Closeab
                 buf.getMemorySegment().put(buf.getMemorySegmentOffset(), data, 0, e.length);
                 buf.setSize(e.length);
 
-                // (C) Critical section — deliver + advance offset must be a single atomic action
-                //     so the task-thread snapshot never observes a half-applied entry. Channel
-                //     pushes block on the channel's per-instance upstreamReady future; release
-                //     completes that future exceptionally, surfacing here as a
-                //     CompletionException / CancellationException. Treat it as graceful drain
-                //     termination: recycle the in-flight buffer and exit the loop. The release
-                //     path itself drains recoveredQueue separately.
+                // (C) Wait for the upstream connection to be published — outside the lock so a
+                //     concurrent task-thread Step 1 can still take the lock and insert its
+                //     RecoveryCheckpointBarrier while we wait. Channel-internal push paths are
+                //     intentionally lock-free wrt upstreamReady (task-thread callers would
+                //     deadlock against the PartitionNotFoundException retrigger, which is itself
+                //     a mailbox-scheduled mail). Release-time exceptions surface as
+                //     CompletionException / CancellationException and terminate drain gracefully.
                 try {
-                    synchronized (lock) {
-                        ch.onRecoveredStateBuffer(buf);
-                        seg.pollNextEntry();
-                        currentSegmentIndex = seg.segmentIndex;
-                        currentOffset = e.offset + e.length;
-                    }
-                } catch (CompletionException | CancellationException releaseDuringPush) {
+                    ch.awaitUpstreamReady();
+                } catch (CompletionException | CancellationException releaseDuringAwait) {
                     buf.recycleBuffer();
                     return;
                 }
+
+                // (D) Critical section — deliver + advance offset must be a single atomic action
+                //     so the task-thread snapshot never observes a half-applied entry.
+                synchronized (lock) {
+                    ch.onRecoveredStateBuffer(buf);
+                    seg.pollNextEntry();
+                    currentSegmentIndex = seg.segmentIndex;
+                    currentOffset = e.offset + e.length;
+                }
             }
         }
-        // (D) End-of-drain: signal producer completion to every channel. The flag is published
-        //     through the channel's internal monitor that finishRecoveredBufferDelivery already
-        //     takes. Same release-time exception handling as the push loop above: a release in
-        //     flight just terminates drain cleanly.
-        try {
-            for (RecoverableInputChannel ch : channels.allChannels) {
-                ch.finishRecoveredBufferDelivery();
+        // (E) End-of-drain: signal producer completion to every channel. Must await upstream on
+        //     each channel before finish — finish flips allDelivered=true, so the very next
+        //     consumer poll on a now not-in-recovery channel hits the not-in-recovery branch and
+        //     probes subpartitionView. Channels that never had any buffer in the spill file
+        //     (skipped by the push loop above) are precisely the ones the push-time await would
+        //     not have covered; this loop closes that gap. Release-time exceptions surface as
+        //     CompletionException / CancellationException — skip that channel and continue
+        //     finishing the rest (release path tears them down on its own).
+        for (RecoverableInputChannel ch : channels.allChannels) {
+            try {
+                ch.awaitUpstreamReady();
+            } catch (CompletionException | CancellationException releaseDuringAwait) {
+                continue;
             }
-        } catch (CompletionException | CancellationException releaseDuringFinish) {
-            // Already finished for the channels we got through; the rest will see isReleased
-            // when they eventually unblock.
+            ch.finishRecoveredBufferDelivery();
         }
     }
 
