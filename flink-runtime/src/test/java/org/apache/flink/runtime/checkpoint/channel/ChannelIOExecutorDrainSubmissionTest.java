@@ -68,13 +68,15 @@ class ChannelIOExecutorDrainSubmissionTest {
         CapturingChannel chan = new CapturingChannel(cInfo);
         List<RecoverableInputChannel> all = new ArrayList<>();
         all.add(chan);
-        SpillFileReader reader = new SpillFileReader(spillFile, all, new StubBufferRequester());
+        SpillFileReader reader =
+                new SpillFileReader(
+                        spillFile, CompletableFuture.completedFuture(all), new StubBufferRequester());
 
         ExecutorService channelIOExecutor = Executors.newSingleThreadExecutor();
         try {
-            // Drain stage of the unified runnable in StreamTask.restoreStateAndGates: after the
-            // task thread hands the reader off via drainHandoff, the I/O thread calls
-            // reader.drain() and then closes.
+            // Drain stage of the unified runnable in StreamTask.restoreStateAndGates: once the
+            // physicalChannelsFuture inside the SpillFileReader is satisfied, the I/O thread
+            // proceeds to reader.drain() and then closes.
             CompletableFuture<Void> done = new CompletableFuture<>();
             channelIOExecutor.execute(
                     () -> {
@@ -132,7 +134,9 @@ class ChannelIOExecutorDrainSubmissionTest {
 
         List<RecoverableInputChannel> all = new ArrayList<>();
         all.add(chan);
-        SpillFileReader reader = new SpillFileReader(spillFile, all, new StubBufferRequester());
+        SpillFileReader reader =
+                new SpillFileReader(
+                        spillFile, CompletableFuture.completedFuture(all), new StubBufferRequester());
 
         // Mock the StreamTask.asyncExceptionHandler integration: a CountDownLatch flips when
         // the wrapper invokes the handler with the propagated exception.

@@ -118,35 +118,17 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
                     stateConsumedFuture.isDone(), "recovered state is not fully consumed");
         }
 
-        // Extract remaining buffers before conversion.
-        // These buffers have been filtered but not yet consumed by the Task.
-        final ArrayDeque<Buffer> remainingBuffers;
+        // Invariant: on the cpDuringRecovery=true path no caller pushes anything into
+        // receivedBuffers (filter writes to SpillFile, pass-through also writes to SpillFile); on
+        // the cpDuringRecovery=false legacy path the task's inner mailbox loop consumes everything
+        // out of receivedBuffers before requestPartitions runs.
         synchronized (receivedBuffers) {
-            remainingBuffers = new ArrayDeque<>(receivedBuffers);
-            receivedBuffers.clear();
+            Preconditions.checkState(
+                    receivedBuffers.isEmpty(), "Received buffer should be empty.");
         }
 
         final InputChannel inputChannel = toInputChannelInternal();
         inputChannel.checkpointStopped(lastStoppedCheckpointId);
-
-        // Feed remaining buffers via the uniform push interface. This migration path has no
-        // SpillFileReader.lock (no spiller exists yet); delivery is single-threaded and sequential,
-        // occurring before the physical channel is exposed to any other thread.
-        if (inputChannel instanceof RecoverableInputChannel) {
-            RecoverableInputChannel rec = (RecoverableInputChannel) inputChannel;
-            for (Buffer buf : remainingBuffers) {
-                rec.onRecoveredStateBuffer(buf);
-            }
-            // cpDuringRecovery=false path no longer needs an explicit finishRecoveredBufferDelivery
-            // call: the physical channel's RecoveredBufferQueue is constructed with
-            // allDelivered=true on that path, so isInRecovery is already false (unless
-            // remainingBuffers above pushed something, in which case it falls to false as soon as
-            // those buffers are consumed — no sentinel, no extra wake-up).
-        } else {
-            throw new IllegalStateException(
-                    "Physical channel does not implement RecoverableInputChannel: "
-                            + inputChannel.getClass().getName());
-        }
         return inputChannel;
     }
 
@@ -219,10 +201,6 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
         // physical channel's finishRecoveredBufferDelivery() will offer the sentinel
         // directly into its own recoveredQueue.
         synchronized (receivedBuffers) {
-            if (!inputGate.isCheckpointingDuringRecoveryEnabled()) {
-                onRecoveredStateBuffer(
-                        EventSerializer.toBuffer(EndOfInputChannelStateEvent.INSTANCE, false));
-            }
             bufferFilteringCompleteFuture.complete(null);
         }
         bufferManager.releaseFloatingBuffers();

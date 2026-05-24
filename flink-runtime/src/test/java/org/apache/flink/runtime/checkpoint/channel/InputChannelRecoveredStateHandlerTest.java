@@ -83,6 +83,7 @@ class InputChannelRecoveredStateHandlerTest extends RecoveredChannelStateHandler
                                             .MappingType.IDENTITY)
                         }),
                 null,
+                false,
                 MemoryManager.DEFAULT_PAGE_SIZE,
                 null);
     }
@@ -112,6 +113,7 @@ class InputChannelRecoveredStateHandlerTest extends RecoveredChannelStateHandler
                                             .MappingType.RESCALING)
                         }),
                 null,
+                false,
                 MemoryManager.DEFAULT_PAGE_SIZE,
                 null);
     }
@@ -138,6 +140,7 @@ class InputChannelRecoveredStateHandlerTest extends RecoveredChannelStateHandler
                                             .MappingType.IDENTITY)
                         }),
                 stubFilteringHandler,
+                true,
                 MemoryManager.DEFAULT_PAGE_SIZE,
                 null);
     }

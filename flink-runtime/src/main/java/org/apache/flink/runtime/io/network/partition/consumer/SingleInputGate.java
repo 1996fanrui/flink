@@ -245,6 +245,17 @@ public class SingleInputGate extends IndexedInputGate {
 
     private volatile boolean checkpointingDuringRecoveryEnabled = false;
 
+    /**
+     * Final decision on whether this gate will see a SpillFileReader-driven drain phase. Computed
+     * in the filter wind-down ({@code channelIOExecutor}) as {@code
+     * checkpointingDuringRecoveryEnabled && spillFile != null}, set before {@code
+     * bufferFilteringCompleteFuture.complete()} so any downstream mailbox task observes the final
+     * value. Channels read this in their constructor (during {@code convertRecoveredInputChannels})
+     * to decide the initial {@code RecoveredBufferQueue.allDelivered} state, keeping the
+     * "channel is in-recovery iff trigger is SpillFileReader" invariant.
+     */
+    private volatile boolean finalDrainEnabled = false;
+
     public SingleInputGate(
             String owningTaskName,
             int gateIndex,
@@ -339,6 +350,16 @@ public class SingleInputGate extends IndexedInputGate {
     @Override
     public boolean isCheckpointingDuringRecoveryEnabled() {
         return checkpointingDuringRecoveryEnabled;
+    }
+
+    @Override
+    public void setFinalDrainEnabled(boolean enabled) {
+        this.finalDrainEnabled = enabled;
+    }
+
+    @Override
+    public boolean isFinalDrainEnabled() {
+        return finalDrainEnabled;
     }
 
     @Override

@@ -30,6 +30,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
@@ -51,8 +52,18 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 public final class SpillFileReader implements RecoveryCheckpointTrigger, Closeable {
 
     private final SpillFile spillFile;
-    private final List<RecoverableInputChannel> allChannels;
-    private final Map<InputChannelInfo, RecoverableInputChannel> channelByInfo;
+
+    /**
+     * Resolved channels (list + InputChannelInfo-keyed map) wrapped in a future. The reader is
+     * constructed on {@code channelIOExecutor} before {@code convertRecoveredInputChannels} has
+     * run on the mailbox; the physical channel set arrives later via the input future, and the
+     * derived {@code channelByInfo} map is computed once by the {@code thenApply} callback (which
+     * caches the result). Drain and the task-thread Step 1 snapshot both {@link
+     * CompletableFuture#join} this — by the time either runs, the upstream input future is
+     * guaranteed complete (mail #A finishes before {@code suspend} and before task RUNNING).
+     */
+    private final CompletableFuture<ResolvedChannels> resolvedChannelsFuture;
+
     private final BufferRequester bufferRequester;
 
     /**
@@ -70,24 +81,39 @@ public final class SpillFileReader implements RecoveryCheckpointTrigger, Closeab
     private long currentOffset = 0L;
 
     /**
-     * Constructs the reader from a frozen spill file and the physical channel set of the task.
-     * Derives the {@code InputChannelInfo}-keyed map internally via {@link
-     * RecoverableInputChannel#getChannelInfo()}.
+     * Constructs the reader from a frozen spill file and a future that will be completed with the
+     * physical channel set once {@code convertRecoveredInputChannels} runs on the mailbox. The
+     * future is the second of the two communications between {@code channelIOExecutor} and the
+     * mailbox; it carries both the synchronization signal and the channels themselves.
      */
     public SpillFileReader(
             SpillFile spillFile,
-            List<RecoverableInputChannel> allChannels,
+            CompletableFuture<List<RecoverableInputChannel>> channelsFuture,
             BufferRequester bufferRequester) {
         this.spillFile = checkNotNull(spillFile);
-        this.allChannels = checkNotNull(allChannels);
+        this.resolvedChannelsFuture = checkNotNull(channelsFuture).thenApply(ResolvedChannels::new);
         this.bufferRequester = checkNotNull(bufferRequester);
-        Map<InputChannelInfo, RecoverableInputChannel> byInfo = new HashMap<>();
-        for (RecoverableInputChannel ch : allChannels) {
-            byInfo.put(ch.getChannelInfo(), ch);
-        }
-        this.channelByInfo = byInfo;
         // Drain holds one ref-count grant for the lifetime of this reader; matched by close().
         spillFile.acquire();
+    }
+
+    /**
+     * Cached pair of the physical channel list and the {@code InputChannelInfo}-keyed map derived
+     * from it. Built once by the {@code thenApply} callback so drain and Step 1 snapshot share a
+     * single map instance.
+     */
+    private static final class ResolvedChannels {
+        final List<RecoverableInputChannel> allChannels;
+        final Map<InputChannelInfo, RecoverableInputChannel> channelByInfo;
+
+        ResolvedChannels(List<RecoverableInputChannel> all) {
+            this.allChannels = all;
+            Map<InputChannelInfo, RecoverableInputChannel> byInfo = new HashMap<>();
+            for (RecoverableInputChannel ch : all) {
+                byInfo.put(ch.getChannelInfo(), ch);
+            }
+            this.channelByInfo = byInfo;
+        }
     }
 
     /**
@@ -99,6 +125,11 @@ public final class SpillFileReader implements RecoveryCheckpointTrigger, Closeab
      * that point, so the (queue, offset) atomicity that the lock protects does not apply.
      */
     public void drain() throws IOException, InterruptedException {
+        // Block until convertRecoveredInputChannels has handed off the physical channel set.
+        // join() is fine: by the time drain runs, the input future is guaranteed complete (mail
+        // #A finishes on the mailbox before suspend runs, which is what unblocks the channelIO
+        // thread after F1). Returns the cached ResolvedChannels — both drain and Step 1 share it.
+        ResolvedChannels channels = resolvedChannelsFuture.join();
         for (SpillFile.SpillFileSegment seg : spillFile.segments()) {
             SpillFile.Entry e;
             // Peek runs outside the lock: filter completed before drain started, so the per-
@@ -106,7 +137,7 @@ public final class SpillFileReader implements RecoveryCheckpointTrigger, Closeab
             // snapshot only reads entries, never mutates them. Putting peek inside the lock would
             // add no safety and increase Step 1 contention.
             while ((e = seg.peekNextEntry()) != null) {
-                RecoverableInputChannel ch = channelByInfo.get(e.channelInfo);
+                RecoverableInputChannel ch = channels.channelByInfo.get(e.channelInfo);
                 if (ch == null) {
                     throw new IllegalStateException(
                             "Drain: no physical channel found for " + e.channelInfo);
@@ -148,7 +179,7 @@ public final class SpillFileReader implements RecoveryCheckpointTrigger, Closeab
         //     takes. Same release-time exception handling as the push loop above: a release in
         //     flight just terminates drain cleanly.
         try {
-            for (RecoverableInputChannel ch : allChannels) {
+            for (RecoverableInputChannel ch : channels.allChannels) {
                 ch.finishRecoveredBufferDelivery();
             }
         } catch (CompletionException | CancellationException releaseDuringFinish) {
@@ -159,6 +190,10 @@ public final class SpillFileReader implements RecoveryCheckpointTrigger, Closeab
 
     @Override
     public DiskSnapshot snapshotAndInsertBarriers(long checkpointId) throws IOException {
+        // Same await as drain — by the time the cp barrier handler reaches this on the task
+        // thread, requestPartitions has completed and the input future is guaranteed done.
+        ResolvedChannels channels = resolvedChannelsFuture.join();
+
         SpillFile.Snapshot diskSnap;
         int startSegmentIndex;
         long startOffset;
@@ -181,7 +216,7 @@ public final class SpillFileReader implements RecoveryCheckpointTrigger, Closeab
             // and onRecoveredStateBuffer under the same monitor; lock order stays
             // SpillFileReader.lock → channel-internal queue monitor, identical to the drain main
             // path, so no new lock-order edge is introduced.
-            for (RecoverableInputChannel ch : allChannels) {
+            for (RecoverableInputChannel ch : channels.allChannels) {
                 if (ch.isInRecovery()) {
                     ch.onRecoveredStateBuffer(
                             EventSerializer.toBuffer(
