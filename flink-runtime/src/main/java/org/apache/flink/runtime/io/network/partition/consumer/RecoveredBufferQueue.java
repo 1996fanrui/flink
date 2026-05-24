@@ -62,10 +62,10 @@ class RecoveredBufferQueue {
     /**
      * True once the drain/spill producer has finished pushing recovered buffers into this queue.
      * Producer-side completion only; the consumer may still have buffers queued. May be initialized
-     * to {@code true} when the owning channel has no SpillFileReader-driven drain phase ahead of
-     * it (cpDuringRecovery=false / migration path): in that case {@code isInRecovery} starts false
-     * and the channel goes straight to the master normal path, avoiding the {@code true → false}
-     * flip that would otherwise let a consumer race past an in-flight {@code requestSubpartitions}
+     * to {@code true} when the owning channel has no SpillFileReader-driven drain phase ahead of it
+     * (cpDuringRecovery=false / migration path): in that case {@code isInRecovery} starts false and
+     * the channel goes straight to the master normal path, avoiding the {@code true → false} flip
+     * that would otherwise let a consumer race past an in-flight {@code requestSubpartitions}
      * retrigger and observe a null {@code subpartitionView}.
      */
     private boolean allDelivered;
@@ -133,8 +133,8 @@ class RecoveredBufferQueue {
      * — the channel-state writer only accepts data buffers.
      *
      * @throws IOException if no sentinel matching {@code checkpointId} is found (the snapshot
-     *     protocol guarantees one must be present); retained buffers are released before throwing
-     *     so the caller does not have to clean up.
+     *     protocol guarantees one must be present whenever this method is invoked); retained
+     *     buffers are released before throwing so the caller does not have to clean up.
      */
     List<Buffer> collectPreRecoveryBarrier(long checkpointId) throws IOException {
         List<Buffer> retained = new ArrayList<>();

@@ -29,6 +29,8 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletionException;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
@@ -122,20 +124,36 @@ public final class SpillFileReader implements RecoveryCheckpointTrigger, Closeab
                 buf.setSize(e.length);
 
                 // (C) Critical section — deliver + advance offset must be a single atomic action
-                //     so the task-thread snapshot never observes a half-applied entry.
-                synchronized (lock) {
-                    ch.onRecoveredStateBuffer(buf);
-                    seg.pollNextEntry();
-                    currentSegmentIndex = seg.segmentIndex;
-                    currentOffset = e.offset + e.length;
+                //     so the task-thread snapshot never observes a half-applied entry. Channel
+                //     pushes block on the channel's per-instance upstreamReady future; release
+                //     completes that future exceptionally, surfacing here as a
+                //     CompletionException / CancellationException. Treat it as graceful drain
+                //     termination: recycle the in-flight buffer and exit the loop. The release
+                //     path itself drains recoveredQueue separately.
+                try {
+                    synchronized (lock) {
+                        ch.onRecoveredStateBuffer(buf);
+                        seg.pollNextEntry();
+                        currentSegmentIndex = seg.segmentIndex;
+                        currentOffset = e.offset + e.length;
+                    }
+                } catch (CompletionException | CancellationException releaseDuringPush) {
+                    buf.recycleBuffer();
+                    return;
                 }
             }
         }
         // (D) End-of-drain: signal producer completion to every channel. The flag is published
         //     through the channel's internal monitor that finishRecoveredBufferDelivery already
-        //     takes.
-        for (RecoverableInputChannel ch : allChannels) {
-            ch.finishRecoveredBufferDelivery();
+        //     takes. Same release-time exception handling as the push loop above: a release in
+        //     flight just terminates drain cleanly.
+        try {
+            for (RecoverableInputChannel ch : allChannels) {
+                ch.finishRecoveredBufferDelivery();
+            }
+        } catch (CompletionException | CancellationException releaseDuringFinish) {
+            // Already finished for the channels we got through; the rest will see isReleased
+            // when they eventually unblock.
         }
     }
 
