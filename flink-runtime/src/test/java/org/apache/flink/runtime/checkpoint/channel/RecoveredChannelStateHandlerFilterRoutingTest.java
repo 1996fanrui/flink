@@ -181,6 +181,7 @@ class RecoveredChannelStateHandlerFilterRoutingTest {
                 new InputGate[] {inputGate},
                 identityRescalingForOneGate(),
                 filteringHandler,
+                true,
                 MemoryManager.DEFAULT_PAGE_SIZE,
                 new String[] {tempDir.toString()});
     }
@@ -190,6 +191,7 @@ class RecoveredChannelStateHandlerFilterRoutingTest {
                 new InputGate[] {inputGate},
                 identityRescalingForOneGate(),
                 null,
+                false,
                 MemoryManager.DEFAULT_PAGE_SIZE,
                 null);
     }

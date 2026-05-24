@@ -39,6 +39,7 @@ import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -137,15 +138,34 @@ class InputChannelRecoveredStateHandler
     /** Frozen handle to the produced {@link SpillFile}, populated by {@link #close()}. */
     @Nullable private SpillFile producedSpillFile;
 
+    /**
+     * True iff the job has unaligned checkpointing-during-recovery enabled. Drives the {@code
+     * recover} dispatch:
+     *
+     * <ul>
+     *   <li>{@code true} + {@link #filteringHandler} != null — rescale path; bytes are filtered
+     *       and the surviving records are written to the {@link SpillFile} via the accumulator.
+     *   <li>{@code true} + {@link #filteringHandler} == null — non-rescale path; bytes still go
+     *       to the {@link SpillFile} (no filter, just pass-through), so the drain phase has a
+     *       single uniform source on this path.
+     *   <li>{@code false} — legacy path; bytes are pushed directly into the {@link
+     *       RecoveredInputChannel}'s {@code receivedBuffers} for in-line consumption by the
+     *       task's inner mailbox loop.
+     * </ul>
+     */
+    private final boolean checkpointingDuringRecoveryEnabled;
+
     InputChannelRecoveredStateHandler(
             InputGate[] inputGates,
             InflightDataRescalingDescriptor channelMapping,
             @Nullable ChannelStateFilteringHandler filteringHandler,
+            boolean checkpointingDuringRecoveryEnabled,
             int memorySegmentSize,
             @Nullable String[] spillTmpDirectories) {
         this.inputGates = inputGates;
         this.channelMapping = channelMapping;
         this.filteringHandler = filteringHandler;
+        this.checkpointingDuringRecoveryEnabled = checkpointingDuringRecoveryEnabled;
         checkArgument(
                 memorySegmentSize > 0, "memorySegmentSize must be positive: %s", memorySegmentSize);
         this.memorySegmentSize = memorySegmentSize;
@@ -218,9 +238,13 @@ class InputChannelRecoveredStateHandler
             if (buffer.readableBytes() > 0) {
                 RecoveredInputChannel channel = getMappedChannels(channelInfo);
 
-                if (filteringHandler != null) {
-                    recoverWithFiltering(
-                            channel, channelInfo, oldSubtaskIndex, buffer.retainBuffer());
+                if (checkpointingDuringRecoveryEnabled) {
+                    if (filteringHandler != null) {
+                        recoverWithFiltering(
+                                channel, channelInfo, oldSubtaskIndex, buffer.retainBuffer());
+                    } else {
+                        recoverPassThroughToSpill(channel.getChannelInfo(), buffer);
+                    }
                 } else {
                     channel.onRecoveredStateBuffer(
                             EventSerializer.toBuffer(
@@ -232,6 +256,31 @@ class InputChannelRecoveredStateHandler
             }
         } finally {
             buffer.recycleBuffer();
+        }
+    }
+
+    /**
+     * Pass-through path: copies the source buffer's raw bytes into the spill-file accumulator,
+     * unchanged. Used when checkpointing-during-recovery is on but no rescale-driven filtering is
+     * needed; mirrors how {@link #recoverWithFiltering} funnels post-filter bytes through the
+     * accumulator, so the drain phase has a single uniform source. Copies in chunks bounded by
+     * the accumulator's writable capacity; each {@code requestBufferBlocking} call flushes the
+     * accumulator if the channel switched or it is full, so a single source buffer may produce
+     * multiple {@link SpillFile} entries for the same channel.
+     */
+    private void recoverPassThroughToSpill(InputChannelInfo channelInfo, Buffer source)
+            throws IOException, InterruptedException {
+        FilteredBufferWriter accumulator = ensureSpillFileWriter().getAccumulator();
+        ByteBuffer src = source.getNioBufferReadable();
+        while (src.hasRemaining()) {
+            Buffer dst = accumulator.requestBufferBlocking(channelInfo);
+            int writable = dst.getMaxCapacity() - dst.getSize();
+            int toCopy = Math.min(writable, src.remaining());
+            ByteBuffer slice = src.slice();
+            slice.limit(toCopy);
+            dst.getMemorySegment().put(dst.getSize(), slice, toCopy);
+            dst.setSize(dst.getSize() + toCopy);
+            src.position(src.position() + toCopy);
         }
     }
 
@@ -274,10 +323,10 @@ class InputChannelRecoveredStateHandler
         Path baseDir = resolveSpillBaseDir();
         SpillFile spillFile = new SpillFile(baseDir);
         // Producer-side ref-count grant. Held by the handler from filter-pipeline construction
-        // until the drain reader has been built on the task thread; transferred to the drain
-        // reader at handoff time (see StreamTask#handoffSpillReaderToDrain). Without this grant
-        // the SpillFile would be cleaned up between filter end and drain start, because nothing
-        // else holds the file alive in that window.
+        // until SpillFileReader is built in stage 1 of the recovery filter wind-down (which takes
+        // its own grant on construction); StreamTask releases this producer grant right after the
+        // reader is built. Without this grant the SpillFile would be cleaned up between filter
+        // end and drain start, because nothing else holds the file alive in that window.
         spillFile.acquire();
 
         postFilterSegment = MemorySegmentFactory.allocateUnpooledSegment(memorySegmentSize);
@@ -331,9 +380,11 @@ class InputChannelRecoveredStateHandler
 
     @Override
     public void close() throws IOException {
-        // Filter-phase spill file must be frozen before any channel sees finishReadRecoveredState
-        // — the latter completes bufferFilteringCompleteFuture on every channel, and the drain
-        // is allowed to assume the spill file is closed by the time that future fires.
+        // Filter-phase spill file must be frozen here so the producedSpillFile handle is
+        // available to callers right after close. finishReadRecoveredState() is no longer called
+        // from here — the caller (StreamTask filter runnable) invokes it explicitly after stage 1
+        // work (computing finalDrainEnabled, building SpillFileReader, publishing the trigger
+        // field) so the resulting F1 completion observes a stable trigger reference.
         if (spillFileWriter != null) {
             SpillFile produced = spillFileWriter.getSpillFile();
             try {
@@ -346,10 +397,6 @@ class InputChannelRecoveredStateHandler
         if (postFilterSegment != null) {
             postFilterSegment.free();
             postFilterSegment = null;
-        }
-        // note that we need to finish all RecoveredInputChannels, not just those with state
-        for (final InputGate inputGate : inputGates) {
-            inputGate.finishReadRecoveredState();
         }
         if (preFilterSegment != null) {
             preFilterSegment.free();

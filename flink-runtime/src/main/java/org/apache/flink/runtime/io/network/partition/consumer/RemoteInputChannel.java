@@ -180,10 +180,9 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
         this.bufferManager = new BufferManager(inputGate.getMemorySegmentProvider(), this, 0);
         this.channelStatePersister =
                 new ChannelStatePersister(checkNotNull(stateWriter), getChannelInfo());
-        // See LocalInputChannel constructor for the rationale on the cpDuringRecovery split.
+        // See LocalInputChannel constructor for the rationale.
         this.recoveredQueue =
-                new RecoveredBufferQueue(
-                        getChannelInfo(), !inputGate.isCheckpointingDuringRecoveryEnabled());
+                new RecoveredBufferQueue(getChannelInfo(), !inputGate.isFinalDrainEnabled());
     }
 
     @VisibleForTesting

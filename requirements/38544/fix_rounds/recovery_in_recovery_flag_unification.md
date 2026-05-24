@@ -435,6 +435,41 @@ Remote 完全对称——只是锁对象（`receivedBuffers`）和 `isReleased.g
 
 所以两个机制都要保留，分别守住"trigger 装上"与"上游连接真正建好"两条独立约束。
 
+#### 9.4.4 `RecoveredInputChannel.receivedBuffers` 不变式：toInputChannel 时永远为空
+
+之前的 `toInputChannel` 实现里有一段"把 `receivedBuffers` 里剩余的 buffer 迁移到 physical channel"的代码：
+
+```java
+// 旧实现
+final ArrayDeque<Buffer> remainingBuffers;
+synchronized (receivedBuffers) {
+    remainingBuffers = new ArrayDeque<>(receivedBuffers);
+    receivedBuffers.clear();
+}
+final InputChannel inputChannel = toInputChannelInternal();
+inputChannel.checkpointStopped(lastStoppedCheckpointId);
+if (inputChannel instanceof RecoverableInputChannel) {
+    for (Buffer buf : remainingBuffers) {
+        ((RecoverableInputChannel) inputChannel).onRecoveredStateBuffer(buf);
+    }
+}
+```
+
+跟机制 B 的 `upstreamReady` 直接死锁：mail #A 上跑的 `toInputChannel` 在迁移循环里调 physical channel 的 `onRecoveredStateBuffer` → `upstreamReady.join()` → 等 `requestSubpartitions` 真正建好 partitionRequestClient/subpartitionView；但 `requestSubpartitions` 是 mail #A 内 `internalRequestPartitions` 才跑，被 `toInputChannel` 的迁移卡住——循环依赖、mailbox 永远不返回。
+
+**修法**：把迁移循环整段删掉、改成断言 `Preconditions.checkState(receivedBuffers.isEmpty(), ...)`，因为这个不变式**两条路径下都必然成立**：
+
+| 路径 | 谁会写 `receivedBuffers` | toInputChannel 时为何为空 |
+| --- | --- | --- |
+| cpDuringRecovery=false | `RecoveredChannelStateHandler.recover` 在 `filteringHandler == null` 分支直接 push（含 `SubtaskConnectionDescriptor` + buffer 本身）；旧路径里 `finishReadRecoveredState` 还会 push 一个 `EndOfInputChannelStateEvent` sentinel | 数据走 RecoveredInputChannel 的 mailbox 内 inner-loop 消费（`getNextRecoveredStateBuffer`），消费完最后一个 buffer 才 `stateConsumedFuture.complete`；mail #A 的 trigger 是 `stateConsumedFuture` 自身，所以 mail #A 跑时 `receivedBuffers` 一定已经被消费空 |
+| cpDuringRecovery=true | `RecoveredChannelStateHandler.recover` 在 `filteringHandler != null` 分支走 `recoverWithFiltering` → 过滤后写 `SpillFile`（accumulator），**完全不写** `receivedBuffers`；旧路径里 `finishReadRecoveredState` 的 sentinel push 也已通过 `!isCheckpointingDuringRecoveryEnabled()` 跳过 | filter 期间没有任何代码路径写入 `receivedBuffers`，所以从初始化到 toInputChannel 一直空 |
+
+两条路径的"为空"原因不同，但结论一致：**`toInputChannel` 时 `receivedBuffers` 必须为空**。
+
+附带清理：
+- 删 `RecoveredInputChannel.finishReadRecoveredState` 内的 sentinel push 整段——cpDuringRecovery=false 路径下 sentinel 的唯一用途是触发 `stateConsumedFuture.complete`（消费 sentinel 的分支），但 sentinel 不 push 也不影响 task 在 RUNNING 之前消费完所有真实 buffer 后退出 inner-loop。
+- `EndOfInputChannelStateEvent` 类本身保留——`getNextRecoveredStateBuffer` 内的"如果读到 sentinel 就 complete stateConsumedFuture"的识别分支保留作为防御代码，不再有 caller 主动 push（不影响行为）。
+
 ### 9.5 风险点 / 待 verify
 
 - `upstreamReady.join()` 在 channelIOExecutor 上阻塞——确认 channelIOExecutor 这条线程上阻塞不会拖死别的 task（每个 task 有自己的 channelIOExecutor？还是全局共享？要 verify）。

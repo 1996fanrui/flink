@@ -80,4 +80,24 @@ public abstract class IndexedInputGate extends InputGate implements Checkpointab
 
     /** Returns whether unaligned checkpointing during recovery is enabled. */
     public abstract boolean isCheckpointingDuringRecoveryEnabled();
+
+    /**
+     * Sets whether this gate's physical channels will see a SpillFileReader-driven drain phase.
+     * Written by the filter wind-down on {@code channelIOExecutor} before {@code
+     * bufferFilteringCompleteFuture} is completed, so any consumer of {@link
+     * #isFinalDrainEnabled()} that races with downstream mailbox tasks observes the final value.
+     *
+     * <p>This is strictly tighter than {@link #isCheckpointingDuringRecoveryEnabled()}: the feature
+     * flag is known at gate-setup time, but {@code finalDrainEnabled} is only known after filter
+     * has actually produced (or failed to produce) a spill file — i.e. only after
+     * {@code cpDuringRecovery && spillFile != null} can be evaluated.
+     */
+    public abstract void setFinalDrainEnabled(boolean enabled);
+
+    /**
+     * Returns whether this gate's physical channels will see a SpillFileReader-driven drain phase.
+     * Read by {@code LocalInputChannel} / {@code RemoteInputChannel} constructors during gate
+     * conversion to decide the initial {@code RecoveredBufferQueue.allDelivered} state.
+     */
+    public abstract boolean isFinalDrainEnabled();
 }

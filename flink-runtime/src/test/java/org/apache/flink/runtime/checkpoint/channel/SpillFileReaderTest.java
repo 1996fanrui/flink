@@ -34,6 +34,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -358,7 +359,7 @@ class SpillFileReaderTest {
             RecoverableInputChannel ch = (RecoverableInputChannel) infoChannelPairs[i + 1];
             all.add(ch);
         }
-        return new SpillFileReader(spillFile, all, requester);
+        return new SpillFileReader(spillFile, CompletableFuture.completedFuture(all), requester);
     }
 
     /** Deterministic 4-byte payload per id. */

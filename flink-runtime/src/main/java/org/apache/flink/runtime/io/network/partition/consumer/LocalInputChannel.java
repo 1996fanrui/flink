@@ -143,13 +143,16 @@ public class LocalInputChannel extends InputChannel
         this.taskEventPublisher = checkNotNull(taskEventPublisher);
         this.channelStatePersister =
                 new ChannelStatePersister(checkNotNull(stateWriter), getChannelInfo());
-        // cpDuringRecovery=false: this channel has no SpillFileReader drain ahead of it, so
-        // mark allDelivered=true at construction. isInRecovery stays false from the start and
-        // the channel goes straight to the master normal path — no sentinel-driven wake-up,
-        // no true→false flip that could race with a PartitionNotFoundException retrigger.
+        // The "final drain" decision (cpDuringRecovery && spillFile != null) is published on the
+        // gate by the filter wind-down before mail #A runs convertRecoveredInputChannels, so this
+        // constructor sees the stable value. !finalDrainEnabled means no SpillFileReader will push
+        // anything into recoveredQueue — start the queue in allDelivered=true so isInRecovery is
+        // false from the start, keeping the channel state in lockstep with the trigger field
+        // (NO_OP in this case). When finalDrainEnabled=true, the channel enters in-recovery and
+        // the SpillFileReader drain phase flips allDelivered via finishRecoveredBufferDelivery().
         this.recoveredQueue =
                 new RecoveredBufferQueue(
-                        getChannelInfo(), !inputGate.isCheckpointingDuringRecoveryEnabled());
+                        getChannelInfo(), !inputGate.isFinalDrainEnabled());
     }
 
     // ------------------------------------------------------------------------
