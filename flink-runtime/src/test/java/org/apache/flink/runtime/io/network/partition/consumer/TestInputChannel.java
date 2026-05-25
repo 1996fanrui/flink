@@ -277,6 +277,9 @@ public class TestInputChannel extends InputChannel implements RecoverableInputCh
         return !finishRecoveredBufferDeliveryCalled || !recoveredBuffersSpy.isEmpty();
     }
 
+    @Override
+    public void awaitUpstreamReady() {}
+
     public java.util.Deque<Buffer> getRecoveredBuffersSpy() {
         return recoveredBuffersSpy;
     }

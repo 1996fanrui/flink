@@ -130,6 +130,9 @@ class ChannelIOExecutorDrainSubmissionTest {
                     public boolean isInRecovery() {
                         return true;
                     }
+
+                    @Override
+                    public void awaitUpstreamReady() {}
                 };
 
         List<RecoverableInputChannel> all = new ArrayList<>();
@@ -205,6 +208,9 @@ class ChannelIOExecutorDrainSubmissionTest {
         public boolean isInRecovery() {
             return !finishCalled;
         }
+
+        @Override
+        public void awaitUpstreamReady() {}
     }
 
     private static final class StubBufferRequester implements BufferRequester {

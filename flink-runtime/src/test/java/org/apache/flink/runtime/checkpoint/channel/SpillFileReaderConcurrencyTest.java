@@ -210,6 +210,9 @@ class SpillFileReaderConcurrencyTest {
             return true;
         }
 
+        @Override
+        public void awaitUpstreamReady() {}
+
         synchronized int dataCount() {
             return data.size();
         }
