@@ -24,6 +24,7 @@ import org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointBarrier;
 import org.apache.flink.runtime.event.AbstractEvent;
 import org.apache.flink.runtime.io.network.api.serialization.EventSerializer;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
+import org.apache.flink.util.Preconditions;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
@@ -84,6 +85,18 @@ class RecoveredBufferQueue {
      *     call (so the caller knows whether to issue the channel-available notification).
      */
     boolean offer(Buffer buffer) {
+        // Strict monotonic invariant: push is only allowed while the channel is still in the
+        // recovery phase. The "transition" state (allDelivered=true but buffers non-empty) still
+        // counts as in-recovery — Step 1 can push a RecoveryCheckpointBarrier in that window, the
+        // consumer keeps using the in-recovery branch until buffers drain. Once buffers go empty
+        // and allDelivered=true (isInRecovery()=false), the channel has fully left recovery and
+        // no caller is allowed to push back into the queue. Fail-loud here so any caller that
+        // violates that monotonic exit shows up in the stack.
+        Preconditions.checkState(
+                isInRecovery(),
+                "Push into RecoveredBufferQueue after recovery finished (channelInfo=%s, bufferType=%s)",
+                channelInfo,
+                buffer.getDataType());
         boolean wasEmpty = buffers.isEmpty();
         buffers.add(buffer);
         return wasEmpty;
