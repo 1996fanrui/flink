@@ -151,8 +151,7 @@ public class LocalInputChannel extends InputChannel
         // (NO_OP in this case). When finalDrainEnabled=true, the channel enters in-recovery and
         // the SpillFileReader drain phase flips allDelivered via finishRecoveredBufferDelivery().
         this.recoveredQueue =
-                new RecoveredBufferQueue(
-                        getChannelInfo(), !inputGate.isFinalDrainEnabled());
+                new RecoveredBufferQueue(getChannelInfo(), !inputGate.isFinalDrainEnabled());
     }
 
     // ------------------------------------------------------------------------
@@ -184,10 +183,10 @@ public class LocalInputChannel extends InputChannel
 
     /**
      * Flips the producer-completion flag to true exactly once and fires an unconditional drain-end
-     * wake-up so the consumer re-checks the channel. <b>Does not push any sentinel buffer</b> —
-     * the old {@code EndOfInputChannelStateEvent} sentinel was only useful to provide this
-     * wake-up, which {@code notifyChannelNonEmpty()} now delivers directly without leaving a
-     * "phantom in-recovery" entry in {@code recoveredQueue}.
+     * wake-up so the consumer re-checks the channel. <b>Does not push any sentinel buffer</b> — the
+     * old {@code EndOfInputChannelStateEvent} sentinel was only useful to provide this wake-up,
+     * which {@code notifyChannelNonEmpty()} now delivers directly without leaving a "phantom
+     * in-recovery" entry in {@code recoveredQueue}.
      *
      * <p>End-of-drain exception: caller does NOT need to hold {@code SpillFileReader.lock} because
      * no more buffers are being added at this point.

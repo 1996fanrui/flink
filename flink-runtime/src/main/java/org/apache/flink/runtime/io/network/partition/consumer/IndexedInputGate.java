@@ -89,8 +89,8 @@ public abstract class IndexedInputGate extends InputGate implements Checkpointab
      *
      * <p>This is strictly tighter than {@link #isCheckpointingDuringRecoveryEnabled()}: the feature
      * flag is known at gate-setup time, but {@code finalDrainEnabled} is only known after filter
-     * has actually produced (or failed to produce) a spill file — i.e. only after
-     * {@code cpDuringRecovery && spillFile != null} can be evaluated.
+     * has actually produced (or failed to produce) a spill file — i.e. only after {@code
+     * cpDuringRecovery && spillFile != null} can be evaluated.
      */
     public abstract void setFinalDrainEnabled(boolean enabled);
 

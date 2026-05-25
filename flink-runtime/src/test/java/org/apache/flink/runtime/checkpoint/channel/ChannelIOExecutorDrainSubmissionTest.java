@@ -70,7 +70,9 @@ class ChannelIOExecutorDrainSubmissionTest {
         all.add(chan);
         SpillFileReader reader =
                 new SpillFileReader(
-                        spillFile, CompletableFuture.completedFuture(all), new StubBufferRequester());
+                        spillFile,
+                        CompletableFuture.completedFuture(all),
+                        new StubBufferRequester());
 
         ExecutorService channelIOExecutor = Executors.newSingleThreadExecutor();
         try {
@@ -139,7 +141,9 @@ class ChannelIOExecutorDrainSubmissionTest {
         all.add(chan);
         SpillFileReader reader =
                 new SpillFileReader(
-                        spillFile, CompletableFuture.completedFuture(all), new StubBufferRequester());
+                        spillFile,
+                        CompletableFuture.completedFuture(all),
+                        new StubBufferRequester());
 
         // Mock the StreamTask.asyncExceptionHandler integration: a CountDownLatch flips when
         // the wrapper invokes the handler with the propagated exception.

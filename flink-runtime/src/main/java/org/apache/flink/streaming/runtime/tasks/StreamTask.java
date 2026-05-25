@@ -148,7 +148,6 @@ import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -915,7 +914,8 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
         //   Communication 1 (A -> B): trigger F1 by explicitly calling finishReadRecoveredState
         //     on each gate. F1 completes; mail #A enqueues per gate and the suspend mail
         //     enqueues after all of them.
-        //   Stage 2 (B, mailbox, per gate): convertRecoveredInputChannels + internalRequestPartitions.
+        //   Stage 2 (B, mailbox, per gate): convertRecoveredInputChannels +
+        // internalRequestPartitions.
         //     The last gate to finish completes physicalChannelsFuture with the post-conversion
         //     channel set.
         //   Communication 2 (B -> A): physicalChannelsFuture carries the channels themselves.

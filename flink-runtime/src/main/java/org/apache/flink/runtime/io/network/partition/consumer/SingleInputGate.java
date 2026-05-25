@@ -251,8 +251,8 @@ public class SingleInputGate extends IndexedInputGate {
      * checkpointingDuringRecoveryEnabled && spillFile != null}, set before {@code
      * bufferFilteringCompleteFuture.complete()} so any downstream mailbox task observes the final
      * value. Channels read this in their constructor (during {@code convertRecoveredInputChannels})
-     * to decide the initial {@code RecoveredBufferQueue.allDelivered} state, keeping the
-     * "channel is in-recovery iff trigger is SpillFileReader" invariant.
+     * to decide the initial {@code RecoveredBufferQueue.allDelivered} state, keeping the "channel
+     * is in-recovery iff trigger is SpillFileReader" invariant.
      */
     private volatile boolean finalDrainEnabled = false;
 

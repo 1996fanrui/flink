@@ -55,12 +55,12 @@ public final class SpillFileReader implements RecoveryCheckpointTrigger, Closeab
 
     /**
      * Resolved channels (list + InputChannelInfo-keyed map) wrapped in a future. The reader is
-     * constructed on {@code channelIOExecutor} before {@code convertRecoveredInputChannels} has
-     * run on the mailbox; the physical channel set arrives later via the input future, and the
-     * derived {@code channelByInfo} map is computed once by the {@code thenApply} callback (which
-     * caches the result). Drain and the task-thread Step 1 snapshot both {@link
-     * CompletableFuture#join} this — by the time either runs, the upstream input future is
-     * guaranteed complete (mail #A finishes before {@code suspend} and before task RUNNING).
+     * constructed on {@code channelIOExecutor} before {@code convertRecoveredInputChannels} has run
+     * on the mailbox; the physical channel set arrives later via the input future, and the derived
+     * {@code channelByInfo} map is computed once by the {@code thenApply} callback (which caches
+     * the result). Drain and the task-thread Step 1 snapshot both {@link CompletableFuture#join}
+     * this — by the time either runs, the upstream input future is guaranteed complete (mail #A
+     * finishes before {@code suspend} and before task RUNNING).
      */
     private final CompletableFuture<ResolvedChannels> resolvedChannelsFuture;
 
