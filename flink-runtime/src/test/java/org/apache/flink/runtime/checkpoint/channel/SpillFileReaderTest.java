@@ -328,6 +328,9 @@ class SpillFileReaderTest {
         public boolean isInRecovery() {
             return inRecovery;
         }
+
+        @Override
+        public void awaitUpstreamReady() {}
     }
 
     /** Returns fresh heap-backed buffers and counts release calls. */
