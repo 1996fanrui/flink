@@ -86,8 +86,9 @@ public interface RecoverableInputChannel {
     /**
      * Blocks until the channel's upstream connection (Local {@code subpartitionView} / Remote
      * {@code partitionRequestClient}) is published. Surfaces release as a {@link
-     * java.util.concurrent.CompletionException} / {@link java.util.concurrent.CancellationException}
-     * so the caller can recycle in-flight buffers and terminate gracefully.
+     * java.util.concurrent.CompletionException} / {@link
+     * java.util.concurrent.CancellationException} so the caller can recycle in-flight buffers and
+     * terminate gracefully.
      *
      * <p>Called <b>only</b> by {@code SpillFileReader.drain} on {@code channelIOExecutor}, before
      * the per-entry push and outside the {@code SpillFileReader.lock} critical section. This

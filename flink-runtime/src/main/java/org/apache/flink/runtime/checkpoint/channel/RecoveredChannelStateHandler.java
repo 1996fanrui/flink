@@ -143,14 +143,14 @@ class InputChannelRecoveredStateHandler
      * recover} dispatch:
      *
      * <ul>
-     *   <li>{@code true} + {@link #filteringHandler} != null — rescale path; bytes are filtered
-     *       and the surviving records are written to the {@link SpillFile} via the accumulator.
-     *   <li>{@code true} + {@link #filteringHandler} == null — non-rescale path; bytes still go
-     *       to the {@link SpillFile} (no filter, just pass-through), so the drain phase has a
-     *       single uniform source on this path.
+     *   <li>{@code true} + {@link #filteringHandler} != null — rescale path; bytes are filtered and
+     *       the surviving records are written to the {@link SpillFile} via the accumulator.
+     *   <li>{@code true} + {@link #filteringHandler} == null — non-rescale path; bytes still go to
+     *       the {@link SpillFile} (no filter, just pass-through), so the drain phase has a single
+     *       uniform source on this path.
      *   <li>{@code false} — legacy path; bytes are pushed directly into the {@link
-     *       RecoveredInputChannel}'s {@code receivedBuffers} for in-line consumption by the
-     *       task's inner mailbox loop.
+     *       RecoveredInputChannel}'s {@code receivedBuffers} for in-line consumption by the task's
+     *       inner mailbox loop.
      * </ul>
      */
     private final boolean checkpointingDuringRecoveryEnabled;
@@ -263,8 +263,8 @@ class InputChannelRecoveredStateHandler
      * Pass-through path: copies the source buffer's raw bytes into the spill-file accumulator,
      * unchanged. Used when checkpointing-during-recovery is on but no rescale-driven filtering is
      * needed; mirrors how {@link #recoverWithFiltering} funnels post-filter bytes through the
-     * accumulator, so the drain phase has a single uniform source. Copies in chunks bounded by
-     * the accumulator's writable capacity; each {@code requestBufferBlocking} call flushes the
+     * accumulator, so the drain phase has a single uniform source. Copies in chunks bounded by the
+     * accumulator's writable capacity; each {@code requestBufferBlocking} call flushes the
      * accumulator if the channel switched or it is full, so a single source buffer may produce
      * multiple {@link SpillFile} entries for the same channel.
      */

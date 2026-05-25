@@ -84,9 +84,9 @@ public final class SpillFileReaderBootstrap {
     /**
      * Constructs a {@link SpillFileReader} from a frozen {@link SpillFile}, the snapshotted source
      * (pre-conversion) channel set, and a future that will be completed with the physical
-     * (post-conversion) channel set once {@code convertRecoveredInputChannels} runs on the
-     * mailbox. Used by the filter wind-down on {@code channelIOExecutor} before mail #A runs, so
-     * the trigger field can be published in stage 1.
+     * (post-conversion) channel set once {@code convertRecoveredInputChannels} runs on the mailbox.
+     * Used by the filter wind-down on {@code channelIOExecutor} before mail #A runs, so the trigger
+     * field can be published in stage 1.
      */
     public static SpillFileReader buildReader(
             SpillFile spillFile,
