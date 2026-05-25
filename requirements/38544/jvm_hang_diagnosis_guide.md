@@ -5,7 +5,7 @@
 ## 0. 核心原则
 
 - **永远不要直接 `wait` 等卡住的进程结束**。它不会自己结束。
-- 先看 thread dump（便宜，几秒钟出全图），再决定要不要 heap dump（贵，可能 GB 级）。
+- **先采集、再分析**：jstack 和 heap dump 两个都要先采集下来，再开始分析。分析的优先级是先看 jstack，但如果只采 jstack、分析完才发现需要 heap，进程可能已经退出/被 kill，再也 dump 不出来了。
 - thread dump 给你**线程都阻塞在哪行代码**；heap dump 给你**对象字段的具体值**。两者互补。
 
 ## 1. 启动测试 + 自动停掉
@@ -38,16 +38,28 @@ done
 - `pgrep -f "surefirebooter-.*\.jar"` 找**真正的 JVM 进程**（不是 `/bin/sh` 包装、不是 mvnw wrapper）。
 - 监控的是**日志大小**（`wc -c`），不是 mtime；mtime 可能因系统事件抖动。
 
-## 2. Thread dump（先做这步）
+## 2. 先把 jstack + heap dump 都采下来
+
+判定 stall 后第一件事：**两种 dump 都采，不要只采 jstack**。原因：分析 jstack 后常常发现需要 heap 验证字段值，那时如果 JVM 已退出/被 kill，heap 就再也拿不到了。loop.sh 的 `dump_surefire_jvms` 已经按这个顺序做（jstack ×2 → heap），手工排查时遵循同样顺序：
 
 ```bash
 JPID=$(ps aux | grep -E "surefirebooter-.*\.jar" | grep -v "/bin/sh" | awk '{print $2}' | head -1)
+
+# 1) jstack：便宜，先来两份用于死锁判定
 jstack -l $JPID > /tmp/dump1.txt
 sleep 5
-jstack -l $JPID > /tmp/dump2.txt  # 第二份，对比验证是不是真死锁
+jstack -l $JPID > /tmp/dump2.txt
+
+# 2) heap：贵但必须现在采，错过这个进程就没了
+mkdir -p /tmp/agent-tmp/heap
+HEAP=/tmp/agent-tmp/heap/dump_$(date +%H%M%S).hprof
+jmap -dump:live,format=b,file=$HEAP $JPID
 ```
 
-分析：
+采集完成后再开始分析，分析顺序：先 jstack，必要时再翻 heap。
+
+## 3. 分析 thread dump（先做这步分析）
+
 - `grep "java.lang.Thread.State:" /tmp/dump1.txt | sort | uniq -c` — 一眼看出多少线程在 RUNNABLE/WAITING/PARKING。
 - 找你关心的业务线程，看 stack 最顶端阻塞在哪个 method/lock object id。
 - diff 两份 dump（剔除 cpu/elapsed 等变化字段）→ 业务线程 stack 完全一致 = **真死锁，不是慢**。
@@ -58,19 +70,13 @@ sed -E 's/cpu=[0-9.]+ms //; s/elapsed=[0-9.]+s //' /tmp/dump2.txt > /tmp/d2
 diff /tmp/d1 /tmp/d2 | head -50
 ```
 
-## 3. Heap dump（thread dump 不够用时再做）
+## 4. 分析 heap dump（jstack 不够用时翻它）
 
-什么时候需要：thread 看出"在等某个 future 完成"，但 future 是哪个对象、对象字段是什么值——这需要 heap。
+什么时候需要：thread 看出"在等某个 future 完成"，但 future 是哪个对象、对象字段是什么值——这需要 heap。**采集已在 §2 完成**，这里直接用那份 `$HEAP` 文件继续分析。
 
-```bash
-mkdir -p /tmp/agent-tmp/heap
-HEAP=/tmp/agent-tmp/heap/dump_$(date +%H%M%S).hprof
-jmap -dump:format=b,file=$HEAP $JPID
-```
+macOS 注意：`jmap` 经常因为 `task_for_pid` 权限失败。如果 §2 采集时失败，确认 JPID 是真正的 java 进程而不是 `/bin/sh` PID，必要时重跑（前提是 JVM 还活着——这就是为什么 §2 强调"先采"）。
 
-macOS 注意：`jmap` 经常因为 `task_for_pid` 权限失败。如果失败，确认 JPID 是真正的 java 进程而不是 `/bin/sh` PID。
-
-## 4. 解析 hprof — **必须用 Eclipse MAT**
+### 4.0 解析 hprof — **必须用 Eclipse MAT**
 
 不允许自己写 Python parser、不允许用 jhat / jhsdb、不允许靠 `strings` 凑。**强制 MAT**。
 
@@ -279,3 +285,36 @@ source emit → PipelinedSubpartition.add → notifyDataAvailable (if readView !
 ## 7. 修复方案验证
 
 提出修复方案后，最快的验证不是把整条因果链再推一遍，而是：**改一行加个唤醒/log，重跑，看 hang 是否消失**。1 分钟实验比 1 小时推理更靠谱。
+
+## 8. 重新编译（改完代码、重跑测试之前）
+
+改完代码后必须重新编译再跑 loop.sh，否则 surefire 加载的还是旧 class。**基线命令**（loop.sh 注释里那行就是这个）：
+
+```bash
+./mvnw -T 20 clean install -U -Pfast -DskipTests \
+    -Dmaven.javadoc.skip=true -Drat.skip=true \
+    -Dcheckstyle.skip=true -Denforcer.skip=true \
+    -P java11-target -P java11 \
+    -pl flink-tests -am
+```
+
+这条命令做了几件不能省的事：
+- `-Pfast` + `-T 20`：并行编译，跳掉慢检查
+- `-DskipTests` + `-Dmaven.javadoc.skip` + `-Drat.skip` + `-Dcheckstyle.skip` + `-Denforcer.skip`：跳掉一切非编译产物，仅为出 jar
+- `-P java11-target -P java11`：**强制 Java 11**，避免本地默认 JDK 不一致引发的诡异编译/运行差异
+- `-pl flink-tests -am`：只构建目标模块及其依赖
+
+**改模块的方法**：保留上面所有 flag，只把 `-pl flink-tests` 替换成你要编译的模块。常见替换：
+
+```bash
+# 编译 flink-runtime 及其依赖
+-pl flink-runtime -am
+
+# 编译多个模块（逗号分隔，注意没有空格）
+-pl flink-runtime,flink-streaming-java -am
+
+# 既要包含上游依赖，又要带上依赖该模块的下游（用 -amd）
+-pl flink-runtime -am -amd
+```
+
+不要自己另起命令、不要丢 `-P java11-target -P java11`、不要去掉 `-Pfast`——这些 flag 是踩过坑总结出来的护栏。
