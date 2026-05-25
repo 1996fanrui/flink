@@ -8,6 +8,12 @@
 - **先采集、再分析**：jstack 和 heap dump 两个都要先采集下来，再开始分析。分析的优先级是先看 jstack，但如果只采 jstack、分析完才发现需要 heap，进程可能已经退出/被 kill，再也 dump 不出来了。
 - thread dump 给你**线程都阻塞在哪行代码**；heap dump 给你**对象字段的具体值**。两者互补。
 
+### 背景信息
+
+- requirements/38544 目录下是所有的背景文档，按需读取
+- requirements/38544/simplify_approach 是核心设计思路。必须完整读取
+- 当前分支所有代码改动都是相应的开发，目前测试会卡住
+
 ## 1. 启动测试 + 自动停掉
 
 不要前台 blocking 等待。后台跑 + 监控日志增长 + 60 秒不增长就判定 stall。
