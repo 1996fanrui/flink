@@ -22,17 +22,13 @@ import org.apache.flink.metrics.SimpleCounter;
 import org.apache.flink.runtime.checkpoint.CheckpointException;
 import org.apache.flink.runtime.checkpoint.CheckpointType;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
-import org.apache.flink.runtime.io.network.buffer.Buffer;
+import org.apache.flink.runtime.io.network.buffer.BufferBuilderTestUtils;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 import org.apache.flink.runtime.io.network.partition.ResultSubpartitionIndexSet;
-import org.apache.flink.runtime.io.network.util.TestBufferFactory;
 
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Deque;
-import java.util.List;
 
 import static org.apache.flink.runtime.checkpoint.CheckpointOptions.unaligned;
 import static org.apache.flink.runtime.state.CheckpointStorageLocationReference.getDefault;
@@ -136,83 +132,38 @@ class RecoveredInputChannelTest {
     }
 
     @Test
-    void testToInputChannelMigrationOrder() throws IOException {
-        // Pre-load recovered buffers into the channel, then convert.
-        // The migration path must call onRecoveredStateBuffer in order. When checkpointing during
-        // recovery is enabled, the downstream channel is finished only by the spill drain.
+    void testToInputChannelRequiresEmptyRecoveredBuffers() throws IOException {
         TestableRecoveredInputChannel channel = buildTestableChannel(true);
 
-        Buffer b1 = TestBufferFactory.createBuffer(1);
-        Buffer b2 = TestBufferFactory.createBuffer(2);
-        Buffer b3 = TestBufferFactory.createBuffer(3);
-        channel.onRecoveredStateBuffer(b1);
-        channel.onRecoveredStateBuffer(b2);
-        channel.onRecoveredStateBuffer(b3);
+        channel.onRecoveredStateBuffer(BufferBuilderTestUtils.buildSomeBuffer());
         channel.finishReadRecoveredState();
 
-        InputChannel converted = channel.toInputChannel();
-        assertThat(converted).isInstanceOf(TestInputChannel.class);
-        TestInputChannel spy = (TestInputChannel) converted;
-
-        // The downstream channel must have received the migrated buffers in the same order.
-        // finishReadRecoveredState() appends EndOfInputChannelStateEvent, so it is also delivered.
-        Deque<Buffer> delivered = spy.getRecoveredBuffersSpy();
-        List<Buffer> dataBuffers = new ArrayList<>();
-        for (Buffer buf : delivered) {
-            if (buf.isBuffer()) {
-                dataBuffers.add(buf);
-            }
-        }
-        assertThat(dataBuffers).containsExactly(b1, b2, b3);
-        assertThat(spy.isFinishRecoveredBufferDeliveryCalled()).isFalse();
-    }
-
-    @Test
-    void testToInputChannelThrowsWhenDownstreamIsNotRecoverable() throws IOException {
-        // Defensive guard: if toInputChannelInternal returns an InputChannel that does NOT
-        // implement RecoverableInputChannel, toInputChannel() must fail fast.
-        SingleInputGate inputGate =
-                new SingleInputGateBuilder().setCheckpointingDuringRecoveryEnabled(true).build();
-        RecoveredInputChannel channel =
-                new RecoveredInputChannel(
-                        inputGate,
-                        0,
-                        new ResultPartitionID(),
-                        new ResultSubpartitionIndexSet(0),
-                        0,
-                        0,
-                        new SimpleCounter(),
-                        new SimpleCounter(),
-                        10) {
-                    @Override
-                    protected InputChannel toInputChannelInternal() {
-                        return new NonRecoverableInputChannel(inputGate);
-                    }
-                };
-
-        channel.finishReadRecoveredState();
         assertThatThrownBy(channel::toInputChannel)
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("does not implement RecoverableInputChannel");
+                .hasMessageContaining("Received buffer should be empty");
     }
 
     @Test
-    void testStateConsumedFutureCompletesAfterConsumingAllBuffers() throws IOException {
-        // This test verifies that stateConsumedFuture completes after consuming
-        // EndOfInputChannelStateEvent regardless of the config setting
-        for (boolean configEnabled : new boolean[] {true, false}) {
-            RecoveredInputChannel channel = buildChannel(configEnabled);
+    void testStateConsumedFutureCompletesAfterLegacySentinelIsConsumed() throws IOException {
+        RecoveredInputChannel channel = buildChannel(false);
 
-            assertThat(channel.getStateConsumedFuture()).isNotDone();
+        assertThat(channel.getStateConsumedFuture()).isNotDone();
 
-            channel.finishReadRecoveredState();
-            assertThat(channel.getStateConsumedFuture()).isNotDone();
+        channel.finishReadRecoveredState();
+        assertThat(channel.getStateConsumedFuture()).isNotDone();
 
-            // Consuming the EndOfInputChannelStateEvent should complete the future.
-            // getNextBuffer() returns empty when it encounters the event internally.
-            assertThat(channel.getNextBuffer()).isNotPresent();
-            assertThat(channel.getStateConsumedFuture()).isDone();
-        }
+        assertThat(channel.getNextBuffer()).isNotPresent();
+        assertThat(channel.getStateConsumedFuture()).isDone();
+    }
+
+    @Test
+    void testStateConsumedFutureDoesNotCompleteWithoutLegacySentinel() throws IOException {
+        RecoveredInputChannel channel = buildChannel(true);
+
+        channel.finishReadRecoveredState();
+
+        assertThat(channel.getNextBuffer()).isNotPresent();
+        assertThat(channel.getStateConsumedFuture()).isNotDone();
     }
 
     private RecoveredInputChannel buildChannel(boolean checkpointingDuringRecoveryEnabled) {
@@ -253,66 +204,6 @@ class RecoveredInputChannelTest {
             return new TestableRecoveredInputChannel(inputGate);
         } catch (Exception e) {
             throw new AssertionError("channel creation failed", e);
-        }
-    }
-
-    /**
-     * A minimal {@link InputChannel} that intentionally does NOT implement {@code
-     * RecoverableInputChannel}, used to verify the defensive failure path in {@code
-     * RecoveredInputChannel.toInputChannel()}.
-     */
-    private static class NonRecoverableInputChannel extends InputChannel {
-        NonRecoverableInputChannel(SingleInputGate inputGate) {
-            super(
-                    inputGate,
-                    0,
-                    new ResultPartitionID(),
-                    new ResultSubpartitionIndexSet(0),
-                    0,
-                    0,
-                    new SimpleCounter(),
-                    new SimpleCounter());
-        }
-
-        @Override
-        public void resumeConsumption() {}
-
-        @Override
-        public void acknowledgeAllRecordsProcessed() {}
-
-        @Override
-        public java.util.Optional<BufferAndAvailability> getNextBuffer() {
-            return java.util.Optional.empty();
-        }
-
-        @Override
-        void sendTaskEvent(org.apache.flink.runtime.event.TaskEvent event) {}
-
-        @Override
-        boolean isReleased() {
-            return false;
-        }
-
-        @Override
-        void releaseAllResources() {}
-
-        @Override
-        public void notifyRequiredSegmentId(int subpartitionId, int segmentId) {}
-
-        @Override
-        protected void requestSubpartitions() {}
-
-        @Override
-        int getBuffersInUseCount() {
-            return 0;
-        }
-
-        @Override
-        void announceBufferSize(int newBufferSize) {}
-
-        @Override
-        protected int peekNextBufferSubpartitionIdInternal() {
-            return 0;
         }
     }
 

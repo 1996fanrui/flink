@@ -123,8 +123,7 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
         // the cpDuringRecovery=false legacy path the task's inner mailbox loop consumes everything
         // out of receivedBuffers before requestPartitions runs.
         synchronized (receivedBuffers) {
-            Preconditions.checkState(
-                    receivedBuffers.isEmpty(), "Received buffer should be empty.");
+            Preconditions.checkState(receivedBuffers.isEmpty(), "Received buffer should be empty.");
         }
 
         final InputChannel inputChannel = toInputChannelInternal();
@@ -190,17 +189,14 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     }
 
     public void finishReadRecoveredState() throws IOException {
-        // When checkpointing-during-recovery is enabled, the EndOfInputChannelStateEvent
-        // sentinel must be delivered to the *physical* channel's recoveredQueue (so that
-        // wrapRecoveredBufferAsAvailability has a buffer to wrap and trigger the
-        // "queue empty + delivered → probe subpartitionView" branch). If we pushed the
-        // sentinel into receivedBuffers here, the inner mailbox loop's default action
-        // could consume it from the RecoveredInputChannel before convertRecoveredInputChannels
-        // runs, leaving the physical channel with an empty recoveredQueue and no wake-up
-        // path. Therefore: skip the sentinel push on the cpDuringRecovery path; the
-        // physical channel's finishRecoveredBufferDelivery() will offer the sentinel
-        // directly into its own recoveredQueue.
+        // The legacy path waits for stateConsumedFuture, which is completed by consuming this
+        // sentinel. The checkpointing-during-recovery path waits only for filtering completion and
+        // later delivers its sentinel through the physical channel's recoveredQueue.
         synchronized (receivedBuffers) {
+            if (!inputGate.isCheckpointingDuringRecoveryEnabled()) {
+                onRecoveredStateBuffer(
+                        EventSerializer.toBuffer(EndOfInputChannelStateEvent.INSTANCE, false));
+            }
             bufferFilteringCompleteFuture.complete(null);
         }
         bufferManager.releaseFloatingBuffers();
