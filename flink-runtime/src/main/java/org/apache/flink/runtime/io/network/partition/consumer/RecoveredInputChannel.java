@@ -19,8 +19,6 @@
 package org.apache.flink.runtime.io.network.partition.consumer;
 
 import org.apache.flink.annotation.VisibleForTesting;
-import org.apache.flink.core.memory.MemorySegment;
-import org.apache.flink.core.memory.MemorySegmentFactory;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.runtime.checkpoint.CheckpointException;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
@@ -29,13 +27,10 @@ import org.apache.flink.runtime.event.TaskEvent;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
 import org.apache.flink.runtime.io.network.api.serialization.EventSerializer;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
-import org.apache.flink.runtime.io.network.buffer.FreeingBufferRecycler;
-import org.apache.flink.runtime.io.network.buffer.NetworkBuffer;
 import org.apache.flink.runtime.io.network.logger.NetworkActionsLogger;
 import org.apache.flink.runtime.io.network.partition.ChannelStateHolder;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 import org.apache.flink.runtime.io.network.partition.ResultSubpartitionIndexSet;
-import org.apache.flink.runtime.memory.MemoryManager;
 import org.apache.flink.util.Preconditions;
 
 import org.slf4j.Logger;
@@ -123,15 +118,15 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
                     stateConsumedFuture.isDone(), "recovered state is not fully consumed");
         }
 
-        // Extract remaining buffers before conversion.
-        // These buffers have been filtered but not yet consumed by the Task.
-        final ArrayDeque<Buffer> remainingBuffers;
+        // Invariant: on the cpDuringRecovery=true path no caller pushes anything into
+        // receivedBuffers (filter writes to SpillFile, pass-through also writes to SpillFile); on
+        // the cpDuringRecovery=false legacy path the task's inner mailbox loop consumes everything
+        // out of receivedBuffers before requestPartitions runs.
         synchronized (receivedBuffers) {
-            remainingBuffers = new ArrayDeque<>(receivedBuffers);
-            receivedBuffers.clear();
+            Preconditions.checkState(receivedBuffers.isEmpty(), "Received buffer should be empty.");
         }
 
-        final InputChannel inputChannel = toInputChannelInternal(remainingBuffers);
+        final InputChannel inputChannel = toInputChannelInternal();
         inputChannel.checkpointStopped(lastStoppedCheckpointId);
         return inputChannel;
     }
@@ -142,14 +137,13 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     }
 
     /**
-     * Creates the physical InputChannel from this recovered channel.
+     * Creates the physical InputChannel from this recovered channel. The remaining buffers are
+     * delivered via {@link RecoverableInputChannel#onRecoveredStateBuffer} after this method
+     * returns.
      *
-     * @param remainingBuffers buffers that have been filtered but not yet consumed by the Task.
-     *     These buffers will be migrated to the new physical channel.
      * @return the physical InputChannel (LocalInputChannel or RemoteInputChannel)
      */
-    protected abstract InputChannel toInputChannelInternal(ArrayDeque<Buffer> remainingBuffers)
-            throws IOException;
+    protected abstract InputChannel toInputChannelInternal() throws IOException;
 
     /**
      * Returns the future that completes when buffer filtering is complete. This future completes
@@ -195,20 +189,14 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     }
 
     public void finishReadRecoveredState() throws IOException {
-        // Adding the event and completing the future must be atomic under receivedBuffers lock.
-        // Without this, either ordering has a race:
-        // - event first: task thread consumes EndOfInputChannelStateEvent, which completes
-        //   stateConsumedFuture. When checkpointing during recovery is disabled,
-        //   stateConsumedFuture triggers requestPartitions -> toInputChannel(), which
-        //   fails because bufferFilteringCompleteFuture is not yet done.
-        // - future first: toInputChannel() extracts buffers before the event is added,
-        //   losing the EndOfInputChannelStateEvent.
-        // Both toInputChannel() and getNextRecoveredStateBuffer() synchronize on
-        // receivedBuffers, so holding the same lock here guarantees
-        // bufferFilteringCompleteFuture is always done before stateConsumedFuture.
+        // The legacy path waits for stateConsumedFuture, which is completed by consuming this
+        // sentinel. The checkpointing-during-recovery path waits only for filtering completion and
+        // later delivers its sentinel through the physical channel's recoveredQueue.
         synchronized (receivedBuffers) {
-            onRecoveredStateBuffer(
-                    EventSerializer.toBuffer(EndOfInputChannelStateEvent.INSTANCE, false));
+            if (!inputGate.isCheckpointingDuringRecoveryEnabled()) {
+                onRecoveredStateBuffer(
+                        EventSerializer.toBuffer(EndOfInputChannelStateEvent.INSTANCE, false));
+            }
             bufferFilteringCompleteFuture.complete(null);
         }
         bufferManager.releaseFloatingBuffers();
@@ -307,7 +295,7 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
         }
     }
 
-    void releaseAllResources() throws IOException {
+    public void releaseAllResources() throws IOException {
         ArrayDeque<Buffer> releasedBuffers = new ArrayDeque<>();
         boolean shouldRelease = false;
 
@@ -333,31 +321,13 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     }
 
     public Buffer requestBufferBlocking() throws InterruptedException, IOException {
-        // not in setup to avoid assigning buffers unnecessarily if there is no state
+        // Lazy exclusive-buffer assignment — avoids reserving the pool for channels that have
+        // no recovered state to consume.
         if (!exclusiveBuffersAssigned) {
             bufferManager.requestExclusiveBuffers(networkBuffersPerChannel);
             exclusiveBuffersAssigned = true;
         }
-        if (!inputGate.isCheckpointingDuringRecoveryEnabled()) {
-            // When checkpoint-during-recovery is not enabled, the original blocking allocation
-            // is used as-is — no heap buffer fallback, no behavior change from the legacy path.
-            return bufferManager.requestBufferBlocking();
-        }
-        // Use heap buffer fallback to avoid deadlock during filtering recovery: the filtering
-        // thread first requests buffers to read state (pre-filter), then requests more buffers
-        // to write filtered output (post-filter). If pre-filter buffers exhaust the pool,
-        // post-filter allocation blocks, stalling the thread so pre-filter buffers can never
-        // be consumed and released — the thread deadlocks itself. Heap buffers bypass the pool
-        // so post-filter writes always proceed. Both call sites (getBuffer and filterAndRewrite)
-        // go through this method, so the fallback applies uniformly.
-        // TODO: replace heap fallback with disk spilling to bound memory usage in FLINK-38544.
-        Buffer buffer = bufferManager.requestBuffer();
-        if (buffer != null) {
-            return buffer;
-        }
-        MemorySegment memorySegment =
-                MemorySegmentFactory.allocateUnpooledSegment(MemoryManager.DEFAULT_PAGE_SIZE);
-        return new NetworkBuffer(memorySegment, FreeingBufferRecycler.INSTANCE);
+        return bufferManager.requestBufferBlocking();
     }
 
     @Override

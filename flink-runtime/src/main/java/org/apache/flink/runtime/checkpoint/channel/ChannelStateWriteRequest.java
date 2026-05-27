@@ -258,6 +258,28 @@ abstract class ChannelStateWriteRequest {
         return new CheckpointAbortRequest(jobVertexID, subtaskIndex, checkpointId, cause);
     }
 
+    /**
+     * Factory for the spill-replay request that feeds Step 3 of the recovery-checkpoint protocol.
+     * The writer thread iterates {@code chunks} via {@link
+     * ChannelStateCheckpointWriter#writeInputFromSpill}, which appends each chunk's raw bytes
+     * directly to the cpId's checkpoint stream and demuxes by {@code chunk.channelInfo}. The
+     * iterator is closed on both the success path (writer's {@code finally}) and the abort path
+     * (the request's discard callback).
+     */
+    static ChannelStateWriteRequest replayInputDataFromSpill(
+            JobVertexID jobVertexID,
+            int subtaskIndex,
+            long checkpointId,
+            CloseableIterator<DiskSnapshot.Chunk> chunks) {
+        return new CheckpointInProgressRequest(
+                "writeInputFromSpill",
+                jobVertexID,
+                subtaskIndex,
+                checkpointId,
+                writer -> writer.writeInputFromSpill(jobVertexID, subtaskIndex, chunks),
+                throwable -> chunks.close());
+    }
+
     static ChannelStateWriteRequest registerSubtask(JobVertexID jobVertexID, int subtaskIndex) {
         return new SubtaskRegisterRequest(jobVertexID, subtaskIndex);
     }

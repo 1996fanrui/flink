@@ -26,6 +26,7 @@ import org.apache.flink.runtime.state.AbstractChannelStateHandle.StateContentMet
 import org.apache.flink.runtime.state.CheckpointStateOutputStream;
 import org.apache.flink.runtime.state.CheckpointStreamFactory;
 import org.apache.flink.runtime.state.StreamStateHandle;
+import org.apache.flink.util.CloseableIterator;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.function.RunnableWithException;
 
@@ -159,6 +160,46 @@ class ChannelStateCheckpointWriter {
         } finally {
             buffer.recycleBuffer();
         }
+    }
+
+    /**
+     * Writes spilled input-channel chunks as a [4-byte length prefix][data bytes] pair per entry,
+     * demuxed by {@code chunk.channelInfo}. The raw bytes go straight into the checkpoint stream —
+     * no per-chunk {@code Buffer} wrapping. The iterator is closed on success and failure paths.
+     */
+    void writeInputFromSpill(
+            JobVertexID jobVertexID,
+            int subtaskIndex,
+            CloseableIterator<DiskSnapshot.Chunk> chunks) {
+        if (isDone()) {
+            try {
+                chunks.close();
+            } catch (Exception ignored) {
+            }
+            return;
+        }
+        ChannelStatePendingResult pendingResult =
+                getChannelStatePendingResult(jobVertexID, subtaskIndex);
+        runWithChecks(
+                () -> {
+                    checkState(!pendingResult.isAllInputsReceived());
+                    try {
+                        while (chunks.hasNext()) {
+                            DiskSnapshot.Chunk chunk = chunks.next();
+                            long offset = checkpointStream.getPos();
+                            dataStream.writeInt(chunk.length);
+                            dataStream.write(chunk.data, 0, chunk.length);
+                            long size = checkpointStream.getPos() - offset;
+                            pendingResult
+                                    .getInputChannelOffsets()
+                                    .computeIfAbsent(
+                                            chunk.channelInfo, unused -> new StateContentMetaInfo())
+                                    .withDataAdded(offset, size);
+                        }
+                    } finally {
+                        chunks.close();
+                    }
+                });
     }
 
     void writeOutput(
