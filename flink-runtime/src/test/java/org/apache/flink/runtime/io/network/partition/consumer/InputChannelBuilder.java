@@ -33,6 +33,7 @@ import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionManager;
 import org.apache.flink.runtime.io.network.partition.ResultSubpartitionIndexSet;
 
+import java.io.IOException;
 import java.net.InetSocketAddress;
 
 import static org.apache.flink.runtime.io.network.partition.consumer.SingleInputGateTest.TestingResultPartitionManager;
@@ -239,7 +240,7 @@ public class InputChannelBuilder {
     private static void markNoRecovery(RecoverableInputChannel channel) {
         try {
             channel.finishRecoveredBufferDelivery();
-        } catch (java.io.IOException e) {
+        } catch (IOException e) {
             throw new IllegalStateException(e);
         }
     }

@@ -31,8 +31,10 @@ import org.apache.flink.runtime.io.network.partition.ResultSubpartitionIndexSet;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Deque;
 import java.util.Optional;
 import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
@@ -259,7 +261,7 @@ public class TestInputChannel extends InputChannel implements RecoverableInputCh
         requiredSegmentIdFuture.complete(segmentId);
     }
 
-    private final java.util.Deque<Buffer> recoveredBuffersSpy = new java.util.ArrayDeque<>();
+    private final Deque<Buffer> recoveredBuffersSpy = new ArrayDeque<>();
     private boolean finishRecoveredBufferDeliveryCalled = false;
 
     @Override
@@ -280,7 +282,7 @@ public class TestInputChannel extends InputChannel implements RecoverableInputCh
     @Override
     public void awaitUpstreamReady() {}
 
-    public java.util.Deque<Buffer> getRecoveredBuffersSpy() {
+    public Deque<Buffer> getRecoveredBuffersSpy() {
         return recoveredBuffersSpy;
     }
 

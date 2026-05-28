@@ -28,6 +28,8 @@ import org.apache.flink.runtime.checkpoint.CheckpointType;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
 import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.runtime.checkpoint.channel.RecordingChannelStateWriter;
+import org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointBarrier;
+import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.execution.CancelTaskException;
 import org.apache.flink.runtime.execution.ExecutionState;
 import org.apache.flink.runtime.io.network.ConnectionID;
@@ -73,6 +75,7 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.net.InetSocketAddress;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
@@ -2081,10 +2084,7 @@ class RemoteInputChannelTest {
         SingleInputGate inputGate = createSingleInputGate(1);
 
         ConnectionID connectionId =
-                new ConnectionID(
-                        org.apache.flink.runtime.clusterframework.types.ResourceID.generate(),
-                        new java.net.InetSocketAddress("localhost", 0),
-                        0);
+                new ConnectionID(ResourceID.generate(), new InetSocketAddress("localhost", 0), 0);
         RemoteInputChannel channel =
                 new RemoteInputChannel(
                         inputGate,
@@ -2320,10 +2320,7 @@ class RemoteInputChannelTest {
         channel.onRecoveredStateBuffer(b1);
         channel.onRecoveredStateBuffer(b2);
         channel.onRecoveredStateBuffer(
-                org.apache.flink.runtime.io.network.api.serialization.EventSerializer.toBuffer(
-                        new org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointBarrier(
-                                1L),
-                        false));
+                EventSerializer.toBuffer(new RecoveryCheckpointBarrier(1L), false));
         channel.onRecoveredStateBuffer(b3);
 
         stateWriter.start(1L, UNALIGNED);
@@ -2375,10 +2372,7 @@ class RemoteInputChannelTest {
         Buffer b1 = TestBufferFactory.createBuffer(1);
         channel.onRecoveredStateBuffer(b1);
         channel.onRecoveredStateBuffer(
-                org.apache.flink.runtime.io.network.api.serialization.EventSerializer.toBuffer(
-                        new org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointBarrier(
-                                1L),
-                        false));
+                EventSerializer.toBuffer(new RecoveryCheckpointBarrier(1L), false));
 
         // refCnt before checkpointStarted
         int before = b1.refCnt();
@@ -2400,10 +2394,7 @@ class RemoteInputChannelTest {
 
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(1));
         channel.onRecoveredStateBuffer(
-                org.apache.flink.runtime.io.network.api.serialization.EventSerializer.toBuffer(
-                        new org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointBarrier(
-                                1L),
-                        false));
+                EventSerializer.toBuffer(new RecoveryCheckpointBarrier(1L), false));
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(2));
 
         stateWriter.start(1L, UNALIGNED);
@@ -2431,16 +2422,10 @@ class RemoteInputChannelTest {
 
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(1));
         channel.onRecoveredStateBuffer(
-                org.apache.flink.runtime.io.network.api.serialization.EventSerializer.toBuffer(
-                        new org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointBarrier(
-                                1L),
-                        false));
+                EventSerializer.toBuffer(new RecoveryCheckpointBarrier(1L), false));
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(2));
         channel.onRecoveredStateBuffer(
-                org.apache.flink.runtime.io.network.api.serialization.EventSerializer.toBuffer(
-                        new org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointBarrier(
-                                2L),
-                        false));
+                EventSerializer.toBuffer(new RecoveryCheckpointBarrier(2L), false));
 
         stateWriter.start(1L, UNALIGNED);
         channel.checkpointStarted(new CheckpointBarrier(1L, 0L, UNALIGNED));
