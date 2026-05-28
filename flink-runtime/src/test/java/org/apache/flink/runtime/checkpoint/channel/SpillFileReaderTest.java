@@ -20,6 +20,8 @@ package org.apache.flink.runtime.checkpoint.channel;
 
 import org.apache.flink.core.memory.MemorySegment;
 import org.apache.flink.core.memory.MemorySegmentFactory;
+import org.apache.flink.runtime.event.AbstractEvent;
+import org.apache.flink.runtime.io.network.api.serialization.EventSerializer;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.FreeingBufferRecycler;
 import org.apache.flink.runtime.io.network.buffer.NetworkBuffer;
@@ -226,10 +228,9 @@ class SpillFileReaderTest {
         }
     }
 
-    private static long extractRecoveryBarrierCheckpointId(
-            org.apache.flink.runtime.io.network.buffer.Buffer buffer) throws IOException {
-        org.apache.flink.runtime.event.AbstractEvent event =
-                org.apache.flink.runtime.io.network.api.serialization.EventSerializer.fromBuffer(
+    private static long extractRecoveryBarrierCheckpointId(Buffer buffer) throws IOException {
+        AbstractEvent event =
+                EventSerializer.fromBuffer(
                         buffer, RecoveryCheckpointBarrier.class.getClassLoader());
         buffer.setReaderIndex(0);
         assertThat(event).isInstanceOf(RecoveryCheckpointBarrier.class);

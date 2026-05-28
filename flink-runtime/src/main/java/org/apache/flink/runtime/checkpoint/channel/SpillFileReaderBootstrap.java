@@ -23,6 +23,7 @@ import org.apache.flink.runtime.io.network.partition.consumer.InputGate;
 import org.apache.flink.runtime.io.network.partition.consumer.RecoverableInputChannel;
 import org.apache.flink.runtime.io.network.partition.consumer.RecoveredInputChannel;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -59,7 +60,7 @@ public final class SpillFileReaderBootstrap {
      * channels) from the gates; their queues receive drain deliveries.
      */
     public static List<RecoverableInputChannel> collectPhysicalChannels(InputGate[] inputGates) {
-        java.util.ArrayList<RecoverableInputChannel> list = new java.util.ArrayList<>();
+        ArrayList<RecoverableInputChannel> list = new ArrayList<>();
         for (InputGate gate : inputGates) {
             int n = gate.getNumberOfInputChannels();
             for (int i = 0; i < n; i++) {

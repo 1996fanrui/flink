@@ -29,6 +29,7 @@ import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.ByteBuffer;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -38,6 +39,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -66,7 +68,7 @@ class SpillFileReaderConcurrencyTest {
 
     @RepeatedTest(5)
     void testDrainAndSnapshotInsertBarriersConcurrentAtomicity() throws Exception {
-        Path runDir = java.nio.file.Files.createTempDirectory(tempDir, "spill-stress-");
+        Path runDir = Files.createTempDirectory(tempDir, "spill-stress-");
         SpillFile spillFile = new SpillFile(runDir);
         InputChannelInfo c0 = new InputChannelInfo(0, 0);
         InputChannelInfo c1 = new InputChannelInfo(0, 1);
@@ -92,7 +94,7 @@ class SpillFileReaderConcurrencyTest {
         ExecutorService io = Executors.newSingleThreadExecutor();
         AtomicReference<Throwable> drainError = new AtomicReference<>();
 
-        java.util.concurrent.Future<?> drainFuture =
+        Future<?> drainFuture =
                 io.submit(
                         () -> {
                             try {
