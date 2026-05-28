@@ -38,9 +38,6 @@ public final class RecoveryCheckpointBarrier extends RuntimeEvent {
 
     private long checkpointId;
 
-    /** Required for deserialization. */
-    public RecoveryCheckpointBarrier() {}
-
     public RecoveryCheckpointBarrier(long checkpointId) {
         this.checkpointId = checkpointId;
     }
