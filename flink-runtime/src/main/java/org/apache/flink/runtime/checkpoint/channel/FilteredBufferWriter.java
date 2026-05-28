@@ -26,6 +26,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
+import static org.apache.flink.util.Preconditions.checkState;
 
 /**
  * Accumulates filter-phase output bytes for one input channel at a time and flushes to a {@link
@@ -104,7 +105,7 @@ public final class FilteredBufferWriter implements Closeable, BufferSupplier {
         if (outputBuffer.getSize() == 0) {
             return;
         }
-        assert currentChannel != null : "flush invoked with no currentChannel";
+        checkState(currentChannel != null, "flush invoked with no currentChannel");
         ByteBuffer payload = outputBuffer.getNioBufferReadable();
         spillFile.append(currentChannel, payload);
         outputBuffer.setReaderIndex(0);
