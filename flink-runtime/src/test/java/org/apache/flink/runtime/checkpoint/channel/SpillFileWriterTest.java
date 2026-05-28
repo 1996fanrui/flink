@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.util.Arrays;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -95,7 +96,7 @@ class SpillFileWriterTest {
     private static void writeBytes(Buffer buf, int length, byte fill) {
         int writeAt = buf.getMemorySegmentOffset() + buf.getSize();
         byte[] data = new byte[length];
-        java.util.Arrays.fill(data, fill);
+        Arrays.fill(data, fill);
         buf.getMemorySegment().put(writeAt, data);
         buf.setSize(buf.getSize() + length);
     }

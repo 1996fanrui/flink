@@ -42,6 +42,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -133,9 +134,9 @@ class GateFilterHandlerTest {
     private static final class CollectingSupplier
             implements ChannelStateFilteringHandler.BufferSupplier {
         final List<Buffer> collected = new ArrayList<>();
-        private final java.util.function.Supplier<Buffer> bufferFactory;
+        private final Supplier<Buffer> bufferFactory;
 
-        CollectingSupplier(java.util.function.Supplier<Buffer> bufferFactory) {
+        CollectingSupplier(Supplier<Buffer> bufferFactory) {
             this.bufferFactory = bufferFactory;
         }
 

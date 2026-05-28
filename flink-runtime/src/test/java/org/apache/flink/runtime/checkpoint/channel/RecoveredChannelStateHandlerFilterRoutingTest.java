@@ -31,8 +31,10 @@ import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.FreeingBufferRecycler;
 import org.apache.flink.runtime.io.network.buffer.NetworkBuffer;
 import org.apache.flink.runtime.io.network.buffer.NetworkBufferPool;
+import org.apache.flink.runtime.io.network.partition.consumer.InputChannel;
 import org.apache.flink.runtime.io.network.partition.consumer.InputChannelBuilder;
 import org.apache.flink.runtime.io.network.partition.consumer.InputGate;
+import org.apache.flink.runtime.io.network.partition.consumer.RecoveredInputChannel;
 import org.apache.flink.runtime.io.network.partition.consumer.SingleInputGate;
 import org.apache.flink.runtime.io.network.partition.consumer.SingleInputGateBuilder;
 import org.apache.flink.runtime.memory.MemoryManager;
@@ -53,6 +55,7 @@ import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -294,15 +297,10 @@ class RecoveredChannelStateHandlerFilterRoutingTest {
      * queue is empty by definition; tests should not call it twice expecting the same answer.
      */
     private int countQueuedRecoveredBuffers() throws IOException {
-        org.apache.flink.runtime.io.network.partition.consumer.RecoveredInputChannel ch =
-                (org.apache.flink.runtime.io.network.partition.consumer.RecoveredInputChannel)
-                        inputGate.getChannel(0);
+        RecoveredInputChannel ch = (RecoveredInputChannel) inputGate.getChannel(0);
         int count = 0;
         while (true) {
-            java.util.Optional<
-                            org.apache.flink.runtime.io.network.partition.consumer.InputChannel
-                                    .BufferAndAvailability>
-                    next = ch.getNextBuffer();
+            Optional<InputChannel.BufferAndAvailability> next = ch.getNextBuffer();
             if (!next.isPresent()) {
                 break;
             }
