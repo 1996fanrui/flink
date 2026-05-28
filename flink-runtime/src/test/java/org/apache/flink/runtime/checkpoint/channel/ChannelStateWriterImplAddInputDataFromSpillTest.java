@@ -27,6 +27,7 @@ import org.apache.flink.util.CloseableIterator;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -94,8 +95,7 @@ class ChannelStateWriterImplAddInputDataFromSpillTest {
             writer.start(CHECKPOINT_ID, CheckpointOptions.forCheckpointWithDefaultLocation());
 
             int submittedBefore = worker.submitCount.get();
-            TrackingChunkIterator empty =
-                    new TrackingChunkIterator(java.util.Collections.emptyList());
+            TrackingChunkIterator empty = new TrackingChunkIterator(Collections.emptyList());
             writer.addInputDataFromSpill(CHECKPOINT_ID, empty);
 
             assertThat(worker.submitCount.get())
@@ -126,7 +126,7 @@ class ChannelStateWriterImplAddInputDataFromSpillTest {
             worker.failNext.set(true);
             TrackingChunkIterator chunks =
                     new TrackingChunkIterator(
-                            java.util.Collections.singletonList(
+                            Collections.singletonList(
                                     new DiskSnapshot.Chunk(
                                             new InputChannelInfo(0, 0), new byte[] {1}, 1)));
 
@@ -151,7 +151,7 @@ class ChannelStateWriterImplAddInputDataFromSpillTest {
 
             TrackingChunkIterator chunks =
                     new TrackingChunkIterator(
-                            java.util.Collections.singletonList(
+                            Collections.singletonList(
                                     new DiskSnapshot.Chunk(
                                             new InputChannelInfo(0, 0), new byte[] {1}, 1)));
             writer.addInputDataFromSpill(CHECKPOINT_ID, chunks);
