@@ -824,14 +824,16 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
                     // Defensive: during recovery, receivedBuffers must contain only
                     // priority/control buffers (no live data); the two flows are mutually
                     // exclusive.
-                    assert receivedBuffersHasNoLiveDataBuffer()
-                            : "live upstream data observed in receivedBuffers during recovery";
+                    checkState(
+                            receivedBuffersHasNoLiveDataBuffer(),
+                            "live upstream data observed in receivedBuffers during recovery");
                     toPersist = recoveredQueue.collectPreRecoveryBarrier(barrier.getId());
                 } else {
                     // Defensive: outside recovery, recoveredQueue must be empty so the two
                     // branches stay mutually exclusive.
-                    assert recoveredQueue.isEmpty()
-                            : "recoveredQueue must be empty when not in recovery";
+                    checkState(
+                            recoveredQueue.isEmpty(),
+                            "recoveredQueue must be empty when not in recovery");
                     if (barrier.getId() < lastBarrierId) {
                         throw new CheckpointException(
                                 String.format(
