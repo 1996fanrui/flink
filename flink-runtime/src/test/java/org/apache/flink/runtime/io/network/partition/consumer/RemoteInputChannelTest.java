@@ -2270,6 +2270,46 @@ class RemoteInputChannelTest {
     }
 
     @Test
+    void testPeekNextDataTypeNoneWhenInRecoveryAndRecoveredQueueEmpty() throws Exception {
+        // In-recovery contract: while the channel is still in-recovery, live upstream data parked
+        // in receivedBuffers must not be exposed to the caller. peekNextDataType must therefore
+        // report NONE once recoveredQueue has been drained, even if receivedBuffers happens to
+        // hold a normal data buffer — otherwise BufferAndAvailability.moreAvailable() returns
+        // true, the caller comes back, and the next getNextBuffer() blocks on the recovery branch
+        // (returning empty), spinning the input gate.
+        final NetworkBufferPool networkBufferPool = new NetworkBufferPool(4, 4096);
+        try {
+            SingleInputGate inputGate =
+                    new SingleInputGateBuilder()
+                            .setBufferPoolFactory(networkBufferPool.createBufferPool(1, 4))
+                            .setSegmentProvider(networkBufferPool)
+                            .setFinalDrainEnabled(true)
+                            .setChannelFactory(
+                                    InputChannelBuilder::buildRemoteChannelForRecoveryTest)
+                            .build();
+            inputGate.setup();
+            RemoteInputChannel channel = (RemoteInputChannel) inputGate.getChannel(0);
+
+            // Push a single recovered buffer so the channel is in-recovery with one entry queued.
+            channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(11));
+            // Inject a normal data buffer into receivedBuffers to set the trap that
+            // peekNextDataType used to fall into when recoveredQueue became empty.
+            channel.onBuffer(TestBufferFactory.createBuffer(22), 0, 0, 0);
+
+            // Drain the only recovered buffer; recoveredQueue is now empty but the channel stays
+            // in-recovery because finishRecoveredBufferDelivery() has not been called.
+            Optional<BufferAndAvailability> recoveredBuf = channel.getNextBuffer();
+            assertThat(recoveredBuf).isPresent();
+            assertThat(recoveredBuf.get().buffer().getSize()).isEqualTo(11);
+            // The next data type reported must be NONE — receivedBuffers' normal data must stay
+            // hidden until the drain finishes.
+            assertThat(recoveredBuf.get().moreAvailable()).isFalse();
+        } finally {
+            networkBufferPool.destroy();
+        }
+    }
+
+    @Test
     void testPriorityEventDuringRecoveryViaAddPriorityBuffer() throws Exception {
         // Build a fully-wired gate so onBuffer / onSenderBacklog have a real buffer pool.
         final NetworkBufferPool networkBufferPool = new NetworkBufferPool(4, 4096);

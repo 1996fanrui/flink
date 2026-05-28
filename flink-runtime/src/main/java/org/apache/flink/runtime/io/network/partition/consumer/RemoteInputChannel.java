@@ -398,8 +398,9 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
 
     /**
      * Returns the {@code DataType} of the buffer the next {@link #getNextBuffer()} call will
-     * produce. Priority elements always win, then the recovery queue head, then the regular {@code
-     * receivedBuffers} head, then {@code NONE}.
+     * produce. Priority elements always win; during recovery only the recovery queue head is
+     * exposed (live upstream data must not leak out before drain completes); outside recovery the
+     * regular {@code receivedBuffers} head; otherwise {@code NONE}.
      */
     @GuardedBy("receivedBuffers")
     private DataType peekNextDataType() {
@@ -407,8 +408,8 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
         if (receivedBuffers.getNumPriorityElements() > 0) {
             return receivedBuffers.peek().buffer.getDataType();
         }
-        if (!recoveredQueue.isEmpty()) {
-            return recoveredQueue.peek().getDataType();
+        if (recoveredQueue.isInRecovery()) {
+            return recoveredQueue.isEmpty() ? DataType.NONE : recoveredQueue.peek().getDataType();
         }
         SequenceBuffer head = receivedBuffers.peek();
         return head != null ? head.buffer.getDataType() : DataType.NONE;
