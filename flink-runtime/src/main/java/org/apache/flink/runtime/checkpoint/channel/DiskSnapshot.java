@@ -20,7 +20,10 @@ package org.apache.flink.runtime.checkpoint.channel;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.CloseableIterator;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
+import java.util.Collections;
 import java.util.List;
 import java.util.NoSuchElementException;
 
@@ -89,7 +92,7 @@ public final class DiskSnapshot implements CloseableIterator<DiskSnapshot.Chunk>
      * release the ref-count grant taken at construction time. {@code null} only for the {@link
      * #empty()} singleton.
      */
-    @javax.annotation.Nullable private final SpillFile spillFile;
+    @Nullable private final SpillFile spillFile;
 
     private int entryCursor;
     private boolean closed;
@@ -97,7 +100,7 @@ public final class DiskSnapshot implements CloseableIterator<DiskSnapshot.Chunk>
     private DiskSnapshot() {
         this.snapshot = null;
         this.startPos = null;
-        this.entries = java.util.Collections.emptyList();
+        this.entries = Collections.emptyList();
         this.spillFile = null;
         this.entryCursor = 0;
         this.closed = false;
