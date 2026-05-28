@@ -71,6 +71,7 @@ public class SequentialChannelStateReaderImpl implements SequentialChannelStateR
     public void readInputData(InputGate[] inputGates, RecordFilterContext filterContext)
             throws IOException, InterruptedException {
 
+        // Create filtering handler if filtering is needed
         ChannelStateFilteringHandler filteringHandler =
                 filterContext.isCheckpointingDuringRecoveryEnabled()
                         ? ChannelStateFilteringHandler.createFromContext(filterContext, inputGates)
@@ -183,7 +184,9 @@ public class SequentialChannelStateReaderImpl implements SequentialChannelStateR
     private static <Info, Handle extends AbstractChannelStateHandle<Info>>
             Consumer<Handle> validate() {
         Set<Tuple2<Info, Integer>> seen = new HashSet<>();
-        // Each channel/subtask must be described only once; duplicates would re-order buffers.
+        // expect each channel/subtask to be described only once; otherwise, buffers in channel
+        // could be
+        // re-ordered
         return handle -> {
             if (!seen.add(new Tuple2<>(handle.getInfo(), handle.getSubtaskIndex()))) {
                 throw new IllegalStateException("Duplicate channel info: " + handle);

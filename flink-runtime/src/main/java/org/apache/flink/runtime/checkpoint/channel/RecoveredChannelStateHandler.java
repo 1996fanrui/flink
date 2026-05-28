@@ -87,8 +87,8 @@ class InputChannelRecoveredStateHandler
     private final Map<Integer, RescaleMappings> oldToNewMappings = new HashMap<>();
 
     /**
-     * Optional filtering handler. When non-null, recovered buffers are filtered in the
-     * channel-state-unspilling thread before being routed to the spill file.
+     * Optional filtering handler for filtering recovered buffers. When non-null, filtering is
+     * performed during recovery in the channel-state-unspilling thread.
      */
     @Nullable private final ChannelStateFilteringHandler filteringHandler;
 
@@ -174,6 +174,7 @@ class InputChannelRecoveredStateHandler
         if (filteringHandler != null) {
             return getPreFilterBuffer();
         }
+        // Non-filtering mode: use existing network buffer pool allocation.
         RecoveredInputChannel channel = getMappedChannels(channelInfo);
         Buffer buffer = channel.requestBufferBlocking();
         return new BufferWithContext<>(wrap(buffer), buffer);
