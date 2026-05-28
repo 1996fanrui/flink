@@ -333,20 +333,19 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
         // checkError, but the in-recovery branch otherwise has no error-surfacing path.
         checkError();
 
-        boolean inRecovery;
-        synchronized (receivedBuffers) {
-            inRecovery = recoveredQueue.isInRecovery();
-        }
+        final SequenceBuffer next;
+        final DataType nextDataType;
 
-        if (inRecovery) {
-            // Priority events (e.g. UC barriers) may arrive in receivedBuffers with priority
-            // position during recovery; serve them first so checkpoints can fire while drain runs.
-            synchronized (receivedBuffers) {
-                if (receivedBuffers.getNumPriorityElements() > 0) {
-                    return pollReceivedBufferAsPriority();
-                }
+        synchronized (receivedBuffers) {
+            boolean inRecovery = recoveredQueue.isInRecovery();
+            boolean hasPriority = receivedBuffers.getNumPriorityElements() > 0;
+
+            // During recovery without a pending priority event, serve from recoveredQueue; if the
+            // drain has not delivered yet, block normal upstream data. Priority events (e.g. UC
+            // barriers) parked at the head of receivedBuffers are served by the unified path
+            // below so checkpoints can still fire mid-drain.
+            if (inRecovery && !hasPriority) {
                 if (recoveredQueue.isEmpty()) {
-                    // Drain not finished yet; block normal upstream data.
                     if (isReleased.get()) {
                         throw new CancelTaskException(
                                 "Queried for a buffer after channel has been released.");
@@ -354,7 +353,7 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
                     return Optional.empty();
                 }
                 Buffer buf = recoveredQueue.poll();
-                DataType nextDataType = peekNextDataType();
+                DataType type = peekNextDataType();
                 int sequenceNumber = recoveredQueue.nextSequenceNumber();
                 numBytesIn.inc(buf.getSize());
                 numBuffersIn.inc();
@@ -365,18 +364,11 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
                         channelInfo,
                         channelStatePersister,
                         sequenceNumber);
-                return Optional.of(new BufferAndAvailability(buf, nextDataType, 0, sequenceNumber));
+                return Optional.of(new BufferAndAvailability(buf, type, 0, sequenceNumber));
             }
-        }
 
-        final SequenceBuffer next;
-        final DataType nextDataType;
-
-        synchronized (receivedBuffers) {
             checkReadability();
-
             next = receivedBuffers.poll();
-
             if (next != null) {
                 totalQueueSizeInBytes -= next.buffer.getSize();
             }
@@ -400,34 +392,6 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
                 next.sequenceNumber);
         numBytesIn.inc(next.buffer.getSize());
         numBuffersIn.inc();
-        return Optional.of(
-                new BufferAndAvailability(next.buffer, nextDataType, 0, next.sequenceNumber));
-    }
-
-    /** Polls the priority-position head from {@code receivedBuffers} during recovery. */
-    private Optional<BufferAndAvailability> pollReceivedBufferAsPriority() {
-        assert Thread.holdsLock(receivedBuffers);
-        SequenceBuffer next = receivedBuffers.poll();
-        if (next != null) {
-            totalQueueSizeInBytes -= next.buffer.getSize();
-        }
-        if (next == null) {
-            if (isReleased.get()) {
-                throw new CancelTaskException(
-                        "Queried for a buffer after channel has been released.");
-            }
-            return Optional.empty();
-        }
-        DataType nextDataType = peekNextDataType();
-        numBytesIn.inc(next.buffer.getSize());
-        numBuffersIn.inc();
-        NetworkActionsLogger.traceInput(
-                "RemoteInputChannel#getNextBuffer",
-                next.buffer,
-                inputGate.getOwningTaskName(),
-                channelInfo,
-                channelStatePersister,
-                next.sequenceNumber);
         return Optional.of(
                 new BufferAndAvailability(next.buffer, nextDataType, 0, next.sequenceNumber));
     }
