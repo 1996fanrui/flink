@@ -27,6 +27,7 @@ import java.util.List;
 
 /** An {@link InputGate} with a specific index. */
 public abstract class IndexedInputGate extends InputGate implements CheckpointableInput {
+    /** Returns the index of this input gate. Only supported on */
     public abstract int getGateIndex();
 
     /** Returns the list of channels that have not received EndOfPartitionEvent. */
@@ -65,13 +66,19 @@ public abstract class IndexedInputGate extends InputGate implements Checkpointab
         getChannel(channelIndex).convertToPriorityEvent(sequenceNumber);
     }
 
-    /** Returns the type of this input channel's consumed result partition. */
+    /**
+     * Returns the type of this input channel's consumed result partition.
+     *
+     * @return consumed result partition type
+     */
     public abstract ResultPartitionType getConsumedPartitionType();
 
     public abstract void triggerDebloating();
 
+    /** Sets whether unaligned checkpointing during recovery is enabled. */
     public abstract void setCheckpointingDuringRecoveryEnabled(boolean enabled);
 
+    /** Returns whether unaligned checkpointing during recovery is enabled. */
     public abstract boolean isCheckpointingDuringRecoveryEnabled();
 
     /**
