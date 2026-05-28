@@ -47,9 +47,7 @@ public interface SequentialChannelStateReader extends AutoCloseable {
      * spill file was produced (filter-off path, or {@code readInputData} has not yet produced one).
      */
     @Nullable
-    default SpillFile getProducedSpillFile() {
-        return null;
-    }
+    SpillFile getProducedSpillFile();
 
     @Override
     void close() throws Exception;
@@ -64,6 +62,12 @@ public interface SequentialChannelStateReader extends AutoCloseable {
                 @Override
                 public void readOutputData(
                         ResultPartitionWriter[] writers, boolean notifyAndBlockOnCompletion) {}
+
+                @Nullable
+                @Override
+                public SpillFile getProducedSpillFile() {
+                    return null;
+                }
 
                 @Override
                 public void close() {}
