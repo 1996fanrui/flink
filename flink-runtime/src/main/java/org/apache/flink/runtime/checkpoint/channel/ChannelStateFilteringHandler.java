@@ -74,6 +74,7 @@ public class ChannelStateFilteringHandler implements Closeable {
     @Nullable
     public static ChannelStateFilteringHandler createFromContext(
             RecordFilterContext filterContext, InputGate[] inputGates) {
+        // Source tasks have no network inputs
         if (filterContext.getNumberOfGates() == 0) {
             return null;
         }
@@ -151,6 +152,10 @@ public class ChannelStateFilteringHandler implements Closeable {
             }
         }
     }
+
+    // -------------------------------------------------------------------------------------------
+    // Private static helper methods
+    // -------------------------------------------------------------------------------------------
 
     /**
      * Creates a {@link GateFilterHandler} for a single gate. The method-level type parameter
@@ -245,6 +250,10 @@ public class ChannelStateFilteringHandler implements Closeable {
             return new SpillingAdaptiveSpanningRecordDeserializer<>(defaultDirs);
         }
     }
+
+    // -------------------------------------------------------------------------------------------
+    // Inner classes
+    // -------------------------------------------------------------------------------------------
 
     /**
      * Provides buffers for re-serializing filtered records, tagged with the destination input

@@ -137,10 +137,11 @@ class GateFilterHandlerBufferOwnershipTest {
     }
 
     /**
-     * When filterAndRewrite throws mid-processing, the deserializer may still hold sourceBuffer.
-     * Production wraps ChannelStateFilteringHandler in try-with-resources, so close() always runs
-     * and cascades clear() through every GateFilterHandler and deserializer. This test exercises
-     * that exact pattern.
+     * Tests the production cleanup path: when filterAndRewrite throws mid-processing, the
+     * deserializer may still hold sourceBuffer. In production, ChannelStateFilteringHandler is used
+     * in a try-with-resources block (see {@code SequentialChannelStateReaderImpl#readInputData}),
+     * so its close() is guaranteed to be called, which triggers clear() on all GateFilterHandlers
+     * and their deserializers. This test simulates that exact pattern.
      */
     @Test
     void testCloseRecyclesDeserializerHeldBufferAfterError() throws Exception {
