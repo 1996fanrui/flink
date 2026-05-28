@@ -638,6 +638,8 @@ public class LocalInputChannel extends InputChannel
             synchronized (recoveredQueue) {
                 recoveredQueue.releaseAll();
             }
+            // Release any remaining buffers in toBeConsumedBuffers to avoid memory leak.
+            // These may be recovered buffers or partial buffers from FullyFilledBuffer.
             for (BufferAndBacklog bufferAndBacklog : toBeConsumedBuffers) {
                 bufferAndBacklog.buffer().recycleBuffer();
             }
