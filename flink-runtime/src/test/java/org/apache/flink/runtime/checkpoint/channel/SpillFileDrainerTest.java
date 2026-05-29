@@ -26,6 +26,7 @@ import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.FreeingBufferRecycler;
 import org.apache.flink.runtime.io.network.buffer.NetworkBuffer;
 import org.apache.flink.runtime.io.network.partition.consumer.RecoverableInputChannel;
+import org.apache.flink.util.CloseableIterator;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -40,21 +41,21 @@ import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** Unit tests for {@link SpillFileReader}. */
-class SpillFileReaderTest {
+/** Unit tests for {@link SpillFileDrainer}. */
+class SpillFileDrainerTest {
 
     @TempDir Path tempDir;
 
     @Test
     void testDrainEndToEnd() throws Exception {
         InputChannelInfo cInfo = new InputChannelInfo(0, 0);
-        try (SpillFile spillFile = new SpillFile(tempDir)) {
+        try (SpillFile spillFile = new SpillFile(tempDir, 4096)) {
             spillFile.append(cInfo, ByteBuffer.wrap(payload(1)));
             spillFile.append(cInfo, ByteBuffer.wrap(payload(2)));
             spillFile.append(cInfo, ByteBuffer.wrap(payload(3)));
 
             RecordingChannel rec = new RecordingChannel(cInfo);
-            SpillFileReader reader = newReader(spillFile, cInfo, rec);
+            SpillFileDrainer reader = newReader(spillFile, cInfo, rec);
 
             reader.drain();
             reader.close();
@@ -70,7 +71,7 @@ class SpillFileReaderTest {
     void testDrainDemuxByChannelInfo() throws Exception {
         InputChannelInfo c0 = new InputChannelInfo(0, 0);
         InputChannelInfo c1 = new InputChannelInfo(0, 1);
-        try (SpillFile spillFile = new SpillFile(tempDir)) {
+        try (SpillFile spillFile = new SpillFile(tempDir, 4096)) {
             spillFile.append(c0, ByteBuffer.wrap(payload(11)));
             spillFile.append(c1, ByteBuffer.wrap(payload(22)));
             spillFile.append(c0, ByteBuffer.wrap(payload(33)));
@@ -78,7 +79,7 @@ class SpillFileReaderTest {
 
             RecordingChannel chan0 = new RecordingChannel(c0);
             RecordingChannel chan1 = new RecordingChannel(c1);
-            SpillFileReader reader = newReader(spillFile, c0, chan0, c1, chan1);
+            SpillFileDrainer reader = newReader(spillFile, c0, chan0, c1, chan1);
 
             reader.drain();
             reader.close();
@@ -92,14 +93,14 @@ class SpillFileReaderTest {
     void testDrainCallsFinishReadRecoveredStateAfterAllOnRecoveredStateBuffer() throws Exception {
         InputChannelInfo c0 = new InputChannelInfo(0, 0);
         InputChannelInfo c1 = new InputChannelInfo(0, 1);
-        try (SpillFile spillFile = new SpillFile(tempDir)) {
+        try (SpillFile spillFile = new SpillFile(tempDir, 4096)) {
             spillFile.append(c0, ByteBuffer.wrap(payload(1)));
             spillFile.append(c1, ByteBuffer.wrap(payload(2)));
 
             int[] seq = {0};
             RecordingChannel chan0 = new RecordingChannel(c0, seq);
             RecordingChannel chan1 = new RecordingChannel(c1, seq);
-            SpillFileReader reader = newReader(spillFile, c0, chan0, c1, chan1);
+            SpillFileDrainer reader = newReader(spillFile, c0, chan0, c1, chan1);
 
             reader.drain();
             reader.close();
@@ -114,15 +115,15 @@ class SpillFileReaderTest {
     @Test
     void testSnapshotAndInsertBarriersSnapsStartPos() throws Exception {
         InputChannelInfo cInfo = new InputChannelInfo(0, 0);
-        try (SpillFile spillFile = new SpillFile(tempDir)) {
+        try (SpillFile spillFile = new SpillFile(tempDir, 4096)) {
             spillFile.append(cInfo, ByteBuffer.wrap(payload(5)));
             spillFile.append(cInfo, ByteBuffer.wrap(payload(6)));
 
             RecordingChannel chan = new RecordingChannel(cInfo);
-            SpillFileReader reader = newReader(spillFile, cInfo, chan);
+            SpillFileDrainer reader = newReader(spillFile, cInfo, chan);
 
             long cpId = 42L;
-            DiskSnapshot snap = reader.snapshotAndInsertBarriers(cpId);
+            CloseableIterator<SpillFileReader.Chunk> snap = reader.snapshotAndInsertBarriers(cpId);
 
             int count = 0;
             while (snap.hasNext()) {
@@ -139,16 +140,16 @@ class SpillFileReaderTest {
     void testSnapshotAndInsertBarriersInsertsBarrierPerChannel() throws Exception {
         InputChannelInfo c0 = new InputChannelInfo(0, 0);
         InputChannelInfo c1 = new InputChannelInfo(0, 1);
-        try (SpillFile spillFile = new SpillFile(tempDir)) {
+        try (SpillFile spillFile = new SpillFile(tempDir, 4096)) {
             spillFile.append(c0, ByteBuffer.wrap(payload(1)));
             spillFile.append(c1, ByteBuffer.wrap(payload(2)));
 
             RecordingChannel chan0 = new RecordingChannel(c0);
             RecordingChannel chan1 = new RecordingChannel(c1);
-            SpillFileReader reader = newReader(spillFile, c0, chan0, c1, chan1);
+            SpillFileDrainer reader = newReader(spillFile, c0, chan0, c1, chan1);
 
             long cpId = 7L;
-            DiskSnapshot snap = reader.snapshotAndInsertBarriers(cpId);
+            CloseableIterator<SpillFileReader.Chunk> snap = reader.snapshotAndInsertBarriers(cpId);
             snap.close();
 
             assertThat(chan0.recovered).hasSize(1);
@@ -167,11 +168,11 @@ class SpillFileReaderTest {
     @Test
     void testSnapshotInsertsBarrierWhenChannelInRecoveryEvenIfDiskSliceEmpty() throws Exception {
         InputChannelInfo cInfo = new InputChannelInfo(0, 0);
-        try (SpillFile spillFile = new SpillFile(tempDir)) {
+        try (SpillFile spillFile = new SpillFile(tempDir, 4096)) {
             spillFile.append(cInfo, ByteBuffer.wrap(payload(1)));
 
             RecordingChannel chan = new RecordingChannel(cInfo);
-            SpillFileReader reader = newReader(spillFile, cInfo, chan);
+            SpillFileDrainer reader = newReader(spillFile, cInfo, chan);
 
             reader.drain();
             // Drain has advanced past the last entry; simulate the channel queue still reporting
@@ -180,7 +181,7 @@ class SpillFileReaderTest {
             int recoveredBefore = chan.recovered.size();
 
             long cpId = 6L;
-            DiskSnapshot snap = reader.snapshotAndInsertBarriers(cpId);
+            CloseableIterator<SpillFileReader.Chunk> snap = reader.snapshotAndInsertBarriers(cpId);
             assertThat(snap.hasNext()).isFalse();
             snap.close();
 
@@ -200,17 +201,17 @@ class SpillFileReaderTest {
     void testSnapshotInsertsBarrierOnlyForChannelsStillInRecovery() throws Exception {
         InputChannelInfo c0 = new InputChannelInfo(0, 0);
         InputChannelInfo c1 = new InputChannelInfo(0, 1);
-        try (SpillFile spillFile = new SpillFile(tempDir)) {
+        try (SpillFile spillFile = new SpillFile(tempDir, 4096)) {
             spillFile.append(c0, ByteBuffer.wrap(payload(1)));
 
             RecordingChannel chan0 = new RecordingChannel(c0);
             RecordingChannel chan1 = new RecordingChannel(c1);
             chan1.inRecovery = false;
 
-            SpillFileReader reader = newReader(spillFile, c0, chan0, c1, chan1);
+            SpillFileDrainer reader = newReader(spillFile, c0, chan0, c1, chan1);
 
             long cpId = 11L;
-            DiskSnapshot snap = reader.snapshotAndInsertBarriers(cpId);
+            CloseableIterator<SpillFileReader.Chunk> snap = reader.snapshotAndInsertBarriers(cpId);
             snap.close();
 
             assertThat(chan0.recovered).hasSize(1);
@@ -232,12 +233,12 @@ class SpillFileReaderTest {
     @Test
     void testSnapshotReturnsEmptyDiskSliceWhenCursorPastEnd() throws Exception {
         InputChannelInfo cInfo = new InputChannelInfo(0, 0);
-        try (SpillFile spillFile = new SpillFile(tempDir)) {
+        try (SpillFile spillFile = new SpillFile(tempDir, 4096)) {
             spillFile.append(cInfo, ByteBuffer.wrap(payload(1)));
             spillFile.append(cInfo, ByteBuffer.wrap(payload(2)));
 
             RecordingChannel chan = new RecordingChannel(cInfo);
-            SpillFileReader reader = newReader(spillFile, cInfo, chan);
+            SpillFileDrainer reader = newReader(spillFile, cInfo, chan);
 
             reader.drain();
             // Consumer fully drained the recovery queue; the channel has exited recovery, so the
@@ -245,7 +246,7 @@ class SpillFileReaderTest {
             chan.inRecovery = false;
             int recoveredBefore = chan.recovered.size();
 
-            DiskSnapshot snap = reader.snapshotAndInsertBarriers(99L);
+            CloseableIterator<SpillFileReader.Chunk> snap = reader.snapshotAndInsertBarriers(99L);
             assertThat(snap.hasNext()).isFalse();
             snap.close();
 
@@ -325,7 +326,7 @@ class SpillFileReaderTest {
     // Helpers
     // -------------------------------------------------------------------------------------------
 
-    private static SpillFileReader newReader(SpillFile spillFile, Object... infoChannelPairs) {
+    private static SpillFileDrainer newReader(SpillFile spillFile, Object... infoChannelPairs) {
         List<RecoverableInputChannel> all = new ArrayList<>();
         for (int i = 0; i < infoChannelPairs.length; i += 2) {
             // The InputChannelInfo argument is redundant (channels expose getChannelInfo) but
@@ -333,7 +334,7 @@ class SpillFileReaderTest {
             RecoverableInputChannel ch = (RecoverableInputChannel) infoChannelPairs[i + 1];
             all.add(ch);
         }
-        return new SpillFileReader(spillFile, CompletableFuture.completedFuture(all));
+        return new SpillFileDrainer(spillFile, CompletableFuture.completedFuture(all));
     }
 
     /** Deterministic 4-byte payload per id. */

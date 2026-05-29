@@ -24,6 +24,7 @@ import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.FreeingBufferRecycler;
 import org.apache.flink.runtime.io.network.buffer.NetworkBuffer;
 import org.apache.flink.runtime.io.network.partition.consumer.RecoverableInputChannel;
+import org.apache.flink.util.CloseableIterator;
 
 import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.io.TempDir;
@@ -69,7 +70,7 @@ class SpillFileReaderConcurrencyTest {
     @RepeatedTest(5)
     void testDrainAndSnapshotInsertBarriersConcurrentAtomicity() throws Exception {
         Path runDir = Files.createTempDirectory(tempDir, "spill-stress-");
-        SpillFile spillFile = new SpillFile(runDir);
+        SpillFile spillFile = new SpillFile(runDir, 4096);
         InputChannelInfo c0 = new InputChannelInfo(0, 0);
         InputChannelInfo c1 = new InputChannelInfo(0, 1);
 
@@ -85,8 +86,8 @@ class SpillFileReaderConcurrencyTest {
         all.add(chan0);
         all.add(chan1);
 
-        SpillFileReader reader =
-                new SpillFileReader(spillFile, CompletableFuture.completedFuture(all));
+        SpillFileDrainer reader =
+                new SpillFileDrainer(spillFile, CompletableFuture.completedFuture(all));
 
         ExecutorService io = Executors.newSingleThreadExecutor();
         AtomicReference<Throwable> drainError = new AtomicReference<>();
@@ -102,10 +103,10 @@ class SpillFileReaderConcurrencyTest {
                         });
 
         // Capture snapshots concurrently while the drain runs.
-        List<DiskSnapshot> snapshots = new ArrayList<>();
+        List<CloseableIterator<SpillFileReader.Chunk>> snapshots = new ArrayList<>();
         List<Integer> barrierCountsAtSnap = new ArrayList<>();
         for (int i = 0; i < SNAPSHOTS; i++) {
-            DiskSnapshot snap = reader.snapshotAndInsertBarriers(i + 1);
+            CloseableIterator<SpillFileReader.Chunk> snap = reader.snapshotAndInsertBarriers(i + 1);
             snapshots.add(snap);
             barrierCountsAtSnap.add(chan0.barrierCount());
             Thread.yield();
@@ -125,9 +126,9 @@ class SpillFileReaderConcurrencyTest {
         // deliveries below.
         Set<Integer> seenInAnySnap = new HashSet<>();
         for (int i = 0; i < snapshots.size(); i++) {
-            DiskSnapshot snap = snapshots.get(i);
+            CloseableIterator<SpillFileReader.Chunk> snap = snapshots.get(i);
             while (snap.hasNext()) {
-                DiskSnapshot.Chunk chunk = snap.next();
+                SpillFileReader.Chunk chunk = snap.next();
                 int entryId = decode(chunk.data);
                 seenInAnySnap.add(entryId);
             }

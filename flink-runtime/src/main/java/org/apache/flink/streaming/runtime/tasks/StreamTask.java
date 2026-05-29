@@ -47,7 +47,7 @@ import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointTrigger;
 import org.apache.flink.runtime.checkpoint.channel.SequentialChannelStateReader;
 import org.apache.flink.runtime.checkpoint.channel.SpillFile;
-import org.apache.flink.runtime.checkpoint.channel.SpillFileReader;
+import org.apache.flink.runtime.checkpoint.channel.SpillFileDrainer;
 import org.apache.flink.runtime.checkpoint.channel.SpillFileReaderBootstrap;
 import org.apache.flink.runtime.checkpoint.filemerging.FileMergingSnapshotManager;
 import org.apache.flink.runtime.execution.CancelTaskException;
@@ -313,7 +313,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
     /**
      * Trigger that snapshots the spill file and inserts per-channel sentinels when a checkpoint
      * fires during recovery. Published by {@code restoreStateAndGates} once the {@link
-     * SpillFileReader} has been constructed; {@code null} when no spill file was produced. Read
+     * SpillFileDrainer} has been constructed; {@code null} when no spill file was produced. Read
      * from the task thread by the checkpoint dispatcher.
      */
     @Nullable private volatile RecoveryCheckpointTrigger recoveryCheckpointTrigger;
@@ -906,13 +906,13 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 
         // Filter-on recovery flow:
         //   I/O thread: readInputData -> compute needsRecovery -> setNeedsRecovery per
-        //     gate -> build SpillFileReader (holding physicalChannelsFuture) -> publish
+        //     gate -> build SpillFileDrainer (holding physicalChannelsFuture) -> publish
         //     recoveryCheckpointTrigger -> release the producer-side SpillFile grant.
         //   Hand-off: finishReadRecoveredState on each gate; the mailbox then runs
         //     convertRecoveredInputChannels + internalRequestPartitions per gate.
         //   Back to I/O thread: the last gate completes physicalChannelsFuture with the
         //     post-conversion channel set, then drain + close run on the I/O thread.
-        // Filter-off path: just readInputData + finishReadRecoveredState — no SpillFileReader,
+        // Filter-off path: just readInputData + finishReadRecoveredState — no SpillFileDrainer,
         // no drain, no physicalChannelsFuture.
         final CompletableFuture<List<RecoverableInputChannel>> physicalChannelsFuture =
                 checkpointingDuringRecoveryEnabled ? new CompletableFuture<>() : null;
@@ -945,7 +945,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                         return;
                     }
 
-                    SpillFileReader spillReader = null;
+                    SpillFileDrainer drainer = null;
                     if (checkpointingDuringRecoveryEnabled) {
                         try {
                             SpillFile producedSpillFile = reader.getProducedSpillFile();
@@ -956,21 +956,21 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                                 gate.setNeedsRecovery(needsRecovery);
                             }
                             if (needsRecovery) {
-                                spillReader =
-                                        SpillFileReaderBootstrap.buildReader(
+                                drainer =
+                                        SpillFileReaderBootstrap.buildDrainer(
                                                 producedSpillFile, physicalChannelsFuture);
                                 // Publish before finishReadRecoveredState, so the checkpoint
-                                // dispatcher sees the SpillFileReader instance and not null once
-                                // the task reaches RUNNING.
-                                this.recoveryCheckpointTrigger = spillReader;
-                                // SpillFileReader's constructor took its own grant; the producer
+                                // dispatcher sees the drainer instance and not null once the task
+                                // reaches RUNNING.
+                                this.recoveryCheckpointTrigger = drainer;
+                                // The drainer's root reader took its own grant; the producer
                                 // grant (held across the filter/drain handover) can now be
                                 // released.
                                 producedSpillFile.release();
                             }
                         } catch (Throwable t) {
                             asyncExceptionHandler.handleAsyncException(
-                                    "Unable to wire SpillFileReader during recovery", t);
+                                    "Unable to wire SpillFileDrainer during recovery", t);
                             physicalChannelsFuture.completeExceptionally(t);
                             return;
                         }
@@ -992,20 +992,20 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                         return;
                     }
 
-                    if (spillReader == null) {
+                    if (drainer == null) {
                         return;
                     }
                     try {
-                        spillReader.drain();
+                        drainer.drain();
                     } catch (Throwable t) {
                         asyncExceptionHandler.handleAsyncException(
                                 "Unable to drain recovered channel state", t);
                     } finally {
                         try {
-                            spillReader.close();
+                            drainer.close();
                         } catch (Throwable closeError) {
                             asyncExceptionHandler.handleAsyncException(
-                                    "Unable to close SpillFileReader after drain", closeError);
+                                    "Unable to close SpillFileDrainer after drain", closeError);
                         }
                     }
                 });
@@ -1035,7 +1035,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                                         }
                                         // The last gate to finish conversion publishes the
                                         // physical channel set into the future the
-                                        // SpillFileReader is already holding.
+                                        // SpillFileDrainer is already holding.
                                         if (remainingGates != null
                                                 && remainingGates.decrementAndGet() == 0) {
                                             try {
