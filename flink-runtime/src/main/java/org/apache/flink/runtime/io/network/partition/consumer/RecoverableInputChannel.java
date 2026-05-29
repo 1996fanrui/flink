@@ -54,8 +54,10 @@ public interface RecoverableInputChannel {
      * consumer may still have leftover buffers queued; the channel completes its state-consumed
      * future once this flag is set AND the queue is drained.
      *
-     * <p>Caller does NOT need to hold {@code SpillFileReader.lock}: no more buffers are being
-     * added, so the (queue, offset) atomicity protected by the lock no longer applies.
+     * <p>Implementations must first await the channel's upstream connection being published so
+     * channels with no spill entries still observe the upstream-ready edge before being marked
+     * delivered. Caller does NOT need to hold {@code SpillFileReader.lock}: no more buffers are
+     * being added, so the (queue, offset) atomicity protected by the lock no longer applies.
      */
     void finishRecoveredBufferDelivery() throws IOException;
 
@@ -72,16 +74,15 @@ public interface RecoverableInputChannel {
     boolean isInRecovery();
 
     /**
-     * Blocks until the channel's upstream connection (Local {@code subpartitionView} / Remote
-     * {@code partitionRequestClient}) is published. Surfaces release as a {@link
+     * Blocks until a buffer is available from this channel's own buffer pool. Implementations must
+     * first await the channel's upstream connection (Local {@code subpartitionView} / Remote {@code
+     * partitionRequestClient}) being published before allocating, so the recovered buffer is
+     * delivered only after the upstream is in place. Surfaces release as a {@link
      * java.util.concurrent.CompletionException} / {@link
-     * java.util.concurrent.CancellationException} so the caller can recycle in-flight buffers and
-     * terminate gracefully.
+     * java.util.concurrent.CancellationException} so the caller can terminate gracefully.
      *
-     * <p>Must be invoked off the task thread and outside the {@code SpillFileReader.lock} critical
-     * section. The PartitionNotFoundException retrigger that completes {@code upstreamReady} is
-     * itself a mailbox-scheduled mail, so awaiting from the task thread would deadlock against the
-     * future being waited on.
+     * <p>Must be invoked outside the {@code SpillFileReader.lock} critical section so the
+     * checkpoint trigger can still take the lock while this call is parked.
      */
-    void awaitUpstreamReady();
+    Buffer requestRecoveryBufferBlocking() throws InterruptedException, IOException;
 }

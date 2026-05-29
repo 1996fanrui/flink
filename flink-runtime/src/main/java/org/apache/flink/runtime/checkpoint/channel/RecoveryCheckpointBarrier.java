@@ -36,7 +36,7 @@ import java.io.IOException;
 @Internal
 public final class RecoveryCheckpointBarrier extends RuntimeEvent {
 
-    private long checkpointId;
+    private final long checkpointId;
 
     public RecoveryCheckpointBarrier(long checkpointId) {
         this.checkpointId = checkpointId;
@@ -52,8 +52,14 @@ public final class RecoveryCheckpointBarrier extends RuntimeEvent {
     }
 
     @Override
-    public void read(DataInputView in) throws IOException {
-        this.checkpointId = in.readLong();
+    public void read(DataInputView in) {
+        // Deserialization goes through EventSerializer's dedicated type tag, which constructs the
+        // instance directly via the public constructor. Reaching this method means the event
+        // accidentally hit the reflection-based OTHER_EVENT path; fail loud so the routing bug is
+        // surfaced instead of producing a half-constructed barrier.
+        throw new UnsupportedOperationException(
+                "RecoveryCheckpointBarrier must be deserialized via EventSerializer's dedicated"
+                        + " type-tag path, not reflective read().");
     }
 
     @Override
