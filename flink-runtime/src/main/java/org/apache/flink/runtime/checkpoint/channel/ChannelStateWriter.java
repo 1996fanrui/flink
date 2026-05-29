@@ -195,7 +195,7 @@ public interface ChannelStateWriter extends Closeable {
      * {@code entry.channelInfo} into each channel's checkpoint output. Ownership of {@code chunks}
      * is transferred: the writer is responsible for closing it on both success and failure paths.
      */
-    void addInputDataFromSpill(long checkpointId, CloseableIterator<DiskSnapshot.Chunk> chunks);
+    void addInputDataFromSpill(long checkpointId, CloseableIterator<SpillFileReader.Chunk> chunks);
 
     ChannelStateWriter NO_OP = new NoOpChannelStateWriter();
 
@@ -240,7 +240,7 @@ public interface ChannelStateWriter extends Closeable {
 
         @Override
         public void addInputDataFromSpill(
-                long checkpointId, CloseableIterator<DiskSnapshot.Chunk> chunks) {
+                long checkpointId, CloseableIterator<SpillFileReader.Chunk> chunks) {
             try {
                 chunks.close();
             } catch (Exception ignored) {

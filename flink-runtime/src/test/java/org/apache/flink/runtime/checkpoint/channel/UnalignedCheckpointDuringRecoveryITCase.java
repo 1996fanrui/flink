@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Integration coverage for the recovery-checkpoint dispatcher. End-to-end rescaling coverage
  * against a real {@code MiniCluster} lives in {@code UnalignedCheckpointRescaleITCase}; this class
  * pins the disjoint-and-complete invariant that the recovery-time checkpoint slice must satisfy,
- * using a unit-style {@link DiskSnapshot} fixture that mirrors what the production {@code
+ * using a unit-style {@link SpillFileReader} fixture that mirrors what the production {@code
  * SpillFileReader} feeds in.
  */
 class UnalignedCheckpointDuringRecoveryITCase {
@@ -89,15 +89,15 @@ class UnalignedCheckpointDuringRecoveryITCase {
     @Test
     void testEmptyDiskSnapshotIsConsumedOnceByStep3() throws Exception {
         AtomicBoolean closed = new AtomicBoolean(false);
-        CloseableIterator<DiskSnapshot.Chunk> empty =
-                new CloseableIterator<DiskSnapshot.Chunk>() {
+        CloseableIterator<SpillFileReader.Chunk> empty =
+                new CloseableIterator<SpillFileReader.Chunk>() {
                     @Override
                     public boolean hasNext() {
                         return false;
                     }
 
                     @Override
-                    public DiskSnapshot.Chunk next() {
+                    public SpillFileReader.Chunk next() {
                         throw new NoSuchElementException();
                     }
 

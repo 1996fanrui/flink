@@ -170,7 +170,7 @@ class ChannelStateCheckpointWriter {
     void writeInputFromSpill(
             JobVertexID jobVertexID,
             int subtaskIndex,
-            CloseableIterator<DiskSnapshot.Chunk> chunks) {
+            CloseableIterator<SpillFileReader.Chunk> chunks) {
         if (isDone()) {
             try {
                 chunks.close();
@@ -185,7 +185,7 @@ class ChannelStateCheckpointWriter {
                     checkState(!pendingResult.isAllInputsReceived());
                     try {
                         while (chunks.hasNext()) {
-                            DiskSnapshot.Chunk chunk = chunks.next();
+                            SpillFileReader.Chunk chunk = chunks.next();
                             long offset = checkpointStream.getPos();
                             dataStream.writeInt(chunk.length);
                             dataStream.write(chunk.data, 0, chunk.length);

@@ -268,7 +268,7 @@ abstract class ChannelStateWriteRequest {
             JobVertexID jobVertexID,
             int subtaskIndex,
             long checkpointId,
-            CloseableIterator<DiskSnapshot.Chunk> chunks) {
+            CloseableIterator<SpillFileReader.Chunk> chunks) {
         return new CheckpointInProgressRequest(
                 "writeInputFromSpill",
                 jobVertexID,

@@ -22,10 +22,10 @@ import org.apache.flink.runtime.checkpoint.CheckpointException;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
 import org.apache.flink.runtime.checkpoint.CheckpointType;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
-import org.apache.flink.runtime.checkpoint.channel.DiskSnapshot;
 import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointTrigger;
 import org.apache.flink.runtime.checkpoint.channel.ResultSubpartitionInfo;
+import org.apache.flink.runtime.checkpoint.channel.SpillFileReader;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.partition.consumer.CheckpointableInput;
@@ -59,7 +59,7 @@ class ChannelStateDispatcherTest {
     @Test
     void testStepOrderingFeatureOn() throws Exception {
         List<String> trace = new ArrayList<>();
-        DiskSnapshot snap = DiskSnapshot.empty();
+        CloseableIterator<SpillFileReader.Chunk> snap = CloseableIterator.empty();
         RecordingTrigger trigger = new RecordingTrigger(trace, /* nonEmptySnapshot */ snap);
         RecordingWriter writer = new RecordingWriter(trace);
         CheckpointableInput input1 = new RecordingInput(trace, "in1");
@@ -93,7 +93,7 @@ class ChannelStateDispatcherTest {
         state.onCheckpointStartedForAllInputs(newUnalignedBarrier());
 
         // The dispatcher always invokes writer.addInputDataFromSpill; with the NO_OP trigger it
-        // receives the empty DiskSnapshot and short-circuits in-line.
+        // receives the empty spill iterator and short-circuits in-line.
         assertThat(trace)
                 .containsExactly(
                         "in1.checkpointStarted:" + CHECKPOINT_ID,
@@ -104,7 +104,7 @@ class ChannelStateDispatcherTest {
     @Test
     void testEmptySnapshotInlineEarlyReturn() throws Exception {
         List<String> trace = new ArrayList<>();
-        DiskSnapshot empty = DiskSnapshot.empty();
+        CloseableIterator<SpillFileReader.Chunk> empty = CloseableIterator.empty();
         RecordingTrigger trigger = new RecordingTrigger(trace, empty);
         RecordingWriter writer = new RecordingWriter(trace);
 
@@ -172,15 +172,16 @@ class ChannelStateDispatcherTest {
     /** No-op stub used to capture step ordering without pulling in a mock framework. */
     private static final class RecordingTrigger implements RecoveryCheckpointTrigger {
         private final List<String> trace;
-        private final DiskSnapshot snapshot;
+        private final CloseableIterator<SpillFileReader.Chunk> snapshot;
 
-        RecordingTrigger(List<String> trace, DiskSnapshot snapshot) {
+        RecordingTrigger(List<String> trace, CloseableIterator<SpillFileReader.Chunk> snapshot) {
             this.trace = trace;
             this.snapshot = snapshot;
         }
 
         @Override
-        public DiskSnapshot snapshotAndInsertBarriers(long checkpointId) {
+        public CloseableIterator<SpillFileReader.Chunk> snapshotAndInsertBarriers(
+                long checkpointId) {
             trace.add("trigger.snapshotAndInsertBarriers:" + checkpointId);
             return snapshot;
         }
@@ -234,7 +235,7 @@ class ChannelStateDispatcherTest {
 
         @Override
         public void addInputDataFromSpill(
-                long checkpointId, CloseableIterator<DiskSnapshot.Chunk> chunks) {
+                long checkpointId, CloseableIterator<SpillFileReader.Chunk> chunks) {
             trace.add("writer.addInputDataFromSpill:" + checkpointId);
             lastCpId.set(checkpointId);
             addInputDataFromSpillCalls.incrementAndGet();

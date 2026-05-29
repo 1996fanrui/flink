@@ -238,15 +238,15 @@ public class ChannelStateWriterImpl implements ChannelStateWriter {
 
     @Override
     public void addInputDataFromSpill(
-            long checkpointId, CloseableIterator<DiskSnapshot.Chunk> chunks) {
+            long checkpointId, CloseableIterator<SpillFileReader.Chunk> chunks) {
         // Empty snapshot: short-circuit without submitting to the writer thread. Closing the
-        // iterator still releases any SpillFile ref-count grant held by DiskSnapshot.
+        // iterator still releases the sub-reader's SpillFile ref-count grant.
         if (!chunks.hasNext()) {
             try {
                 chunks.close();
             } catch (Exception e) {
                 LOG.warn(
-                        "{} failed to close empty DiskSnapshot for checkpoint {}",
+                        "{} failed to close empty spill iterator for checkpoint {}",
                         taskName,
                         checkpointId,
                         e);
@@ -260,8 +260,8 @@ public class ChannelStateWriterImpl implements ChannelStateWriter {
                     false);
         } catch (RuntimeException e) {
             // enqueue's failure path already invoked request.cancel which closes the iterator
-            // (releasing the SpillFile ref-count grant via DiskSnapshot, which is idempotent).
-            // Fail the write result so any concurrent waiter observes the failure too.
+            // (releasing the sub-reader's SpillFile ref-count grant; idempotent). Fail the write
+            // result so any concurrent waiter observes the failure too.
             ChannelStateWriteResult result = results.get(checkpointId);
             if (result != null) {
                 result.fail(e);
