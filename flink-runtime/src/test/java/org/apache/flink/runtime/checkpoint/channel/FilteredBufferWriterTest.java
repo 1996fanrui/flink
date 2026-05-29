@@ -45,7 +45,7 @@ class FilteredBufferWriterTest {
     void testChannelSwitchFlushesAndKeepsEntryPerChannel() throws Exception {
         // Bytes from different channels must never share a spill-file entry. The accumulator
         // flushes whenever requestBufferBlocking sees a different channel with pending bytes.
-        SpillFile spillFile = new SpillFile(tempDir);
+        SpillFile spillFile = new SpillFile(tempDir, 4096);
         Buffer accumulator = newHeapBuffer(BUF_SIZE);
         try (FilteredBufferWriter writer = new FilteredBufferWriter(spillFile, accumulator)) {
             InputChannelInfo c0 = new InputChannelInfo(0, 0);
@@ -75,7 +75,7 @@ class FilteredBufferWriterTest {
 
     @Test
     void testBufferFullFlushesInsideRequest() throws Exception {
-        SpillFile spillFile = new SpillFile(tempDir);
+        SpillFile spillFile = new SpillFile(tempDir, 4096);
         Buffer accumulator = newHeapBuffer(BUF_SIZE);
         try (FilteredBufferWriter writer = new FilteredBufferWriter(spillFile, accumulator)) {
             InputChannelInfo c0 = new InputChannelInfo(0, 0);
@@ -95,7 +95,7 @@ class FilteredBufferWriterTest {
 
     @Test
     void testCloseFlushesResidualBytes() throws Exception {
-        SpillFile spillFile = new SpillFile(tempDir);
+        SpillFile spillFile = new SpillFile(tempDir, 4096);
         Buffer accumulator = newHeapBuffer(BUF_SIZE);
         FilteredBufferWriter writer = new FilteredBufferWriter(spillFile, accumulator);
 
@@ -112,7 +112,7 @@ class FilteredBufferWriterTest {
 
     @Test
     void testCloseIsIdempotent() throws Exception {
-        SpillFile spillFile = new SpillFile(tempDir);
+        SpillFile spillFile = new SpillFile(tempDir, 4096);
         Buffer accumulator = newHeapBuffer(BUF_SIZE);
         FilteredBufferWriter writer = new FilteredBufferWriter(spillFile, accumulator);
 

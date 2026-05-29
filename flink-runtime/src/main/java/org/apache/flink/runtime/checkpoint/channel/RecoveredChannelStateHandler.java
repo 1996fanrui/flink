@@ -263,7 +263,7 @@ class InputChannelRecoveredStateHandler
      * is full, so a single source buffer may produce multiple {@link SpillFile} entries.
      */
     private void recoverPassThroughToSpill(InputChannelInfo channelInfo, Buffer source)
-            throws IOException, InterruptedException {
+            throws IOException {
         FilteredBufferWriter accumulator = ensureSpillFileWriter().getAccumulator();
         ByteBuffer src = source.getNioBufferReadable();
         while (src.hasRemaining()) {
@@ -315,7 +315,9 @@ class InputChannelRecoveredStateHandler
             return spillFileWriter;
         }
         Path baseDir = resolveSpillBaseDir();
-        SpillFile spillFile = new SpillFile(baseDir);
+        // Use memorySegmentSize as maxEntryLength — every entry is at most one MemorySegment
+        // worth of bytes (the filter writes one post-filter MemorySegment per entry).
+        SpillFile spillFile = new SpillFile(baseDir, memorySegmentSize);
         // Producer-side ref-count grant. Held by the handler from pipeline construction until
         // the SpillFileReader takes its own grant on construction, at which point StreamTask
         // releases this grant. Without it the SpillFile could be cleaned up between filter end

@@ -27,10 +27,8 @@ import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -40,9 +38,9 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
  * An append-only, segmented on-disk store for recovered channel-state buffers produced by the
- * filter phase. Written by a single thread (the {@code channelIOExecutor}); records the metadata
- * for every appended payload in an in-memory {@link Entry} queue so that the drain can replay the
- * payloads in order.
+ * filter phase. Written by a single thread (the {@code channelIOExecutor}); each segment owns its
+ * own {@link Entry} list so that "entry belongs to segment" is a structural fact, not a runtime
+ * check.
  *
  * <p>Segments rotate once a single file would exceed the configured segment size. The default size
  * caps each segment file at 64 MiB, balancing OS-level I/O scheduling against per-segment metadata
@@ -62,14 +60,10 @@ public final class SpillFile implements Closeable {
     public static final long DEFAULT_SEGMENT_SIZE_BYTES = 64L * 1024 * 1024;
 
     /**
-     * One on-disk segment of a {@link SpillFile}. Holds the segment index, file path, an opened
-     * {@link FileChannel} for append-only writes, and a running byte counter.
-     *
-     * <p>Drain ({@code SpillFileReader}) maintains a private peek/poll cursor over the entries
-     * belonging to this segment so that read progress can be advanced atomically with the channel
-     * delivery inside {@code SpillFileReader.lock}. Each {@link #readBytesAt} call opens an
-     * independent read-only {@link FileChannel} so that the drain and any concurrent in-recovery
-     * checkpoint readers never share file position state.
+     * One on-disk segment of a {@link SpillFile}. Holds the segment index, file path, the
+     * append-side {@link FileChannel}, a running byte counter, and the entry list for records that
+     * landed in this segment. The entry list is the structural owner of entry-to-segment mapping —
+     * no separate top-level entry queue exists.
      */
     static final class SpillFileSegment implements Closeable {
         final int segmentIndex;
@@ -78,10 +72,9 @@ public final class SpillFile implements Closeable {
         // Number of bytes written so far in this segment. Updated after every append.
         long currentEnd;
 
-        // Drain-side cursor over the entries that belong to this segment. Populated by the
-        // enclosing SpillFile after filter completes; consumed by drain. Not used by readers
-        // opened over a SpillFile.Snapshot — those iterate via their own cursor.
-        private final Deque<Entry> drainEntries = new ArrayDeque<>();
+        // Entries that landed in this segment, in append order. Populated by SpillFile.append on
+        // the single-writer (filter) thread.
+        private final List<Entry> entries = new ArrayList<>();
 
         SpillFileSegment(int segmentIndex, Path path, FileChannel channel) {
             this.segmentIndex = segmentIndex;
@@ -90,41 +83,9 @@ public final class SpillFile implements Closeable {
             this.currentEnd = 0L;
         }
 
-        /** Returns the next entry to drain without removing it, or {@code null} when empty. */
-        Entry peekNextEntry() {
-            return drainEntries.peek();
-        }
-
-        /** Removes and returns the next entry to drain, or {@code null} when empty. */
-        Entry pollNextEntry() {
-            return drainEntries.poll();
-        }
-
-        /**
-         * Reads {@code length} bytes from {@code offset} into {@code dest} using an independently
-         * opened read-only {@link FileChannel}. A fresh handle per call avoids sharing position
-         * state with the segment's append-side handle and with any other concurrent reader (drain
-         * and the per-checkpoint readers can call this in parallel).
-         */
-        void readBytesAt(long offset, int length, byte[] dest) throws IOException {
-            checkArgument(length >= 0, "length must be non-negative: %s", length);
-            checkArgument(
-                    dest.length >= length, "dest buffer too small: %s < %s", dest.length, length);
-            try (FileChannel reader = FileChannel.open(path, StandardOpenOption.READ)) {
-                ByteBuffer view = ByteBuffer.wrap(dest, 0, length);
-                int totalRead = 0;
-                while (totalRead < length) {
-                    int n = reader.read(view, offset + totalRead);
-                    if (n < 0) {
-                        throw new IOException(
-                                "Unexpected EOF reading segment "
-                                        + path
-                                        + " at offset "
-                                        + (offset + totalRead));
-                    }
-                    totalRead += n;
-                }
-            }
+        /** Read-only view of the entries belonging to this segment. */
+        List<Entry> entries() {
+            return Collections.unmodifiableList(entries);
         }
 
         @Override
@@ -136,18 +97,17 @@ public final class SpillFile implements Closeable {
     }
 
     /**
-     * A single record persisted in a {@link SpillFile}: identifies the channel, segment, and byte
-     * range of the payload. The drain phase replays the file in {@code entries} order.
+     * A single record persisted in a {@link SpillFile}: identifies the channel and the byte range
+     * within its owning segment. The owning segment is determined structurally by which {@link
+     * SpillFileSegment#entries} list the entry appears in.
      */
     static final class Entry {
         final InputChannelInfo channelInfo;
-        final int segmentIndex;
         final long offset;
         final int length;
 
-        Entry(InputChannelInfo channelInfo, int segmentIndex, long offset, int length) {
+        Entry(InputChannelInfo channelInfo, long offset, int length) {
             this.channelInfo = channelInfo;
-            this.segmentIndex = segmentIndex;
             this.offset = offset;
             this.length = length;
         }
@@ -155,16 +115,16 @@ public final class SpillFile implements Closeable {
 
     private final Path baseDir;
     private final long segmentSizeBytes;
+    private final int maxEntryLength;
     private final List<SpillFileSegment> segments = new ArrayList<>();
-    private final Deque<Entry> entries = new ArrayDeque<>();
     private boolean closed = false;
 
     /**
-     * Number of live consumers that still need the on-disk segments: the drain reader, plus one per
-     * in-flight {@link DiskSnapshot} produced by a recovery-time checkpoint. Incremented by {@link
-     * #acquire()} and decremented by {@link #release()}. The actual segment deletion is gated by
-     * {@link #cleanedUp} so it runs at most once even when {@code release} and {@link #close()}
-     * race.
+     * Number of live consumers that still need the on-disk segments: each live {@code
+     * SpillFileReader} instance holds exactly one grant (acquired in its constructor, released in
+     * its {@code close()}). Incremented by {@link #acquire()} and decremented by {@link
+     * #release()}. The actual segment deletion is gated by {@link #cleanedUp} so it runs at most
+     * once even when {@code release} and {@link #close()} race.
      */
     private final AtomicInteger refCount = new AtomicInteger(0);
 
@@ -175,15 +135,18 @@ public final class SpillFile implements Closeable {
      */
     private final AtomicBoolean cleanedUp = new AtomicBoolean(false);
 
-    public SpillFile(Path baseDir, long segmentSizeBytes) {
+    public SpillFile(Path baseDir, long segmentSizeBytes, int maxEntryLength) {
         checkArgument(
                 segmentSizeBytes > 0, "segmentSizeBytes must be positive: %s", segmentSizeBytes);
+        checkArgument(
+                maxEntryLength >= 0, "maxEntryLength must be non-negative: %s", maxEntryLength);
         this.baseDir = checkNotNull(baseDir);
         this.segmentSizeBytes = segmentSizeBytes;
+        this.maxEntryLength = maxEntryLength;
     }
 
-    public SpillFile(Path baseDir) {
-        this(baseDir, DEFAULT_SEGMENT_SIZE_BYTES);
+    public SpillFile(Path baseDir, int maxEntryLength) {
+        this(baseDir, DEFAULT_SEGMENT_SIZE_BYTES, maxEntryLength);
     }
 
     /**
@@ -227,12 +190,7 @@ public final class SpillFile implements Closeable {
             written += n;
         }
         active.currentEnd = offsetBeforeWrite + length;
-        Entry entry = new Entry(channelInfo, active.segmentIndex, offsetBeforeWrite, length);
-        entries.add(entry);
-        // Mirror into the per-segment drain queue so SpillFileReader can peek/poll without
-        // re-grouping. Filter is single-writer; appending here observes the same single-writer
-        // invariant.
-        active.drainEntries.add(entry);
+        active.entries.add(new Entry(channelInfo, offsetBeforeWrite, length));
     }
 
     /**
@@ -267,8 +225,8 @@ public final class SpillFile implements Closeable {
     }
 
     /**
-     * Increments the reference count. Held by the {@link SpillFileReader} (one grant) and by each
-     * in-flight {@link DiskSnapshot} produced for a recovery-time checkpoint. Pairs with {@link
+     * Increments the reference count. Each {@code SpillFileReader} instance holds exactly one grant
+     * (acquired in its constructor, released in {@link Closeable#close()}). Pairs with {@link
      * #release()}.
      */
     public void acquire() {
@@ -293,9 +251,9 @@ public final class SpillFile implements Closeable {
 
     /**
      * Forced cleanup entry retained for tests and task-manager shutdown — callers may need to
-     * remove segments even if some {@link DiskSnapshot} references are still outstanding (e.g. the
-     * checkpoint they belong to was aborted before the writer future fired). Shares the {@link
-     * #cleanedUp} CAS with {@link #release()} so the actual deletion runs at most once.
+     * remove segments even if some readers are still outstanding (e.g. the checkpoint they belong
+     * to was aborted before the writer future fired). Shares the {@link #cleanedUp} CAS with {@link
+     * #release()} so the actual deletion runs at most once.
      */
     @Override
     public void close() throws IOException {
@@ -344,12 +302,9 @@ public final class SpillFile implements Closeable {
         return closed;
     }
 
-    /**
-     * Returns an unmodifiable view of the entry queue. Package-private so callers in this package
-     * (drain, tests) can inspect the disk layout without touching internal state.
-     */
-    List<Entry> entries() {
-        return Collections.unmodifiableList(new ArrayList<>(entries));
+    /** Per-entry max byte length; SpillFileReader allocates {@code byte[maxEntryLength]}. */
+    int maxEntryLength() {
+        return maxEntryLength;
     }
 
     /** Returns an unmodifiable snapshot of the current segment list. */
@@ -358,74 +313,24 @@ public final class SpillFile implements Closeable {
     }
 
     /**
-     * Returns an immutable point-in-time view of the file's metadata: a shallow copy of the segment
-     * list plus a defensive copy of the entry queue. Both lists are exposed as unmodifiable. Filter
-     * is the single writer of {@link #entries} and {@link SpillFileSegment#currentEnd}; once filter
-     * has completed (the only legitimate moment to call this method), neither changes, so the
-     * shallow segment copy is a stable read-only view of the on-disk layout.
-     *
-     * <p>Callers are expected to be on the task thread inside {@code SpillFileReader.lock}. The
-     * method itself does no synchronisation — atomicity with the drain progress fields is the
-     * caller's responsibility.
+     * Flattens all segments' entries into a single list in append order. Test-only helper for
+     * asserting metadata; the production read path goes through {@link SpillFileReader}.
      */
-    public Snapshot snapshot() {
-        return new Snapshot(new ArrayList<>(segments), new ArrayList<>(entries));
+    @VisibleForTesting
+    public List<Entry> entries() {
+        List<Entry> out = new ArrayList<>();
+        for (SpillFileSegment seg : segments) {
+            out.addAll(seg.entries);
+        }
+        return Collections.unmodifiableList(out);
     }
 
     /**
-     * Immutable view of a {@link SpillFile} produced by {@link #snapshot()}. Used by the
-     * per-checkpoint readers ({@link DiskSnapshot}) to iterate the disk slice without touching the
-     * live writer state. The lists are unmodifiable; segments themselves remain shared with the
-     * underlying {@link SpillFile} since they are no longer mutated after filter completes.
+     * Opens a root {@link SpillFileReader} positioned at the start of the file. Called once by the
+     * {@code SpillFileDrainer}'s constructor; the resulting reader is shared between the drain
+     * thread and the task-thread checkpoint trigger.
      */
-    public static final class Snapshot {
-        private final List<SpillFileSegment> segments;
-        private final List<Entry> entries;
-
-        Snapshot(List<SpillFileSegment> segments, List<Entry> entries) {
-            this.segments = Collections.unmodifiableList(segments);
-            this.entries = Collections.unmodifiableList(entries);
-        }
-
-        /** Returns the segments captured at snapshot time, in segment-index order. */
-        public List<SpillFileSegment> getSegments() {
-            return segments;
-        }
-
-        /** Returns the entries captured at snapshot time, in append order. */
-        public List<Entry> getEntries() {
-            return entries;
-        }
-    }
-
-    /**
-     * Reads {@code length} bytes from {@code segmentIndex} starting at {@code offset} into a fresh
-     * byte array. Exists primarily so tests and drain code can verify on-disk content without
-     * re-implementing the segment lookup. Reads the open file channel directly via a position-based
-     * read so concurrent appends (single-writer guarantee aside) cannot affect the channel's
-     * logical position.
-     */
-    byte[] readBytes(int segmentIndex, long offset, int length) throws IOException {
-        checkArgument(
-                segmentIndex >= 0 && segmentIndex < segments.size(),
-                "segmentIndex out of range: %s",
-                segmentIndex);
-        checkArgument(length >= 0, "length must be non-negative: %s", length);
-
-        SpillFileSegment seg = segments.get(segmentIndex);
-        ByteBuffer buf = ByteBuffer.allocate(length);
-        int totalRead = 0;
-        while (totalRead < length) {
-            int n = seg.channel.read(buf, offset + totalRead);
-            if (n < 0) {
-                throw new IOException(
-                        "Unexpected EOF reading segment "
-                                + seg.path
-                                + " at offset "
-                                + (offset + totalRead));
-            }
-            totalRead += n;
-        }
-        return buf.array();
+    public SpillFileReader reader() {
+        return SpillFileReader.openRoot(this);
     }
 }

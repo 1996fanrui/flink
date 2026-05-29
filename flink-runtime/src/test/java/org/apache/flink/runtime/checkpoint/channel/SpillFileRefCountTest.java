@@ -84,7 +84,7 @@ class SpillFileRefCountTest {
     void testAbortPathReleasesViaSameRoute() throws IOException {
         SpillFile spillFile = newSpillFileWithEntries(2);
         // Mirror the production wiring: one acquire held by SpillFileReader, one per in-flight
-        // DiskSnapshot. Releasing the snapshots while the reader still holds its acquire must
+        // SpillFileReader. Releasing the snapshots while the reader still holds its acquire must
         // keep the segments on disk.
         spillFile.acquire();
         spillFile.acquire();
@@ -120,7 +120,7 @@ class SpillFileRefCountTest {
     }
 
     private SpillFile newSpillFileWithEntries(int count) throws IOException {
-        SpillFile spillFile = new SpillFile(tempDir);
+        SpillFile spillFile = new SpillFile(tempDir, 4096);
         for (int i = 0; i < count; i++) {
             spillFile.append(
                     new InputChannelInfo(0, i % 2),
