@@ -20,11 +20,12 @@ package org.apache.flink.streaming.runtime.io.checkpointing;
 
 import org.apache.flink.runtime.checkpoint.CheckpointException;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
-import org.apache.flink.runtime.checkpoint.channel.DiskSnapshot;
 import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointTrigger;
+import org.apache.flink.runtime.checkpoint.channel.SpillFileReader;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
 import org.apache.flink.runtime.io.network.partition.consumer.CheckpointableInput;
+import org.apache.flink.util.CloseableIterator;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -60,8 +61,8 @@ final class ChannelState {
 
     /**
      * Resolved to the live {@code SpillFileReader} when the recovery-spill path is active; {@link
-     * RecoveryCheckpointTrigger#NO_OP} otherwise. The no-op returns the empty {@link DiskSnapshot}
-     * singleton and inserts no barriers, keeping the dispatcher branch-free.
+     * RecoveryCheckpointTrigger#NO_OP} otherwise. The no-op returns an empty {@link
+     * CloseableIterator} singleton and inserts no barriers, keeping the dispatcher branch-free.
      */
     private final RecoveryCheckpointTrigger recoveryCheckpointTrigger;
 
@@ -138,8 +139,8 @@ final class ChannelState {
      * <ol>
      *   <li>{@code recoveryCheckpointTrigger.snapshotAndInsertBarriers(cpId)} captures the on-disk
      *       slice and inserts the {@code RecoveryCheckpointBarrier} sentinel into every channel
-     *       inside {@code SpillFileReader.lock}. {@link RecoveryCheckpointTrigger#NO_OP} returns
-     *       the empty {@link DiskSnapshot} when no recovery spill is active.
+     *       inside {@code SpillFileReader.lock}. {@link RecoveryCheckpointTrigger#NO_OP} returns an
+     *       empty {@link CloseableIterator} when no recovery spill is active.
      *   <li>Per-input {@code checkpointStarted(barrier)} fan-out. Channel implementations select
      *       their in-recovery vs not-in-recovery branch inside their own monitor.
      *   <li>{@code channelStateWriter.addInputDataFromSpill(cpId, snap)} hands the snapshot to the
@@ -154,7 +155,7 @@ final class ChannelState {
     public void onCheckpointStartedForAllInputs(CheckpointBarrier barrier)
             throws CheckpointException, IOException {
         long cpId = barrier.getId();
-        DiskSnapshot snap = null;
+        CloseableIterator<SpillFileReader.Chunk> snap = null;
         try {
             snap = recoveryCheckpointTrigger.snapshotAndInsertBarriers(cpId);
 
@@ -171,7 +172,7 @@ final class ChannelState {
                     snap.close();
                 } catch (Exception suppressed) {
                     LOG.warn(
-                            "Failed to release DiskSnapshot after dispatcher error for checkpoint {}",
+                            "Failed to release spill iterator after dispatcher error for checkpoint {}",
                             cpId,
                             suppressed);
                 }

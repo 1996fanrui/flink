@@ -64,9 +64,9 @@ class ChannelStateWriterImplAddInputDataFromSpillTest {
             TrackingChunkIterator chunks =
                     new TrackingChunkIterator(
                             Arrays.asList(
-                                    new DiskSnapshot.Chunk(c0, new byte[] {1, 2, 3}, 3),
-                                    new DiskSnapshot.Chunk(c1, new byte[] {4, 5}, 2),
-                                    new DiskSnapshot.Chunk(c0, new byte[] {6}, 1)));
+                                    new SpillFileReader.Chunk(c0, new byte[] {1, 2, 3}, 3),
+                                    new SpillFileReader.Chunk(c1, new byte[] {4, 5}, 2),
+                                    new SpillFileReader.Chunk(c0, new byte[] {6}, 1)));
 
             writer.addInputDataFromSpill(CHECKPOINT_ID, chunks);
             // Request is queued but not yet processed — iteration must not have happened yet.
@@ -99,7 +99,7 @@ class ChannelStateWriterImplAddInputDataFromSpillTest {
             writer.addInputDataFromSpill(CHECKPOINT_ID, empty);
 
             assertThat(worker.submitCount.get())
-                    .as("empty DiskSnapshot must skip writer-thread submission")
+                    .as("empty spill iterator must skip writer-thread submission")
                     .isEqualTo(submittedBefore);
             assertThat(empty.closed.get()).as("empty chunks closed inline").isTrue();
         }
@@ -127,7 +127,7 @@ class ChannelStateWriterImplAddInputDataFromSpillTest {
             TrackingChunkIterator chunks =
                     new TrackingChunkIterator(
                             Collections.singletonList(
-                                    new DiskSnapshot.Chunk(
+                                    new SpillFileReader.Chunk(
                                             new InputChannelInfo(0, 0), new byte[] {1}, 1)));
 
             assertThatThrownBy(() -> writer.addInputDataFromSpill(CHECKPOINT_ID, chunks))
@@ -152,7 +152,7 @@ class ChannelStateWriterImplAddInputDataFromSpillTest {
             TrackingChunkIterator chunks =
                     new TrackingChunkIterator(
                             Collections.singletonList(
-                                    new DiskSnapshot.Chunk(
+                                    new SpillFileReader.Chunk(
                                             new InputChannelInfo(0, 0), new byte[] {1}, 1)));
             writer.addInputDataFromSpill(CHECKPOINT_ID, chunks);
             worker.processAllRequests();
@@ -167,13 +167,13 @@ class ChannelStateWriterImplAddInputDataFromSpillTest {
 
     /** Tracks iteration and close calls so the test can assert on them deterministically. */
     private static final class TrackingChunkIterator
-            implements CloseableIterator<DiskSnapshot.Chunk> {
+            implements CloseableIterator<SpillFileReader.Chunk> {
 
-        private final Iterator<DiskSnapshot.Chunk> backing;
+        private final Iterator<SpillFileReader.Chunk> backing;
         final AtomicInteger iteratedCount = new AtomicInteger(0);
         final AtomicBoolean closed = new AtomicBoolean(false);
 
-        TrackingChunkIterator(List<DiskSnapshot.Chunk> chunks) {
+        TrackingChunkIterator(List<SpillFileReader.Chunk> chunks) {
             this.backing = chunks.iterator();
         }
 
@@ -183,7 +183,7 @@ class ChannelStateWriterImplAddInputDataFromSpillTest {
         }
 
         @Override
-        public DiskSnapshot.Chunk next() {
+        public SpillFileReader.Chunk next() {
             if (!backing.hasNext()) {
                 throw new NoSuchElementException();
             }
