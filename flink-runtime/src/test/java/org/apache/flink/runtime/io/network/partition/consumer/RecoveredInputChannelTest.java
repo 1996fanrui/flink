@@ -42,7 +42,7 @@ class RecoveredInputChannelTest {
     void testConversionOnlyPossibleAfterBufferFilteringComplete() {
         // toInputChannel() always checks bufferFilteringCompleteFuture regardless of config
         for (boolean configEnabled : new boolean[] {true, false}) {
-            assertThatThrownBy(() -> buildChannel(configEnabled).toInputChannel())
+            assertThatThrownBy(() -> buildChannel(configEnabled).toInputChannel(true))
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("buffer filtering is not complete");
         }
@@ -75,7 +75,7 @@ class RecoveredInputChannelTest {
         TestableRecoveredInputChannel channel = buildTestableChannel(true);
 
         // Initially, conversion should fail
-        assertThatThrownBy(() -> channel.toInputChannel())
+        assertThatThrownBy(() -> channel.toInputChannel(true))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("buffer filtering is not complete");
 
@@ -85,7 +85,7 @@ class RecoveredInputChannelTest {
         assertThat(channel.getStateConsumedFuture()).isNotDone();
 
         // Conversion should now succeed (no exception)
-        InputChannel converted = channel.toInputChannel();
+        InputChannel converted = channel.toInputChannel(true);
         assertThat(converted).isNotNull();
     }
 
@@ -96,7 +96,7 @@ class RecoveredInputChannelTest {
         TestableRecoveredInputChannel channel = buildTestableChannel(false);
 
         // Initially, conversion should fail (buffer filtering not complete)
-        assertThatThrownBy(() -> channel.toInputChannel())
+        assertThatThrownBy(() -> channel.toInputChannel(true))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("buffer filtering is not complete");
 
@@ -107,7 +107,7 @@ class RecoveredInputChannelTest {
         assertThat(channel.getStateConsumedFuture()).isNotDone();
 
         // Conversion should still fail because stateConsumedFuture is not done
-        assertThatThrownBy(() -> channel.toInputChannel())
+        assertThatThrownBy(() -> channel.toInputChannel(true))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("recovered state is not fully consumed");
 
@@ -116,7 +116,7 @@ class RecoveredInputChannelTest {
         assertThat(channel.getStateConsumedFuture()).isDone();
 
         // Now conversion should succeed
-        InputChannel converted = channel.toInputChannel();
+        InputChannel converted = channel.toInputChannel(true);
         assertThat(converted).isNotNull();
     }
 
@@ -138,7 +138,7 @@ class RecoveredInputChannelTest {
         channel.onRecoveredStateBuffer(BufferBuilderTestUtils.buildSomeBuffer());
         channel.finishReadRecoveredState();
 
-        assertThatThrownBy(channel::toInputChannel)
+        assertThatThrownBy(() -> channel.toInputChannel(true))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("Received buffer should be empty");
     }
@@ -184,7 +184,7 @@ class RecoveredInputChannelTest {
                     new SimpleCounter(),
                     10) {
                 @Override
-                protected InputChannel toInputChannelInternal() {
+                protected InputChannel toInputChannelInternal(boolean needsRecovery) {
                     throw new AssertionError("channel conversion succeeded");
                 }
             };
@@ -225,7 +225,7 @@ class RecoveredInputChannelTest {
         }
 
         @Override
-        protected InputChannel toInputChannelInternal() {
+        protected InputChannel toInputChannelInternal(boolean needsRecovery) {
             return new TestInputChannel(inputGate, 0);
         }
     }

@@ -128,7 +128,9 @@ public class SingleInputGateBenchmarkFactory extends SingleInputGateFactory {
                     maxBackoff,
                     metrics.getNumBytesInLocalCounter(),
                     metrics.getNumBuffersInLocalCounter(),
-                    ChannelStateWriter.NO_OP);
+                    ChannelStateWriter.NO_OP,
+                    0,
+                    false);
         }
 
         @Override
@@ -183,7 +185,8 @@ public class SingleInputGateBenchmarkFactory extends SingleInputGateFactory {
                     networkBuffersPerChannel,
                     metrics.getNumBytesInRemoteCounter(),
                     metrics.getNumBuffersInRemoteCounter(),
-                    ChannelStateWriter.NO_OP);
+                    ChannelStateWriter.NO_OP,
+                    false);
         }
 
         @Override
