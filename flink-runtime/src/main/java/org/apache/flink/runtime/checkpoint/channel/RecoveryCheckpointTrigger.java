@@ -18,40 +18,43 @@
 package org.apache.flink.runtime.checkpoint.channel;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.util.CloseableIterator;
 
 import java.io.IOException;
 
 /**
  * Inserts recovery-checkpoint barriers into in-flight recovered state. The task thread holds the
  * reference typed as this interface; the production implementation lives in {@code
- * SpillFileReader}.
+ * SpillFileDrainer}.
  */
 @Internal
 public interface RecoveryCheckpointTrigger {
 
     /**
-     * Atomically, under {@code SpillFileReader.lock}:
+     * Atomically, under the drainer's lock:
      *
      * <ol>
-     *   <li>Snapshots every SpillFileSegment and captures {@code (currentSegmentIndex,
-     *       currentOffset)} as {@link DiskSnapshot.StartPos}.
+     *   <li>Derives a sub-{@link SpillFileReader} from the drain reader's current cursor, covering
+     *       all entries the drain has not yet delivered to channels.
      *   <li>Calls {@code onRecoveredStateBuffer(new RecoveryCheckpointBarrier(checkpointId))} on
-     *       every channel of the task.
+     *       every in-recovery channel of the task.
      * </ol>
+     *
+     * <p>Returns the sub-reader (wrapped as a {@link CloseableIterator}) so the checkpoint write
+     * path can stream the entries directly. When no entries remain, returns {@link
+     * CloseableIterator#empty()}.
      *
      * <p>The {@code checkpointId} is forwarded from {@code CheckpointBarrier.getId()} and embedded
      * in the {@link RecoveryCheckpointBarrier} sentinel so consumers can correlate the barrier with
      * the triggering checkpoint.
-     *
-     * <p>Caller (task thread) MUST NOT hold {@code SpillFileReader.lock} — the implementation
-     * acquires it.
      */
-    DiskSnapshot snapshotAndInsertBarriers(long checkpointId) throws IOException;
+    CloseableIterator<SpillFileReader.Chunk> snapshotAndInsertBarriers(long checkpointId)
+            throws IOException;
 
     /**
-     * No-op singleton used when no spill file exists or recovery has fully completed. Returning the
-     * empty {@link DiskSnapshot} singleton lets the checkpoint dispatcher invoke this
-     * unconditionally without branching on whether recovery filtering is active.
+     * No-op singleton used when no spill file exists or recovery has fully completed. Returning an
+     * empty iterator lets the checkpoint dispatcher invoke this unconditionally without branching
+     * on whether recovery filtering is active.
      */
-    RecoveryCheckpointTrigger NO_OP = checkpointId -> DiskSnapshot.empty();
+    RecoveryCheckpointTrigger NO_OP = checkpointId -> CloseableIterator.empty();
 }
