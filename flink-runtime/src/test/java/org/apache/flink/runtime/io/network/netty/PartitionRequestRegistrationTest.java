@@ -248,7 +248,8 @@ class PartitionRequestRegistrationTest {
                     2,
                     new SimpleCounter(),
                     new SimpleCounter(),
-                    ChannelStateWriter.NO_OP);
+                    ChannelStateWriter.NO_OP,
+                    false);
             this.latch = latch;
         }
 

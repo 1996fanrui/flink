@@ -280,7 +280,9 @@ public class TestInputChannel extends InputChannel implements RecoverableInputCh
     }
 
     @Override
-    public void awaitUpstreamReady() {}
+    public Buffer requestRecoveryBufferBlocking() {
+        throw new UnsupportedOperationException("TestInputChannel does not back recovery drain");
+    }
 
     public Deque<Buffer> getRecoveredBuffersSpy() {
         return recoveredBuffersSpy;

@@ -139,7 +139,7 @@ class RecoveredInputChannelRequestBufferBlockingHeapFallbackRemovedTest {
                     new SimpleCounter(),
                     exclusivePerChannel) {
                 @Override
-                protected InputChannel toInputChannelInternal() {
+                protected InputChannel toInputChannelInternal(boolean needsRecovery) {
                     throw new AssertionError("not expected during this test");
                 }
             };

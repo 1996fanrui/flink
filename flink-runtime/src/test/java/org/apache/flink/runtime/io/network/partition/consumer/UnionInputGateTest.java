@@ -325,7 +325,7 @@ class UnionInputGateTest extends InputGateTestBase {
                 new SimpleCounter(),
                 10) {
             @Override
-            protected InputChannel toInputChannelInternal() {
+            protected InputChannel toInputChannelInternal(boolean needsRecovery) {
                 throw new UnsupportedOperationException();
             }
         };
