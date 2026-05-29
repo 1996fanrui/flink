@@ -91,6 +91,25 @@ public class LocalInputChannel extends InputChannel
     private final RecoveredBufferQueue recoveredQueue;
 
     /**
+     * Per-channel buffer pool used exclusively by the spill drain to allocate buffers it pushes
+     * through {@link #onRecoveredStateBuffer}. Only created when {@code needsRecovery == true};
+     * Local channels not started in-recovery never need a private pool because their live-path
+     * buffers are owned by the upstream subpartition.
+     */
+    @Nullable private final BufferManager bufferManager;
+
+    /** Initial exclusive credit requested by {@link #setup()} for the spill-drain buffer pool. */
+    private final int networkBuffersPerChannel;
+
+    /**
+     * Whether this channel is constructed in-recovery (will accept recovered buffers pushed by the
+     * spill drain) or starts in the live path. Decided by the caller; conversion paths that come
+     * from a {@link RecoveredInputChannel} pass {@code true}, while paths that bypass recovery
+     * (e.g. {@link UnknownInputChannel} → physical, or tests with no spill) pass {@code false}.
+     */
+    private final boolean needsRecovery;
+
+    /**
      * Whether a priority event (e.g., checkpoint barrier) is pending in {@code subpartitionView}
      * and must be consumed before {@code recoveredQueue}. Volatile because it is written by the
      * network thread and read by the task thread.
@@ -117,7 +136,9 @@ public class LocalInputChannel extends InputChannel
             int maxBackoff,
             Counter numBytesIn,
             Counter numBuffersIn,
-            ChannelStateWriter stateWriter) {
+            ChannelStateWriter stateWriter,
+            int networkBuffersPerChannel,
+            boolean needsRecovery) {
 
         super(
                 inputGate,
@@ -133,11 +154,26 @@ public class LocalInputChannel extends InputChannel
         this.taskEventPublisher = checkNotNull(taskEventPublisher);
         this.channelStatePersister =
                 new ChannelStatePersister(checkNotNull(stateWriter), getChannelInfo());
-        // When the gate has no final-drain to perform, no producer will ever push into
-        // recoveredQueue, so start it with allDelivered=true (isInRecovery=false). Otherwise the
-        // channel enters in-recovery and finishRecoveredBufferDelivery() flips allDelivered later.
-        this.recoveredQueue =
-                new RecoveredBufferQueue(getChannelInfo(), !inputGate.isFinalDrainEnabled());
+        // needsRecovery=true → channel enters in-recovery (recoveredQueue.allDelivered=false) and
+        // finishRecoveredBufferDelivery() will flip it. needsRecovery=false → start with
+        // allDelivered=true so the channel skips the recovery branch from the get-go.
+        this.recoveredQueue = new RecoveredBufferQueue(getChannelInfo(), !needsRecovery);
+        this.bufferManager =
+                needsRecovery
+                        ? new BufferManager(inputGate.getMemorySegmentProvider(), this, 0)
+                        : null;
+        this.networkBuffersPerChannel = networkBuffersPerChannel;
+        this.needsRecovery = needsRecovery;
+    }
+
+    @Override
+    void setup() throws IOException {
+        if (needsRecovery && networkBuffersPerChannel > 0) {
+            // Recovery-only pool: the spill drain pushes buffers allocated from here through
+            // onRecoveredStateBuffer; once recovery ends, the consumer recycles them back into
+            // this same BufferManager.
+            bufferManager.requestExclusiveBuffers(networkBuffersPerChannel);
+        }
     }
 
     // ------------------------------------------------------------------------
@@ -147,8 +183,7 @@ public class LocalInputChannel extends InputChannel
     /**
      * Appends {@code buffer} to {@code recoveredQueue} and wakes the consumer when the queue
      * transitions from empty to non-empty. If the channel was released before we entered the
-     * synchronized block, the buffer is recycled silently. The upstream-ready wait is performed
-     * externally by the caller (see {@link #awaitUpstreamReady}).
+     * synchronized block, the buffer is recycled silently.
      */
     @Override
     public void onRecoveredStateBuffer(Buffer buffer) {
@@ -172,6 +207,9 @@ public class LocalInputChannel extends InputChannel
      */
     @Override
     public void finishRecoveredBufferDelivery() {
+        // Await upstream so channels with no spill entries still observe the upstream-ready edge
+        // before being marked delivered.
+        upstreamReady.join();
         synchronized (recoveredQueue) {
             recoveredQueue.finish();
         }
@@ -179,8 +217,16 @@ public class LocalInputChannel extends InputChannel
     }
 
     @Override
-    public void awaitUpstreamReady() {
+    public Buffer requestRecoveryBufferBlocking() throws InterruptedException, IOException {
+        // Allocate from this channel's own recovery pool so the recovered buffer is owned by the
+        // same physical channel that will eventually recycle it. Only valid when the channel was
+        // constructed in-recovery; non-recovery channels never receive a drain push.
+        checkState(
+                bufferManager != null,
+                "requestRecoveryBufferBlocking called on a Local channel constructed with"
+                        + " needsRecovery=false");
         upstreamReady.join();
+        return bufferManager.requestBufferBlocking();
     }
 
     @Override
@@ -644,6 +690,9 @@ public class LocalInputChannel extends InputChannel
                 bufferAndBacklog.buffer().recycleBuffer();
             }
             toBeConsumedBuffers.clear();
+            if (bufferManager != null) {
+                bufferManager.releaseAllBuffers(new ArrayDeque<>());
+            }
         }
     }
 
@@ -696,5 +745,16 @@ public class LocalInputChannel extends InputChannel
     @VisibleForTesting
     ResultSubpartitionView getSubpartitionView() {
         return subpartitionView;
+    }
+
+    /**
+     * Simulates the "upstream view published" edge that {@link #requestSubpartitions()} would
+     * otherwise produce in production. Used by unit tests that drive the recovery push interface
+     * without going through {@code requestSubpartitions()}; allows {@link
+     * #finishRecoveredBufferDelivery()} to return without parking on {@code upstreamReady}.
+     */
+    @VisibleForTesting
+    void completeUpstreamReadyForTest() {
+        upstreamReady.complete(null);
     }
 }

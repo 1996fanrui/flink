@@ -82,20 +82,24 @@ public abstract class IndexedInputGate extends InputGate implements Checkpointab
     public abstract boolean isCheckpointingDuringRecoveryEnabled();
 
     /**
-     * Sets whether this gate's physical channels will see a SpillFileReader-driven drain phase.
-     * Must be written on the channel IO executor before the buffer-filtering completion future is
-     * completed, so consumers racing with downstream mailbox tasks observe the final value.
+     * Sets whether the physical channels converted out of this gate's {@link
+     * RecoveredInputChannel}s should start in-recovery (will receive recovered buffers from a
+     * SpillFileReader drain). Must be written on the channel IO executor before the
+     * buffer-filtering completion future is completed, so consumers racing with downstream mailbox
+     * tasks observe the final value.
      *
      * <p>Strictly tighter than {@link #isCheckpointingDuringRecoveryEnabled()}: the feature flag is
-     * known at gate-setup time, but the final-drain decision is only known after filter has
-     * actually produced (or failed to produce) a spill file.
+     * known at gate-setup time, but the recovery decision is only known after filter has actually
+     * produced (or failed to produce) a spill file.
      */
-    public abstract void setFinalDrainEnabled(boolean enabled);
+    public abstract void setNeedsRecovery(boolean enabled);
 
     /**
-     * Returns whether this gate's physical channels will see a SpillFileReader-driven drain phase.
-     * Read by local/remote input channel constructors during gate conversion to decide the initial
-     * {@code RecoveredBufferQueue.allDelivered} state.
+     * Returns whether the physical channels converted out of this gate's {@link
+     * RecoveredInputChannel}s should start in-recovery. Read by {@link
+     * SingleInputGate#convertRecoveredInputChannels()} and passed through {@code
+     * toInputChannel(needsRecovery)} to the physical channel constructor; channel constructors do
+     * NOT read this directly.
      */
-    public abstract boolean isFinalDrainEnabled();
+    public abstract boolean needsRecovery();
 }

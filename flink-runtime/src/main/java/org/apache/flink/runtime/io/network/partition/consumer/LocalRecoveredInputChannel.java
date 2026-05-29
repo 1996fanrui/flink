@@ -61,7 +61,7 @@ public class LocalRecoveredInputChannel extends RecoveredInputChannel {
     }
 
     @Override
-    protected InputChannel toInputChannelInternal() {
+    protected InputChannel toInputChannelInternal(boolean needsRecovery) {
         return new LocalInputChannel(
                 inputGate,
                 getChannelIndex(),
@@ -73,6 +73,8 @@ public class LocalRecoveredInputChannel extends RecoveredInputChannel {
                 maxBackoff,
                 numBytesIn,
                 numBuffersIn,
-                channelStateWriter);
+                channelStateWriter,
+                networkBuffersPerChannel,
+                needsRecovery);
     }
 }

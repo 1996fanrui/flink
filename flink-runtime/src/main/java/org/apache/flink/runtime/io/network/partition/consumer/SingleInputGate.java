@@ -246,14 +246,14 @@ public class SingleInputGate extends IndexedInputGate {
     private volatile boolean checkpointingDuringRecoveryEnabled = false;
 
     /**
-     * Final decision on whether this gate will see a SpillFileReader-driven drain phase. Set on the
-     * channel-IO executor before {@code bufferFilteringCompleteFuture.complete()} so downstream
-     * mailbox tasks observe the final value. Channels read this in their constructor during {@link
-     * #convertRecoveredInputChannels()} to decide the initial {@code
-     * RecoveredBufferQueue.allDelivered} state, preserving the invariant that a channel is
-     * in-recovery iff its producer is the SpillFileReader.
+     * Whether the physical channels converted out of this gate's {@link RecoveredInputChannel}s
+     * should start in-recovery (i.e. will receive recovered buffers from a SpillFileReader drain).
+     * Set on the channel-IO executor before {@code bufferFilteringCompleteFuture.complete()} so
+     * downstream mailbox tasks observe the final value. Read by {@link
+     * #convertRecoveredInputChannels()} and passed through {@code toInputChannel(needsRecovery)} to
+     * the physical channel constructor; channel constructors do NOT read this field directly.
      */
-    private volatile boolean finalDrainEnabled = false;
+    private volatile boolean needsRecovery = false;
 
     public SingleInputGate(
             String owningTaskName,
@@ -352,13 +352,13 @@ public class SingleInputGate extends IndexedInputGate {
     }
 
     @Override
-    public void setFinalDrainEnabled(boolean enabled) {
-        this.finalDrainEnabled = enabled;
+    public void setNeedsRecovery(boolean enabled) {
+        this.needsRecovery = enabled;
     }
 
     @Override
-    public boolean isFinalDrainEnabled() {
-        return finalDrainEnabled;
+    public boolean needsRecovery() {
+        return needsRecovery;
     }
 
     @Override
@@ -432,12 +432,11 @@ public class SingleInputGate extends IndexedInputGate {
                     // them here keeps lock ordering consistent with onRecoveredStateBuffer(), which
                     // takes receivedBuffers before inputChannelsWithData.
                     InputChannel realInputChannel =
-                            ((RecoveredInputChannel) inputChannel).toInputChannel();
-                    if (!checkpointingDuringRecoveryEnabled) {
-                        // The drain still needs to allocate from this channel's BufferManager;
-                        // SpillFileReader.close() releases it later.
-                        inputChannel.releaseAllResources();
-                    }
+                            ((RecoveredInputChannel) inputChannel).toInputChannel(needsRecovery);
+                    // The drain allocates from the physical channel's own BufferManager, not the
+                    // RecoveredInputChannel's, so the recovery scaffolding can be released
+                    // unconditionally here.
+                    inputChannel.releaseAllResources();
                     int buffersInUseCount = realInputChannel.getBuffersInUseCount();
 
                     // Atomically update data structures under the lock.

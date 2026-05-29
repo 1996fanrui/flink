@@ -176,13 +176,13 @@ public class InputGateWithMetrics extends IndexedInputGate {
     }
 
     @Override
-    public void setFinalDrainEnabled(boolean enabled) {
-        inputGate.setFinalDrainEnabled(enabled);
+    public void setNeedsRecovery(boolean enabled) {
+        inputGate.setNeedsRecovery(enabled);
     }
 
     @Override
-    public boolean isFinalDrainEnabled() {
-        return inputGate.isFinalDrainEnabled();
+    public boolean needsRecovery() {
+        return inputGate.needsRecovery();
     }
 
     private BufferOrEvent updateMetrics(BufferOrEvent bufferOrEvent) {

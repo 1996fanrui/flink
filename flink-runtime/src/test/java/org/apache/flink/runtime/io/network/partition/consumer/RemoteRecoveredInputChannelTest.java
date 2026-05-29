@@ -43,7 +43,7 @@ class RemoteRecoveredInputChannelTest {
 
         try {
             recoveredChannel.finishReadRecoveredState();
-            assertThatThrownBy(recoveredChannel::toInputChannel)
+            assertThatThrownBy(() -> recoveredChannel.toInputChannel(true))
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("Received buffer should be empty");
         } finally {

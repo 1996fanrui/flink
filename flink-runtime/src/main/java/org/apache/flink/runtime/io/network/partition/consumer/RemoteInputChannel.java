@@ -158,7 +158,8 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
             int networkBuffersPerChannel,
             Counter numBytesIn,
             Counter numBuffersIn,
-            ChannelStateWriter stateWriter) {
+            ChannelStateWriter stateWriter,
+            boolean needsRecovery) {
 
         super(
                 inputGate,
@@ -178,15 +179,26 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
         this.bufferManager = new BufferManager(inputGate.getMemorySegmentProvider(), this, 0);
         this.channelStatePersister =
                 new ChannelStatePersister(checkNotNull(stateWriter), getChannelInfo());
-        // When no final-drain phase is configured, start with allDelivered=true so the channel
-        // skips the recovery branch entirely. See LocalInputChannel for the rationale.
-        this.recoveredQueue =
-                new RecoveredBufferQueue(getChannelInfo(), !inputGate.isFinalDrainEnabled());
+        // needsRecovery=true → channel enters in-recovery and finishRecoveredBufferDelivery()
+        // will flip allDelivered. needsRecovery=false → start with allDelivered=true so the
+        // channel skips the recovery branch entirely.
+        this.recoveredQueue = new RecoveredBufferQueue(getChannelInfo(), !needsRecovery);
     }
 
     @VisibleForTesting
     void setExpectedSequenceNumber(int expectedSequenceNumber) {
         this.expectedSequenceNumber = expectedSequenceNumber;
+    }
+
+    /**
+     * Simulates the "upstream request dispatched" edge that {@link #requestSubpartitions()} would
+     * otherwise produce in production. Used by unit tests that drive the recovery push interface
+     * without going through {@code requestSubpartitions()}; allows {@link
+     * #finishRecoveredBufferDelivery()} to return without parking on {@code upstreamReady}.
+     */
+    @VisibleForTesting
+    void completeUpstreamReadyForTest() {
+        upstreamReady.complete(null);
     }
 
     /**
@@ -227,6 +239,7 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
      */
     @Override
     public void finishRecoveredBufferDelivery() {
+        upstreamReady.join();
         synchronized (receivedBuffers) {
             recoveredQueue.finish();
         }
@@ -234,8 +247,11 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
     }
 
     @Override
-    public void awaitUpstreamReady() {
+    public Buffer requestRecoveryBufferBlocking() throws InterruptedException, IOException {
+        // Allocate from this channel's own pool so the recovered buffer is owned by the same
+        // physical channel that will eventually recycle it — no cross-owner release plumbing.
         upstreamReady.join();
+        return bufferManager.requestBufferBlocking();
     }
 
     @Override
