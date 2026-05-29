@@ -36,12 +36,25 @@ git log --oneline 159560fd730..HEAD | grep -v fixup
 
 ## 规则 3：按文件归属 phase
 
-所有文件按其所属 phase 归类；唯一的例外是：
+所有文件按其所属 phase 归类；**跨阶段文件**按本次改动的**语义**决定归属哪个 phase commit，**不按文件历史归属死规定**。
 
-- `flink-runtime/src/main/java/org/apache/flink/runtime/io/network/partition/consumer/RecoveredInputChannel.java`  
-  跨 Phase 1 / 2 / 4。修改此文件时按改动语义决定归属哪个 phase commit。
+### 当前已知的跨阶段文件清单
 
-除上述文件外，所有其他文件的改动只允许归到其所在的唯一 phase。
+| 文件 | 改动过的 phase | 归属判定准则 |
+|------|--------------|------------|
+| `flink-runtime/src/main/java/org/apache/flink/runtime/io/network/partition/consumer/RecoveredInputChannel.java` | Phase 1 / 2 / 4 | 按本次改动的字段、方法、行号语义归属 |
+| `flink-runtime/src/main/java/org/apache/flink/runtime/io/network/partition/consumer/LocalInputChannel.java` | Phase 0（解耦 refactor）、Phase 2（接入 RecoverableInputChannel 接口） | 注释级改动 → phase 0；功能/接口/语义改动 → phase 2 |
+
+后续如发现新的跨阶段文件，**必须先把它追加到这张表里**，再开始改动。
+
+### 归属判定的判断方法
+
+1. 改的是哪个 phase 引入的代码？— 若新增方法体或字段 → 归引入它的 phase。
+2. 改的是注释 / 格式 / 行号？— 注释规范化按行号 blame 归属（默认归 phase 0 的文件就归 phase 0）。
+3. 改的是接口契约 / 函数语义 / 数据流？— 这个改动是哪个 phase 的功能落地的一部分？归对应 phase。
+4. 实在判不清 → 在 review doc 里讨论，写定后追加到上方表格。
+
+除上述跨阶段文件外，所有其他文件的改动只允许归到其所在的唯一 phase。
 
 文件 → phase 映射可通过下面命令在本分支当前状态下查询：
 
