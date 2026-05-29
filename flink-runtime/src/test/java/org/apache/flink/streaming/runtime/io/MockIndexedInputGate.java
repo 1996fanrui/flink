@@ -152,10 +152,10 @@ public class MockIndexedInputGate extends IndexedInputGate {
     }
 
     @Override
-    public void setFinalDrainEnabled(boolean enabled) {}
+    public void setNeedsRecovery(boolean enabled) {}
 
     @Override
-    public boolean isFinalDrainEnabled() {
+    public boolean needsRecovery() {
         return false;
     }
 }

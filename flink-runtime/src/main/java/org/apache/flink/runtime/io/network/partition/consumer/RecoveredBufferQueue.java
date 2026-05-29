@@ -100,8 +100,17 @@ class RecoveredBufferQueue {
         return wasEmpty;
     }
 
-    /** Marks producer-side delivery as complete. Idempotent. */
+    /**
+     * Marks producer-side delivery as complete. Fail-loud on repeated invocation: {@code finish()}
+     * is a one-shot state flip — calling it on a queue that was never in recovery (or already
+     * finished) signals a wiring bug in the caller, since the only legitimate caller is the spill
+     * drain at end-of-drain.
+     */
     void finish() {
+        Preconditions.checkState(
+                !allDelivered,
+                "finish() called on a RecoveredBufferQueue that is already done (channelInfo=%s)",
+                channelInfo);
         allDelivered = true;
     }
 

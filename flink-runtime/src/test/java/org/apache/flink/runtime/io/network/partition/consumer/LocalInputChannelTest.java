@@ -691,7 +691,9 @@ class LocalInputChannelTest {
                         0,
                         new SimpleCounter(),
                         new SimpleCounter(),
-                        ChannelStateWriter.NO_OP);
+                        ChannelStateWriter.NO_OP,
+                        2,
+                        true);
 
         inputGate.setInputChannels(localChannel);
 
@@ -729,12 +731,15 @@ class LocalInputChannelTest {
                         0,
                         new SimpleCounter(),
                         new SimpleCounter(),
-                        ChannelStateWriter.NO_OP);
+                        ChannelStateWriter.NO_OP,
+                        2,
+                        true);
 
         inputGate.setInputChannels(channel);
 
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(10));
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(20));
+        channel.completeUpstreamReadyForTest();
         channel.finishRecoveredBufferDelivery();
 
         // then: Can read recovered buffers even before requestSubpartitions()
@@ -767,13 +772,19 @@ class LocalInputChannelTest {
                         0,
                         new SimpleCounter(),
                         new SimpleCounter(),
-                        stateWriter);
+                        stateWriter,
+                        2,
+                        true);
 
         inputGate.setInputChannels(channel);
 
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(10));
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(20));
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(30));
+        // Mirror SpillFileReader.snapshotAndInsertBarriers: push the sentinel before
+        // checkpointStarted scans recoveredQueue.
+        channel.onRecoveredStateBuffer(
+                EventSerializer.toBuffer(new RecoveryCheckpointBarrier(1L), false));
 
         // when: Checkpoint is started while in recovery (recoveredBuffers non-empty, flag false)
         CheckpointOptions options =
@@ -832,7 +843,9 @@ class LocalInputChannelTest {
                         0,
                         new SimpleCounter(),
                         new SimpleCounter(),
-                        ChannelStateWriter.NO_OP);
+                        ChannelStateWriter.NO_OP,
+                        2,
+                        true);
 
         inputGate.setInputChannels(channel);
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(10));
@@ -967,7 +980,9 @@ class LocalInputChannelTest {
                         0,
                         new SimpleCounter(),
                         new SimpleCounter(),
-                        stateWriter);
+                        stateWriter,
+                        2,
+                        true);
 
         inputGate.setInputChannels(channel);
 
@@ -1007,7 +1022,9 @@ class LocalInputChannelTest {
                 0,
                 new SimpleCounter(),
                 new SimpleCounter(),
-                stateWriter);
+                stateWriter,
+                2,
+                true);
     }
 
     @Test
@@ -1085,6 +1102,7 @@ class LocalInputChannelTest {
         LocalInputChannel channel = newPushOnlyLocalChannel(inputGate, ChannelStateWriter.NO_OP);
         inputGate.setInputChannels(channel);
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(8));
+        channel.completeUpstreamReadyForTest();
         channel.finishRecoveredBufferDelivery();
         Optional<InputChannel.BufferAndAvailability> r = channel.getNextBuffer();
         assertThat(r).isPresent();
@@ -1100,6 +1118,7 @@ class LocalInputChannelTest {
         SingleInputGate inputGate = new SingleInputGateBuilder().build();
         LocalInputChannel channel = newPushOnlyLocalChannel(inputGate, ChannelStateWriter.NO_OP);
         inputGate.setInputChannels(channel);
+        channel.completeUpstreamReadyForTest();
         channel.finishRecoveredBufferDelivery();
         assertThatThrownBy(channel::getNextBuffer)
                 .isInstanceOf(IllegalStateException.class)
@@ -1273,6 +1292,10 @@ class LocalInputChannelTest {
         RecordingChannelStateWriter stateWriter = new RecordingChannelStateWriter();
         LocalInputChannel channel = newPushOnlyLocalChannel(inputGate, stateWriter);
         inputGate.setInputChannels(channel);
+        // Channel starts in-recovery; flip it to not-in-recovery so checkpointStarted exercises
+        // the master path instead of the recovery branch.
+        channel.completeUpstreamReadyForTest();
+        channel.finishRecoveredBufferDelivery();
 
         // No recovery — checkpointStarted goes through the master path, which calls
         // startPersisting(barrier.getId(), Collections.emptyList()).

@@ -184,41 +184,26 @@ class UnknownInputChannel extends InputChannel implements ChannelStateHolder {
                         networkBuffersPerChannel,
                         metrics.getNumBytesInRemoteCounter(),
                         metrics.getNumBuffersInRemoteCounter(),
-                        channelStateWriter == null ? ChannelStateWriter.NO_OP : channelStateWriter);
-        markNoRecovery(channel);
+                        channelStateWriter == null ? ChannelStateWriter.NO_OP : channelStateWriter,
+                        false);
         return channel;
     }
 
     public LocalInputChannel toLocalInputChannel(ResultPartitionID resultPartitionID) {
-        LocalInputChannel channel =
-                new LocalInputChannel(
-                        inputGate,
-                        getChannelIndex(),
-                        resultPartitionID,
-                        consumedSubpartitionIndexSet,
-                        partitionManager,
-                        taskEventPublisher,
-                        initialBackoff,
-                        maxBackoff,
-                        metrics.getNumBytesInLocalCounter(),
-                        metrics.getNumBuffersInLocalCounter(),
-                        channelStateWriter == null ? ChannelStateWriter.NO_OP : channelStateWriter);
-        markNoRecovery(channel);
-        return channel;
-    }
-
-    /**
-     * Signals that the produced physical channel has no spilled state to replay, so {@link
-     * RemoteInputChannel#getNextBuffer()} / {@link LocalInputChannel#getNextBuffer()} fall through
-     * to the live upstream path immediately instead of staying in the in-recovery branch.
-     */
-    private static void markNoRecovery(RecoverableInputChannel channel) {
-        try {
-            channel.finishRecoveredBufferDelivery();
-        } catch (IOException e) {
-            throw new IllegalStateException(
-                    "Failed to mark non-recovery channel as recovery-complete", e);
-        }
+        return new LocalInputChannel(
+                inputGate,
+                getChannelIndex(),
+                resultPartitionID,
+                consumedSubpartitionIndexSet,
+                partitionManager,
+                taskEventPublisher,
+                initialBackoff,
+                maxBackoff,
+                metrics.getNumBytesInLocalCounter(),
+                metrics.getNumBuffersInLocalCounter(),
+                channelStateWriter == null ? ChannelStateWriter.NO_OP : channelStateWriter,
+                networkBuffersPerChannel,
+                false);
     }
 
     @Override

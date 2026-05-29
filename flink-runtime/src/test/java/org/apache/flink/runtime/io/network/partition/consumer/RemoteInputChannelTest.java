@@ -2100,12 +2100,14 @@ class RemoteInputChannelTest {
                         2,
                         new SimpleCounter(),
                         new SimpleCounter(),
-                        ChannelStateWriter.NO_OP);
+                        ChannelStateWriter.NO_OP,
+                        true);
 
         inputGate.setInputChannels(channel);
 
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(10));
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(20));
+        channel.completeUpstreamReadyForTest();
         channel.finishRecoveredBufferDelivery();
 
         // then: Can read recovered buffers even before requestSubpartitions()
@@ -2129,7 +2131,8 @@ class RemoteInputChannelTest {
         RemoteInputChannel channel =
                 InputChannelBuilder.newBuilder()
                         .setStateWriter(ChannelStateWriter.NO_OP)
-                        .buildRemoteChannelForRecoveryTest(inputGate);
+                        .setNeedsRecovery(true)
+                        .buildRemoteChannel(inputGate);
         inputGate.setInputChannels(channel);
 
         Buffer b1 = TestBufferFactory.createBuffer(11);
@@ -2151,7 +2154,8 @@ class RemoteInputChannelTest {
         RemoteInputChannel channel =
                 InputChannelBuilder.newBuilder()
                         .setStateWriter(ChannelStateWriter.NO_OP)
-                        .buildRemoteChannelForRecoveryTest(inputGate);
+                        .setNeedsRecovery(true)
+                        .buildRemoteChannel(inputGate);
         inputGate.setInputChannels(channel);
         channel.releaseAllResources();
 
@@ -2169,7 +2173,8 @@ class RemoteInputChannelTest {
         RemoteInputChannel channel =
                 InputChannelBuilder.newBuilder()
                         .setStateWriter(ChannelStateWriter.NO_OP)
-                        .buildRemoteChannelForRecoveryTest(inputGate);
+                        .setNeedsRecovery(true)
+                        .buildRemoteChannel(inputGate);
         inputGate.setInputChannels(channel);
 
         // No buffers yet — gate availability future is not yet completed.
@@ -2187,7 +2192,8 @@ class RemoteInputChannelTest {
         RemoteInputChannel channel =
                 InputChannelBuilder.newBuilder()
                         .setStateWriter(ChannelStateWriter.NO_OP)
-                        .buildRemoteChannelForRecoveryTest(inputGate);
+                        .setNeedsRecovery(true)
+                        .buildRemoteChannel(inputGate);
         inputGate.setInputChannels(channel);
 
         // Force in-recovery + empty queue: push then poll a buffer, then push another while
@@ -2216,7 +2222,8 @@ class RemoteInputChannelTest {
         RemoteInputChannel channel =
                 InputChannelBuilder.newBuilder()
                         .setStateWriter(ChannelStateWriter.NO_OP)
-                        .buildRemoteChannelForRecoveryTest(inputGate);
+                        .setNeedsRecovery(true)
+                        .buildRemoteChannel(inputGate);
         inputGate.setInputChannels(channel);
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(7));
 
@@ -2232,9 +2239,11 @@ class RemoteInputChannelTest {
         RemoteInputChannel channel =
                 InputChannelBuilder.newBuilder()
                         .setStateWriter(ChannelStateWriter.NO_OP)
-                        .buildRemoteChannelForRecoveryTest(inputGate);
+                        .setNeedsRecovery(true)
+                        .buildRemoteChannel(inputGate);
         inputGate.setInputChannels(channel);
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(8));
+        channel.completeUpstreamReadyForTest();
         channel.finishRecoveredBufferDelivery();
 
         // flag=true, queue non-empty → still in-recovery, poll the head.
@@ -2254,10 +2263,12 @@ class RemoteInputChannelTest {
                             .setBufferPoolFactory(networkBufferPool.createBufferPool(1, 4))
                             .setSegmentProvider(networkBufferPool)
                             .setChannelFactory(
-                                    InputChannelBuilder::buildRemoteChannelForRecoveryTest)
+                                    (builder, gate) ->
+                                            builder.setNeedsRecovery(true).buildRemoteChannel(gate))
                             .build();
             inputGate.setup();
             RemoteInputChannel channel = (RemoteInputChannel) inputGate.getChannel(0);
+            channel.completeUpstreamReadyForTest();
             channel.finishRecoveredBufferDelivery();
             inputGate.requestPartitions();
 
@@ -2283,9 +2294,10 @@ class RemoteInputChannelTest {
                     new SingleInputGateBuilder()
                             .setBufferPoolFactory(networkBufferPool.createBufferPool(1, 4))
                             .setSegmentProvider(networkBufferPool)
-                            .setFinalDrainEnabled(true)
+                            .setNeedsRecovery(true)
                             .setChannelFactory(
-                                    InputChannelBuilder::buildRemoteChannelForRecoveryTest)
+                                    (builder, gate) ->
+                                            builder.setNeedsRecovery(true).buildRemoteChannel(gate))
                             .build();
             inputGate.setup();
             RemoteInputChannel channel = (RemoteInputChannel) inputGate.getChannel(0);
@@ -2319,7 +2331,8 @@ class RemoteInputChannelTest {
                             .setBufferPoolFactory(networkBufferPool.createBufferPool(1, 4))
                             .setSegmentProvider(networkBufferPool)
                             .setChannelFactory(
-                                    InputChannelBuilder::buildRemoteChannelForRecoveryTest)
+                                    (builder, gate) ->
+                                            builder.setNeedsRecovery(true).buildRemoteChannel(gate))
                             .build();
             inputGate.setup();
             RemoteInputChannel channel = (RemoteInputChannel) inputGate.getChannel(0);
@@ -2351,7 +2364,8 @@ class RemoteInputChannelTest {
         RemoteInputChannel channel =
                 InputChannelBuilder.newBuilder()
                         .setStateWriter(stateWriter)
-                        .buildRemoteChannelForRecoveryTest(inputGate);
+                        .setNeedsRecovery(true)
+                        .buildRemoteChannel(inputGate);
         inputGate.setInputChannels(channel);
 
         Buffer b1 = TestBufferFactory.createBuffer(1);
@@ -2379,7 +2393,8 @@ class RemoteInputChannelTest {
         RemoteInputChannel channel =
                 InputChannelBuilder.newBuilder()
                         .setStateWriter(stateWriter)
-                        .buildRemoteChannelForRecoveryTest(inputGate);
+                        .setNeedsRecovery(true)
+                        .buildRemoteChannel(inputGate);
         inputGate.setInputChannels(channel);
 
         Buffer b1 = TestBufferFactory.createBuffer(1);
@@ -2406,7 +2421,8 @@ class RemoteInputChannelTest {
         RemoteInputChannel channel =
                 InputChannelBuilder.newBuilder()
                         .setStateWriter(stateWriter)
-                        .buildRemoteChannelForRecoveryTest(inputGate);
+                        .setNeedsRecovery(true)
+                        .buildRemoteChannel(inputGate);
         inputGate.setInputChannels(channel);
 
         Buffer b1 = TestBufferFactory.createBuffer(1);
@@ -2429,7 +2445,8 @@ class RemoteInputChannelTest {
         RemoteInputChannel channel =
                 InputChannelBuilder.newBuilder()
                         .setStateWriter(stateWriter)
-                        .buildRemoteChannelForRecoveryTest(inputGate);
+                        .setNeedsRecovery(true)
+                        .buildRemoteChannel(inputGate);
         inputGate.setInputChannels(channel);
 
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(1));
@@ -2457,7 +2474,8 @@ class RemoteInputChannelTest {
         RemoteInputChannel channel =
                 InputChannelBuilder.newBuilder()
                         .setStateWriter(stateWriter)
-                        .buildRemoteChannelForRecoveryTest(inputGate);
+                        .setNeedsRecovery(true)
+                        .buildRemoteChannel(inputGate);
         inputGate.setInputChannels(channel);
 
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(1));
@@ -2483,7 +2501,7 @@ class RemoteInputChannelTest {
         RemoteInputChannel channel =
                 InputChannelBuilder.newBuilder()
                         .setStateWriter(stateWriter)
-                        .buildRemoteChannelForRecoveryTest(inputGate);
+                        .buildRemoteChannel(inputGate);
         inputGate.setInputChannels(channel);
         channel.requestSubpartitions();
         // No recovery activity → channel is NOT in recovery; checkpointStarted must go through
@@ -2505,7 +2523,8 @@ class RemoteInputChannelTest {
                             .setBufferPoolFactory(networkBufferPool.createBufferPool(1, 4))
                             .setSegmentProvider(networkBufferPool)
                             .setChannelFactory(
-                                    InputChannelBuilder::buildRemoteChannelForRecoveryTest)
+                                    (builder, gate) ->
+                                            builder.setNeedsRecovery(true).buildRemoteChannel(gate))
                             .build();
             inputGate.setup();
             RemoteInputChannel channel = (RemoteInputChannel) inputGate.getChannel(0);
@@ -2513,14 +2532,15 @@ class RemoteInputChannelTest {
             // Drive into in-recovery by pushing a recovered buffer.
             channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(1));
             // Inject live data into receivedBuffers (network path) — this is the invariant
-            // violation that the in-recovery branch's assert should catch (when -ea is on).
+            // violation that the in-recovery branch's checkState should catch.
             channel.onBuffer(TestBufferFactory.createBuffer(1), 0, 0, 0);
 
-            try {
-                channel.checkpointStarted(new CheckpointBarrier(1L, 0L, UNALIGNED));
-            } catch (AssertionError expected) {
-                // The defensive assert fired — exact behaviour depends on -ea flag.
-            }
+            assertThatThrownBy(
+                            () ->
+                                    channel.checkpointStarted(
+                                            new CheckpointBarrier(1L, 0L, UNALIGNED)))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("live upstream data observed in receivedBuffers");
         } finally {
             networkBufferPool.destroy();
         }
@@ -2538,12 +2558,17 @@ class RemoteInputChannelTest {
                             .setChannelFactory(
                                     (builder, gate) ->
                                             builder.setStateWriter(stateWriter)
-                                                    .buildRemoteChannelForRecoveryTest(gate))
+                                                    .setNeedsRecovery(true)
+                                                    .buildRemoteChannel(gate))
                             .build();
             inputGate.setup();
             RemoteInputChannel channel = (RemoteInputChannel) inputGate.getChannel(0);
 
             channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(1));
+            // Mirror what SpillFileReader.snapshotAndInsertBarriers does: push the
+            // RecoveryCheckpointBarrier sentinel so collectPreRecoveryBarrier finds it.
+            channel.onRecoveredStateBuffer(
+                    EventSerializer.toBuffer(new RecoveryCheckpointBarrier(1L), false));
             // Priority event in receivedBuffers is OK (!isBuffer()).
             CheckpointBarrier priorityBarrier = new CheckpointBarrier(1L, 0L, UNALIGNED);
             channel.onBuffer(toBuffer(priorityBarrier, true), 0, 0, 0);

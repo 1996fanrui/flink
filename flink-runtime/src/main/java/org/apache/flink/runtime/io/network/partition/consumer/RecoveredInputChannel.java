@@ -110,7 +110,7 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
         this.channelStateWriter = checkNotNull(channelStateWriter);
     }
 
-    public final InputChannel toInputChannel() throws IOException {
+    public final InputChannel toInputChannel(boolean needsRecovery) throws IOException {
         Preconditions.checkState(
                 bufferFilteringCompleteFuture.isDone(), "buffer filtering is not complete");
         if (!inputGate.isCheckpointingDuringRecoveryEnabled()) {
@@ -126,7 +126,7 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
             Preconditions.checkState(receivedBuffers.isEmpty(), "Received buffer should be empty.");
         }
 
-        final InputChannel inputChannel = toInputChannelInternal();
+        final InputChannel inputChannel = toInputChannelInternal(needsRecovery);
         inputChannel.checkpointStopped(lastStoppedCheckpointId);
         return inputChannel;
     }
@@ -137,11 +137,13 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     }
 
     /**
-     * Creates the physical {@link InputChannel} (local or remote) from this recovered channel. Any
-     * remaining buffers are delivered via {@link RecoverableInputChannel#onRecoveredStateBuffer}
-     * after this method returns.
+     * Creates the physical {@link InputChannel} (local or remote) from this recovered channel.
+     * {@code needsRecovery} controls whether the physical channel starts in-recovery. Any remaining
+     * buffers are delivered via {@link RecoverableInputChannel#onRecoveredStateBuffer} after this
+     * method returns.
      */
-    protected abstract InputChannel toInputChannelInternal() throws IOException;
+    protected abstract InputChannel toInputChannelInternal(boolean needsRecovery)
+            throws IOException;
 
     /**
      * Returns the future that completes when buffer filtering is complete. This future completes
