@@ -45,7 +45,7 @@ class SpillFileWriterTest {
         // SpillFile lifecycle itself (acquire/release/close) is NOT the writer's concern — that is
         // owned by the producer (RecoveredChannelStateHandler) and the handoff path that transfers
         // the grant to the drain reader.
-        SpillFile spillFile = new SpillFile(tempDir);
+        SpillFile spillFile = new SpillFile(tempDir, 4096);
         FilteredBufferWriter accumulator = newAccumulator(spillFile);
         SpillFileWriter writer = new SpillFileWriter(spillFile, accumulator);
 
@@ -61,7 +61,7 @@ class SpillFileWriterTest {
 
     @Test
     void testCloseIsIdempotent() throws Exception {
-        SpillFile spillFile = new SpillFile(tempDir);
+        SpillFile spillFile = new SpillFile(tempDir, 4096);
         FilteredBufferWriter accumulator = newAccumulator(spillFile);
         SpillFileWriter writer = new SpillFileWriter(spillFile, accumulator);
 
@@ -74,7 +74,7 @@ class SpillFileWriterTest {
 
     @Test
     void testGetSpillFileReturnsConstructorArg() {
-        SpillFile spillFile = new SpillFile(tempDir);
+        SpillFile spillFile = new SpillFile(tempDir, 4096);
         FilteredBufferWriter accumulator = newAccumulator(spillFile);
         SpillFileWriter writer = new SpillFileWriter(spillFile, accumulator);
         assertThat(writer.getSpillFile()).isSameAs(spillFile);
