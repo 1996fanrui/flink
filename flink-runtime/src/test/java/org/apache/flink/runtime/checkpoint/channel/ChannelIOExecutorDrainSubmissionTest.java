@@ -54,14 +54,14 @@ class ChannelIOExecutorDrainSubmissionTest {
     @Test
     void testFilterOnSubmitsDrainAfterConversion() throws Exception {
         InputChannelInfo cInfo = new InputChannelInfo(0, 0);
-        SpillFile spillFile = new SpillFile(tempDir);
+        SpillFile spillFile = new SpillFile(tempDir, 4096);
         spillFile.append(cInfo, ByteBuffer.wrap(new byte[] {1, 2, 3}));
 
         CapturingChannel chan = new CapturingChannel(cInfo);
         List<RecoverableInputChannel> all = new ArrayList<>();
         all.add(chan);
-        SpillFileReader reader =
-                new SpillFileReader(spillFile, CompletableFuture.completedFuture(all));
+        SpillFileDrainer reader =
+                new SpillFileDrainer(spillFile, CompletableFuture.completedFuture(all));
 
         ExecutorService channelIOExecutor = Executors.newSingleThreadExecutor();
         try {
@@ -95,7 +95,7 @@ class ChannelIOExecutorDrainSubmissionTest {
     @Test
     void testDrainExceptionBubblesViaAsyncExceptionHandler() throws Exception {
         InputChannelInfo cInfo = new InputChannelInfo(0, 0);
-        SpillFile spillFile = new SpillFile(tempDir);
+        SpillFile spillFile = new SpillFile(tempDir, 4096);
         spillFile.append(cInfo, ByteBuffer.wrap(new byte[] {1, 2, 3}));
 
         RecoverableInputChannel chan =
@@ -127,8 +127,8 @@ class ChannelIOExecutorDrainSubmissionTest {
 
         List<RecoverableInputChannel> all = new ArrayList<>();
         all.add(chan);
-        SpillFileReader reader =
-                new SpillFileReader(spillFile, CompletableFuture.completedFuture(all));
+        SpillFileDrainer reader =
+                new SpillFileDrainer(spillFile, CompletableFuture.completedFuture(all));
 
         CountDownLatch handlerCalled = new CountDownLatch(1);
         AtomicReference<Throwable> captured = new AtomicReference<>();

@@ -26,7 +26,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
-/** Helpers that collect input channels and construct a {@link SpillFileReader}. */
+/** Helpers that collect input channels and construct a {@link SpillFileDrainer}. */
 @Internal
 public final class SpillFileReaderBootstrap {
 
@@ -51,13 +51,13 @@ public final class SpillFileReaderBootstrap {
     }
 
     /**
-     * Constructs a {@link SpillFileReader} from a frozen {@link SpillFile} and a future that will
+     * Constructs a {@link SpillFileDrainer} from a frozen {@link SpillFile} and a future that will
      * be completed with the post-conversion physical channel set. Drain buffer allocation is
      * delegated to each physical channel via {@code requestRecoveryBufferBlocking()}.
      */
-    public static SpillFileReader buildReader(
+    public static SpillFileDrainer buildDrainer(
             SpillFile spillFile,
             CompletableFuture<List<RecoverableInputChannel>> physicalChannelsFuture) {
-        return new SpillFileReader(spillFile, physicalChannelsFuture);
+        return new SpillFileDrainer(spillFile, physicalChannelsFuture);
     }
 }

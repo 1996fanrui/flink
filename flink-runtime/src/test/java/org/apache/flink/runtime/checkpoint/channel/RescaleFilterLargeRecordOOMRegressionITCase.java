@@ -52,7 +52,7 @@ class RescaleFilterLargeRecordOOMRegressionITCase {
         long totalBytes = (long) largeRecordSize * recordCount;
         assertThat(totalBytes).as("workload exceeds a single segment").isGreaterThan(segmentSize);
 
-        try (SpillFile spillFile = new SpillFile(tempDir, segmentSize)) {
+        try (SpillFile spillFile = new SpillFile(tempDir, segmentSize, 4096)) {
             InputChannelInfo channelInfo = new InputChannelInfo(0, 0);
             byte[] reusableRecord = new byte[largeRecordSize];
             for (int i = 0; i < reusableRecord.length; i++) {
