@@ -69,6 +69,15 @@ public final class SpillFileDrainer implements RecoveryCheckpointTrigger, Closea
     private final Object lock = new Object();
 
     /**
+     * Set true once the drain loop has delivered its last entry and stopped advancing the root
+     * reader; guarded by {@code lock} so it is published atomically with the final cursor advance.
+     * A checkpoint that fires after drain has finished observes this under the same lock and
+     * returns an empty slice without touching the (about-to-be / already) closed root reader —
+     * there is no recovery data left to snapshot once every channel has been marked delivered.
+     */
+    private boolean drainFinished;
+
+    /**
      * @param channelsFuture completed with the post-conversion physical channel set; carries both
      *     the synchronization signal and the channels themselves.
      */
@@ -131,7 +140,15 @@ public final class SpillFileDrainer implements RecoveryCheckpointTrigger, Closea
             }
         }
 
-        // (D) End-of-drain: finish flips allDelivered=true so the next consumer poll probes the
+        // (D) Mark drain finished under the lock, paired with the final advance() above. After this
+        // point the root reader is no longer advanced and is about to be closed, so a checkpoint
+        // entering snapshotAndInsertBarriers must observe drainFinished and return an empty slice
+        // rather than derive a sub-reader from the closing root reader.
+        synchronized (lock) {
+            drainFinished = true;
+        }
+
+        // (E) End-of-drain: finish flips allDelivered=true so the next consumer poll probes the
         // physical-channel upstream. finishRecoveredBufferDelivery awaits upstream readiness
         // internally; channels with no spill entries also reach this loop so they observe the
         // upstream-ready edge before being marked delivered.
@@ -153,6 +170,13 @@ public final class SpillFileDrainer implements RecoveryCheckpointTrigger, Closea
 
         SpillFileReader sub;
         synchronized (lock) {
+            // Drain has finished: every channel is already marked delivered and out of recovery, so
+            // there is nothing to snapshot and no barrier to insert. Return early before touching
+            // the root reader, which close() may have already invalidated.
+            if (drainFinished) {
+                return CloseableIterator.empty();
+            }
+
             sub = rootReader.snapshot();
 
             // A channel needs a RecoveryCheckpointBarrier iff its recovery queue is still
