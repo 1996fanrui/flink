@@ -60,8 +60,6 @@ public final class SpillFileReader implements RecoveryCheckpointTrigger, Closeab
      */
     private final CompletableFuture<ResolvedChannels> resolvedChannelsFuture;
 
-    private final BufferRequester bufferRequester;
-
     /**
      * Drain holds this lock briefly per entry; the task thread holds it once per checkpoint
      * trigger. Lock order: {@code SpillFileReader.lock → channel-internal queue monitor}.
@@ -79,12 +77,9 @@ public final class SpillFileReader implements RecoveryCheckpointTrigger, Closeab
      *     the synchronization signal and the channels themselves.
      */
     public SpillFileReader(
-            SpillFile spillFile,
-            CompletableFuture<List<RecoverableInputChannel>> channelsFuture,
-            BufferRequester bufferRequester) {
+            SpillFile spillFile, CompletableFuture<List<RecoverableInputChannel>> channelsFuture) {
         this.spillFile = checkNotNull(spillFile);
         this.resolvedChannelsFuture = checkNotNull(channelsFuture).thenApply(ResolvedChannels::new);
-        this.bufferRequester = checkNotNull(bufferRequester);
         // One ref-count grant for the reader's lifetime; matched by close().
         spillFile.acquire();
     }
@@ -124,25 +119,20 @@ public final class SpillFileReader implements RecoveryCheckpointTrigger, Closeab
                             "Drain: no physical channel found for " + e.channelInfo);
                 }
 
-                // Buffer allocation may park on BufferManager.bufferQueue; must not happen while
-                // holding the checkpoint-trigger lock.
-                Buffer buf = bufferRequester.requestBufferBlocking(e.channelInfo);
+                // Buffer allocation may park on BufferManager.bufferQueue; the channel's own
+                // requestRecoveryBufferBlocking awaits upstream readiness internally and must run
+                // outside the checkpoint-trigger lock so a concurrent snapshot can still proceed.
+                Buffer buf;
+                try {
+                    buf = ch.requestRecoveryBufferBlocking();
+                } catch (CompletionException | CancellationException releaseDuringAwait) {
+                    return;
+                }
 
                 byte[] data = new byte[e.length];
                 seg.readBytesAt(e.offset, e.length, data);
                 buf.getMemorySegment().put(buf.getMemorySegmentOffset(), data, 0, e.length);
                 buf.setSize(e.length);
-
-                // Awaiting upstream readiness outside the lock lets a concurrent checkpoint
-                // trigger still take the lock and insert its barrier. Release-time cancellation
-                // surfaces as CompletionException / CancellationException and ends drain
-                // gracefully.
-                try {
-                    ch.awaitUpstreamReady();
-                } catch (CompletionException | CancellationException releaseDuringAwait) {
-                    buf.recycleBuffer();
-                    return;
-                }
 
                 // Deliver + advance offset must be atomic so the checkpoint snapshot never sees a
                 // half-applied entry.
@@ -154,17 +144,16 @@ public final class SpillFileReader implements RecoveryCheckpointTrigger, Closeab
                 }
             }
         }
-        // End-of-drain: finish flips allDelivered=true, so the next consumer poll probes
-        // subpartitionView; upstream readiness must be awaited first. Channels with no spill
-        // entries are skipped by the push loop above, so this loop closes that gap. Cancellation
-        // during release skips that channel; the release path tears it down.
+        // End-of-drain: finish flips allDelivered=true so the next consumer poll probes the
+        // physical-channel upstream. finishRecoveredBufferDelivery awaits upstream readiness
+        // internally; channels with no spill entries also reach this loop so they observe the
+        // upstream-ready edge before being marked delivered.
         for (RecoverableInputChannel ch : channels.allChannels) {
             try {
-                ch.awaitUpstreamReady();
+                ch.finishRecoveredBufferDelivery();
             } catch (CompletionException | CancellationException releaseDuringAwait) {
-                continue;
+                // Channel released mid-drain; the release path tears it down.
             }
-            ch.finishRecoveredBufferDelivery();
         }
     }
 
@@ -212,17 +201,13 @@ public final class SpillFileReader implements RecoveryCheckpointTrigger, Closeab
     }
 
     /**
-     * Releases the source channels' exclusive buffer pools and the drain's grant on the spill file.
-     * Segment deletion happens once all outstanding grants ({@link DiskSnapshot}s included) are
-     * released.
+     * Releases the drain's grant on the spill file. Segment deletion happens once all outstanding
+     * grants ({@link DiskSnapshot}s included) are released. Source channels manage their own
+     * BufferManager lifecycle through {@code releaseAllResources()} on the physical channel.
      */
     @Override
     public void close() throws IOException {
-        try {
-            bufferRequester.releaseExclusiveBuffers();
-        } finally {
-            spillFile.release();
-        }
+        spillFile.release();
     }
 
     /**

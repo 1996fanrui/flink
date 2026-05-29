@@ -21,13 +21,9 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.runtime.io.network.partition.consumer.InputChannel;
 import org.apache.flink.runtime.io.network.partition.consumer.InputGate;
 import org.apache.flink.runtime.io.network.partition.consumer.RecoverableInputChannel;
-import org.apache.flink.runtime.io.network.partition.consumer.RecoveredInputChannel;
 
 import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 /** Helpers that collect input channels and construct a {@link SpillFileReader}. */
@@ -35,25 +31,6 @@ import java.util.concurrent.CompletableFuture;
 public final class SpillFileReaderBootstrap {
 
     private SpillFileReaderBootstrap() {}
-
-    /**
-     * Collects pre-conversion {@link RecoveredInputChannel}s keyed by {@link InputChannelInfo} in
-     * an insertion-ordered map; this is the source set for {@link RecoveredChannelBufferRequester}.
-     */
-    public static Map<InputChannelInfo, RecoveredInputChannel> collectRecoveredChannels(
-            InputGate[] inputGates) {
-        Map<InputChannelInfo, RecoveredInputChannel> map = new LinkedHashMap<>();
-        for (InputGate gate : inputGates) {
-            int n = gate.getNumberOfInputChannels();
-            for (int i = 0; i < n; i++) {
-                InputChannel ch = gate.getChannel(i);
-                if (ch instanceof RecoveredInputChannel) {
-                    map.put(ch.getChannelInfo(), (RecoveredInputChannel) ch);
-                }
-            }
-        }
-        return map;
-    }
 
     /**
      * Collects post-conversion {@link RecoverableInputChannel}s (the physical Local/Remote
@@ -74,17 +51,13 @@ public final class SpillFileReaderBootstrap {
     }
 
     /**
-     * Constructs a {@link SpillFileReader} from a frozen {@link SpillFile}, the pre-conversion
-     * source channels, and a future that will be completed with the post-conversion physical
-     * channel set.
+     * Constructs a {@link SpillFileReader} from a frozen {@link SpillFile} and a future that will
+     * be completed with the post-conversion physical channel set. Drain buffer allocation is
+     * delegated to each physical channel via {@code requestRecoveryBufferBlocking()}.
      */
     public static SpillFileReader buildReader(
             SpillFile spillFile,
-            Map<InputChannelInfo, RecoveredInputChannel> sourceChannels,
             CompletableFuture<List<RecoverableInputChannel>> physicalChannelsFuture) {
-        return new SpillFileReader(
-                spillFile,
-                physicalChannelsFuture,
-                new RecoveredChannelBufferRequester(new HashMap<>(sourceChannels)));
+        return new SpillFileReader(spillFile, physicalChannelsFuture);
     }
 }

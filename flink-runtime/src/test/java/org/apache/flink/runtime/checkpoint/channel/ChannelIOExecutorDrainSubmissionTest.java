@@ -61,10 +61,7 @@ class ChannelIOExecutorDrainSubmissionTest {
         List<RecoverableInputChannel> all = new ArrayList<>();
         all.add(chan);
         SpillFileReader reader =
-                new SpillFileReader(
-                        spillFile,
-                        CompletableFuture.completedFuture(all),
-                        new StubBufferRequester());
+                new SpillFileReader(spillFile, CompletableFuture.completedFuture(all));
 
         ExecutorService channelIOExecutor = Executors.newSingleThreadExecutor();
         try {
@@ -122,16 +119,16 @@ class ChannelIOExecutorDrainSubmissionTest {
                     }
 
                     @Override
-                    public void awaitUpstreamReady() {}
+                    public Buffer requestRecoveryBufferBlocking() {
+                        MemorySegment seg = MemorySegmentFactory.allocateUnpooledSegment(64);
+                        return new NetworkBuffer(seg, FreeingBufferRecycler.INSTANCE);
+                    }
                 };
 
         List<RecoverableInputChannel> all = new ArrayList<>();
         all.add(chan);
         SpillFileReader reader =
-                new SpillFileReader(
-                        spillFile,
-                        CompletableFuture.completedFuture(all),
-                        new StubBufferRequester());
+                new SpillFileReader(spillFile, CompletableFuture.completedFuture(all));
 
         CountDownLatch handlerCalled = new CountDownLatch(1);
         AtomicReference<Throwable> captured = new AtomicReference<>();
@@ -200,17 +197,9 @@ class ChannelIOExecutorDrainSubmissionTest {
         }
 
         @Override
-        public void awaitUpstreamReady() {}
-    }
-
-    private static final class StubBufferRequester implements BufferRequester {
-        @Override
-        public Buffer requestBufferBlocking(InputChannelInfo channelInfo) {
+        public Buffer requestRecoveryBufferBlocking() {
             MemorySegment seg = MemorySegmentFactory.allocateUnpooledSegment(64);
             return new NetworkBuffer(seg, FreeingBufferRecycler.INSTANCE);
         }
-
-        @Override
-        public void releaseExclusiveBuffers() {}
     }
 }

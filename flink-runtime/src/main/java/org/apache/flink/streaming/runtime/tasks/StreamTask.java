@@ -68,7 +68,6 @@ import org.apache.flink.runtime.io.network.partition.ResultPartitionType;
 import org.apache.flink.runtime.io.network.partition.consumer.IndexedInputGate;
 import org.apache.flink.runtime.io.network.partition.consumer.InputGate;
 import org.apache.flink.runtime.io.network.partition.consumer.RecoverableInputChannel;
-import org.apache.flink.runtime.io.network.partition.consumer.RecoveredInputChannel;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.jobgraph.tasks.CheckpointableTask;
 import org.apache.flink.runtime.jobgraph.tasks.CoordinatedTask;
@@ -142,7 +141,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
@@ -907,7 +905,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
         }
 
         // Filter-on recovery flow:
-        //   I/O thread: readInputData -> compute finalDrainEnabled -> setFinalDrainEnabled per
+        //   I/O thread: readInputData -> compute needsRecovery -> setNeedsRecovery per
         //     gate -> build SpillFileReader (holding physicalChannelsFuture) -> publish
         //     recoveryCheckpointTrigger -> release the producer-side SpillFile grant.
         //   Hand-off: finishReadRecoveredState on each gate; the mailbox then runs
@@ -951,21 +949,16 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                     if (checkpointingDuringRecoveryEnabled) {
                         try {
                             SpillFile producedSpillFile = reader.getProducedSpillFile();
-                            boolean finalDrainEnabled = producedSpillFile != null;
+                            boolean needsRecovery = producedSpillFile != null;
                             // Publish before any channel-construction callback runs, so
                             // convertRecoveredInputChannels reads the final value.
                             for (IndexedInputGate gate : inputGates) {
-                                gate.setFinalDrainEnabled(finalDrainEnabled);
+                                gate.setNeedsRecovery(needsRecovery);
                             }
-                            if (finalDrainEnabled) {
-                                Map<InputChannelInfo, RecoveredInputChannel> sourceChannels =
-                                        SpillFileReaderBootstrap.collectRecoveredChannels(
-                                                inputGates);
+                            if (needsRecovery) {
                                 spillReader =
                                         SpillFileReaderBootstrap.buildReader(
-                                                producedSpillFile,
-                                                sourceChannels,
-                                                physicalChannelsFuture);
+                                                producedSpillFile, physicalChannelsFuture);
                                 // Publish before finishReadRecoveredState, so the checkpoint
                                 // dispatcher sees the SpillFileReader instance and not null once
                                 // the task reaches RUNNING.
@@ -984,7 +977,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                     }
 
                     // Finishing the recovered state per gate must happen after the trigger field
-                    // and the per-gate finalDrainEnabled flag have been published, so the
+                    // and the per-gate needsRecovery flag have been published, so the
                     // downstream mailbox callbacks observe consistent state.
                     try {
                         for (IndexedInputGate gate : inputGates) {

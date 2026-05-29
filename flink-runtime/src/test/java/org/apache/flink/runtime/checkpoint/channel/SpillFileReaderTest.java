@@ -54,8 +54,7 @@ class SpillFileReaderTest {
             spillFile.append(cInfo, ByteBuffer.wrap(payload(3)));
 
             RecordingChannel rec = new RecordingChannel(cInfo);
-            RecordingBufferRequester reqer = new RecordingBufferRequester();
-            SpillFileReader reader = newReader(spillFile, reqer, cInfo, rec);
+            SpillFileReader reader = newReader(spillFile, cInfo, rec);
 
             reader.drain();
             reader.close();
@@ -64,7 +63,6 @@ class SpillFileReaderTest {
             assertThat(toByteArrays(rec.recovered))
                     .containsExactly(payload(1), payload(2), payload(3));
             assertThat(rec.finishCalls).isEqualTo(1);
-            assertThat(reqer.releaseCalls).isEqualTo(1);
         }
     }
 
@@ -80,8 +78,7 @@ class SpillFileReaderTest {
 
             RecordingChannel chan0 = new RecordingChannel(c0);
             RecordingChannel chan1 = new RecordingChannel(c1);
-            SpillFileReader reader =
-                    newReader(spillFile, new RecordingBufferRequester(), c0, chan0, c1, chan1);
+            SpillFileReader reader = newReader(spillFile, c0, chan0, c1, chan1);
 
             reader.drain();
             reader.close();
@@ -102,8 +99,7 @@ class SpillFileReaderTest {
             int[] seq = {0};
             RecordingChannel chan0 = new RecordingChannel(c0, seq);
             RecordingChannel chan1 = new RecordingChannel(c1, seq);
-            SpillFileReader reader =
-                    newReader(spillFile, new RecordingBufferRequester(), c0, chan0, c1, chan1);
+            SpillFileReader reader = newReader(spillFile, c0, chan0, c1, chan1);
 
             reader.drain();
             reader.close();
@@ -123,8 +119,7 @@ class SpillFileReaderTest {
             spillFile.append(cInfo, ByteBuffer.wrap(payload(6)));
 
             RecordingChannel chan = new RecordingChannel(cInfo);
-            SpillFileReader reader =
-                    newReader(spillFile, new RecordingBufferRequester(), cInfo, chan);
+            SpillFileReader reader = newReader(spillFile, cInfo, chan);
 
             long cpId = 42L;
             DiskSnapshot snap = reader.snapshotAndInsertBarriers(cpId);
@@ -150,8 +145,7 @@ class SpillFileReaderTest {
 
             RecordingChannel chan0 = new RecordingChannel(c0);
             RecordingChannel chan1 = new RecordingChannel(c1);
-            SpillFileReader reader =
-                    newReader(spillFile, new RecordingBufferRequester(), c0, chan0, c1, chan1);
+            SpillFileReader reader = newReader(spillFile, c0, chan0, c1, chan1);
 
             long cpId = 7L;
             DiskSnapshot snap = reader.snapshotAndInsertBarriers(cpId);
@@ -177,8 +171,7 @@ class SpillFileReaderTest {
             spillFile.append(cInfo, ByteBuffer.wrap(payload(1)));
 
             RecordingChannel chan = new RecordingChannel(cInfo);
-            SpillFileReader reader =
-                    newReader(spillFile, new RecordingBufferRequester(), cInfo, chan);
+            SpillFileReader reader = newReader(spillFile, cInfo, chan);
 
             reader.drain();
             // Drain has advanced past the last entry; simulate the channel queue still reporting
@@ -214,8 +207,7 @@ class SpillFileReaderTest {
             RecordingChannel chan1 = new RecordingChannel(c1);
             chan1.inRecovery = false;
 
-            SpillFileReader reader =
-                    newReader(spillFile, new RecordingBufferRequester(), c0, chan0, c1, chan1);
+            SpillFileReader reader = newReader(spillFile, c0, chan0, c1, chan1);
 
             long cpId = 11L;
             DiskSnapshot snap = reader.snapshotAndInsertBarriers(cpId);
@@ -245,8 +237,7 @@ class SpillFileReaderTest {
             spillFile.append(cInfo, ByteBuffer.wrap(payload(2)));
 
             RecordingChannel chan = new RecordingChannel(cInfo);
-            SpillFileReader reader =
-                    newReader(spillFile, new RecordingBufferRequester(), cInfo, chan);
+            SpillFileReader reader = newReader(spillFile, cInfo, chan);
 
             reader.drain();
             // Consumer fully drained the recovery queue; the channel has exited recovery, so the
@@ -322,22 +313,11 @@ class SpillFileReaderTest {
         }
 
         @Override
-        public void awaitUpstreamReady() {}
-    }
-
-    /** Returns fresh heap-backed buffers and counts release calls. */
-    private static final class RecordingBufferRequester implements BufferRequester {
-        int releaseCalls = 0;
-
-        @Override
-        public Buffer requestBufferBlocking(InputChannelInfo channelInfo) {
+        public Buffer requestRecoveryBufferBlocking() {
+            // Stub channels do not park on a real BufferManager; hand out a fresh heap-backed
+            // buffer so the drain can fill and forward it through onRecoveredStateBuffer.
             MemorySegment seg = MemorySegmentFactory.allocateUnpooledSegment(4096);
             return new NetworkBuffer(seg, FreeingBufferRecycler.INSTANCE);
-        }
-
-        @Override
-        public void releaseExclusiveBuffers() {
-            releaseCalls++;
         }
     }
 
@@ -345,8 +325,7 @@ class SpillFileReaderTest {
     // Helpers
     // -------------------------------------------------------------------------------------------
 
-    private static SpillFileReader newReader(
-            SpillFile spillFile, BufferRequester requester, Object... infoChannelPairs) {
+    private static SpillFileReader newReader(SpillFile spillFile, Object... infoChannelPairs) {
         List<RecoverableInputChannel> all = new ArrayList<>();
         for (int i = 0; i < infoChannelPairs.length; i += 2) {
             // The InputChannelInfo argument is redundant (channels expose getChannelInfo) but
@@ -354,7 +333,7 @@ class SpillFileReaderTest {
             RecoverableInputChannel ch = (RecoverableInputChannel) infoChannelPairs[i + 1];
             all.add(ch);
         }
-        return new SpillFileReader(spillFile, CompletableFuture.completedFuture(all), requester);
+        return new SpillFileReader(spillFile, CompletableFuture.completedFuture(all));
     }
 
     /** Deterministic 4-byte payload per id. */

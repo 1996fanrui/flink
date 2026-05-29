@@ -86,10 +86,7 @@ class SpillFileReaderConcurrencyTest {
         all.add(chan1);
 
         SpillFileReader reader =
-                new SpillFileReader(
-                        spillFile,
-                        CompletableFuture.completedFuture(all),
-                        new ThreadSafeBufferRequester());
+                new SpillFileReader(spillFile, CompletableFuture.completedFuture(all));
 
         ExecutorService io = Executors.newSingleThreadExecutor();
         AtomicReference<Throwable> drainError = new AtomicReference<>();
@@ -197,7 +194,10 @@ class SpillFileReaderConcurrencyTest {
         }
 
         @Override
-        public void awaitUpstreamReady() {}
+        public Buffer requestRecoveryBufferBlocking() {
+            MemorySegment seg = MemorySegmentFactory.allocateUnpooledSegment(64);
+            return new NetworkBuffer(seg, FreeingBufferRecycler.INSTANCE);
+        }
 
         synchronized int dataCount() {
             return data.size();
@@ -210,17 +210,6 @@ class SpillFileReaderConcurrencyTest {
         synchronized List<Buffer> dataBuffers() {
             return new ArrayList<>(data);
         }
-    }
-
-    private static final class ThreadSafeBufferRequester implements BufferRequester {
-        @Override
-        public Buffer requestBufferBlocking(InputChannelInfo channelInfo) {
-            MemorySegment seg = MemorySegmentFactory.allocateUnpooledSegment(64);
-            return new NetworkBuffer(seg, FreeingBufferRecycler.INSTANCE);
-        }
-
-        @Override
-        public void releaseExclusiveBuffers() {}
     }
 
     // -------------------------------------------------------------------------------------------
