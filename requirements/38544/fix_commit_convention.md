@@ -44,6 +44,7 @@ git log --oneline 159560fd730..HEAD | grep -v fixup
 |------|--------------|------------|
 | `flink-runtime/src/main/java/org/apache/flink/runtime/io/network/partition/consumer/RecoveredInputChannel.java` | Phase 1 / 2 / 4 | 按本次改动的字段、方法、行号语义归属 |
 | `flink-runtime/src/main/java/org/apache/flink/runtime/io/network/partition/consumer/LocalInputChannel.java` | Phase 0（解耦 refactor）、Phase 2（接入 RecoverableInputChannel 接口） | 注释级改动 → phase 0；功能/接口/语义改动 → phase 2 |
+| `flink-runtime/src/main/java/org/apache/flink/runtime/io/network/partition/consumer/BufferManager.java`、`.../netty/NettyMessage.java`(PartitionRequest)、`.../netty/CreditBasedSequenceNumberingViewReader.java`、`.../netty/NettyPartitionRequestClient.java`、`.../netty/PartitionRequestServerHandler.java` 及其对应 test | spilling-v2 原 6 个 phase commit **从未碰过**（master 既有文件），首次改动来自 recovery-phase credit 超发修复 | **跟随 `RemoteInputChannel`** → Phase 2。判定准则：这些改动都是为 `RemoteInputChannel` 的 recovery credit 流控服务的（`BufferManager` 是其成员、netty `PartitionRequest`/reader/handler 是其上游对端协议），`RemoteInputChannel.java` 的 recovery 改动在 Phase 2 引入，故同归 Phase 2 |
 
 后续如发现新的跨阶段文件，**必须先把它追加到这张表里**，再开始改动。
 
