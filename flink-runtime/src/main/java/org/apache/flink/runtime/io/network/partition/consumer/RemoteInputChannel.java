@@ -109,6 +109,15 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
     /** The initial number of exclusive buffers assigned to this channel. */
     private final int initialCredit;
 
+    /**
+     * Whether this channel starts in the spill-recovery phase. Communicated to the producer in the
+     * {@code PartitionRequest} so the upstream reader starts with zero available credit (the
+     * exclusive buffers backing {@code initialCredit} are on loan to the recovery drain) while
+     * still recording {@code initialCredit} for its exclusive-buffer semantics. Real credit is then
+     * announced once at recovery exit (see {@link BufferManager#enableNotify()}).
+     */
+    private final boolean needsRecovery;
+
     /** The milliseconds timeout for partition request listener in result partition manager. */
     private final int partitionRequestListenerTimeout;
 
@@ -135,11 +144,14 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
     private final RecoveredBufferQueue recoveredQueue;
 
     /**
-     * Completed exactly once when {@link #requestSubpartitions()} has installed {@link
-     * #partitionRequestClient} and dispatched the upstream {@code requestSubpartition} call. {@link
-     * #onRecoveredStateBuffer} and {@link #finishRecoveredBufferDelivery} await this before
-     * touching {@code recoveredQueue}, so any buffer reaching the queue is delivered only after the
-     * remote upstream request is underway. Completed exceptionally on release to unblock awaiters.
+     * Completed once the first buffer (always an event, since data stays blocked upstream during
+     * recovery) arrives from the producer. {@link #onRecoveredStateBuffer} and {@link
+     * #finishRecoveredBufferDelivery} await this before touching {@code recoveredQueue}. Waiting
+     * for the producer's first buffer — rather than merely dispatching the request — proves the
+     * upstream reader is registered and the connection is live; the wait is brief but lets the
+     * recovery path stay simple and sidesteps multi-thread races and out-of-order messaging (e.g.
+     * credit reaching a not-yet-registered upstream reader). Completed exceptionally on release to
+     * unblock awaiters.
      */
     private final CompletableFuture<Void> upstreamReady = new CompletableFuture<>();
 
@@ -176,7 +188,12 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
         this.initialCredit = networkBuffersPerChannel;
         this.connectionId = checkNotNull(connectionId);
         this.connectionManager = checkNotNull(connectionManager);
-        this.bufferManager = new BufferManager(inputGate.getMemorySegmentProvider(), this, 0);
+        this.needsRecovery = needsRecovery;
+        // Notifications start disabled while in recovery: the channel's exclusive buffers are
+        // borrowed by the spill drain, so freed buffers must not be announced as credit until
+        // recovery exit (enableNotify). needsRecovery=false → enabled from the start (native).
+        this.bufferManager =
+                new BufferManager(inputGate.getMemorySegmentProvider(), this, 0, !needsRecovery);
         this.channelStatePersister =
                 new ChannelStatePersister(checkNotNull(stateWriter), getChannelInfo());
         // needsRecovery=true → channel enters in-recovery and finishRecoveredBufferDelivery()
@@ -238,12 +255,22 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
      * {@link #notifyChannelNonEmpty()}.
      */
     @Override
-    public void finishRecoveredBufferDelivery() {
+    public void finishRecoveredBufferDelivery() throws IOException {
         upstreamReady.join();
         synchronized (receivedBuffers) {
             recoveredQueue.finish();
         }
         notifyChannelNonEmpty();
+        // Recovery is over from the producer side: enable notifications and announce, exactly once,
+        // the buffers actually back in the pool right now. enableNotify reads that count under the
+        // bufferQueue monitor while flipping the flag, so it is atomic with concurrent recycles:
+        // buffers already returned are counted here, buffers returned afterwards observe the
+        // enabled
+        // flag and are announced incrementally. Buffers still held by not-yet-consumed recovered
+        // data are not counted now and flow back as credit when they are recycled. Announcing is
+        // safe even while the consumer keeps draining recovered buffers: the upstream stays blocked
+        // until resumeConsumption, so credit alone cannot make it send live data early.
+        bufferManager.enableNotify();
     }
 
     @Override
@@ -291,9 +318,6 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
 
             partitionRequestClient.requestSubpartition(
                     partitionId, consumedSubpartitionIndexSet, this, 0);
-            // Upstream request is dispatched; any drain-side awaiter on upstreamReady can now
-            // safely push recovered buffers into recoveredQueue. See field javadoc.
-            upstreamReady.complete(null);
         }
     }
 
@@ -570,6 +594,9 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
      */
     @Override
     public void notifyBufferAvailable(int numAvailableBuffers) throws IOException {
+        // Credit suppression during recovery is enforced at the source in BufferManager (the credit
+        // gate), so any positive count reaching here is genuinely announceable: apply the native
+        // from-zero edge that triggers a single credit notification.
         if (numAvailableBuffers > 0 && unannouncedCredit.getAndAdd(numAvailableBuffers) == 0) {
             notifyCreditAvailable();
         }
@@ -673,6 +700,10 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
         return initialCredit;
     }
 
+    public boolean needsRecovery() {
+        return needsRecovery;
+    }
+
     public BufferProvider getBufferProvider() throws IOException {
         if (isReleased.get()) {
             return null;
@@ -710,6 +741,10 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
     public void onBuffer(Buffer buffer, int sequenceNumber, int backlog, int subpartitionId)
             throws IOException {
         boolean recycleBuffer = true;
+
+        // The first buffer from the producer proves the upstream reader is registered and the
+        // connection is live; release any recovery-side awaiter. Idempotent on later buffers.
+        upstreamReady.complete(null);
 
         try {
             if (expectedSequenceNumber != sequenceNumber) {

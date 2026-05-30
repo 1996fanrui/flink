@@ -160,7 +160,7 @@ public class LocalInputChannel extends InputChannel
         this.recoveredQueue = new RecoveredBufferQueue(getChannelInfo(), !needsRecovery);
         this.bufferManager =
                 needsRecovery
-                        ? new BufferManager(inputGate.getMemorySegmentProvider(), this, 0)
+                        ? new BufferManager(inputGate.getMemorySegmentProvider(), this, 0, true)
                         : null;
         this.networkBuffersPerChannel = networkBuffersPerChannel;
         this.needsRecovery = needsRecovery;
