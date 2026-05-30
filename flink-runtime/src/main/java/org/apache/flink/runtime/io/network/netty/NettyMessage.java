@@ -583,15 +583,25 @@ public abstract class NettyMessage {
 
         final int credit;
 
+        /**
+         * Whether the consumer channel starts in the spill-recovery phase. When true the upstream
+         * reader starts with zero available credit even though {@code credit} (= initialCredit) is
+         * non-zero: the exclusive buffers are on loan to the recovery drain, and real credit is
+         * announced once recovery completes.
+         */
+        final boolean needsRecovery;
+
         PartitionRequest(
                 ResultPartitionID partitionId,
                 ResultSubpartitionIndexSet queueIndexSet,
                 InputChannelID receiverId,
-                int credit) {
+                int credit,
+                boolean needsRecovery) {
             this.partitionId = checkNotNull(partitionId);
             this.queueIndexSet = queueIndexSet;
             this.receiverId = checkNotNull(receiverId);
             this.credit = credit;
+            this.needsRecovery = needsRecovery;
         }
 
         @Override
@@ -604,6 +614,7 @@ public abstract class NettyMessage {
                         queueIndexSet.writeTo(bb);
                         receiverId.writeTo(bb);
                         bb.writeInt(credit);
+                        bb.writeBoolean(needsRecovery);
                     };
 
             writeToChannel(
@@ -616,7 +627,8 @@ public abstract class NettyMessage {
                             + ExecutionAttemptID.getByteBufLength()
                             + ResultSubpartitionIndexSet.getByteBufLength(queueIndexSet)
                             + InputChannelID.getByteBufLength()
-                            + Integer.BYTES);
+                            + Integer.BYTES
+                            + Byte.BYTES);
         }
 
         static PartitionRequest readFrom(ByteBuf buffer) {
@@ -628,8 +640,10 @@ public abstract class NettyMessage {
                     ResultSubpartitionIndexSet.fromByteBuf(buffer);
             InputChannelID receiverId = InputChannelID.fromByteBuf(buffer);
             int credit = buffer.readInt();
+            boolean needsRecovery = buffer.readBoolean();
 
-            return new PartitionRequest(partitionId, queueIndexSet, receiverId, credit);
+            return new PartitionRequest(
+                    partitionId, queueIndexSet, receiverId, credit, needsRecovery);
         }
 
         @Override
