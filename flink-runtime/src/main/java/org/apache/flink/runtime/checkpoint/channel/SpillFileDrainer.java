@@ -153,11 +153,7 @@ public final class SpillFileDrainer implements RecoveryCheckpointTrigger, Closea
         // internally; channels with no spill entries also reach this loop so they observe the
         // upstream-ready edge before being marked delivered.
         for (RecoverableInputChannel ch : channels.allChannels) {
-            try {
-                ch.finishRecoveredBufferDelivery();
-            } catch (CompletionException | CancellationException releaseDuringAwait) {
-                // Channel released mid-drain; the release path tears it down.
-            }
+            ch.finishRecoveredBufferDelivery();
         }
     }
 
@@ -170,19 +166,14 @@ public final class SpillFileDrainer implements RecoveryCheckpointTrigger, Closea
 
         SpillFileReader sub;
         synchronized (lock) {
-            // Drain has finished: every channel is already marked delivered and out of recovery, so
-            // there is nothing to snapshot and no barrier to insert. Return early before touching
-            // the root reader, which close() may have already invalidated.
-            if (drainFinished) {
-                return CloseableIterator.empty();
-            }
-
-            sub = rootReader.snapshot();
-
             // A channel needs a RecoveryCheckpointBarrier iff its recovery queue is still
-            // in-recovery (allDelivered=false OR queue non-empty). Driving this off the global
-            // drain cursor instead of per-channel state would miss channels whose sentinel is
-            // still queued after the cursor has reached end-of-spill.
+            // in-recovery (allDelivered=false OR queue non-empty). This is decided per channel,
+            // symmetrically with the per-channel isInRecovery() check in checkpointStarted, and
+            // must run regardless of drainFinished: the global drainFinished flips before the
+            // per-channel finish() loop, so a channel may still be in-recovery (and have its
+            // collectPreRecoveryBarrier called) even after drain has stopped touching the root
+            // reader. Inserting only when drainFinished is false would leave such a channel
+            // without the barrier it is about to be asked to collect.
             for (RecoverableInputChannel ch : channels.allChannels) {
                 if (ch.isInRecovery()) {
                     ch.onRecoveredStateBuffer(
@@ -190,6 +181,16 @@ public final class SpillFileDrainer implements RecoveryCheckpointTrigger, Closea
                                     new RecoveryCheckpointBarrier(checkpointId), false));
                 }
             }
+
+            // Drain has finished: the root reader is already (or about to be) closed, so there is
+            // no on-disk slice left to snapshot. Return an empty slice before touching the root
+            // reader, which close() may have already invalidated. Barrier insertion above is
+            // independent of this and has already run.
+            if (drainFinished) {
+                return CloseableIterator.empty();
+            }
+
+            sub = rootReader.snapshot();
         }
 
         // Empty disk slice: close the sub-reader (releases its ref-count grant) and return the
