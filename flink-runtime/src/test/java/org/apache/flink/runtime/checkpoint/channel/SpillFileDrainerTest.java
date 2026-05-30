@@ -18,6 +18,7 @@
 
 package org.apache.flink.runtime.checkpoint.channel;
 
+import org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointBarrier;
 import org.apache.flink.core.memory.MemorySegment;
 import org.apache.flink.core.memory.MemorySegmentFactory;
 import org.apache.flink.runtime.event.AbstractEvent;
@@ -309,8 +310,13 @@ class SpillFileDrainerTest {
         }
 
         @Override
-        public boolean isInRecovery() {
-            return inRecovery;
+        public void insertRecoveryCheckpointBarrierIfInRecovery(long checkpointId)
+                throws IOException {
+            if (inRecovery) {
+                recovered.add(
+                        EventSerializer.toBuffer(
+                                new RecoveryCheckpointBarrier(checkpointId), false));
+            }
         }
 
         @Override

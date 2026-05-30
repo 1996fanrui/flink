@@ -18,7 +18,6 @@
 package org.apache.flink.runtime.checkpoint.channel;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.runtime.io.network.api.serialization.EventSerializer;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.partition.consumer.RecoverableInputChannel;
 import org.apache.flink.util.CloseableIterator;
@@ -167,19 +166,16 @@ public final class SpillFileDrainer implements RecoveryCheckpointTrigger, Closea
         SpillFileReader sub;
         synchronized (lock) {
             // A channel needs a RecoveryCheckpointBarrier iff its recovery queue is still
-            // in-recovery (allDelivered=false OR queue non-empty). This is decided per channel,
-            // symmetrically with the per-channel isInRecovery() check in checkpointStarted, and
-            // must run regardless of drainFinished: the global drainFinished flips before the
-            // per-channel finish() loop, so a channel may still be in-recovery (and have its
-            // collectPreRecoveryBarrier called) even after drain has stopped touching the root
-            // reader. Inserting only when drainFinished is false would leave such a channel
-            // without the barrier it is about to be asked to collect.
+            // in-recovery (allDelivered=false OR queue non-empty). The check-and-insert is done
+            // atomically inside the channel's own monitor (see
+            // insertRecoveryCheckpointBarrierIfInRecovery), so a concurrent end-of-drain
+            // finishRecoveredBufferDelivery cannot flip the channel out of recovery between the
+            // decision and the insert. It must run regardless of drainFinished: the global
+            // drainFinished flips before the per-channel finish() loop, so a channel may still be
+            // in-recovery (and have its collectPreRecoveryBarrier called) even after drain has
+            // stopped touching the root reader.
             for (RecoverableInputChannel ch : channels.allChannels) {
-                if (ch.isInRecovery()) {
-                    ch.onRecoveredStateBuffer(
-                            EventSerializer.toBuffer(
-                                    new RecoveryCheckpointBarrier(checkpointId), false));
-                }
+                ch.insertRecoveryCheckpointBarrierIfInRecovery(checkpointId);
             }
 
             // Drain has finished: the root reader is already (or about to be) closed, so there is

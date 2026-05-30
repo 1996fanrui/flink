@@ -282,12 +282,21 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
     }
 
     @Override
-    public boolean isInRecovery() {
-        // Lock matches the in-recovery read in getNextBuffer() so the value cannot flip while the
-        // snapshot trigger holds SpillFileReader.lock and is deciding whether to insert a
-        // RecoveryCheckpointBarrier into this channel.
+    public void insertRecoveryCheckpointBarrierIfInRecovery(long checkpointId) throws IOException {
+        // Decide and insert under the receivedBuffers monitor (the same one onRecoveredStateBuffer
+        // and getNextBuffer's recovery branch take), so the channel cannot leave recovery between
+        // the in-recovery check and the offer.
+        boolean wasEmpty = false;
         synchronized (receivedBuffers) {
-            return recoveredQueue.isInRecovery();
+            if (!isReleased.get() && recoveredQueue.isInRecovery()) {
+                wasEmpty =
+                        recoveredQueue.offer(
+                                EventSerializer.toBuffer(
+                                        new RecoveryCheckpointBarrier(checkpointId), false));
+            }
+        }
+        if (wasEmpty) {
+            notifyChannelNonEmpty();
         }
     }
 

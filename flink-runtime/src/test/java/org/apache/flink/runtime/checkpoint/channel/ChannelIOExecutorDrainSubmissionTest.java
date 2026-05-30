@@ -114,8 +114,8 @@ class ChannelIOExecutorDrainSubmissionTest {
                     public void finishRecoveredBufferDelivery() {}
 
                     @Override
-                    public boolean isInRecovery() {
-                        return true;
+                    public void insertRecoveryCheckpointBarrierIfInRecovery(long checkpointId) {
+                        throw new RuntimeException("boom");
                     }
 
                     @Override
@@ -192,8 +192,9 @@ class ChannelIOExecutorDrainSubmissionTest {
         }
 
         @Override
-        public boolean isInRecovery() {
-            return !finishCalled;
+        public void insertRecoveryCheckpointBarrierIfInRecovery(long checkpointId) {
+            // Barrier sentinels are non-buffer; this fake only counts real data buffer deliveries,
+            // so inserting a barrier is a no-op here regardless of recovery state.
         }
 
         @Override

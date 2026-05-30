@@ -23,10 +23,12 @@ import org.apache.flink.metrics.Counter;
 import org.apache.flink.runtime.checkpoint.CheckpointException;
 import org.apache.flink.runtime.checkpoint.CheckpointFailureReason;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
+import org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointBarrier;
 import org.apache.flink.runtime.event.TaskEvent;
 import org.apache.flink.runtime.execution.CancelTaskException;
 import org.apache.flink.runtime.io.network.TaskEventPublisher;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
+import org.apache.flink.runtime.io.network.api.serialization.EventSerializer;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.CompositeBuffer;
 import org.apache.flink.runtime.io.network.buffer.FileRegionBuffer;
@@ -230,9 +232,21 @@ public class LocalInputChannel extends InputChannel
     }
 
     @Override
-    public boolean isInRecovery() {
+    public void insertRecoveryCheckpointBarrierIfInRecovery(long checkpointId) throws IOException {
+        boolean wasEmpty = false;
         synchronized (recoveredQueue) {
-            return recoveredQueue.isInRecovery();
+            // Decide and insert under the same monitor that guards onRecoveredStateBuffer and
+            // finishRecoveredBufferDelivery, so the channel cannot leave recovery between the
+            // in-recovery check and the offer.
+            if (!isReleased && recoveredQueue.isInRecovery()) {
+                wasEmpty =
+                        recoveredQueue.offer(
+                                EventSerializer.toBuffer(
+                                        new RecoveryCheckpointBarrier(checkpointId), false));
+            }
+        }
+        if (wasEmpty) {
+            notifyChannelNonEmpty();
         }
     }
 

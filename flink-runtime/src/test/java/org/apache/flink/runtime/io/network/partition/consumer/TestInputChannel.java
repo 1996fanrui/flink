@@ -18,6 +18,7 @@
 
 package org.apache.flink.runtime.io.network.partition.consumer;
 
+import org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointBarrier;
 import org.apache.flink.metrics.SimpleCounter;
 import org.apache.flink.runtime.event.TaskEvent;
 import org.apache.flink.runtime.io.network.api.EndOfData;
@@ -275,8 +276,11 @@ public class TestInputChannel extends InputChannel implements RecoverableInputCh
     }
 
     @Override
-    public boolean isInRecovery() {
-        return !finishRecoveredBufferDeliveryCalled || !recoveredBuffersSpy.isEmpty();
+    public void insertRecoveryCheckpointBarrierIfInRecovery(long checkpointId) throws IOException {
+        if (!finishRecoveredBufferDeliveryCalled || !recoveredBuffersSpy.isEmpty()) {
+            recoveredBuffersSpy.add(
+                    EventSerializer.toBuffer(new RecoveryCheckpointBarrier(checkpointId), false));
+        }
     }
 
     @Override
