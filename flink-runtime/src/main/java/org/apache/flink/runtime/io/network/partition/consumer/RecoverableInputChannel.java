@@ -62,16 +62,15 @@ public interface RecoverableInputChannel {
     void finishRecoveredBufferDelivery() throws IOException;
 
     /**
-     * Reports whether the channel's recovery queue is still active: producer has not yet signalled
-     * completion OR consumer has not yet drained every queued recovery buffer. Used to decide, per
-     * channel, whether a {@code RecoveryCheckpointBarrier} should be inserted into the channel
-     * queue.
-     *
-     * <p>Implementations must take the channel's own queue monitor (the same one that protects
-     * {@code onRecoveredStateBuffer} and {@code getNextBuffer}'s recovery branch) so the value
-     * cannot flip mid-decision.
+     * Inserts a {@code RecoveryCheckpointBarrier} for {@code checkpointId} into this channel's
+     * recovery queue, but only if the channel is still in recovery. The in-recovery check and the
+     * insert happen atomically under the channel's own queue monitor (the same monitor that guards
+     * {@code onRecoveredStateBuffer} and the consumer's recovery branch), so a concurrent
+     * end-of-drain {@code finishRecoveredBufferDelivery} cannot flip the channel out of recovery
+     * between the decision and the insert. If the channel has already left recovery (or been
+     * released), nothing is inserted and no barrier buffer is allocated.
      */
-    boolean isInRecovery();
+    void insertRecoveryCheckpointBarrierIfInRecovery(long checkpointId) throws IOException;
 
     /**
      * Blocks until a buffer is available from this channel's own buffer pool. Implementations must

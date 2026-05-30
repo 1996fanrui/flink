@@ -18,6 +18,9 @@
 
 package org.apache.flink.runtime.checkpoint.channel;
 
+import java.io.IOException;
+import org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointBarrier;
+import org.apache.flink.runtime.io.network.api.serialization.EventSerializer;
 import org.apache.flink.core.memory.MemorySegment;
 import org.apache.flink.core.memory.MemorySegmentFactory;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
@@ -188,10 +191,12 @@ class SpillFileReaderConcurrencyTest {
         }
 
         @Override
-        public synchronized boolean isInRecovery() {
+        public synchronized void insertRecoveryCheckpointBarrierIfInRecovery(long checkpointId)
+                throws IOException {
             // Always in-recovery so every snapshot exercises the per-channel barrier-insert path
             // under contention.
-            return true;
+            barriers.add(
+                    EventSerializer.toBuffer(new RecoveryCheckpointBarrier(checkpointId), false));
         }
 
         @Override
