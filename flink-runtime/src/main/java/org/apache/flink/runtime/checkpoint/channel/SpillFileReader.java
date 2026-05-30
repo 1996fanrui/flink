@@ -166,26 +166,13 @@ public final class SpillFileReader implements Closeable {
      * Must be called inside the drainer's lock when invoked on the root reader.
      *
      * <p>If a {@link #peek()} is in flight (entry has been read into the reusable buffer but {@link
-     * #advance()} has not been called), the peeked entry is treated as "owned by the parent" — the
-     * sub-reader starts immediately past it. The parent's pending advance + deliver will consume
-     * this entry, so parent and sub cover disjoint ranges that together span every entry still in
-     * the file.
+     * #advance()} has not been called), the peeked entry is still part of the snapshot. Only {@link
+     * #advance()} marks an entry as delivered by moving the cursor; {@code peek()} is just an
+     * internal read-ahead cache.
      */
     public SpillFileReader snapshot() {
         checkState(!closed, "SpillFileReader is closed");
-        int startSegment = segmentCursor;
-        int startEntry = entryCursor;
-        if (cachedChunk != null) {
-            startEntry++;
-            // The peeked entry may have been the last in its segment; advance to the next
-            // non-empty segment if so.
-            while (startSegment < segments.size()
-                    && startEntry >= segments.get(startSegment).entries().size()) {
-                startSegment++;
-                startEntry = 0;
-            }
-        }
-        return new SpillFileReader(spillFile, segments, startSegment, startEntry);
+        return new SpillFileReader(spillFile, segments, segmentCursor, entryCursor);
     }
 
     /**

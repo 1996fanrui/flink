@@ -129,6 +129,56 @@ class SpillFileTest {
     }
 
     @Test
+    void testSnapshotIncludesPeekedEntryUntilAdvance() throws IOException {
+        try (SpillFile spillFile = new SpillFile(tempDir, 4096)) {
+            InputChannelInfo channelInfo = new InputChannelInfo(0, 0);
+            byte[] payloadA = bytes(1, 2, 3);
+            byte[] payloadB = bytes(4, 5, 6);
+            spillFile.append(channelInfo, ByteBuffer.wrap(payloadA));
+            spillFile.append(channelInfo, ByteBuffer.wrap(payloadB));
+
+            try (SpillFileReader reader = spillFile.reader()) {
+                assertThat(reader.peek()).isNotNull();
+
+                try (SpillFileReader snapshot = reader.snapshot()) {
+                    SpillFileReader.Chunk first = snapshot.peek();
+                    assertThat(first).isNotNull();
+                    assertThat(Arrays.copyOf(first.data, first.length)).isEqualTo(payloadA);
+                    snapshot.advance();
+
+                    SpillFileReader.Chunk second = snapshot.peek();
+                    assertThat(second).isNotNull();
+                    assertThat(Arrays.copyOf(second.data, second.length)).isEqualTo(payloadB);
+                }
+            }
+        }
+    }
+
+    @Test
+    void testSnapshotExcludesAdvancedEntry() throws IOException {
+        try (SpillFile spillFile = new SpillFile(tempDir, 4096)) {
+            InputChannelInfo channelInfo = new InputChannelInfo(0, 0);
+            byte[] payloadA = bytes(1, 2, 3);
+            byte[] payloadB = bytes(4, 5, 6);
+            spillFile.append(channelInfo, ByteBuffer.wrap(payloadA));
+            spillFile.append(channelInfo, ByteBuffer.wrap(payloadB));
+
+            try (SpillFileReader reader = spillFile.reader()) {
+                assertThat(reader.peek()).isNotNull();
+                reader.advance();
+
+                try (SpillFileReader snapshot = reader.snapshot()) {
+                    SpillFileReader.Chunk first = snapshot.peek();
+                    assertThat(first).isNotNull();
+                    assertThat(Arrays.copyOf(first.data, first.length)).isEqualTo(payloadB);
+                    snapshot.advance();
+                    assertThat(snapshot.peek()).isNull();
+                }
+            }
+        }
+    }
+
+    @Test
     void testCloseIsIdempotent() throws IOException {
         SpillFile spillFile = new SpillFile(tempDir, 4096);
         spillFile.append(new InputChannelInfo(0, 0), ByteBuffer.wrap(bytes(1, 2, 3)));
