@@ -1023,7 +1023,11 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
         // that the now-blocked single mailbox thread can no longer run. Waiting on
         // physicalChannelsFuture keeps the loop running until conversion is done, so any barrier
         // is processed only after the channels future is resolved.
-        if (physicalChannelsFuture != null) {
+        // The inputGates.length > 0 guard is required: physicalChannelsFuture is completed by the
+        // last gate's requestPartitions mail (remainingGates reaches 0). A task with no input gates
+        // (e.g. a source) submits no such mail, so the future would never complete and the recovery
+        // loop would hang forever — only wait on it when there is at least one gate to complete it.
+        if (physicalChannelsFuture != null && inputGates.length > 0) {
             recoveredFutures.add(physicalChannelsFuture);
         }
         for (InputGate inputGate : inputGates) {
