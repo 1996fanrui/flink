@@ -83,7 +83,6 @@ public class RemoteRecoveredInputChannel extends RecoveredInputChannel {
                         numBuffersIn,
                         channelStateWriter,
                         needsRecovery);
-        remoteInputChannel.setup();
         return remoteInputChannel;
     }
 }

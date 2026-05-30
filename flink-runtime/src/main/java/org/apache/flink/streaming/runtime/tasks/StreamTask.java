@@ -1014,6 +1014,18 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
         // start checkpointing. If we implement incremental checkpointing of input channel state
         // we must make sure it supports CheckpointType#FULL_CHECKPOINT.
         List<CompletableFuture<?>> recoveredFutures = new ArrayList<>(inputGates.length);
+        // Gate the recovery mailbox loop on physical-channel conversion, not just on buffer
+        // filtering. The per-gate requestPartitions mail (which converts recovered channels and
+        // completes physicalChannelsFuture) is only submitted after filtering completes; if the
+        // loop suspended on filtering alone, a checkpoint barrier mail could be processed before
+        // those conversion mails and block in SpillFileDrainer.snapshotAndInsertBarriers /
+        // drain on resolvedChannelsFuture.join() — a future only completable by a conversion mail
+        // that the now-blocked single mailbox thread can no longer run. Waiting on
+        // physicalChannelsFuture keeps the loop running until conversion is done, so any barrier
+        // is processed only after the channels future is resolved.
+        if (physicalChannelsFuture != null) {
+            recoveredFutures.add(physicalChannelsFuture);
+        }
         for (InputGate inputGate : inputGates) {
             CompletableFuture<?> requestPartitionsTrigger =
                     checkpointingDuringRecoveryEnabled

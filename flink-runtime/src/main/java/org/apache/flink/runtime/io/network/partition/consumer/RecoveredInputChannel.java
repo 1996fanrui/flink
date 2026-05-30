@@ -127,6 +127,10 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
         }
 
         final InputChannel inputChannel = toInputChannelInternal(needsRecovery);
+        // Allocate the physical channel's exclusive buffers (Remote: credit segments; Local: the
+        // recovery-only pool the spill drain pushes into). Both channel types are set up here so
+        // the call site stays symmetric and a new channel type cannot silently skip setup.
+        inputChannel.setup();
         inputChannel.checkpointStopped(lastStoppedCheckpointId);
         return inputChannel;
     }
