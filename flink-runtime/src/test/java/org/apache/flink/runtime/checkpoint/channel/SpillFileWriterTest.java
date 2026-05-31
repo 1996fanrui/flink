@@ -32,7 +32,6 @@ import java.util.Arrays;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** Unit tests for {@link SpillFileWriter}. */
 class SpillFileWriterTest {
 
     @TempDir Path tempDir;
@@ -109,10 +108,6 @@ class SpillFileWriterTest {
         SpillFileWriter writer = newWriter(spillFile);
         assertThat(writer.getSpillFile()).isSameAs(spillFile);
     }
-
-    // -------------------------------------------------------------------------------------------
-    // Helpers
-    // -------------------------------------------------------------------------------------------
 
     private static SpillFileWriter newWriter(SpillFile spillFile) {
         return new SpillFileWriter(spillFile, newHeapBuffer(BUF_SIZE));

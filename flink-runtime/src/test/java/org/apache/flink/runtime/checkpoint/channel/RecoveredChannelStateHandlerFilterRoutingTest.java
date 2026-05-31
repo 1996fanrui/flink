@@ -59,11 +59,6 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Verifies that {@link InputChannelRecoveredStateHandler#recover} routes its output to a {@link
- * SpillFile} when filtering is enabled, and that the filter-off path delivers buffers directly to
- * the channel's {@code recoveredBuffers}.
- */
 class RecoveredChannelStateHandlerFilterRoutingTest {
 
     @TempDir Path tempDir;
@@ -137,7 +132,6 @@ class RecoveredChannelStateHandlerFilterRoutingTest {
                 InputChannelRecoveredStateHandler handler = newFilterOnHandler(filteringHandler)) {
             invokeRecoverWithRecords(handler, 1L, 2L, 3L);
 
-            // Filter-on must NOT enqueue any buffer into the channel during recovery.
             int queuedDuringRecovery = countQueuedRecoveredBuffers();
             assertThat(queuedDuringRecovery)
                     .as("filter-on must not enqueue buffers into the channel during recovery")
@@ -173,10 +167,6 @@ class RecoveredChannelStateHandlerFilterRoutingTest {
                     .isGreaterThanOrEqualTo(2);
         }
     }
-
-    // -------------------------------------------------------------------------------------------
-    // Fixtures and helpers
-    // -------------------------------------------------------------------------------------------
 
     private InputChannelRecoveredStateHandler newFilterOnHandler(
             ChannelStateFilteringHandler filteringHandler) {

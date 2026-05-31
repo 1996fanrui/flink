@@ -76,7 +76,6 @@ class GateFilterHandlerTest {
         CollectingSupplier supplier = new CollectingSupplier(() -> createEmptyBuffer());
         handler.filterAndRewrite(0, 0, NEW_CHANNEL, sourceBuffer, supplier);
 
-        // No record passed the filter, supplier must never have been asked for a buffer.
         assertThat(supplier.collected).isEmpty();
     }
 
@@ -123,14 +122,9 @@ class GateFilterHandlerTest {
         CollectingSupplier supplier = new CollectingSupplier(() -> createEmptyBuffer());
         handler.filterAndRewrite(0, 0, NEW_CHANNEL, emptyBuffer, supplier);
 
-        // No records, so the supplier was never invoked.
         assertThat(supplier.collected).isEmpty();
     }
 
-    /**
-     * Test-only {@link ChannelStateFilteringHandler.BufferSupplier} that records every buffer it
-     * hands out so the test can inspect the filter's accumulated output.
-     */
     private static final class CollectingSupplier
             implements ChannelStateFilteringHandler.BufferSupplier {
         final List<Buffer> collected = new ArrayList<>();

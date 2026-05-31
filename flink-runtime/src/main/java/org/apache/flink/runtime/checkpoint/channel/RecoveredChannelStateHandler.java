@@ -68,11 +68,7 @@ interface RecoveredChannelStateHandler<Info, Context> extends AutoCloseable {
 
     BufferWithContext<Context> getBuffer(Info info) throws IOException, InterruptedException;
 
-    /**
-     * Recover the data from buffer. This method is taking over the ownership of the
-     * bufferWithContext and is fully responsible for cleaning it up both on the happy path and in
-     * case of an error.
-     */
+    /** Recovers the data and takes ownership of {@code bufferWithContext}. */
     void recover(Info info, int oldSubtaskIndex, BufferWithContext<Context> bufferWithContext)
             throws IOException, InterruptedException;
 }
@@ -86,20 +82,11 @@ class InputChannelRecoveredStateHandler
     private final Map<InputChannelInfo, RecoveredInputChannel> rescaledChannels = new HashMap<>();
     private final Map<Integer, RescaleMappings> oldToNewMappings = new HashMap<>();
 
-    /**
-     * Optional filtering handler for filtering recovered buffers. When non-null, filtering is
-     * performed during recovery in the channel-state-unspilling thread.
-     */
     @Nullable private final ChannelStateFilteringHandler filteringHandler;
 
     /** Network buffer memory segment size in bytes. Used to size the reusable pre-filter buffer. */
     private final int memorySegmentSize;
 
-    /**
-     * Optional list of root tmp directories used to locate the spill-file base directory in
-     * filtering mode. Falls back to the JVM's {@code java.io.tmpdir} when {@code null} or empty —
-     * the spill file lives only for the filter phase so any writable location is acceptable.
-     */
     @Nullable private final String[] spillTmpDirectories;
 
     /**
@@ -119,36 +106,12 @@ class InputChannelRecoveredStateHandler
      */
     private boolean preFilterBufferInUse;
 
-    /**
-     * Unpooled heap segment backing the post-filter accumulator. Lazily allocated on the first
-     * filter call, reused for the whole filter phase, and freed in {@link #close()}. Sized to one
-     * network buffer — the post-filter byte stream is flushed to {@link SpillFile} every time the
-     * accumulator fills, so a single buffer is sufficient.
-     */
     @Nullable private MemorySegment postFilterSegment;
 
-    /**
-     * Lazily constructed on the first filter call. {@code null} when no spill output is produced.
-     * Stays alive until {@link #close()} freezes the underlying {@link SpillFile} and publishes the
-     * handle.
-     */
     @Nullable private SpillFileWriter spillFileWriter;
 
-    /** Frozen handle to the produced {@link SpillFile}, populated by {@link #close()}. */
     @Nullable private SpillFile producedSpillFile;
 
-    /**
-     * Drives the {@code recover} dispatch:
-     *
-     * <ul>
-     *   <li>{@code true} + {@link #filteringHandler} != null — rescale path; bytes are filtered and
-     *       the surviving records are written to the {@link SpillFile} via the accumulator.
-     *   <li>{@code true} + {@link #filteringHandler} == null — non-rescale path; bytes still go to
-     *       the {@link SpillFile} (pass-through), giving the drain a single uniform source.
-     *   <li>{@code false} — bytes are pushed directly into the {@link RecoveredInputChannel}'s
-     *       {@code receivedBuffers} for in-line consumption by the task's mailbox loop.
-     * </ul>
-     */
     private final boolean checkpointingDuringRecoveryEnabled;
 
     InputChannelRecoveredStateHandler(
@@ -180,21 +143,6 @@ class InputChannelRecoveredStateHandler
         return new BufferWithContext<>(wrap(buffer), buffer);
     }
 
-    /**
-     * Allocates a pre-filter buffer from a reusable heap segment (isolated from the Network Buffer
-     * Pool) in filtering mode.
-     *
-     * <p>Memory management: a single {@link MemorySegment} per task is lazily allocated on first
-     * invocation and reused across every subsequent call. The custom {@link BufferRecycler} does
-     * not free the segment — it only flips {@link #preFilterBufferInUse} back to {@code false} so
-     * the next call can reuse it. The segment itself is freed in {@link #close()}.
-     *
-     * <p>Runtime invariant check: the one-at-a-time invariant on pre-filter buffers is guaranteed
-     * by Flink's serial recovery loop and the deserializer's ownership contract. This method
-     * asserts the invariant before issuing a buffer: if a previously issued buffer has not yet been
-     * recycled, it throws {@link IllegalStateException} so any future regression fails loudly
-     * instead of silently corrupting memory.
-     */
     private BufferWithContext<Buffer> getPreFilterBuffer() {
         checkState(
                 !preFilterBufferInUse,
@@ -255,13 +203,6 @@ class InputChannelRecoveredStateHandler
         }
     }
 
-    /**
-     * Copies the source buffer's raw bytes into the spill-file accumulator unchanged. Used when
-     * checkpointing-during-recovery is on but no rescale filtering is needed, so the drain has a
-     * uniform source. Copies in chunks bounded by the accumulator's writable capacity; each {@code
-     * requestBufferBlocking} call flushes the accumulator when the channel switched or the buffer
-     * is full, so a single source buffer may produce multiple {@link SpillFile} entries.
-     */
     private void recoverPassThroughToSpill(InputChannelInfo channelInfo, Buffer source)
             throws IOException {
         SpillFileWriter writer = ensureSpillFileWriter();
@@ -287,12 +228,8 @@ class InputChannelRecoveredStateHandler
         checkState(filteringHandler != null, "filtering handler not set.");
         SpillFileWriter writer = ensureSpillFileWriter();
 
-        // Pass the mapped (post-rescale) channel's InputChannelInfo to the filter chain so each
-        // filter-internal bufferSupplier.requestBufferBlocking(...) call tags the accumulator
-        // with the NEW channel — switching NEW channels triggers a flush so each spill file
-        // entry carries exactly one channel's bytes. The `channelInfo` argument here carries the
-        // OLD (pre-rescale) channel index and only matches the physical channel when parallelism
-        // is unchanged.
+        // The spill accumulator must be tagged with the mapped channel, not the pre-rescale
+        // channel, so channel switches flush entries by their final owner.
         filteringHandler.filterAndRewrite(
                 channelInfo.getGateIdx(),
                 oldSubtaskIndex,
@@ -302,33 +239,20 @@ class InputChannelRecoveredStateHandler
                 writer);
     }
 
-    /**
-     * Lazily constructs the spill-file pipeline on the first filter call. The accumulator's backing
-     * memory is an unpooled heap segment owned by the handler (same pattern as {@link
-     * #preFilterSegment}), so this method has no dependency on any particular channel's buffer
-     * pool. {@code channel switch} and {@code buffer full} are the two flush triggers; the segment
-     * is freed in {@link #close()}.
-     */
     private SpillFileWriter ensureSpillFileWriter() throws IOException {
         if (spillFileWriter != null) {
             return spillFileWriter;
         }
         Path baseDir = resolveSpillBaseDir();
-        // Use memorySegmentSize as maxEntryLength — every entry is at most one MemorySegment
-        // worth of bytes (the filter writes one post-filter MemorySegment per entry).
         SpillFile spillFile = new SpillFile(baseDir, memorySegmentSize);
-        // Producer-side ref-count grant. Held by the handler from pipeline construction until
-        // the SpillFileReader takes its own grant on construction, at which point StreamTask
-        // releases this grant. Without it the SpillFile could be cleaned up between filter end
-        // and drain start, since nothing else holds the file alive in that window.
+        // Keep the spill file alive between filter completion and drain-reader construction.
         spillFile.acquire();
 
         postFilterSegment = MemorySegmentFactory.allocateUnpooledSegment(memorySegmentSize);
 
         BufferRecycler noOpRecycler =
                 segment -> {
-                    // No-op: handler retains ownership of the segment for the duration of the
-                    // filter phase. The segment is freed in close().
+                    // The handler owns and frees this segment.
                 };
         Buffer outputBuffer = new NetworkBuffer(postFilterSegment, noOpRecycler);
 
@@ -343,26 +267,14 @@ class InputChannelRecoveredStateHandler
         } else {
             root = System.getProperty("java.io.tmpdir");
         }
-        // A fresh subdirectory per handler instance isolates concurrent recoveries (and
-        // re-recoveries on the same JVM). The directory is intentionally not deleted on close —
-        // deletion is driven by the ref-counted lifecycle in SpillFile (acquire/release pairs).
         return Files.createTempDirectory(Paths.get(root), "flink-channel-spill-");
     }
 
-    /**
-     * Returns the produced {@link SpillFile} once {@link #close} has run on the filter-on path, or
-     * {@code null} otherwise. The drain consumes this handle after filter completes.
-     */
     @Nullable
     SpillFile getProducedSpillFile() {
         return producedSpillFile;
     }
 
-    /**
-     * Test-only accessor for the SpillFile held by the active {@link SpillFileWriter}. Returns
-     * {@code null} on the filter-off path or before the first filter call. Distinct from {@link
-     * #getProducedSpillFile()} which is only populated after {@link #close()}.
-     */
     @VisibleForTesting
     @Nullable
     SpillFile peekActiveSpillFileForTesting() {
@@ -371,10 +283,6 @@ class InputChannelRecoveredStateHandler
 
     @Override
     public void close() throws IOException {
-        // Freeze the spill file here so producedSpillFile is available to callers immediately
-        // after close. finishReadRecoveredState() is invoked by the caller (StreamTask filter
-        // runnable) once it has built the SpillFileReader and published the trigger reference,
-        // so the completion future observes a stable trigger.
         if (spillFileWriter != null) {
             SpillFile produced = spillFileWriter.getSpillFile();
             try {

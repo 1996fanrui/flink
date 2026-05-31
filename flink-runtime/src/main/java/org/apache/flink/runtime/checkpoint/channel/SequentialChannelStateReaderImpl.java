@@ -55,10 +55,6 @@ public class SequentialChannelStateReaderImpl implements SequentialChannelStateR
     private final ChannelStateSerializer serializer;
     private final ChannelStateChunkReader chunkReader;
 
-    /**
-     * Frozen handle to the produced spill file, or {@code null} when filtering was not enabled.
-     * Published by {@link #readInputData} after the input handler closes.
-     */
     @Nullable private SpillFile producedSpillFile;
 
     public SequentialChannelStateReaderImpl(TaskStateSnapshot taskStateSnapshot) {
@@ -108,8 +104,6 @@ public class SequentialChannelStateReaderImpl implements SequentialChannelStateR
             } finally {
                 stateHandler.close();
             }
-            // After handler close: filter writer is flushed and producedSpillFile is populated
-            // on the filter-on path (null otherwise). The drain consumes it from here.
             this.producedSpillFile = stateHandler.getProducedSpillFile();
         }
     }
