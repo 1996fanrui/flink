@@ -24,15 +24,7 @@ import org.apache.flink.runtime.event.RuntimeEvent;
 
 import java.io.IOException;
 
-/**
- * Task-local sentinel event carrying the checkpoint id that triggered it. Wrapped into a Buffer and
- * inserted into each channel's {@code recoveredBuffers} queue to mark the cut between recovered
- * state delivered before vs. after a recovery-checkpoint trigger; consumers match by {@link
- * #getCheckpointId()}.
- *
- * <p>This event never travels across the network; it is created and consumed within a single task,
- * but goes through serialize/deserialize because the channel queue carries {@code Buffer} only.
- */
+/** Task-local event marking the recovery-state cut for a recovery checkpoint. */
 @Internal
 public final class RecoveryCheckpointBarrier extends RuntimeEvent {
 
@@ -53,10 +45,6 @@ public final class RecoveryCheckpointBarrier extends RuntimeEvent {
 
     @Override
     public void read(DataInputView in) {
-        // Deserialization goes through EventSerializer's dedicated type tag, which constructs the
-        // instance directly via the public constructor. Reaching this method means the event
-        // accidentally hit the reflection-based OTHER_EVENT path; fail loud so the routing bug is
-        // surfaced instead of producing a half-constructed barrier.
         throw new UnsupportedOperationException(
                 "RecoveryCheckpointBarrier must be deserialized via EventSerializer's dedicated"
                         + " type-tag path, not reflective read().");

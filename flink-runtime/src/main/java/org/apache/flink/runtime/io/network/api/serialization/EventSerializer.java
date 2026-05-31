@@ -166,8 +166,6 @@ public class EventSerializer {
             buf.putInt(4, recoveryMetadata.getFinalBufferSubpartitionId());
             return buf;
         } else if (eventClass == RecoveryCheckpointBarrier.class) {
-            // Dedicated tag so the constructor wires the checkpoint id directly; avoids the
-            // reflective OTHER_EVENT path which would require a no-arg constructor.
             RecoveryCheckpointBarrier barrier = (RecoveryCheckpointBarrier) event;
 
             ByteBuffer buf = ByteBuffer.allocate(12);
