@@ -1,5 +1,9 @@
 # Fix Commit 规范
 
+本文档只约束**修复阶段**：也就是在最终整理历史之前，如何把 review comment / bug fix / polish comment 以追加 commit 的方式留在分支尾部。修复阶段不整理历史、不合并 phase commit。
+
+最终整理阶段的目标不同：需要把 `requirements/38544/**` 文档前置到 6 个代码 phase commits 之前，并把所有 `flink-runtime/**` 改动归并回对应 phase commit。最终整理规范见 [Final Commit Organization](final_commit_organization.md)。
+
 当前分支已按 Phase 1–5（含一个 Phase 0 前置 refactor）拆分为多个独立 commit。后续所有修复阶段产生的 commit 统一称为 **fix commit**，遵循以下规范，便于后续 squash / rebase 时按 phase 合并。
 
 ## 总体原则
