@@ -22,6 +22,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -74,6 +75,33 @@ class SpillFileTest {
             assertThat(readBack.get(0)).isEqualTo(payloadA);
             assertThat(readBack.get(1)).isEqualTo(payloadB);
             assertThat(readBack.get(2)).isEqualTo(payloadC);
+        }
+    }
+
+    @Test
+    void testReaderRejectsEmptySegment() throws Exception {
+        long segmentSize = 4L;
+        try (SpillFile spillFile = new SpillFile(tempDir, segmentSize, 4096)) {
+            InputChannelInfo channelInfo = new InputChannelInfo(0, 0);
+            byte[] payloadA = bytes(1, 2, 3, 4);
+            byte[] payloadB = bytes(5);
+
+            spillFile.append(channelInfo, ByteBuffer.wrap(payloadA));
+            spillFile.append(channelInfo, ByteBuffer.wrap(payloadB));
+
+            assertThat(spillFile.segments()).hasSize(2);
+            clearEntries(spillFile.segments().get(1));
+
+            try (SpillFileReader reader = spillFile.reader()) {
+                SpillFileReader.Chunk first = reader.peek();
+                assertThat(first).isNotNull();
+                assertThat(Arrays.copyOf(first.data, first.length)).isEqualTo(payloadA);
+                reader.advance();
+
+                assertThatThrownBy(reader::peek)
+                        .isInstanceOf(IllegalStateException.class)
+                        .hasMessageContaining("has no entries");
+            }
         }
     }
 
@@ -196,6 +224,14 @@ class SpillFileTest {
             }
         }
         return out;
+    }
+
+    private static void clearEntries(SpillFile.SpillFileSegment segment) throws Exception {
+        Field entriesField = SpillFile.SpillFileSegment.class.getDeclaredField("entries");
+        entriesField.setAccessible(true);
+        Object entries = entriesField.get(segment);
+        assertThat(entries).isInstanceOf(List.class);
+        ((List<?>) entries).clear();
     }
 
     private static byte[] bytes(int... values) {

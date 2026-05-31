@@ -98,7 +98,7 @@ public final class SpillFileReader implements Closeable {
         if (cachedChunk != null) {
             return cachedChunk;
         }
-        skipExhaustedSegments();
+        advanceToNextSegmentIfCurrentIsExhausted();
         if (segmentCursor >= segments.size()) {
             return null;
         }
@@ -175,13 +175,38 @@ public final class SpillFileReader implements Closeable {
         }
     }
 
-    private void skipExhaustedSegments() throws IOException {
-        while (segmentCursor < segments.size()
-                && entryCursor >= segments.get(segmentCursor).entries().size()) {
-            closeActiveChannel();
-            segmentCursor++;
-            entryCursor = 0;
+    private void advanceToNextSegmentIfCurrentIsExhausted() throws IOException {
+        if (segmentCursor >= segments.size()) {
+            return;
         }
+
+        SpillFile.SpillFileSegment currentSegment = segments.get(segmentCursor);
+        int entryCount = currentSegment.entries().size();
+        checkState(entryCount > 0, "Spill segment %s has no entries", currentSegment.path);
+        checkState(
+                entryCursor <= entryCount,
+                "Entry cursor %s is past the entry count %s in spill segment %s",
+                entryCursor,
+                entryCount,
+                currentSegment.path);
+
+        if (entryCursor < entryCount) {
+            return;
+        }
+
+        closeActiveChannel();
+        segmentCursor++;
+        entryCursor = 0;
+
+        if (segmentCursor >= segments.size()) {
+            return;
+        }
+
+        SpillFile.SpillFileSegment nextSegment = segments.get(segmentCursor);
+        checkState(
+                !nextSegment.entries().isEmpty(),
+                "Spill segment %s has no entries",
+                nextSegment.path);
     }
 
     private void ensureActiveChannelFor(SpillFile.SpillFileSegment seg, long offset)
