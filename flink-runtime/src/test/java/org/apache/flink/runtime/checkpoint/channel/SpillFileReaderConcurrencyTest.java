@@ -157,10 +157,6 @@ class SpillFileReaderConcurrencyTest {
         spillFile.close();
     }
 
-    // -------------------------------------------------------------------------------------------
-    // Fixtures
-    // -------------------------------------------------------------------------------------------
-
     private static final class ThreadSafeRecordingChannel implements RecoverableInputChannel {
         private final InputChannelInfo channelInfo;
         private final List<Buffer> data = new ArrayList<>();
@@ -185,9 +181,7 @@ class SpillFileReaderConcurrencyTest {
         }
 
         @Override
-        public synchronized void finishRecoveredBufferDelivery() {
-            // No-op for the stress test.
-        }
+        public synchronized void finishRecoveredBufferDelivery() {}
 
         @Override
         public synchronized void insertRecoveryCheckpointBarrierIfInRecovery(long checkpointId)
@@ -216,10 +210,6 @@ class SpillFileReaderConcurrencyTest {
             return new ArrayList<>(data);
         }
     }
-
-    // -------------------------------------------------------------------------------------------
-    // Encoding helpers — embed a unique id in each payload's first 4 bytes for verification.
-    // -------------------------------------------------------------------------------------------
 
     private static byte[] payloadFor(int id) {
         byte[] out = new byte[8];

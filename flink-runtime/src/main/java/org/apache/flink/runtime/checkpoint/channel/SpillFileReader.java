@@ -34,38 +34,16 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 import static org.apache.flink.util.Preconditions.checkState;
 
 /**
- * Forward iterator over a {@link SpillFile}'s entries. Two access patterns share the same
- * underlying state:
+ * Forward reader over {@link SpillFile} entries.
  *
- * <ul>
- *   <li><b>Drain (root reader, shared across threads):</b> caller uses {@link #peek()} + {@link
- *       #advance()}. Disk read inside {@code peek()} runs outside any caller lock; the {@code
- *       advance()} call is paired with delivery and must happen under the drainer's lock.
- *   <li><b>Per-checkpoint sub-reader (single consumer):</b> derived via {@link #snapshot()} from a
- *       root reader, consumed via {@link #asIterator()} without any lock.
- * </ul>
- *
- * <p>Invariants:
- *
- * <ul>
- *   <li>Each segment file is opened at most once per reader instance. The cursor only moves
- *       forward; when {@link #advance()} crosses a segment boundary, the previous {@link
- *       FileChannel} is closed before the next segment is opened.
- *   <li>One reusable {@code byte[maxEntryLength]} per reader, allocated at construction. {@link
- *       Chunk#data} aliases this buffer; the bytes are valid only until the next {@link
- *       #advance()}.
- *   <li>Each reader instance holds exactly one {@code SpillFile} ref-count grant — acquired in the
- *       constructor, released in {@link #close()}. {@link #snapshot()} constructs a sub-reader that
- *       takes its own grant.
- * </ul>
+ * <p>The root reader is shared by the drain thread and checkpoint trigger: disk reads happen in
+ * {@link #peek()}, while {@link #advance()} must be paired with channel delivery under the drainer
+ * lock. Snapshot readers are independent and single-consumer.
  */
 @Internal
 public final class SpillFileReader implements Closeable {
 
-    /**
-     * A single recovered-state entry exposed to the caller. {@link #data} aliases the reader's
-     * reusable buffer — valid only until the next {@link SpillFileReader#advance()}.
-     */
+    /** A recovered-state entry. {@link #data} is valid until the next {@link #advance()}. */
     public static final class Chunk {
         public final InputChannelInfo channelInfo;
         public final byte[] data;
@@ -82,13 +60,10 @@ public final class SpillFileReader implements Closeable {
     private final List<SpillFile.SpillFileSegment> segments;
     private final byte[] reusable;
 
-    /** Index into {@code segments}; range [0, segments.size()]. */
     private int segmentCursor;
 
-    /** Index into {@code segments[segmentCursor].entries()}. */
     private int entryCursor;
 
-    /** Open FileChannel for {@code segments[segmentCursor]}, or {@code null}. */
     @Nullable private FileChannel activeChannel;
 
     /**
@@ -99,11 +74,6 @@ public final class SpillFileReader implements Closeable {
 
     private boolean closed;
 
-    /**
-     * Constructs a reader covering all segments / entries of {@code spillFile} starting at position
-     * {@code (segmentCursor, entryCursor)}. Takes one ref-count grant on the spill file; paired
-     * with {@link #close()}.
-     */
     private SpillFileReader(
             SpillFile spillFile,
             List<SpillFile.SpillFileSegment> segments,
@@ -117,17 +87,11 @@ public final class SpillFileReader implements Closeable {
         this.spillFile.acquire();
     }
 
-    /** Opens a root reader positioned at the start of the spill file. */
     static SpillFileReader openRoot(SpillFile spillFile) {
         return new SpillFileReader(spillFile, spillFile.segments(), 0, 0);
     }
 
-    /**
-     * Returns the next entry as a {@link Chunk}, or {@code null} if exhausted. The bytes are read
-     * into the reusable buffer on first call and cached until {@link #advance()} invalidates them.
-     *
-     * <p>Caller must NOT hold any cross-thread lock when invoking this — disk I/O may block.
-     */
+    /** Reads and caches the next entry. Must be called outside cross-thread locks. */
     @Nullable
     public Chunk peek() throws IOException {
         checkState(!closed, "SpillFileReader is closed");
@@ -146,40 +110,24 @@ public final class SpillFileReader implements Closeable {
         return cachedChunk;
     }
 
-    /**
-     * Advances past the entry returned by the most recent {@link #peek()}, invalidating its cache.
-     * Pure in-memory update — safe to call inside a caller lock; for a root reader shared with the
-     * drainer's checkpoint trigger, MUST be called under the drainer's lock, paired with delivery.
-     */
+    /** Advances past the cached entry. Root readers must call this under the drainer lock. */
     public void advance() {
         checkState(!closed, "SpillFileReader is closed");
         checkState(cachedChunk != null, "advance() called without a preceding successful peek()");
         cachedChunk = null;
         entryCursor++;
-        // skipExhaustedSegments is deferred to the next peek(); advance() stays in-memory only and
-        // does NOT close the active FileChannel — that happens lazily when peek() needs to open a
-        // new segment.
     }
 
     /**
-     * Derives an independent sub-reader covering entries the root reader has not yet delivered.
-     * Must be called inside the drainer's lock when invoked on the root reader.
-     *
-     * <p>If a {@link #peek()} is in flight (entry has been read into the reusable buffer but {@link
-     * #advance()} has not been called), the peeked entry is still part of the snapshot. Only {@link
-     * #advance()} marks an entry as delivered by moving the cursor; {@code peek()} is just an
-     * internal read-ahead cache.
+     * Derives an independent reader covering entries not yet advanced past. Root readers must call
+     * this under the drainer lock.
      */
     public SpillFileReader snapshot() {
         checkState(!closed, "SpillFileReader is closed");
         return new SpillFileReader(spillFile, segments, segmentCursor, entryCursor);
     }
 
-    /**
-     * Single-consumer convenience wrapper: {@code hasNext() == peek() != null} and {@code next() ==
-     * peek() + advance()}. Safe only when this reader is NOT shared with the drainer (i.e. only
-     * sub-readers).
-     */
+    /** Single-consumer iterator wrapper for snapshot readers. */
     public CloseableIterator<Chunk> asIterator() {
         return new CloseableIterator<Chunk>() {
             @Override
@@ -227,11 +175,6 @@ public final class SpillFileReader implements Closeable {
         }
     }
 
-    /**
-     * Skips empty segments at the current cursor. Empty segments are unusual but possible (e.g. a
-     * segment file created lazily that received no entries before rotation). Closes any active
-     * channel before moving on.
-     */
     private void skipExhaustedSegments() throws IOException {
         while (segmentCursor < segments.size()
                 && entryCursor >= segments.get(segmentCursor).entries().size()) {
@@ -247,8 +190,6 @@ public final class SpillFileReader implements Closeable {
             activeChannel = FileChannel.open(seg.path, StandardOpenOption.READ);
             activeChannel.position(offset);
         }
-        // Reads within a segment are strictly forward; FileChannel.position advances by each read
-        // so no explicit seek is needed beyond the initial open.
     }
 
     private void readFully(int length) throws IOException {

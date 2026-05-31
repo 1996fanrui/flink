@@ -34,10 +34,6 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Verifies that {@link RecoveredInputChannel#requestBufferBlocking} blocks on the source channel's
- * exclusive buffer pool instead of falling back to unpooled heap-segment allocation.
- */
 class RecoveredInputChannelRequestBufferBlockingHeapFallbackRemovedTest {
 
     private NetworkBufferPool pool;
@@ -60,8 +56,6 @@ class RecoveredInputChannelRequestBufferBlockingHeapFallbackRemovedTest {
             channel.requestBufferBlocking();
         }
 
-        // With the pool drained, the next request must block; no heap fallback returns a
-        // non-pooled buffer.
         CountDownLatch entered = new CountDownLatch(1);
         AtomicReference<Buffer> result = new AtomicReference<>();
         Thread blocker =
@@ -78,19 +72,15 @@ class RecoveredInputChannelRequestBufferBlockingHeapFallbackRemovedTest {
         blocker.start();
 
         assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
-        // Give the requester a chance to attempt allocation.
         Thread.sleep(200);
         assertThat(result.get()).as("buffer should not have been allocated").isNull();
 
-        // Interrupt the blocked thread to release the test.
         blocker.interrupt();
         blocker.join(5_000);
     }
 
     @Test
     void testFilterOnPathTakesSameRouteAsFilterOff() throws Exception {
-        // Both filter-on and filter-off paths must allocate from the network pool; no behavior
-        // divergence based on isCheckpointingDuringRecoveryEnabled.
         int exclusivePerChannel = 1;
         int totalSegments = 4;
         pool = new NetworkBufferPool(totalSegments, MemoryManager.DEFAULT_PAGE_SIZE);

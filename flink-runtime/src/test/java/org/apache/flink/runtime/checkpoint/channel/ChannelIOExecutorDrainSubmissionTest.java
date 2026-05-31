@@ -42,11 +42,6 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Building-block tests for running a {@link SpillFileReader} drain on a single-thread executor:
- * verifies buffer delivery to converted channels and exception propagation through the wrapping
- * runnable.
- */
 class ChannelIOExecutorDrainSubmissionTest {
 
     @TempDir Path tempDir;
@@ -77,7 +72,6 @@ class ChannelIOExecutorDrainSubmissionTest {
                             try {
                                 reader.close();
                             } catch (IOException ignore) {
-                                // tearDown closes the spill file.
                             }
                         }
                     });
@@ -145,7 +139,6 @@ class ChannelIOExecutorDrainSubmissionTest {
                             try {
                                 reader.close();
                             } catch (IOException ignore) {
-                                // ignored — test is done.
                             }
                         }
                     });
@@ -159,10 +152,6 @@ class ChannelIOExecutorDrainSubmissionTest {
             spillFile.close();
         }
     }
-
-    // -------------------------------------------------------------------------------------------
-    // Fixtures
-    // -------------------------------------------------------------------------------------------
 
     private static final class CapturingChannel implements RecoverableInputChannel {
         private final InputChannelInfo channelInfo;

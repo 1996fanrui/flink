@@ -31,7 +31,6 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Unit tests for {@link SpillFile}. */
 class SpillFileTest {
 
     @TempDir Path tempDir;
@@ -57,13 +56,12 @@ class SpillFileTest {
 
     @Test
     void testSegmentRotationAcrossDefaultSegmentSize() throws IOException {
-        // Use a tiny custom segment size to exercise rotation deterministically.
         long segmentSize = 16L;
         try (SpillFile spillFile = new SpillFile(tempDir, segmentSize, 4096)) {
             InputChannelInfo channelInfo = new InputChannelInfo(0, 0);
-            byte[] payloadA = bytes(1, 2, 3, 4, 5, 6, 7, 8, 9, 10); // 10 bytes
-            byte[] payloadB = bytes(11, 12, 13, 14, 15, 16, 17, 18); // 8 bytes — would overflow
-            byte[] payloadC = bytes(19, 20, 21, 22, 23); // 5 bytes — fits in segment 1
+            byte[] payloadA = bytes(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
+            byte[] payloadB = bytes(11, 12, 13, 14, 15, 16, 17, 18);
+            byte[] payloadC = bytes(19, 20, 21, 22, 23);
 
             spillFile.append(channelInfo, ByteBuffer.wrap(payloadA));
             spillFile.append(channelInfo, ByteBuffer.wrap(payloadB));
@@ -184,7 +182,6 @@ class SpillFileTest {
         spillFile.append(new InputChannelInfo(0, 0), ByteBuffer.wrap(bytes(1, 2, 3)));
         spillFile.close();
         assertThat(spillFile.isClosed()).isTrue();
-        // Second close must not throw.
         spillFile.close();
         assertThat(spillFile.isClosed()).isTrue();
     }

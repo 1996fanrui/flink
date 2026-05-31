@@ -41,7 +41,6 @@ import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** Unit tests for {@link SpillFileDrainer}. */
 class SpillFileDrainerTest {
 
     @TempDir Path tempDir;
@@ -105,7 +104,6 @@ class SpillFileDrainerTest {
             reader.drain();
             reader.close();
 
-            // finish must come strictly after every data delivery (sequence monotonic).
             int maxDataSeq = Math.max(chan0.maxDataSeq, chan1.maxDataSeq);
             int minFinishSeq = Math.min(chan0.finishSeq, chan1.finishSeq);
             assertThat(maxDataSeq).isLessThan(minFinishSeq);
@@ -131,7 +129,6 @@ class SpillFileDrainerTest {
                 count++;
             }
             snap.close();
-            // Nothing drained — startPos is (0, 0), the snapshot covers every entry.
             assertThat(count).isEqualTo(2);
         }
     }
@@ -216,7 +213,6 @@ class SpillFileDrainerTest {
 
             assertThat(chan0.recovered).hasSize(1);
             assertThat(extractRecoveryBarrierCheckpointId(chan0.recovered.get(0))).isEqualTo(cpId);
-            // chan1 must not receive a barrier — it had already exited recovery.
             assertThat(chan1.recovered).isEmpty();
         }
     }
@@ -255,10 +251,6 @@ class SpillFileDrainerTest {
         }
     }
 
-    // -------------------------------------------------------------------------------------------
-    // Fixtures
-    // -------------------------------------------------------------------------------------------
-
     /**
      * Stub that records pushed buffers and counts finish calls. With a shared sequence counter, it
      * also lets tests assert finish ordering relative to data delivery.
@@ -268,7 +260,6 @@ class SpillFileDrainerTest {
         final List<Buffer> recovered = new ArrayList<>();
         int finishCalls = 0;
 
-        // Sequence-tracking fields (only used when a shared counter is provided).
         private final int[] sequence;
         int maxDataSeq = Integer.MIN_VALUE;
         int finishSeq = -1;
@@ -327,10 +318,6 @@ class SpillFileDrainerTest {
         }
     }
 
-    // -------------------------------------------------------------------------------------------
-    // Helpers
-    // -------------------------------------------------------------------------------------------
-
     private static SpillFileDrainer newReader(SpillFile spillFile, Object... infoChannelPairs) {
         List<RecoverableInputChannel> all = new ArrayList<>();
         for (int i = 0; i < infoChannelPairs.length; i += 2) {
@@ -342,7 +329,6 @@ class SpillFileDrainerTest {
         return new SpillFileDrainer(spillFile, CompletableFuture.completedFuture(all));
     }
 
-    /** Deterministic 4-byte payload per id. */
     private static byte[] payload(int id) {
         return new byte[] {(byte) (id & 0xff), (byte) ((id >> 8) & 0xff), (byte) 0xAB, (byte) 0xCD};
     }

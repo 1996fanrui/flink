@@ -118,18 +118,12 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
                     stateConsumedFuture.isDone(), "recovered state is not fully consumed");
         }
 
-        // Invariant: when checkpointing-during-recovery is enabled no caller pushes anything into
-        // receivedBuffers (filter and pass-through both write to the SpillFile); otherwise the
-        // task's inner mailbox loop has consumed everything out of receivedBuffers before
-        // requestPartitions runs.
+        // With checkpointing-during-recovery, data is spilled instead of queued here.
         synchronized (receivedBuffers) {
             Preconditions.checkState(receivedBuffers.isEmpty(), "Received buffer should be empty.");
         }
 
         final InputChannel inputChannel = toInputChannelInternal(needsRecovery);
-        // Allocate the physical channel's exclusive buffers (Remote: credit segments; Local: the
-        // recovery-only pool the spill drain pushes into). Both channel types are set up here so
-        // the call site stays symmetric and a new channel type cannot silently skip setup.
         inputChannel.setup();
         inputChannel.checkpointStopped(lastStoppedCheckpointId);
         return inputChannel;
@@ -141,10 +135,8 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     }
 
     /**
-     * Creates the physical {@link InputChannel} (local or remote) from this recovered channel.
-     * {@code needsRecovery} controls whether the physical channel starts in-recovery. Any remaining
-     * buffers are delivered via {@link RecoverableInputChannel#onRecoveredStateBuffer} after this
-     * method returns.
+     * Creates the physical {@link InputChannel}; {@code needsRecovery} controls whether it starts
+     * in recovery.
      */
     protected abstract InputChannel toInputChannelInternal(boolean needsRecovery)
             throws IOException;
@@ -193,10 +185,7 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     }
 
     public void finishReadRecoveredState() throws IOException {
-        // When checkpointing-during-recovery is disabled the gate waits for stateConsumedFuture,
-        // which is completed by consuming this sentinel. When enabled, the gate waits only for
-        // filtering completion and the sentinel is later delivered through the physical channel's
-        // recoveredQueue.
+        // Without checkpointing-during-recovery, the gate still waits for this sentinel to be read.
         synchronized (receivedBuffers) {
             if (!inputGate.isCheckpointingDuringRecoveryEnabled()) {
                 onRecoveredStateBuffer(
