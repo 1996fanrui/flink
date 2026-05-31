@@ -48,7 +48,6 @@ import org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointTrigger;
 import org.apache.flink.runtime.checkpoint.channel.SequentialChannelStateReader;
 import org.apache.flink.runtime.checkpoint.channel.SpillFile;
 import org.apache.flink.runtime.checkpoint.channel.SpillFileDrainer;
-import org.apache.flink.runtime.checkpoint.channel.SpillFileReaderBootstrap;
 import org.apache.flink.runtime.checkpoint.filemerging.FileMergingSnapshotManager;
 import org.apache.flink.runtime.execution.CancelTaskException;
 import org.apache.flink.runtime.execution.Environment;
@@ -66,6 +65,7 @@ import org.apache.flink.runtime.io.network.api.writer.SingleRecordWriter;
 import org.apache.flink.runtime.io.network.partition.ChannelStateHolder;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionType;
 import org.apache.flink.runtime.io.network.partition.consumer.IndexedInputGate;
+import org.apache.flink.runtime.io.network.partition.consumer.InputChannel;
 import org.apache.flink.runtime.io.network.partition.consumer.InputGate;
 import org.apache.flink.runtime.io.network.partition.consumer.RecoverableInputChannel;
 import org.apache.flink.runtime.jobgraph.OperatorID;
@@ -957,7 +957,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                             }
                             if (needsRecovery) {
                                 drainer =
-                                        SpillFileReaderBootstrap.buildDrainer(
+                                        new SpillFileDrainer(
                                                 producedSpillFile, physicalChannelsFuture);
                                 // Publish before finishReadRecoveredState, so the checkpoint
                                 // dispatcher sees the drainer instance and not null once the task
@@ -1056,9 +1056,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                                                 && remainingGates.decrementAndGet() == 0) {
                                             try {
                                                 List<RecoverableInputChannel> physicalChannels =
-                                                        SpillFileReaderBootstrap
-                                                                .collectPhysicalChannels(
-                                                                        inputGates);
+                                                        collectPhysicalChannels(inputGates);
                                                 physicalChannelsFuture.complete(physicalChannels);
                                             } catch (Throwable t) {
                                                 physicalChannelsFuture.completeExceptionally(t);
@@ -1083,6 +1081,24 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                 CompletableFuture.allOf(recoveredFutures.toArray(new CompletableFuture[0]));
         allRecoveredFuture.thenRun(mailboxProcessor::suspend);
         return allRecoveredFuture;
+    }
+
+    /**
+     * Collects post-conversion physical input channels from the gates; their queues receive spill
+     * drain deliveries.
+     */
+    private static List<RecoverableInputChannel> collectPhysicalChannels(InputGate[] inputGates) {
+        List<RecoverableInputChannel> channels = new ArrayList<>();
+        for (InputGate gate : inputGates) {
+            int numberOfInputChannels = gate.getNumberOfInputChannels();
+            for (int i = 0; i < numberOfInputChannels; i++) {
+                InputChannel channel = gate.getChannel(i);
+                if (channel instanceof RecoverableInputChannel) {
+                    channels.add((RecoverableInputChannel) channel);
+                }
+            }
+        }
+        return channels;
     }
 
     /**
