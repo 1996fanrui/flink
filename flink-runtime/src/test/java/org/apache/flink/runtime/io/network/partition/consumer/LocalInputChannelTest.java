@@ -697,7 +697,6 @@ class LocalInputChannelTest {
 
         inputGate.setInputChannels(localChannel);
 
-        // Push 3 recovered buffers via the new RecoverableInputChannel interface.
         localChannel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(32));
         localChannel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(32));
         localChannel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(32));
@@ -716,7 +715,6 @@ class LocalInputChannelTest {
 
     @Test
     void testGetNextBufferWithMigratedRecoveredBuffers() throws Exception {
-        // given: LocalInputChannel with recovered buffers delivered via push interface
         SingleInputGate inputGate = createSingleInputGate(1);
 
         LocalInputChannel channel =
@@ -755,7 +753,6 @@ class LocalInputChannelTest {
 
     @Test
     void testCheckpointStartedPersistsRecoveredBuffers() throws Exception {
-        // given: Local input channel with recovered buffers pushed via the recovery interface
         SingleInputGate inputGate = new SingleInputGateBuilder().build();
 
         RecordingChannelStateWriter stateWriter = new RecordingChannelStateWriter();
@@ -786,14 +783,12 @@ class LocalInputChannelTest {
         channel.onRecoveredStateBuffer(
                 EventSerializer.toBuffer(new RecoveryCheckpointBarrier(1L), false));
 
-        // when: Checkpoint is started while in recovery (recoveredBuffers non-empty, flag false)
         CheckpointOptions options =
                 CheckpointOptions.unaligned(CheckpointType.CHECKPOINT, getDefault());
         stateWriter.start(1L, options);
         CheckpointBarrier barrier = new CheckpointBarrier(1L, 0L, options);
         channel.checkpointStarted(barrier);
 
-        // then: All 3 recovered buffers should be persisted as inflight data via addInputData
         List<Buffer> persistedBuffers = stateWriter.getAddedInput().get(channel.getChannelInfo());
         assertThat(persistedBuffers).isNotNull().hasSize(3);
         assertThat(persistedBuffers.stream().mapToInt(Buffer::getSize).toArray())
@@ -1153,10 +1148,8 @@ class LocalInputChannelTest {
         ctx.subpartition.add(createFilledFinishedBufferConsumer(32));
         ctx.channel.notifyPriorityEvent(0);
 
-        // Pull the priority barrier — afterwards hasPendingPriorityEvent is reset.
         Optional<InputChannel.BufferAndAvailability> priority = ctx.channel.getNextBuffer();
         assertThat(priority).isPresent();
-        // Next pull returns the recovered buffer (queue is preferred over subpartitionView).
         Optional<InputChannel.BufferAndAvailability> recovered = ctx.channel.getNextBuffer();
         assertThat(recovered).isPresent();
         assertThat(recovered.get().buffer().isBuffer()).isTrue();
@@ -1253,8 +1246,6 @@ class LocalInputChannelTest {
         stateWriter.start(1L, options);
         channel.checkpointStarted(new CheckpointBarrier(1L, 0L, options));
 
-        // After checkpointStarted, the next two polls should drain (1) and then (2), with the
-        // sentinel having been removed by the scan.
         Optional<InputChannel.BufferAndAvailability> h1 = channel.getNextBuffer();
         assertThat(h1).isPresent();
         Optional<InputChannel.BufferAndAvailability> h2 = channel.getNextBuffer();
@@ -1297,8 +1288,6 @@ class LocalInputChannelTest {
         channel.completeUpstreamReadyForTest();
         channel.finishRecoveredBufferDelivery();
 
-        // No recovery — checkpointStarted goes through the master path, which calls
-        // startPersisting(barrier.getId(), Collections.emptyList()).
         CheckpointOptions options =
                 CheckpointOptions.unaligned(CheckpointType.CHECKPOINT, getDefault());
         stateWriter.start(1L, options);
@@ -1324,7 +1313,6 @@ class LocalInputChannelTest {
         CheckpointOptions options =
                 CheckpointOptions.unaligned(CheckpointType.CHECKPOINT, getDefault());
         stateWriter.start(1L, options);
-        // Should not throw — the Local-side helper is trivially true.
         channel.checkpointStarted(new CheckpointBarrier(1L, 0L, options));
     }
 

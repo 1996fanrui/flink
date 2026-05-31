@@ -89,11 +89,8 @@ class CreditBasedSequenceNumberingViewReader
 
         this.receiverId = receiverId;
         this.initialCredit = initialCredit;
-        // While the consumer is in spill recovery, the exclusive buffers backing initialCredit are
-        // on loan to the recovery drain, so the consumer cannot receive live data yet: start with
-        // zero available credit. initialCredit is still recorded above to preserve its
-        // exclusive-buffer semantics (resume reset / backlog announcement). The consumer announces
-        // real credit once recovery completes.
+        // During spill recovery, exclusive buffers are on loan to the recovery drain; real credit
+        // is announced only after recovery completes.
         this.numCreditsAvailable = needsRecovery ? 0 : initialCredit;
         this.requestQueue = requestQueue;
         this.subpartitionId = -1;

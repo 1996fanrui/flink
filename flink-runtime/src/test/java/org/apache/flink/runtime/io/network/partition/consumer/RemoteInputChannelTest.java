@@ -2080,7 +2080,6 @@ class RemoteInputChannelTest {
 
     @Test
     void testGetNextBufferWithMigratedRecoveredBuffers() throws Exception {
-        // given: RemoteInputChannel with recovered buffers delivered via push interface
         SingleInputGate inputGate = createSingleInputGate(1);
 
         ConnectionID connectionId =
@@ -2162,7 +2161,6 @@ class RemoteInputChannelTest {
         Buffer b = TestBufferFactory.createBuffer(33);
         channel.onRecoveredStateBuffer(b);
 
-        // Released channels must silently recycle pushed buffers and not enqueue them.
         assertThat(b.isRecycled()).isTrue();
     }
 
@@ -2177,11 +2175,9 @@ class RemoteInputChannelTest {
                         .buildRemoteChannel(inputGate);
         inputGate.setInputChannels(channel);
 
-        // No buffers yet — gate availability future is not yet completed.
         CompletableFuture<?> availability = inputGate.getAvailableFuture();
         assertThat(availability).isNotDone();
 
-        // First push (empty -> non-empty) must notify the gate.
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(1));
         assertThat(availability).isDone();
     }
@@ -2201,18 +2197,13 @@ class RemoteInputChannelTest {
         // flag=false (no finishRecoveredBufferDelivery called yet). getNextBuffer must return
         // empty.
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(1));
-        // Inject a buffer then poll it; afterwards the queue is empty but recovery is not
-        // declared finished.
         channel.getNextBuffer();
         // Simulate an explicit recovery context where the producer signals "not done yet".
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(2));
         channel.getNextBuffer();
-        // Now poll again before any further push: queue is empty, flag is still the default.
         // The boundary case "flag=false (drain still running) + queue empty" should return empty.
         // To set this state explicitly, we deliberately do not call finishReadRecoveredState.
         Optional<BufferAndAvailability> result = channel.getNextBuffer();
-        // With the default initial flag (recovery not currently happening), this falls through
-        // to the master path. Verify it doesn't crash and we do not see a recovery-side buffer.
         assertThat(result).isNotPresent();
     }
 
@@ -2227,7 +2218,6 @@ class RemoteInputChannelTest {
         inputGate.setInputChannels(channel);
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(7));
 
-        // flag is still true (default), queue non-empty → in-recovery → poll the head.
         Optional<BufferAndAvailability> r = channel.getNextBuffer();
         assertThat(r).isPresent();
         assertThat(r.get().buffer().getSize()).isEqualTo(7);
@@ -2246,7 +2236,6 @@ class RemoteInputChannelTest {
         channel.completeUpstreamReadyForTest();
         channel.finishRecoveredBufferDelivery();
 
-        // flag=true, queue non-empty → still in-recovery, poll the head.
         Optional<BufferAndAvailability> r = channel.getNextBuffer();
         assertThat(r).isPresent();
         assertThat(r.get().buffer().getSize()).isEqualTo(8);
@@ -2272,7 +2261,6 @@ class RemoteInputChannelTest {
             channel.finishRecoveredBufferDelivery();
             inputGate.requestPartitions();
 
-            // flag=true, queue empty → NOT in recovery → master path on receivedBuffers (empty).
             Optional<BufferAndAvailability> r = channel.getNextBuffer();
             assertThat(r).isNotPresent();
         } finally {
@@ -2302,14 +2290,11 @@ class RemoteInputChannelTest {
             inputGate.setup();
             RemoteInputChannel channel = (RemoteInputChannel) inputGate.getChannel(0);
 
-            // Push a single recovered buffer so the channel is in-recovery with one entry queued.
             channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(11));
             // Inject a normal data buffer into receivedBuffers to set the trap that
             // peekNextDataType used to fall into when recoveredQueue became empty.
             channel.onBuffer(TestBufferFactory.createBuffer(22), 0, 0, 0);
 
-            // Drain the only recovered buffer; recoveredQueue is now empty but the channel stays
-            // in-recovery because finishRecoveredBufferDelivery() has not been called.
             Optional<BufferAndAvailability> recoveredBuf = channel.getNextBuffer();
             assertThat(recoveredBuf).isPresent();
             assertThat(recoveredBuf.get().buffer().getSize()).isEqualTo(11);
@@ -2323,7 +2308,6 @@ class RemoteInputChannelTest {
 
     @Test
     void testPriorityEventDuringRecoveryViaAddPriorityBuffer() throws Exception {
-        // Build a fully-wired gate so onBuffer / onSenderBacklog have a real buffer pool.
         final NetworkBufferPool networkBufferPool = new NetworkBufferPool(4, 4096);
         try {
             SingleInputGate inputGate =
@@ -2339,16 +2323,13 @@ class RemoteInputChannelTest {
 
             channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(11));
 
-            // Inject a priority event into receivedBuffers via the network path.
             CheckpointBarrier barrier = new CheckpointBarrier(1L, 0L, UNALIGNED);
             channel.onBuffer(toBuffer(barrier, true), 0, 0, 0);
 
-            // Priority event is served before pending recoveredBuffers entries.
             Optional<BufferAndAvailability> first = channel.getNextBuffer();
             assertThat(first).isPresent();
             assertThat(first.get().buffer().getDataType().hasPriority()).isTrue();
 
-            // Next, recovered data buffer.
             Optional<BufferAndAvailability> second = channel.getNextBuffer();
             assertThat(second).isPresent();
             assertThat(second.get().buffer().getSize()).isEqualTo(11);
@@ -2380,7 +2361,6 @@ class RemoteInputChannelTest {
         stateWriter.start(1L, UNALIGNED);
         channel.checkpointStarted(new CheckpointBarrier(1L, 0L, UNALIGNED));
 
-        // Only b1 and b2 should be persisted (pre-barrier); b3 stays in the queue.
         List<Buffer> persisted = stateWriter.getAddedInput().get(channel.getChannelInfo());
         assertThat(persisted).hasSize(2);
         assertThat(persisted.stream().mapToInt(Buffer::getSize).toArray()).containsExactly(1, 2);
@@ -2430,7 +2410,6 @@ class RemoteInputChannelTest {
         channel.onRecoveredStateBuffer(
                 EventSerializer.toBuffer(new RecoveryCheckpointBarrier(1L), false));
 
-        // refCnt before checkpointStarted
         int before = b1.refCnt();
         stateWriter.start(1L, UNALIGNED);
         channel.checkpointStarted(new CheckpointBarrier(1L, 0L, UNALIGNED));
@@ -2457,11 +2436,8 @@ class RemoteInputChannelTest {
         stateWriter.start(1L, UNALIGNED);
         channel.checkpointStarted(new CheckpointBarrier(1L, 0L, UNALIGNED));
 
-        // After checkpointStarted: sentinel must be gone; queue head should now be the data
-        // buffer that came after the sentinel.
         Optional<BufferAndAvailability> head = channel.getNextBuffer();
         assertThat(head).isPresent();
-        // First call drains the pre-barrier b1, second call drains the post-barrier b2.
         Optional<BufferAndAvailability> nextHead = channel.getNextBuffer();
         assertThat(nextHead).isPresent();
         assertThat(nextHead.get().buffer().getSize()).isEqualTo(2);
@@ -2488,7 +2464,6 @@ class RemoteInputChannelTest {
         stateWriter.start(1L, UNALIGNED);
         channel.checkpointStarted(new CheckpointBarrier(1L, 0L, UNALIGNED));
 
-        // checkpointStarted(1) must persist only pre-cp1 buffers (b=1).
         List<Buffer> persisted1 = stateWriter.getAddedInput().get(channel.getChannelInfo());
         assertThat(persisted1).hasSize(1);
         assertThat(persisted1.get(0).getSize()).isEqualTo(1);
@@ -2504,13 +2479,9 @@ class RemoteInputChannelTest {
                         .buildRemoteChannel(inputGate);
         inputGate.setInputChannels(channel);
         channel.requestSubpartitions();
-        // No recovery activity → channel is NOT in recovery; checkpointStarted must go through
-        // the master path (channelStatePersister.startPersisting).
         stateWriter.start(7L, UNALIGNED);
         channel.checkpointStarted(new CheckpointBarrier(7L, 0L, UNALIGNED));
 
-        // Sending a buffer post-barrier should trigger maybePersist on the master path; nothing
-        // is persisted via addInputData in this branch.
         assertThat(stateWriter.getAddedInput().get(channel.getChannelInfo())).isNullOrEmpty();
     }
 
@@ -2529,7 +2500,6 @@ class RemoteInputChannelTest {
             inputGate.setup();
             RemoteInputChannel channel = (RemoteInputChannel) inputGate.getChannel(0);
 
-            // Drive into in-recovery by pushing a recovered buffer.
             channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(1));
             // Inject live data into receivedBuffers (network path) — this is the invariant
             // violation that the in-recovery branch's checkState should catch.
@@ -2574,7 +2544,6 @@ class RemoteInputChannelTest {
             channel.onBuffer(toBuffer(priorityBarrier, true), 0, 0, 0);
 
             stateWriter.start(1L, UNALIGNED);
-            // No assertion failure expected; in-recovery branch tolerates priority/control buffers.
             channel.checkpointStarted(new CheckpointBarrier(1L, 0L, UNALIGNED));
         } finally {
             networkBufferPool.destroy();

@@ -115,12 +115,6 @@ public class InputChannelBuilder {
         return this;
     }
 
-    /**
-     * Controls whether the built physical channel starts in-recovery. Default {@code false} matches
-     * {@code UnknownInputChannel.toLocal/toRemote} and the non-recovery test path; set to {@code
-     * true} to drive the in-recovery branch (tests that push recovered buffers via {@code
-     * onRecoveredStateBuffer}).
-     */
     public InputChannelBuilder setNeedsRecovery(boolean needsRecovery) {
         this.needsRecovery = needsRecovery;
         return this;

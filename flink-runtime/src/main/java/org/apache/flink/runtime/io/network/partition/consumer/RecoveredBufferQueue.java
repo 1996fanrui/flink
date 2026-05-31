@@ -34,18 +34,10 @@ import java.util.Iterator;
 import java.util.List;
 
 /**
- * Holds recovery buffers and recovery-completion state for a physical input channel during the
- * spill-recovery handover.
+ * Recovery buffer queue shared by local and remote input channels.
  *
- * <p>Encapsulates the buffer deque, the {@code allDelivered} flag, and the recovery-sequence
- * counter so that {@link LocalInputChannel} and {@link RemoteInputChannel} can share a single
- * implementation of the recovery state machine. Full recovery is reached when {@code allDelivered
- * && isEmpty()}.
- *
- * <p>All methods are <b>unsafe</b>: callers must hold the channel's monitor (Local: the queue
- * instance itself; Remote: the {@code receivedBuffers} monitor so recovery and live upstream queues
- * can be inspected atomically). The queue intentionally does not own a lock, allowing Remote to
- * inspect both queues under a single critical section.
+ * <p>All methods are unsafe: callers must hold the owning channel's monitor. The queue does not own
+ * a lock because remote channels must inspect recovered and live upstream buffers atomically.
  */
 @Internal
 class RecoveredBufferQueue {
@@ -59,21 +51,8 @@ class RecoveredBufferQueue {
         this.allDelivered = initiallyDelivered;
     }
 
-    /**
-     * True once the drain/spill producer has finished pushing recovered buffers into this queue.
-     * Producer-side completion only; the consumer may still have buffers queued. May be initialized
-     * to {@code true} when the owning channel has no SpillFileReader-driven drain phase ahead of
-     * it: in that case {@code isInRecovery} starts false and the channel goes straight to the
-     * normal path, avoiding a {@code true → false} flip that could let a consumer race past an
-     * in-flight {@code requestSubpartitions} retrigger and observe a null {@code subpartitionView}.
-     */
     private boolean allDelivered;
 
-    /**
-     * Sequence-number counter for buffers emitted during recovery. Starts at {@link
-     * Integer#MIN_VALUE} so that recovery sequence numbers cannot collide with live upstream
-     * sequence numbers. Single-threaded (task thread only).
-     */
     private int sequenceNumber = Integer.MIN_VALUE;
 
     /**
@@ -83,13 +62,6 @@ class RecoveredBufferQueue {
      *     call (so the caller knows whether to issue the channel-available notification).
      */
     boolean offer(Buffer buffer) {
-        // Strict monotonic invariant: push is only allowed while the channel is still in the
-        // recovery phase. The transition state (allDelivered=true but buffers non-empty) still
-        // counts as in-recovery — a RecoveryCheckpointBarrier may be pushed in that window and
-        // the consumer keeps using the in-recovery branch until buffers drain. Once buffers go
-        // empty and allDelivered=true (isInRecovery()=false), the channel has fully left recovery
-        // and no caller is allowed to push back into the queue. Fail loud so any violator shows
-        // up in the stack.
         Preconditions.checkState(
                 isInRecovery(),
                 "Push into RecoveredBufferQueue after recovery finished (channelInfo=%s, bufferType=%s)",
@@ -100,12 +72,6 @@ class RecoveredBufferQueue {
         return wasEmpty;
     }
 
-    /**
-     * Marks producer-side delivery as complete. Fail-loud on repeated invocation: {@code finish()}
-     * is a one-shot state flip — calling it on a queue that was never in recovery (or already
-     * finished) signals a wiring bug in the caller, since the only legitimate caller is the spill
-     * drain at end-of-drain.
-     */
     void finish() {
         Preconditions.checkState(
                 !allDelivered,
@@ -114,7 +80,6 @@ class RecoveredBufferQueue {
         allDelivered = true;
     }
 
-    /** Recovery is still in progress unless the producer is done and the queue is drained. */
     boolean isInRecovery() {
         return !allDelivered || !buffers.isEmpty();
     }
@@ -139,22 +104,16 @@ class RecoveredBufferQueue {
         return buffers.poll();
     }
 
-    /**
-     * Post-increment counter; returned value is the sequence number for the buffer just emitted.
-     */
     int nextSequenceNumber() {
         return sequenceNumber++;
     }
 
     /**
      * Walks the queue up to the {@link RecoveryCheckpointBarrier} sentinel matching {@code
-     * checkpointId}, retaining each pre-barrier data buffer for the channel-state writer and
-     * removing the sentinel itself. Pre-barrier events are left in the queue for normal consumption
-     * — the channel-state writer only accepts data buffers.
+     * checkpointId}, retaining each pre-barrier data buffer and removing the sentinel.
      *
      * @throws IOException if no sentinel matching {@code checkpointId} is found (the snapshot
-     *     protocol guarantees one must be present whenever this method is invoked); retained
-     *     buffers are released before throwing so the caller does not have to clean up.
+     *     protocol guarantees one must be present whenever this method is invoked).
      */
     List<Buffer> collectPreRecoveryBarrier(long checkpointId) throws IOException {
         List<Buffer> retained = new ArrayList<>();
@@ -183,7 +142,6 @@ class RecoveredBufferQueue {
                         + channelInfo);
     }
 
-    /** Recycles every queued buffer and clears the queue. */
     void releaseAll() {
         for (Buffer buffer : buffers) {
             buffer.recycleBuffer();

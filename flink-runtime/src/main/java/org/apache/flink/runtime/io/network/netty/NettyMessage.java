@@ -583,12 +583,6 @@ public abstract class NettyMessage {
 
         final int credit;
 
-        /**
-         * Whether the consumer channel starts in the spill-recovery phase. When true the upstream
-         * reader starts with zero available credit even though {@code credit} (= initialCredit) is
-         * non-zero: the exclusive buffers are on loan to the recovery drain, and real credit is
-         * announced once recovery completes.
-         */
         final boolean needsRecovery;
 
         PartitionRequest(
