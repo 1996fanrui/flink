@@ -91,6 +91,8 @@ class RecoveredInputChannelTest {
 
     @Test
     void testToInputChannelAllowedWhenStateConsumedAndConfigDisabled() throws IOException {
+        // This test verifies that stateConsumedFuture completes after consuming
+        // EndOfInputChannelStateEvent regardless of the config setting.
         // When config is disabled, conversion requires both bufferFilteringCompleteFuture
         // and stateConsumedFuture to be done
         TestableRecoveredInputChannel channel = buildTestableChannel(false);
@@ -111,7 +113,8 @@ class RecoveredInputChannelTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("recovered state is not fully consumed");
 
-        // Consume the EndOfInputChannelStateEvent to complete stateConsumedFuture
+        // Consuming the EndOfInputChannelStateEvent should complete the future.
+        // getNextBuffer() returns empty when it encounters the event internally.
         assertThat(channel.getNextBuffer()).isNotPresent();
         assertThat(channel.getStateConsumedFuture()).isDone();
 

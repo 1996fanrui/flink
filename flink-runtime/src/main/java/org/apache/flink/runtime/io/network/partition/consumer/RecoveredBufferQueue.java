@@ -53,6 +53,10 @@ class RecoveredBufferQueue {
 
     private boolean allDelivered;
 
+    /**
+     * Sequence number starts at {@link Integer#MIN_VALUE}, consistent with {@link
+     * RecoveredInputChannel}.
+     */
     private int sequenceNumber = Integer.MIN_VALUE;
 
     /**

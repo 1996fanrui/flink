@@ -2080,6 +2080,7 @@ class RemoteInputChannelTest {
 
     @Test
     void testGetNextBufferWithMigratedRecoveredBuffers() throws Exception {
+        // given: RemoteInputChannel with recovered buffers migrated from RecoveredInputChannel
         SingleInputGate inputGate = createSingleInputGate(1);
 
         ConnectionID connectionId =

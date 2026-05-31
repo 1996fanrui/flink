@@ -670,7 +670,7 @@ class LocalInputChannelTest {
 
     @Test
     void testGetBuffersInUseCountIncludesToBeConsumedBuffers() throws Exception {
-        // given: Local input channel with recovered buffers pushed via the recovery interface
+        // given: Local input channel with recovered buffers in the recovery queue
         ResultSubpartitionView subpartitionView =
                 InputChannelTestUtils.createResultSubpartitionView(
                         createFilledFinishedBufferConsumer(4096),
@@ -697,6 +697,7 @@ class LocalInputChannelTest {
 
         inputGate.setInputChannels(localChannel);
 
+        // Create 3 recovered buffers
         localChannel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(32));
         localChannel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(32));
         localChannel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(32));
@@ -715,6 +716,7 @@ class LocalInputChannelTest {
 
     @Test
     void testGetNextBufferWithMigratedRecoveredBuffers() throws Exception {
+        // given: LocalInputChannel with recovered buffers migrated from RecoveredInputChannel
         SingleInputGate inputGate = createSingleInputGate(1);
 
         LocalInputChannel channel =
@@ -753,6 +755,7 @@ class LocalInputChannelTest {
 
     @Test
     void testCheckpointStartedPersistsRecoveredBuffers() throws Exception {
+        // given: Local input channel with recovered buffers
         SingleInputGate inputGate = new SingleInputGateBuilder().build();
 
         RecordingChannelStateWriter stateWriter = new RecordingChannelStateWriter();
@@ -787,9 +790,11 @@ class LocalInputChannelTest {
                 CheckpointOptions.unaligned(CheckpointType.CHECKPOINT, getDefault());
         stateWriter.start(1L, options);
         CheckpointBarrier barrier = new CheckpointBarrier(1L, 0L, options);
+        // when: Checkpoint is started
         channel.checkpointStarted(barrier);
 
         List<Buffer> persistedBuffers = stateWriter.getAddedInput().get(channel.getChannelInfo());
+        // then: All 3 recovered buffers should be persisted as inflight data
         assertThat(persistedBuffers).isNotNull().hasSize(3);
         assertThat(persistedBuffers.stream().mapToInt(Buffer::getSize).toArray())
                 .containsExactly(10, 20, 30);

@@ -127,6 +127,11 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
 
     private final ChannelStatePersister channelStatePersister;
 
+    /**
+     * Buffers delivered from {@code RecoveredInputChannel}, kept separately from {@link
+     * #receivedBuffers} so that recovery semantics and live network-data ordering can be handled
+     * atomically under the same monitor.
+     */
     @GuardedBy("receivedBuffers")
     private final RecoveredBufferQueue recoveredQueue;
 
@@ -208,6 +213,8 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
                 buffer.recycleBuffer();
                 return;
             }
+            // Migrate recovered buffers from RecoveredInputChannel. These buffers have been
+            // filtered but not yet consumed by the Task.
             wasEmpty = recoveredQueue.offer(buffer);
         }
         if (wasEmpty) {
@@ -354,6 +361,7 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
                         channelInfo,
                         channelStatePersister,
                         sequenceNumber);
+                // buffersInBacklog is set to 0 as these are recovered buffers.
                 return Optional.of(new BufferAndAvailability(buf, type, 0, sequenceNumber));
             }
 
@@ -803,6 +811,11 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
                 count);
     }
 
+    /**
+     * Persists inflight data on checkpoint start. During recovery, persists recovered buffers before
+     * the matching RecoveryCheckpointBarrier sentinel; after recovery, uses the normal
+     * remote-channel barrier sequence tracking and persists overtaken live buffers.
+     */
     public void checkpointStarted(CheckpointBarrier barrier) throws CheckpointException {
         try {
             List<Buffer> toPersist;
@@ -817,12 +830,16 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
                             recoveredQueue.isEmpty(),
                             "recoveredQueue must be empty when not in recovery");
                     if (barrier.getId() < lastBarrierId) {
+                        // Currently, at most one active unaligned checkpoint is possible.
                         throw new CheckpointException(
                                 String.format(
                                         "Sequence number for checkpoint %d is not known (it was likely been overwritten by a newer checkpoint %d)",
                                         barrier.getId(), lastBarrierId),
                                 CheckpointFailureReason.CHECKPOINT_SUBSUMED);
                     } else if (barrier.getId() > lastBarrierId) {
+                        // This channel has received some obsolete barrier, older compared to the
+                        // checkpointId which we are processing right now, and we should ignore that
+                        // obsoleted checkpoint barrier sequence number.
                         resetLastBarrier();
                     }
                     toPersist = getInflightBuffersUnsafe(barrier.getId());
@@ -1017,6 +1034,11 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
         setError(cause);
     }
 
+    /**
+     * Allows reads while recovery data or already queued network data is available before the remote
+     * partition request is fully initialized. If neither recovery nor queued data can satisfy the
+     * read, require the partition request client to be initialized.
+     */
     private void checkReadability() throws IOException {
         assert Thread.holdsLock(receivedBuffers);
         if (!recoveredQueue.isInRecovery() && receivedBuffers.isEmpty()) {

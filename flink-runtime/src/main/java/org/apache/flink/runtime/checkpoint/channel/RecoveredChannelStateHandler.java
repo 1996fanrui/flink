@@ -68,7 +68,11 @@ interface RecoveredChannelStateHandler<Info, Context> extends AutoCloseable {
 
     BufferWithContext<Context> getBuffer(Info info) throws IOException, InterruptedException;
 
-    /** Recovers the data and takes ownership of {@code bufferWithContext}. */
+    /**
+     * Recover the data from buffer. This method is taking over the ownership of the
+     * bufferWithContext and is fully responsible for cleaning it up both on the happy path and in
+     * case of an error.
+     */
     void recover(Info info, int oldSubtaskIndex, BufferWithContext<Context> bufferWithContext)
             throws IOException, InterruptedException;
 }
@@ -82,6 +86,10 @@ class InputChannelRecoveredStateHandler
     private final Map<InputChannelInfo, RecoveredInputChannel> rescaledChannels = new HashMap<>();
     private final Map<Integer, RescaleMappings> oldToNewMappings = new HashMap<>();
 
+    /**
+     * Optional filtering handler for filtering recovered buffers. When non-null, filtering is
+     * performed during recovery in the channel-state-unspilling thread.
+     */
     @Nullable private final ChannelStateFilteringHandler filteringHandler;
 
     /** Network buffer memory segment size in bytes. Used to size the reusable pre-filter buffer. */
@@ -143,6 +151,21 @@ class InputChannelRecoveredStateHandler
         return new BufferWithContext<>(wrap(buffer), buffer);
     }
 
+    /**
+     * Allocates a pre-filter buffer from a reusable heap segment (isolated from the Network Buffer
+     * Pool) in filtering mode.
+     *
+     * <p>Memory management: a single {@link MemorySegment} per task is lazily allocated on first
+     * invocation and reused across every subsequent call. The custom {@link BufferRecycler} does
+     * not free the segment; it only flips {@link #preFilterBufferInUse} back to {@code false} so the
+     * next call can reuse it. The segment itself is freed in {@link #close()}.
+     *
+     * <p>Runtime invariant check: the one-at-a-time invariant on pre-filter buffers is guaranteed
+     * by Flink's serial recovery loop and the deserializer's ownership contract. This method
+     * asserts the invariant before issuing a buffer: if a previously issued buffer has not yet been
+     * recycled, it throws {@link IllegalStateException} so any future regression fails loudly
+     * instead of silently corrupting memory.
+     */
     private BufferWithContext<Buffer> getPreFilterBuffer() {
         checkState(
                 !preFilterBufferInUse,

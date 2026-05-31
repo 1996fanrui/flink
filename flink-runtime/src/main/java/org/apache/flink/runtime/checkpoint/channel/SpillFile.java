@@ -39,6 +39,8 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 /**
  * Append-only, segmented storage for recovered channel-state buffers.
  *
+ * <p>A segment is one physical spill file. An entry is one buffer payload appended to a segment.
+ *
  * <p>Mutations are single-writer and intentionally unsynchronized; callers must serialize them via
  * the channel IO executor.
  */

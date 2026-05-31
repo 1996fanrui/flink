@@ -185,7 +185,10 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     }
 
     public void finishReadRecoveredState() throws IOException {
-        // Without checkpointing-during-recovery, the gate still waits for this sentinel to be read.
+        // In legacy recovery, adding the sentinel and completing bufferFilteringCompleteFuture must
+        // be atomic under receivedBuffers lock. The sentinel is the event that completes
+        // stateConsumedFuture when consumed by the task thread, and conversion is only allowed after
+        // bufferFilteringCompleteFuture is done.
         synchronized (receivedBuffers) {
             if (!inputGate.isCheckpointingDuringRecoveryEnabled()) {
                 onRecoveredStateBuffer(

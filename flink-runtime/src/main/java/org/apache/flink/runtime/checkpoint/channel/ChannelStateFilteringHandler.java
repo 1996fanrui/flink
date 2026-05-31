@@ -48,7 +48,14 @@ import java.util.Map;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
-/** Filters recovered channel-state buffers during rescaling. */
+/**
+ * Filters recovered channel state buffers during the channel-state-unspilling phase, removing
+ * records that do not belong to the current subtask after rescaling.
+ *
+ * <p>Uses a per-gate architecture: each {@link InputGate} gets its own {@link GateFilterHandler}
+ * with the correct serializer, so multi-input tasks (e.g., TwoInputStreamTask) correctly
+ * deserialize different record types on different gates.
+ */
 @Internal
 public class ChannelStateFilteringHandler implements Closeable {
 
@@ -59,7 +66,11 @@ public class ChannelStateFilteringHandler implements Closeable {
         this.gateHandlers = checkNotNull(gateHandlers);
     }
 
-    /** Returns {@code null} when no gate needs filtering. */
+    /**
+     * Creates a handler from the recovery context, building per-gate virtual channels based on
+     * rescaling descriptors. Returns {@code null} if no filtering is needed (e.g., source tasks or
+     * no rescaling).
+     */
     @Nullable
     public static ChannelStateFilteringHandler createFromContext(
             RecordFilterContext filterContext, InputGate[] inputGates) {
@@ -90,8 +101,14 @@ public class ChannelStateFilteringHandler implements Closeable {
     }
 
     /**
-     * Filters one recovered buffer and writes surviving records to {@code bufferSupplier}. The
-     * deserializer may retain partial records across calls.
+     * Filters a recovered buffer from the specified virtual channel, writing only the records that
+     * belong to the current subtask.
+     *
+     * <p>One source buffer may produce 0 to N output buffers: 0 if all records are filtered out, and
+     * potentially more than 1 when a spanning record completes in this buffer. The deserializer
+     * caches partial record data from previous buffers, so the output may contain data that was not
+     * in the current source buffer, causing the total output size to exceed one buffer capacity.
+     * This can happen with any spanning record regardless of its size.
      */
     public void filterAndRewrite(
             int gateIndex,
@@ -144,6 +161,10 @@ public class ChannelStateFilteringHandler implements Closeable {
     // Private static helper methods
     // -------------------------------------------------------------------------------------------
 
+    /**
+     * Creates a {@link GateFilterHandler} for a single gate. The method-level type parameter
+     * ensures type safety within each gate while allowing different gates to have different types.
+     */
     @SuppressWarnings("unchecked")
     @Nullable
     private static <T> GateFilterHandler<T> createGateHandler(
@@ -207,6 +228,10 @@ public class ChannelStateFilteringHandler implements Closeable {
         return new GateFilterHandler<>(gateVirtualChannels, elementSerializer);
     }
 
+    /**
+     * Collects all old channel indexes that are mapped from any new channel index in this gate.
+     * channelMapping is new-to-old, so we iterate new indexes and collect their old counterparts.
+     */
     private static int[] getOldChannelIndexes(RescaleMappings channelMapping, int numChannels) {
         List<Integer> oldIndexes = new ArrayList<>();
         for (int newIndex = 0; newIndex < numChannels; newIndex++) {
@@ -236,6 +261,7 @@ public class ChannelStateFilteringHandler implements Closeable {
 
     /**
      * Provides buffers for re-serializing filtered records, tagged with the destination channel.
+     * Implementations may block.
      */
     @FunctionalInterface
     public interface BufferSupplier {
@@ -243,6 +269,10 @@ public class ChannelStateFilteringHandler implements Closeable {
                 throws IOException, InterruptedException;
     }
 
+    /**
+     * Handles record filtering for a single input gate. Each gate has its own serializer and set of
+     * virtual channels, allowing different gates to handle different record types independently.
+     */
     static class GateFilterHandler<T> {
 
         private final Map<SubtaskConnectionDescriptor, VirtualChannel<T>> virtualChannels;
@@ -260,6 +290,10 @@ public class ChannelStateFilteringHandler implements Closeable {
             this.outputSerializer = new DataOutputSerializer(128);
         }
 
+        /**
+         * Deserializes records from {@code sourceBuffer}, applies the virtual channel's record
+         * filter, and immediately re-serializes each surviving record into output buffers.
+         */
         void filterAndRewrite(
                 int oldSubtaskIndex,
                 int oldChannelIndex,
@@ -310,6 +344,13 @@ public class ChannelStateFilteringHandler implements Closeable {
             }
         }
 
+        /**
+         * Serializes a single stream element into the current buffer using the length-prefixed
+         * format (4-byte big-endian length + record bytes) expected by Flink's record
+         * deserializers. Spills into new buffers from {@code bufferSupplier} when needed.
+         *
+         * @return the buffer to continue writing into (may differ from the input buffer).
+         */
         private Buffer serializeElement(
                 StreamElement element,
                 InputChannelInfo newChannelInfo,
@@ -344,6 +385,12 @@ public class ChannelStateFilteringHandler implements Closeable {
             lengthBuffer[3] = (byte) length;
         }
 
+        /**
+         * Writes data to the current buffer, spilling into new buffers from {@code bufferSupplier}
+         * when the current one is full.
+         *
+         * @return the buffer to continue writing into (may differ from the input buffer).
+         */
         private Buffer writeDataToBuffer(
                 byte[] data,
                 int dataOffset,
@@ -359,6 +406,8 @@ public class ChannelStateFilteringHandler implements Closeable {
                 int writableBytes = currentBuffer.getMaxCapacity() - currentBuffer.getSize();
 
                 if (writableBytes == 0) {
+                    // Buffer is full; ask the supplier to flush or rotate the current buffer and
+                    // return a writable one.
                     currentBuffer = bufferSupplier.requestBufferBlocking(newChannelInfo);
                     writableBytes = currentBuffer.getMaxCapacity();
                 }
