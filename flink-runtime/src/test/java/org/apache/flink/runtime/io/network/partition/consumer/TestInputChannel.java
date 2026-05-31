@@ -18,8 +18,8 @@
 
 package org.apache.flink.runtime.io.network.partition.consumer;
 
-import org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointBarrier;
 import org.apache.flink.metrics.SimpleCounter;
+import org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointBarrier;
 import org.apache.flink.runtime.event.TaskEvent;
 import org.apache.flink.runtime.io.network.api.EndOfData;
 import org.apache.flink.runtime.io.network.api.EndOfPartitionEvent;
