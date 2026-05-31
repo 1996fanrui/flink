@@ -264,10 +264,10 @@ class InputChannelRecoveredStateHandler
      */
     private void recoverPassThroughToSpill(InputChannelInfo channelInfo, Buffer source)
             throws IOException {
-        FilteredBufferWriter accumulator = ensureSpillFileWriter().getAccumulator();
+        SpillFileWriter writer = ensureSpillFileWriter();
         ByteBuffer src = source.getNioBufferReadable();
         while (src.hasRemaining()) {
-            Buffer dst = accumulator.requestBufferBlocking(channelInfo);
+            Buffer dst = writer.requestBufferBlocking(channelInfo);
             int writable = dst.getMaxCapacity() - dst.getSize();
             int toCopy = Math.min(writable, src.remaining());
             ByteBuffer slice = src.slice();
@@ -286,7 +286,6 @@ class InputChannelRecoveredStateHandler
             throws IOException, InterruptedException {
         checkState(filteringHandler != null, "filtering handler not set.");
         SpillFileWriter writer = ensureSpillFileWriter();
-        FilteredBufferWriter accumulator = writer.getAccumulator();
 
         // Pass the mapped (post-rescale) channel's InputChannelInfo to the filter chain so each
         // filter-internal bufferSupplier.requestBufferBlocking(...) call tags the accumulator
@@ -300,7 +299,7 @@ class InputChannelRecoveredStateHandler
                 channelInfo.getInputChannelIdx(),
                 channel.getChannelInfo(),
                 retainedBuffer,
-                accumulator);
+                writer);
     }
 
     /**
@@ -333,8 +332,7 @@ class InputChannelRecoveredStateHandler
                 };
         Buffer outputBuffer = new NetworkBuffer(postFilterSegment, noOpRecycler);
 
-        FilteredBufferWriter accumulator = new FilteredBufferWriter(spillFile, outputBuffer);
-        spillFileWriter = new SpillFileWriter(spillFile, accumulator);
+        spillFileWriter = new SpillFileWriter(spillFile, outputBuffer);
         return spillFileWriter;
     }
 

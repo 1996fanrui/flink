@@ -295,8 +295,8 @@ public class ChannelStateFilteringHandler implements Closeable {
          * Deserializes records from {@code sourceBuffer}, applies the virtual channel's record
          * filter, and immediately re-serializes each surviving record into buffers obtained from
          * {@code bufferSupplier}. The supplier owns the returned buffers (e.g. {@link
-         * FilteredBufferWriter} flushes them to the spill file on channel switch / buffer full);
-         * this method does NOT call {@code recycleBuffer()} on supplier-returned buffers.
+         * SpillFileWriter} flushes them to the spill file on channel switch / buffer full); this
+         * method does NOT call {@code recycleBuffer()} on supplier-returned buffers.
          */
         void filterAndRewrite(
                 int oldSubtaskIndex,

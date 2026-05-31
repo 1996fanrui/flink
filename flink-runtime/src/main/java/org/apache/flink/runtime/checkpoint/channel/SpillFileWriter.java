@@ -18,27 +18,54 @@
 package org.apache.flink.runtime.checkpoint.channel;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.runtime.checkpoint.channel.ChannelStateFilteringHandler.BufferSupplier;
+import org.apache.flink.runtime.io.network.buffer.Buffer;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
+import static org.apache.flink.util.Preconditions.checkState;
 
 /**
- * Filter-phase facade that pairs the {@link SpillFile} lifecycle with the {@link
- * FilteredBufferWriter} accumulator. The drain phase obtains the frozen {@link SpillFile} via
- * {@link #getSpillFile} after {@link #close} has been called.
+ * Accumulates filter-phase output bytes for one input channel at a time and flushes to a {@link
+ * SpillFile} on two triggers: (a) the input channel switches, or (b) the accumulator buffer fills
+ * up. Both triggers are detected inside {@link #requestBufferBlocking(InputChannelInfo)}. {@link
+ * #close()} flushes any residual bytes.
+ *
+ * <p>The writer implements {@link BufferSupplier}: filter callers pass {@code this} as the supplier
+ * so that filter output bytes land directly in the accumulator — no intermediate buffer copy. The
+ * accumulator's underlying {@link org.apache.flink.core.memory.MemorySegment} comes from a single
+ * heap buffer that lives for the entire filter phase.
+ *
+ * <p>Single-writer invariant — every mutating method assumes the {@code channelIOExecutor} is the
+ * sole caller. No internal synchronization is performed.
  */
 @Internal
-public final class SpillFileWriter implements Closeable {
+public final class SpillFileWriter implements Closeable, BufferSupplier {
 
     private final SpillFile spillFile;
-    private final FilteredBufferWriter accumulator;
+
+    /**
+     * The single accumulator buffer. Wraps a heap {@link
+     * org.apache.flink.core.memory.MemorySegment} with a no-op recycler so the segment survives
+     * intermediate {@code recycleBuffer()} calls from the filter; the owning handler frees the
+     * segment in its {@code close()}.
+     */
+    private final Buffer outputBuffer;
+
+    /**
+     * The input channel that owns the bytes currently sitting in {@link #outputBuffer}. {@code
+     * null} when the accumulator is empty.
+     */
+    private InputChannelInfo currentChannel;
+
     private boolean closed = false;
 
-    public SpillFileWriter(SpillFile spillFile, FilteredBufferWriter accumulator) {
+    public SpillFileWriter(SpillFile spillFile, Buffer outputBuffer) {
         this.spillFile = checkNotNull(spillFile);
-        this.accumulator = checkNotNull(accumulator);
+        this.outputBuffer = checkNotNull(outputBuffer);
     }
 
     /** Returns the underlying {@link SpillFile} so the drain can read it post-close. */
@@ -47,22 +74,38 @@ public final class SpillFileWriter implements Closeable {
     }
 
     /**
-     * Package-private access to the underlying accumulator. The filter-phase wiring in {@code
-     * RecoveredChannelStateHandler} passes it directly as the filter's {@code BufferSupplier}; the
-     * filter tags each {@code requestBufferBlocking} call with the destination channel so the
-     * accumulator flushes whenever the channel switches.
+     * {@link BufferSupplier} entry. Returns the single accumulator buffer to the filter, tagged
+     * with the destination channel. Flushes the accumulator first if either (a) the previous
+     * channel was different or (b) the accumulator is already at capacity.
      */
-    FilteredBufferWriter getAccumulator() {
-        return accumulator;
+    @Override
+    public Buffer requestBufferBlocking(InputChannelInfo channelInfo) throws IOException {
+        checkNotNull(channelInfo);
+        boolean channelSwitch = currentChannel != null && !currentChannel.equals(channelInfo);
+        boolean bufferFull = outputBuffer.getSize() == outputBuffer.getMaxCapacity();
+        if ((channelSwitch || bufferFull) && outputBuffer.getSize() > 0) {
+            flush();
+        }
+        currentChannel = channelInfo;
+        return outputBuffer;
+    }
+
+    /** Flushes readable accumulator bytes to the spill file and resets the buffer. */
+    public void flush() throws IOException {
+        if (outputBuffer.getSize() == 0) {
+            return;
+        }
+        checkState(currentChannel != null, "flush invoked with no currentChannel");
+        ByteBuffer payload = outputBuffer.getNioBufferReadable();
+        spillFile.append(currentChannel, payload);
+        outputBuffer.setReaderIndex(0);
+        outputBuffer.setSize(0);
+        currentChannel = null;
     }
 
     /**
-     * Closes the accumulator (flushing residual bytes). Does not touch the {@link SpillFile}
-     * lifecycle: the producer (the handler that constructed this writer) holds the only initial
-     * ref-count grant on the SpillFile, and that grant must outlive this close — the drain runs
-     * later on a different thread and needs the on-disk segments to still exist. The producer grant
-     * is transferred to the {@code SpillFileReader} at handoff time; segments are deleted only when
-     * both the producer-transferred grant and the drain's grant have been released.
+     * Flushes residual bytes. Does not touch the {@link SpillFile} lifecycle: the producer holds
+     * the initial ref-count grant until handoff to the drain reader.
      */
     @Override
     public void close() throws IOException {
@@ -70,6 +113,6 @@ public final class SpillFileWriter implements Closeable {
             return;
         }
         closed = true;
-        accumulator.close();
+        flush();
     }
 }

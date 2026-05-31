@@ -40,21 +40,54 @@ class SpillFileWriterTest {
     private static final int BUF_SIZE = MemoryManager.DEFAULT_PAGE_SIZE;
 
     @Test
-    void testCloseFlushesResidualBytes() throws Exception {
-        // writer.close() must flush residual bytes from the accumulator into the spill file. The
-        // SpillFile lifecycle itself (acquire/release/close) is NOT the writer's concern — that is
-        // owned by the producer (RecoveredChannelStateHandler) and the handoff path that transfers
-        // the grant to the drain reader.
+    void testChannelSwitchFlushesAndKeepsEntryPerChannel() throws Exception {
         SpillFile spillFile = new SpillFile(tempDir, 4096);
-        FilteredBufferWriter accumulator = newAccumulator(spillFile);
-        SpillFileWriter writer = new SpillFileWriter(spillFile, accumulator);
+        try (SpillFileWriter writer = newWriter(spillFile)) {
+            InputChannelInfo c0 = new InputChannelInfo(0, 0);
+            InputChannelInfo c1 = new InputChannelInfo(0, 1);
 
-        Buffer slot = accumulator.requestBufferBlocking(new InputChannelInfo(0, 0));
+            writeBytes(writer.requestBufferBlocking(c0), 100, (byte) 0x41);
+            assertThat(spillFile.entries()).isEmpty();
+
+            Buffer slotForC1 = writer.requestBufferBlocking(c1);
+            assertThat(spillFile.entries()).hasSize(1);
+            assertThat(spillFile.entries().get(0).channelInfo).isEqualTo(c0);
+            assertThat(spillFile.entries().get(0).length).isEqualTo(100);
+
+            writeBytes(slotForC1, 50, (byte) 0x42);
+        }
+
+        assertThat(spillFile.entries()).hasSize(2);
+        assertThat(spillFile.entries().get(1).channelInfo).isEqualTo(new InputChannelInfo(0, 1));
+        assertThat(spillFile.entries().get(1).length).isEqualTo(50);
+    }
+
+    @Test
+    void testBufferFullFlushesInsideRequest() throws Exception {
+        SpillFile spillFile = new SpillFile(tempDir, 4096);
+        try (SpillFileWriter writer = newWriter(spillFile)) {
+            InputChannelInfo c0 = new InputChannelInfo(0, 0);
+            writeBytes(writer.requestBufferBlocking(c0), BUF_SIZE, (byte) 0x55);
+            assertThat(spillFile.entries()).isEmpty();
+
+            Buffer fresh = writer.requestBufferBlocking(c0);
+            assertThat(spillFile.entries()).hasSize(1);
+            assertThat(spillFile.entries().get(0).channelInfo).isEqualTo(c0);
+            assertThat(spillFile.entries().get(0).length).isEqualTo(BUF_SIZE);
+            assertThat(fresh.getSize()).isZero();
+        }
+    }
+
+    @Test
+    void testCloseFlushesResidualBytes() throws Exception {
+        SpillFile spillFile = new SpillFile(tempDir, 4096);
+        SpillFileWriter writer = newWriter(spillFile);
+
+        Buffer slot = writer.requestBufferBlocking(new InputChannelInfo(0, 0));
         writeBytes(slot, 7, (byte) 0x33);
         assertThat(spillFile.entries()).isEmpty();
 
         writer.close();
-
         assertThat(spillFile.entries()).hasSize(1);
         assertThat(spillFile.entries().get(0).length).isEqualTo(7);
     }
@@ -62,11 +95,9 @@ class SpillFileWriterTest {
     @Test
     void testCloseIsIdempotent() throws Exception {
         SpillFile spillFile = new SpillFile(tempDir, 4096);
-        FilteredBufferWriter accumulator = newAccumulator(spillFile);
-        SpillFileWriter writer = new SpillFileWriter(spillFile, accumulator);
+        SpillFileWriter writer = newWriter(spillFile);
 
         writer.close();
-        // Repeated close must not throw and must not produce extra entries.
         writer.close();
         writer.close();
         assertThat(spillFile.entries()).isEmpty();
@@ -75,8 +106,7 @@ class SpillFileWriterTest {
     @Test
     void testGetSpillFileReturnsConstructorArg() {
         SpillFile spillFile = new SpillFile(tempDir, 4096);
-        FilteredBufferWriter accumulator = newAccumulator(spillFile);
-        SpillFileWriter writer = new SpillFileWriter(spillFile, accumulator);
+        SpillFileWriter writer = newWriter(spillFile);
         assertThat(writer.getSpillFile()).isSameAs(spillFile);
     }
 
@@ -84,8 +114,8 @@ class SpillFileWriterTest {
     // Helpers
     // -------------------------------------------------------------------------------------------
 
-    private static FilteredBufferWriter newAccumulator(SpillFile spillFile) {
-        return new FilteredBufferWriter(spillFile, newHeapBuffer(BUF_SIZE));
+    private static SpillFileWriter newWriter(SpillFile spillFile) {
+        return new SpillFileWriter(spillFile, newHeapBuffer(BUF_SIZE));
     }
 
     private static Buffer newHeapBuffer(int size) {
