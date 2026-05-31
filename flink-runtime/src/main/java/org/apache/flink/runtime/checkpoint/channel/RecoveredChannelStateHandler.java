@@ -157,8 +157,8 @@ class InputChannelRecoveredStateHandler
      *
      * <p>Memory management: a single {@link MemorySegment} per task is lazily allocated on first
      * invocation and reused across every subsequent call. The custom {@link BufferRecycler} does
-     * not free the segment; it only flips {@link #preFilterBufferInUse} back to {@code false} so the
-     * next call can reuse it. The segment itself is freed in {@link #close()}.
+     * not free the segment; it only flips {@link #preFilterBufferInUse} back to {@code false} so
+     * the next call can reuse it. The segment itself is freed in {@link #close()}.
      *
      * <p>Runtime invariant check: the one-at-a-time invariant on pre-filter buffers is guaranteed
      * by Flink's serial recovery loop and the deserializer's ownership contract. This method
@@ -284,12 +284,10 @@ class InputChannelRecoveredStateHandler
     }
 
     private Path resolveSpillBaseDir() throws IOException {
-        String root;
-        if (spillTmpDirectories != null && spillTmpDirectories.length > 0) {
-            root = spillTmpDirectories[0];
-        } else {
-            root = System.getProperty("java.io.tmpdir");
-        }
+        checkArgument(
+                spillTmpDirectories != null && spillTmpDirectories.length > 0,
+                "Spilling temporary directories must not be empty.");
+        String root = spillTmpDirectories[0];
         return Files.createTempDirectory(Paths.get(root), "flink-channel-spill-");
     }
 

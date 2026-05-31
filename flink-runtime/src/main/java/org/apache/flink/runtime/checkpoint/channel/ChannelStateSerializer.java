@@ -43,6 +43,8 @@ interface ChannelStateSerializer {
 
     void writeData(DataOutputStream stream, Buffer... flinkBuffers) throws IOException;
 
+    void writeData(DataOutputStream stream, byte[] bytes, int length) throws IOException;
+
     void readHeader(InputStream stream) throws IOException;
 
     int readLength(InputStream stream) throws IOException;
@@ -163,6 +165,18 @@ class ChannelStateSerializerImpl implements ChannelStateSerializer {
             ByteBuf nettyByteBuf = buffer.asByteBuf();
             nettyByteBuf.getBytes(nettyByteBuf.readerIndex(), stream, nettyByteBuf.readableBytes());
         }
+    }
+
+    @Override
+    public void writeData(DataOutputStream stream, byte[] bytes, int length) throws IOException {
+        Preconditions.checkArgument(length >= 0, "negative state size");
+        Preconditions.checkArgument(
+                length <= bytes.length,
+                "state size %s exceeds source byte array length %s",
+                length,
+                bytes.length);
+        stream.writeInt(length);
+        stream.write(bytes, 0, length);
     }
 
     private int getSize(Buffer[] buffers) {

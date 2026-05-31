@@ -182,14 +182,22 @@ class ChannelStateCheckpointWriter {
                         while (chunks.hasNext()) {
                             SpillFileReader.Chunk chunk = chunks.next();
                             long offset = checkpointStream.getPos();
-                            dataStream.writeInt(chunk.length);
-                            dataStream.write(chunk.data, 0, chunk.length);
+                            String action = "ChannelStateCheckpointWriter#writeInputFromSpill";
+                            try (AutoCloseable ignored =
+                                    NetworkActionsLogger.measureIO(action, chunk)) {
+                                serializer.writeData(dataStream, chunk.data, chunk.length);
+                            }
                             long size = checkpointStream.getPos() - offset;
                             pendingResult
                                     .getInputChannelOffsets()
                                     .computeIfAbsent(
                                             chunk.channelInfo, unused -> new StateContentMetaInfo())
                                     .withDataAdded(offset, size);
+                            NetworkActionsLogger.tracePersist(
+                                    action,
+                                    chunk.length + " bytes",
+                                    chunk.channelInfo,
+                                    checkpointId);
                         }
                     } finally {
                         chunks.close();

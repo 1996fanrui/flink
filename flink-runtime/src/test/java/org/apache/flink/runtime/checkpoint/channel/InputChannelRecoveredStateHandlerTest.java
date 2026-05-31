@@ -145,6 +145,28 @@ class InputChannelRecoveredStateHandlerTest extends RecoveredChannelStateHandler
                 null);
     }
 
+    private InputChannelRecoveredStateHandler buildCheckpointingDuringRecoveryHandler(
+            String[] spillTmpDirectories) {
+        return new InputChannelRecoveredStateHandler(
+                new InputGate[] {inputGate},
+                new InflightDataRescalingDescriptor(
+                        new InflightDataRescalingDescriptor
+                                        .InflightDataGateOrPartitionRescalingDescriptor[] {
+                            new InflightDataRescalingDescriptor
+                                    .InflightDataGateOrPartitionRescalingDescriptor(
+                                    new int[] {1},
+                                    RescaleMappings.identity(1, 1),
+                                    new HashSet<>(),
+                                    InflightDataRescalingDescriptor
+                                            .InflightDataGateOrPartitionRescalingDescriptor
+                                            .MappingType.IDENTITY)
+                        }),
+                null,
+                true,
+                MemoryManager.DEFAULT_PAGE_SIZE,
+                spillTmpDirectories);
+    }
+
     @Test
     void testBufferDistributedToMultipleInputChannelsThrowsException() throws Exception {
         // Test constraint that prevents buffer distribution to multiple channels
@@ -303,5 +325,29 @@ class InputChannelRecoveredStateHandlerTest extends RecoveredChannelStateHandler
 
         assertThat(segment.isFreed()).isTrue();
         assertThat(filteringHandler.getPreFilterSegmentForTesting()).isNull();
+    }
+
+    @Test
+    void testCheckpointingDuringRecoveryRequiresSpillDirectories() throws Exception {
+        assertRecoverRequiresSpillDirectories(null);
+        assertRecoverRequiresSpillDirectories(new String[0]);
+    }
+
+    private void assertRecoverRequiresSpillDirectories(String[] spillTmpDirectories)
+            throws Exception {
+        try (InputChannelRecoveredStateHandler handler =
+                buildCheckpointingDuringRecoveryHandler(spillTmpDirectories)) {
+            RecoveredChannelStateHandler.BufferWithContext<Buffer> bufferWithContext =
+                    handler.getBuffer(channelInfo);
+            bufferWithContext
+                    .context
+                    .getMemorySegment()
+                    .put(bufferWithContext.context.getMemorySegmentOffset(), new byte[] {1});
+            bufferWithContext.context.setSize(1);
+
+            assertThatThrownBy(() -> handler.recover(channelInfo, 1, bufferWithContext))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("Spilling temporary directories must not be empty");
+        }
     }
 }

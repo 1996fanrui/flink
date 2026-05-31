@@ -46,6 +46,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
@@ -104,8 +105,8 @@ public class ChannelStateFilteringHandler implements Closeable {
      * Filters a recovered buffer from the specified virtual channel, writing only the records that
      * belong to the current subtask.
      *
-     * <p>One source buffer may produce 0 to N output buffers: 0 if all records are filtered out, and
-     * potentially more than 1 when a spanning record completes in this buffer. The deserializer
+     * <p>One source buffer may produce 0 to N output buffers: 0 if all records are filtered out,
+     * and potentially more than 1 when a spanning record completes in this buffer. The deserializer
      * caches partial record data from previous buffers, so the output may contain data that was not
      * in the current source buffer, causing the total output size to exceed one buffer capacity.
      * This can happen with any spanning record regardless of its size.
@@ -247,22 +248,17 @@ public class ChannelStateFilteringHandler implements Closeable {
 
     private static RecordDeserializer<DeserializationDelegate<StreamElement>> createDeserializer(
             String[] tmpDirectories) {
-        if (tmpDirectories != null && tmpDirectories.length > 0) {
-            return new SpillingAdaptiveSpanningRecordDeserializer<>(tmpDirectories);
-        } else {
-            String[] defaultDirs = new String[] {System.getProperty("java.io.tmpdir")};
-            return new SpillingAdaptiveSpanningRecordDeserializer<>(defaultDirs);
-        }
+        checkArgument(
+                tmpDirectories != null && tmpDirectories.length > 0,
+                "Spilling temporary directories must not be empty.");
+        return new SpillingAdaptiveSpanningRecordDeserializer<>(tmpDirectories);
     }
 
     // -------------------------------------------------------------------------------------------
     // Inner classes
     // -------------------------------------------------------------------------------------------
 
-    /**
-     * Provides buffers for re-serializing filtered records, tagged with the destination channel.
-     * Implementations may block.
-     */
+    /** Provides buffers for re-serializing filtered records for the destination channel. */
     @FunctionalInterface
     public interface BufferSupplier {
         Buffer requestBufferBlocking(InputChannelInfo channelInfo)

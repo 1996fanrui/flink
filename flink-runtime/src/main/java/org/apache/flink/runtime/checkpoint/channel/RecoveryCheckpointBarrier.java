@@ -22,8 +22,6 @@ import org.apache.flink.core.memory.DataInputView;
 import org.apache.flink.core.memory.DataOutputView;
 import org.apache.flink.runtime.event.RuntimeEvent;
 
-import java.io.IOException;
-
 /** Task-local event marking the recovery-state cut for a recovery checkpoint. */
 @Internal
 public final class RecoveryCheckpointBarrier extends RuntimeEvent {
@@ -39,8 +37,10 @@ public final class RecoveryCheckpointBarrier extends RuntimeEvent {
     }
 
     @Override
-    public void write(DataOutputView out) throws IOException {
-        out.writeLong(checkpointId);
+    public void write(DataOutputView out) {
+        throw new UnsupportedOperationException(
+                "RecoveryCheckpointBarrier must be serialized via EventSerializer's dedicated"
+                        + " type-tag path, not reflective write().");
     }
 
     @Override
