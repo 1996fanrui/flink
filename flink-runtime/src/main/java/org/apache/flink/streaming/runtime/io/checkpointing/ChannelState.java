@@ -59,17 +59,8 @@ final class ChannelState {
 
     private final CheckpointableInput[] inputs;
 
-    /**
-     * Resolved to the live {@code SpillFileReader} when the recovery-spill path is active; {@link
-     * RecoveryCheckpointTrigger#NO_OP} otherwise. The no-op returns an empty {@link
-     * CloseableIterator} singleton and inserts no barriers, keeping the dispatcher branch-free.
-     */
     private final RecoveryCheckpointTrigger recoveryCheckpointTrigger;
 
-    /**
-     * Channel-state writer for the unaligned-checkpoint path; {@link ChannelStateWriter#NO_OP} on
-     * the at-least-once / disabled UC path.
-     */
     private final ChannelStateWriter channelStateWriter;
 
     public ChannelState(CheckpointableInput[] inputs) {
@@ -134,23 +125,7 @@ final class ChannelState {
     }
 
     /**
-     * Coordinates checkpoint start across all inputs on the task thread:
-     *
-     * <ol>
-     *   <li>{@code recoveryCheckpointTrigger.snapshotAndInsertBarriers(cpId)} captures the on-disk
-     *       slice and inserts the {@code RecoveryCheckpointBarrier} sentinel into every channel
-     *       inside {@code SpillFileReader.lock}. {@link RecoveryCheckpointTrigger#NO_OP} returns an
-     *       empty {@link CloseableIterator} when no recovery spill is active.
-     *   <li>Per-input {@code checkpointStarted(barrier)} fan-out. Channel implementations select
-     *       their in-recovery vs not-in-recovery branch inside their own monitor.
-     *   <li>{@code channelStateWriter.addInputDataFromSpill(cpId, snap)} hands the snapshot to the
-     *       writer for async demux. The writer takes ownership of {@code snap} and closes the
-     *       iterator on both success (its {@code finally}) and abort (its cancel callback),
-     *       releasing the SpillFile ref-count grant exactly once.
-     * </ol>
-     *
-     * <p>If a synchronous error happens before ownership is transferred to the writer, the
-     * dispatcher closes {@code snap} itself in {@code finally} so the grant is not leaked.
+     * Transfers spill-snapshot ownership to the writer after all inputs observe checkpoint start.
      */
     public void onCheckpointStartedForAllInputs(CheckpointBarrier barrier)
             throws CheckpointException, IOException {
@@ -164,7 +139,6 @@ final class ChannelState {
             }
 
             channelStateWriter.addInputDataFromSpill(cpId, snap);
-            // Ownership transferred to the writer; it now closes the iterator.
             snap = null;
         } finally {
             if (snap != null) {

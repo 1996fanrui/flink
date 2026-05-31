@@ -82,7 +82,6 @@ class ChannelStateDispatcherTest {
     @Test
     void testStepOrderingFeatureOff() throws Exception {
         List<String> trace = new ArrayList<>();
-        // Use the production NO_OP trigger so we exercise the branch-free path.
         RecordingWriter writer = new RecordingWriter(trace);
         CheckpointableInput input = new RecordingInput(trace, "in1");
 
@@ -92,8 +91,6 @@ class ChannelStateDispatcherTest {
 
         state.onCheckpointStartedForAllInputs(newUnalignedBarrier());
 
-        // The dispatcher always invokes writer.addInputDataFromSpill; with the NO_OP trigger it
-        // receives the empty spill iterator and short-circuits in-line.
         assertThat(trace)
                 .containsExactly(
                         "in1.checkpointStarted:" + CHECKPOINT_ID,
@@ -116,8 +113,6 @@ class ChannelStateDispatcherTest {
 
         state.onCheckpointStartedForAllInputs(newUnalignedBarrier());
 
-        // Writer was invoked with an empty snapshot; the production writer-side implementation
-        // must short-circuit in-line rather than submit to the writer thread.
         assertThat(writer.lastSnapshotWasEmpty.get()).isTrue();
     }
 
@@ -130,7 +125,6 @@ class ChannelStateDispatcherTest {
                 Paths.get(
                         "src/main/java/org/apache/flink/streaming/runtime/io/checkpointing/ChannelState.java");
         if (!Files.exists(candidate)) {
-            // Fallback when the test runs with the repo root as cwd.
             candidate =
                     Paths.get(
                             "flink-runtime/src/main/java/org/apache/flink/streaming/runtime/io/checkpointing/ChannelState.java");
@@ -139,14 +133,12 @@ class ChannelStateDispatcherTest {
                 .as("Located ChannelState.java for the source-level invariant check")
                 .isTrue();
 
-        // Restrict the scan to the dispatcher method body.
         String all = new String(Files.readAllBytes(candidate));
         int methodStart = all.indexOf("public void onCheckpointStartedForAllInputs");
         assertThat(methodStart).isNotNegative();
         int methodEnd = all.indexOf("    private void", methodStart);
         String body = all.substring(methodStart, methodEnd > 0 ? methodEnd : all.length());
 
-        // Strip line comments so explanatory prose in // does not trip the heuristic.
         StringBuilder code = new StringBuilder();
         for (String line : body.split("\n")) {
             int idx = line.indexOf("//");
@@ -169,7 +161,6 @@ class ChannelStateDispatcherTest {
                         CheckpointStorageLocationReference.getDefault()));
     }
 
-    /** No-op stub used to capture step ordering without pulling in a mock framework. */
     private static final class RecordingTrigger implements RecoveryCheckpointTrigger {
         private final List<String> trace;
         private final CloseableIterator<SpillFileReader.Chunk> snapshot;
@@ -187,7 +178,6 @@ class ChannelStateDispatcherTest {
         }
     }
 
-    /** No-op writer recording the {@code addInputDataFromSpill} call and emptiness. */
     private static final class RecordingWriter implements ChannelStateWriter {
         private final List<String> trace;
         final AtomicBoolean lastSnapshotWasEmpty = new AtomicBoolean(false);
@@ -250,7 +240,6 @@ class ChannelStateDispatcherTest {
         public void close() {}
     }
 
-    /** Minimal {@link CheckpointableInput} stub that records calls and is otherwise inert. */
     private static final class RecordingInput implements CheckpointableInput {
 
         private final List<String> trace;

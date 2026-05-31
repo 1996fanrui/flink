@@ -162,11 +162,6 @@ class ChannelStateCheckpointWriter {
         }
     }
 
-    /**
-     * Writes spilled input-channel chunks demuxed by {@code chunk.channelInfo}, with a 4-byte
-     * length prefix per entry. Raw bytes flow straight into the checkpoint stream without per-chunk
-     * {@code Buffer} wrapping. The iterator is closed on both success and failure paths.
-     */
     void writeInputFromSpill(
             JobVertexID jobVertexID,
             int subtaskIndex,

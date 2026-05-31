@@ -38,11 +38,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/**
- * Verifies {@link ChannelStateWriterImpl#addInputDataFromSpill}: async demux for non-empty
- * snapshots, in-line short-circuit on empty snapshots, failure propagation via {@link
- * ChannelStateWriteResult}, and the chunks-always-closed invariant.
- */
 class ChannelStateWriterImplAddInputDataFromSpillTest {
 
     private static final JobID JOB_ID = new JobID();
@@ -165,7 +160,6 @@ class ChannelStateWriterImplAddInputDataFromSpillTest {
                 JOB_VERTEX_ID, TASK_NAME, SUBTASK_INDEX, new ConcurrentHashMap<>(), worker, 5);
     }
 
-    /** Tracks iteration and close calls so the test can assert on them deterministically. */
     private static final class TrackingChunkIterator
             implements CloseableIterator<SpillFileReader.Chunk> {
 
@@ -197,14 +191,11 @@ class ChannelStateWriterImplAddInputDataFromSpillTest {
         }
     }
 
-    /** Counts {@code submit} calls without actually executing the request bodies. */
     private static final class QueueCountingExecutor implements ChannelStateWriteRequestExecutor {
 
         final AtomicInteger submitCount = new AtomicInteger(0);
 
-        QueueCountingExecutor(JobID jobID) {
-            // jobID accepted only for signature parity with SyncChannelStateWriteRequestExecutor.
-        }
+        QueueCountingExecutor(JobID jobID) {}
 
         @Override
         public void submit(ChannelStateWriteRequest e) {

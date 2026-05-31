@@ -43,9 +43,6 @@ final class AlternatingCollectingBarriers extends AbstractAlternatingAlignedBarr
         state.prioritizeAllAnnouncements();
         CheckpointBarrier unalignedBarrier = checkpointBarrier.asUnaligned();
         controller.initInputsCheckpoint(unalignedBarrier);
-        // Aligned-to-UC timeout reaches the same dispatcher as the from-the-start UC path. The
-        // dispatcher is branch-free: feature-off / no-recovery state routes through null-object
-        // trigger and writer with identical semantics.
         state.onCheckpointStartedForAllInputs(unalignedBarrier);
         controller.triggerGlobalCheckpoint(unalignedBarrier);
         return new AlternatingCollectingBarriersUnaligned(true, state);

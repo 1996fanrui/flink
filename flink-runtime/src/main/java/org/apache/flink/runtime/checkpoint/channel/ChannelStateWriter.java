@@ -190,11 +190,7 @@ public interface ChannelStateWriter extends Closeable {
     ChannelStateWriteResult getAndRemoveWriteResult(long checkpointId)
             throws IllegalArgumentException;
 
-    /**
-     * Records input-channel state from a spill file. The writer asynchronously demuxes entries by
-     * {@code entry.channelInfo} into each channel's checkpoint output. Ownership of {@code chunks}
-     * is transferred: the writer is responsible for closing it on both success and failure paths.
-     */
+    /** Records input-channel state from a spill file and takes ownership of {@code chunks}. */
     void addInputDataFromSpill(long checkpointId, CloseableIterator<SpillFileReader.Chunk> chunks);
 
     ChannelStateWriter NO_OP = new NoOpChannelStateWriter();

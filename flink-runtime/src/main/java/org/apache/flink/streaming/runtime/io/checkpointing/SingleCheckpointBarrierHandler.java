@@ -160,8 +160,6 @@ public class SingleCheckpointBarrierHandler extends CheckpointBarrierHandler {
             DelayableTimer registerTimer,
             boolean enableCheckpointAfterTasksFinished,
             CheckpointableInput... inputs) {
-        // Aligned-only path never enters the UC dispatcher (AbstractAlignedBarrierHandlerState has
-        // no UC entry), so ChannelState uses the null-object trigger / writer.
         return new SingleCheckpointBarrierHandler(
                 taskName,
                 toNotifyOnCheckpoint,

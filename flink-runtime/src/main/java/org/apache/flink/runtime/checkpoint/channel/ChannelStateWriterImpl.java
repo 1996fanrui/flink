@@ -239,8 +239,6 @@ public class ChannelStateWriterImpl implements ChannelStateWriter {
     @Override
     public void addInputDataFromSpill(
             long checkpointId, CloseableIterator<SpillFileReader.Chunk> chunks) {
-        // Empty snapshot: short-circuit without submitting to the writer thread. Closing the
-        // iterator still releases the sub-reader's SpillFile ref-count grant.
         if (!chunks.hasNext()) {
             try {
                 chunks.close();
@@ -259,9 +257,6 @@ public class ChannelStateWriterImpl implements ChannelStateWriter {
                     replayInputDataFromSpill(jobVertexID, subtaskIndex, checkpointId, chunks),
                     false);
         } catch (RuntimeException e) {
-            // enqueue's failure path already invoked request.cancel which closes the iterator
-            // (releasing the sub-reader's SpillFile ref-count grant; idempotent). Fail the write
-            // result so any concurrent waiter observes the failure too.
             ChannelStateWriteResult result = results.get(checkpointId);
             if (result != null) {
                 result.fail(e);

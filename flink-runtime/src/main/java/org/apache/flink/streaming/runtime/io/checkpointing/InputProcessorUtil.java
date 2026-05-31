@@ -125,9 +125,7 @@ public class InputProcessorUtil {
 
         Clock clock = SystemClock.getInstance();
         CheckpointingMode checkpointingMode = CheckpointingOptions.getCheckpointingMode(jobConf);
-        // Lazy proxy: the live trigger may not yet be resolvable at barrier-handler construction
-        // time (e.g. the SpillFileReader is only available after recovery filter completes), so
-        // the supplier is dereferenced at dispatch time.
+        // The spill reader may only become available after barrier-handler construction.
         RecoveryCheckpointTrigger lazyTrigger =
                 checkpointId -> {
                     RecoveryCheckpointTrigger resolved = recoveryCheckpointTriggerSupplier.get();
