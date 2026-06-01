@@ -43,7 +43,6 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
-import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 /**
@@ -101,7 +100,7 @@ public class InputProcessorUtil {
                 sourceInputs,
                 mailboxExecutor,
                 timerService,
-                () -> RecoveryCheckpointTrigger.NO_OP);
+                RecoveryCheckpointTrigger.NO_OP);
     }
 
     public static CheckpointBarrierHandler createCheckpointBarrierHandler(
@@ -114,7 +113,7 @@ public class InputProcessorUtil {
             List<StreamTaskSourceInput<?>> sourceInputs,
             MailboxExecutor mailboxExecutor,
             TimerService timerService,
-            Supplier<RecoveryCheckpointTrigger> recoveryCheckpointTriggerSupplier) {
+            RecoveryCheckpointTrigger recoveryCheckpointTrigger) {
 
         CheckpointableInput[] inputs =
                 Stream.<CheckpointableInput>concat(
@@ -125,13 +124,6 @@ public class InputProcessorUtil {
 
         Clock clock = SystemClock.getInstance();
         CheckpointingMode checkpointingMode = CheckpointingOptions.getCheckpointingMode(jobConf);
-        // The spill reader may only become available after barrier-handler construction.
-        RecoveryCheckpointTrigger lazyTrigger =
-                checkpointId -> {
-                    RecoveryCheckpointTrigger resolved = recoveryCheckpointTriggerSupplier.get();
-                    return (resolved != null ? resolved : RecoveryCheckpointTrigger.NO_OP)
-                            .snapshotAndInsertBarriers(checkpointId);
-                };
         ChannelStateWriter channelStateWriter = checkpointCoordinator.getChannelStateWriter();
         switch (checkpointingMode) {
             case EXACTLY_ONCE:
@@ -151,7 +143,7 @@ public class InputProcessorUtil {
                         inputs,
                         clock,
                         numberOfChannels,
-                        lazyTrigger,
+                        recoveryCheckpointTrigger,
                         channelStateWriter);
             case AT_LEAST_ONCE:
                 if (CheckpointingOptions.isUnalignedCheckpointEnabled(jobConf)) {

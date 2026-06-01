@@ -519,7 +519,8 @@ public class LocalInputChannel extends InputChannel
         }
         // If this is the last recovered buffer after delivery finished, dynamically check if
         // subpartitionView has data available. The last buffer's nextDataType may have been NONE
-        // while recovered data was still being delivered, but subpartitionView may already have data
+        // while recovered data was still being delivered, but subpartitionView may already have
+        // data
         // available now.
         return nextDataTypeOnUpstream;
     }

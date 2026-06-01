@@ -812,8 +812,8 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
     }
 
     /**
-     * Persists inflight data on checkpoint start. During recovery, persists recovered buffers before
-     * the matching RecoveryCheckpointBarrier sentinel; after recovery, uses the normal
+     * Persists inflight data on checkpoint start. During recovery, persists recovered buffers
+     * before the matching RecoveryCheckpointBarrier sentinel; after recovery, uses the normal
      * remote-channel barrier sequence tracking and persists overtaken live buffers.
      */
     public void checkpointStarted(CheckpointBarrier barrier) throws CheckpointException {
@@ -1035,9 +1035,9 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
     }
 
     /**
-     * Allows reads while recovery data or already queued network data is available before the remote
-     * partition request is fully initialized. If neither recovery nor queued data can satisfy the
-     * read, require the partition request client to be initialized.
+     * Allows reads while recovery data or already queued network data is available before the
+     * remote partition request is fully initialized. If neither recovery nor queued data can
+     * satisfy the read, require the partition request client to be initialized.
      */
     private void checkReadability() throws IOException {
         assert Thread.holdsLock(receivedBuffers);
