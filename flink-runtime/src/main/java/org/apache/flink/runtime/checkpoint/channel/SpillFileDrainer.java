@@ -82,13 +82,7 @@ public final class SpillFileDrainer implements RecoveryCheckpointTrigger, Closea
                         "Drain: no physical channel found for " + chunk.channelInfo);
             }
 
-            Buffer buf;
-            try {
-                buf = ch.requestRecoveryBufferBlocking();
-            } catch (CompletionException | CancellationException releaseDuringAwait) {
-                return;
-            }
-
+            Buffer buf = ch.requestRecoveryBufferBlocking();
             buf.getMemorySegment().put(buf.getMemorySegmentOffset(), chunk.data, 0, chunk.length);
             buf.setSize(chunk.length);
 

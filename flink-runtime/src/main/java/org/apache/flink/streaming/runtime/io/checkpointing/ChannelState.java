@@ -26,9 +26,7 @@ import org.apache.flink.runtime.checkpoint.channel.SpillFileReader;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
 import org.apache.flink.runtime.io.network.partition.consumer.CheckpointableInput;
 import org.apache.flink.util.CloseableIterator;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.flink.util.ExceptionUtils;
 
 import java.io.IOException;
 import java.util.HashMap;
@@ -44,8 +42,6 @@ import static org.apache.flink.util.Preconditions.checkState;
  * and {@link AbstractAlternatingAlignedBarrierHandlerState}.
  */
 final class ChannelState {
-
-    private static final Logger LOG = LoggerFactory.getLogger(ChannelState.class);
 
     private final Map<InputChannelInfo, Integer> sequenceNumberInAnnouncedChannels =
             new HashMap<>();
@@ -139,18 +135,18 @@ final class ChannelState {
             }
 
             channelStateWriter.addInputDataFromSpill(cpId, snap);
-            snap = null;
-        } finally {
+        } catch (Throwable t) {
             if (snap != null) {
                 try {
                     snap.close();
                 } catch (Exception suppressed) {
-                    LOG.warn(
-                            "Failed to release spill iterator after dispatcher error for checkpoint {}",
-                            cpId,
-                            suppressed);
+                    t.addSuppressed(suppressed);
                 }
             }
+            if (t instanceof CheckpointException) {
+                throw (CheckpointException) t;
+            }
+            ExceptionUtils.rethrowIOException(t);
         }
     }
 }
