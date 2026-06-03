@@ -57,13 +57,15 @@ class SpillFileTest {
 
     @Test
     void testSegmentRotationAcrossDefaultSegmentSize() throws IOException {
-        long segmentSize = 16L;
-        try (SpillFile spillFile = new SpillFile(tempDir, segmentSize, 4096)) {
-            InputChannelInfo channelInfo = new InputChannelInfo(0, 0);
-            byte[] payloadA = bytes(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
-            byte[] payloadB = bytes(11, 12, 13, 14, 15, 16, 17, 18);
-            byte[] payloadC = bytes(19, 20, 21, 22, 23);
+        InputChannelInfo channelInfo = new InputChannelInfo(0, 0);
+        byte[] payloadA = bytes(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
+        byte[] payloadB = bytes(11, 12, 13, 14, 15, 16, 17, 18);
+        byte[] payloadC = bytes(19, 20, 21, 22, 23);
 
+        // Sized so the first two records (payload plus inline header each) exactly fill segment 0,
+        // forcing the third to rotate into segment 1.
+        long segmentSize = 2L * SpillFile.HEADER_BYTES + payloadA.length + payloadB.length;
+        try (SpillFile spillFile = new SpillFile(tempDir, segmentSize, 4096)) {
             spillFile.append(channelInfo, ByteBuffer.wrap(payloadA));
             spillFile.append(channelInfo, ByteBuffer.wrap(payloadB));
             spillFile.append(channelInfo, ByteBuffer.wrap(payloadC));
@@ -90,7 +92,7 @@ class SpillFileTest {
             spillFile.append(channelInfo, ByteBuffer.wrap(payloadB));
 
             assertThat(spillFile.segments()).hasSize(2);
-            clearEntries(spillFile.segments().get(1));
+            markSegmentEmpty(spillFile.segments().get(1));
 
             try (SpillFileReader reader = spillFile.reader()) {
                 SpillFileReader.Chunk first = reader.peek();
@@ -100,7 +102,7 @@ class SpillFileTest {
 
                 assertThatThrownBy(reader::peek)
                         .isInstanceOf(IllegalStateException.class)
-                        .hasMessageContaining("has no entries");
+                        .hasMessageContaining("is empty");
             }
         }
     }
@@ -226,12 +228,10 @@ class SpillFileTest {
         return out;
     }
 
-    private static void clearEntries(SpillFile.SpillFileSegment segment) throws Exception {
-        Field entriesField = SpillFile.SpillFileSegment.class.getDeclaredField("entries");
-        entriesField.setAccessible(true);
-        Object entries = entriesField.get(segment);
-        assertThat(entries).isInstanceOf(List.class);
-        ((List<?>) entries).clear();
+    private static void markSegmentEmpty(SpillFile.SpillFileSegment segment) throws Exception {
+        Field currentEndField = SpillFile.SpillFileSegment.class.getDeclaredField("currentEnd");
+        currentEndField.setAccessible(true);
+        currentEndField.setLong(segment, 0L);
     }
 
     private static byte[] bytes(int... values) {

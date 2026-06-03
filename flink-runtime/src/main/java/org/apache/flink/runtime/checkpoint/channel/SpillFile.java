@@ -49,13 +49,22 @@ public final class SpillFile implements Closeable {
 
     public static final long DEFAULT_SEGMENT_SIZE_BYTES = 64L * 1024 * 1024;
 
+    /**
+     * Fixed per-record header preceding each payload on disk: {@code gateIdx (int) | channelIdx
+     * (int) | length (int)}. Metadata lives inline in the file rather than on the JVM heap, so a
+     * recovery with millions of buffers no longer keeps a per-buffer entry object alive.
+     */
+    static final int HEADER_BYTES = 3 * Integer.BYTES;
+
     static final class SpillFileSegment implements Closeable {
         final int segmentIndex;
         final Path path;
         final FileChannel channel;
-        long currentEnd;
 
-        private final List<Entry> entries = new ArrayList<>();
+        /**
+         * Bytes written so far: the rotation cursor for writers and the read boundary for readers.
+         */
+        long currentEnd;
 
         SpillFileSegment(int segmentIndex, Path path, FileChannel channel) {
             this.segmentIndex = segmentIndex;
@@ -64,25 +73,9 @@ public final class SpillFile implements Closeable {
             this.currentEnd = 0L;
         }
 
-        List<Entry> entries() {
-            return Collections.unmodifiableList(entries);
-        }
-
         @Override
         public void close() throws IOException {
             channel.close();
-        }
-    }
-
-    static final class Entry {
-        final InputChannelInfo channelInfo;
-        final long offset;
-        final int length;
-
-        Entry(InputChannelInfo channelInfo, long offset, int length) {
-            this.channelInfo = channelInfo;
-            this.offset = offset;
-            this.length = length;
         }
     }
 
@@ -90,6 +83,10 @@ public final class SpillFile implements Closeable {
     private final long segmentSizeBytes;
     private final int maxEntryLength;
     private final List<SpillFileSegment> segments = new ArrayList<>();
+
+    /** Reused across appends; safe because mutations are single-writer (see class doc). */
+    private final ByteBuffer headerBuffer = ByteBuffer.allocate(HEADER_BYTES);
+
     private boolean closed = false;
 
     private final AtomicInteger refCount = new AtomicInteger(0);
@@ -125,19 +122,26 @@ public final class SpillFile implements Closeable {
         }
 
         SpillFileSegment active = activeSegmentFor(length);
-        long offsetBeforeWrite = active.currentEnd;
 
-        int written = 0;
-        while (written < length) {
-            int n = active.channel.write(payload);
+        headerBuffer.clear();
+        headerBuffer.putInt(channelInfo.getGateIdx());
+        headerBuffer.putInt(channelInfo.getInputChannelIdx());
+        headerBuffer.putInt(length);
+        headerBuffer.flip();
+
+        writeFully(active, headerBuffer);
+        writeFully(active, payload);
+        active.currentEnd += HEADER_BYTES + length;
+    }
+
+    private void writeFully(SpillFileSegment segment, ByteBuffer src) throws IOException {
+        while (src.hasRemaining()) {
+            int n = segment.channel.write(src);
             if (n <= 0) {
                 throw new IOException(
-                        "FileChannel.write returned " + n + " on segment " + active.path);
+                        "FileChannel.write returned " + n + " on segment " + segment.path);
             }
-            written += n;
         }
-        active.currentEnd = offsetBeforeWrite + length;
-        active.entries.add(new Entry(channelInfo, offsetBeforeWrite, length));
     }
 
     private SpillFileSegment activeSegmentFor(int payloadLength) throws IOException {
@@ -145,7 +149,7 @@ public final class SpillFile implements Closeable {
             return openNewSegment();
         }
         SpillFileSegment current = segments.get(segments.size() - 1);
-        if (current.currentEnd + payloadLength > segmentSizeBytes) {
+        if (current.currentEnd + HEADER_BYTES + payloadLength > segmentSizeBytes) {
             return openNewSegment();
         }
         return current;
@@ -231,15 +235,6 @@ public final class SpillFile implements Closeable {
 
     List<SpillFileSegment> segments() {
         return Collections.unmodifiableList(segments);
-    }
-
-    @VisibleForTesting
-    public List<Entry> entries() {
-        List<Entry> out = new ArrayList<>();
-        for (SpillFileSegment seg : segments) {
-            out.addAll(seg.entries);
-        }
-        return Collections.unmodifiableList(out);
     }
 
     public SpillFileReader reader() {

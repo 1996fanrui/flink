@@ -59,16 +59,19 @@ public final class SpillFileReader implements Closeable {
     private final SpillFile spillFile;
     private final List<SpillFile.SpillFileSegment> segments;
     private final byte[] reusable;
+    private final ByteBuffer headerBuffer = ByteBuffer.allocate(SpillFile.HEADER_BYTES);
 
     private int segmentCursor;
 
-    private int entryCursor;
+    /** Byte offset of the next record within the segment at {@code segmentCursor}. */
+    private long byteOffset;
 
     @Nullable private FileChannel activeChannel;
 
     /**
-     * Cached chunk for the entry at {@code (segmentCursor, entryCursor)}, non-null iff a {@link
-     * #peek()} succeeded and {@link #advance()} has not been called since.
+     * Cached chunk for the record at {@code (segmentCursor, byteOffset)}, non-null iff a {@link
+     * #peek()} succeeded and {@link #advance()} has not been called since. Holds the only live
+     * metadata copy at a time, so iteration cost stays constant regardless of record count.
      */
     @Nullable private Chunk cachedChunk;
 
@@ -78,20 +81,20 @@ public final class SpillFileReader implements Closeable {
             SpillFile spillFile,
             List<SpillFile.SpillFileSegment> segments,
             int segmentCursor,
-            int entryCursor) {
+            long byteOffset) {
         this.spillFile = checkNotNull(spillFile);
         this.segments = checkNotNull(segments);
         this.reusable = new byte[spillFile.maxEntryLength()];
         this.segmentCursor = segmentCursor;
-        this.entryCursor = entryCursor;
+        this.byteOffset = byteOffset;
         this.spillFile.acquire();
     }
 
     static SpillFileReader openRoot(SpillFile spillFile) {
-        return new SpillFileReader(spillFile, spillFile.segments(), 0, 0);
+        return new SpillFileReader(spillFile, spillFile.segments(), 0, 0L);
     }
 
-    /** Reads and caches the next entry. Must be called outside cross-thread locks. */
+    /** Reads and caches the next record. Must be called outside cross-thread locks. */
     @Nullable
     public Chunk peek() throws IOException {
         checkState(!closed, "SpillFileReader is closed");
@@ -103,28 +106,26 @@ public final class SpillFileReader implements Closeable {
             return null;
         }
         SpillFile.SpillFileSegment seg = segments.get(segmentCursor);
-        SpillFile.Entry e = seg.entries().get(entryCursor);
-        ensureActiveChannelFor(seg, e.offset);
-        readFully(e.length);
-        cachedChunk = new Chunk(e.channelInfo, reusable, e.length);
+        ensureActiveChannelFor(seg, byteOffset);
+        cachedChunk = readRecord(seg);
         return cachedChunk;
     }
 
-    /** Advances past the cached entry. Root readers must call this under the drainer lock. */
+    /** Advances past the cached record. Root readers must call this under the drainer lock. */
     public void advance() {
         checkState(!closed, "SpillFileReader is closed");
         checkState(cachedChunk != null, "advance() called without a preceding successful peek()");
+        byteOffset += SpillFile.HEADER_BYTES + cachedChunk.length;
         cachedChunk = null;
-        entryCursor++;
     }
 
     /**
-     * Derives an independent reader covering entries not yet advanced past. Root readers must call
+     * Derives an independent reader covering records not yet advanced past. Root readers must call
      * this under the drainer lock.
      */
     public SpillFileReader snapshot() {
         checkState(!closed, "SpillFileReader is closed");
-        return new SpillFileReader(spillFile, segments, segmentCursor, entryCursor);
+        return new SpillFileReader(spillFile, segments, segmentCursor, byteOffset);
     }
 
     /** Single-consumer iterator wrapper for snapshot readers. */
@@ -181,32 +182,28 @@ public final class SpillFileReader implements Closeable {
         }
 
         SpillFile.SpillFileSegment currentSegment = segments.get(segmentCursor);
-        int entryCount = currentSegment.entries().size();
-        checkState(entryCount > 0, "Spill segment %s has no entries", currentSegment.path);
+        checkState(currentSegment.currentEnd > 0, "Spill segment %s is empty", currentSegment.path);
         checkState(
-                entryCursor <= entryCount,
-                "Entry cursor %s is past the entry count %s in spill segment %s",
-                entryCursor,
-                entryCount,
+                byteOffset <= currentSegment.currentEnd,
+                "Byte offset %s is past the segment end %s in spill segment %s",
+                byteOffset,
+                currentSegment.currentEnd,
                 currentSegment.path);
 
-        if (entryCursor < entryCount) {
+        if (byteOffset < currentSegment.currentEnd) {
             return;
         }
 
         closeActiveChannel();
         segmentCursor++;
-        entryCursor = 0;
+        byteOffset = 0L;
 
         if (segmentCursor >= segments.size()) {
             return;
         }
 
         SpillFile.SpillFileSegment nextSegment = segments.get(segmentCursor);
-        checkState(
-                !nextSegment.entries().isEmpty(),
-                "Spill segment %s has no entries",
-                nextSegment.path);
+        checkState(nextSegment.currentEnd > 0, "Spill segment %s is empty", nextSegment.path);
     }
 
     private void ensureActiveChannelFor(SpillFile.SpillFileSegment seg, long offset)
@@ -217,8 +214,25 @@ public final class SpillFileReader implements Closeable {
         }
     }
 
-    private void readFully(int length) throws IOException {
-        ByteBuffer view = ByteBuffer.wrap(reusable, 0, length);
+    /** Reads the inline header then the payload for the record at the current position. */
+    private Chunk readRecord(SpillFile.SpillFileSegment seg) throws IOException {
+        headerBuffer.clear();
+        readFully(headerBuffer, SpillFile.HEADER_BYTES);
+        headerBuffer.flip();
+        int gateIdx = headerBuffer.getInt();
+        int channelIdx = headerBuffer.getInt();
+        int length = headerBuffer.getInt();
+        checkState(
+                length >= 0 && length <= reusable.length,
+                "Decoded record length %s out of bounds [0, %s] in spill segment %s",
+                length,
+                reusable.length,
+                seg.path);
+        readFully(ByteBuffer.wrap(reusable, 0, length), length);
+        return new Chunk(new InputChannelInfo(gateIdx, channelIdx), reusable, length);
+    }
+
+    private void readFully(ByteBuffer view, int length) throws IOException {
         int totalRead = 0;
         while (totalRead < length) {
             int n = activeChannel.read(view);
