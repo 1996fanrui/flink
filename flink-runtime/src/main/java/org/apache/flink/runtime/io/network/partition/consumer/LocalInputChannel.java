@@ -334,17 +334,25 @@ public class LocalInputChannel extends InputChannel
     public void checkpointStarted(CheckpointBarrier barrier) throws CheckpointException {
         try {
             List<Buffer> toPersist;
+            boolean stopPersisting = false;
             synchronized (recoveredBuffers) {
                 if (inRecovery) {
                     // Collect inflight buffers from recoveredBuffers to be persisted. These are
                     // recovered buffers that have not been consumed yet when the checkpoint barrier
                     // arrives.
                     toPersist = collectPreRecoveryBarrier(barrier.getId());
+                    stopPersisting = true;
                 } else {
                     toPersist = Collections.emptyList();
                 }
             }
             channelStatePersister.startPersisting(barrier.getId(), toPersist);
+            if (stopPersisting) {
+                // Recovered inflight buffers are collected in one shot and no upstream data flows
+                // during recovery, so close the persist window immediately to keep the persister
+                // from carrying a pending state into later checkpoints.
+                channelStatePersister.stopPersisting(barrier.getId());
+            }
         } catch (IOException e) {
             throw new CheckpointException(
                     "Failed to extract recovered buffers for checkpoint " + barrier.getId(),

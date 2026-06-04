@@ -757,21 +757,19 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
                 if (dataType.hasPriority()) {
                     firstPriorityEvent = addPriorityBuffer(sequenceBuffer);
                     recycleBuffer = false;
-                } else if (inRecovery) {
-                    // The upstream has no credit until recovery delivery finishes, so it can only
-                    // send events here, never data buffers. Stash ordinary events so they are
-                    // consumed after the recovered buffers; data buffers are a protocol violation.
-                    checkState(
-                            !buffer.isBuffer(),
-                            "Received live data buffer during recovery on channel %s",
-                            getChannelInfo());
-                    recoveryEventStash.add(sequenceBuffer);
-                    recycleBuffer = false;
-                    if (dataType.requiresAnnouncement()) {
-                        firstPriorityEvent = addPriorityBuffer(announce(sequenceBuffer));
-                    }
                 } else {
-                    receivedBuffers.add(sequenceBuffer);
+                    if (inRecovery) {
+                        // The upstream has no credit until recovery delivery finishes, so it can only
+                        // send events here, never data buffers. Stash ordinary events so they are
+                        // consumed after the recovered buffers; data buffers are a protocol violation.
+                        checkState(
+                                !buffer.isBuffer(),
+                                "Received live data buffer during recovery on channel %s",
+                                getChannelInfo());
+                        recoveryEventStash.add(sequenceBuffer);
+                    } else {
+                        receivedBuffers.add(sequenceBuffer);
+                    }
                     recycleBuffer = false;
                     if (dataType.requiresAnnouncement()) {
                         firstPriorityEvent = addPriorityBuffer(announce(sequenceBuffer));
@@ -878,6 +876,12 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
                     toPersist = getInflightBuffersUnsafe(barrier.getId());
                 }
                 channelStatePersister.startPersisting(barrier.getId(), toPersist);
+                if (inRecovery) {
+                    // Recovered inflight buffers are collected in one shot and the upstream sends no
+                    // data during recovery, so close the persist window immediately to keep the
+                    // persister from carrying a pending state into later checkpoints.
+                    channelStatePersister.stopPersisting(barrier.getId());
+                }
             }
         } catch (IOException e) {
             throw new CheckpointException(
