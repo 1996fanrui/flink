@@ -288,6 +288,11 @@ public class TestInputChannel extends InputChannel implements RecoverableInputCh
         throw new UnsupportedOperationException("TestInputChannel does not back recovery drain");
     }
 
+    @Override
+    public void onRecoveredStateConsumed() {
+        // No-op in this test stub.
+    }
+
     public Deque<Buffer> getRecoveredBuffersSpy() {
         return recoveredBuffersSpy;
     }

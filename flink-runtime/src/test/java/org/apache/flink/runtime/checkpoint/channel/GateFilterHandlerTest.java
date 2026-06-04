@@ -36,18 +36,22 @@ import org.apache.flink.streaming.runtime.streamrecord.StreamElementSerializer;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.io.FileInputStream;
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for {@link ChannelStateFilteringHandler.GateFilterHandler}. */
 class GateFilterHandlerTest {
+
+    @TempDir Path tempDir;
 
     private static final int BUFFER_SIZE = 1024;
     private static final SubtaskConnectionDescriptor KEY = new SubtaskConnectionDescriptor(0, 0);
@@ -59,11 +63,11 @@ class GateFilterHandlerTest {
                 createHandler(RecordFilter.acceptAll());
 
         Buffer sourceBuffer = createBufferWithRecords(1L, 2L, 3L);
-        CollectingSupplier supplier = new CollectingSupplier(() -> createEmptyBuffer());
-        handler.filterAndRewrite(0, 0, NEW_CHANNEL, sourceBuffer, supplier);
+        FetchedChannelStateWriter writer = newWriter();
+        handler.filterAndRewrite(0, 0, NEW_CHANNEL, sourceBuffer, writer);
+        writer.close();
 
-        // deserializeBuffers consumes (recycles) each buffer via the deserializer
-        List<Long> values = deserializeBuffers(supplier.collected);
+        List<Long> values = readRecordsFromWriter(writer.getChannelState(), NEW_CHANNEL);
         assertThat(values).containsExactly(1L, 2L, 3L);
     }
 
@@ -73,10 +77,12 @@ class GateFilterHandlerTest {
         ChannelStateFilteringHandler.GateFilterHandler<Long> handler = createHandler(rejectAll);
 
         Buffer sourceBuffer = createBufferWithRecords(1L, 2L, 3L);
-        CollectingSupplier supplier = new CollectingSupplier(() -> createEmptyBuffer());
-        handler.filterAndRewrite(0, 0, NEW_CHANNEL, sourceBuffer, supplier);
+        FetchedChannelStateWriter writer = newWriter();
+        handler.filterAndRewrite(0, 0, NEW_CHANNEL, sourceBuffer, writer);
+        writer.close();
 
-        assertThat(supplier.collected).isEmpty();
+        // No segments should be emitted when all records are filtered out.
+        assertThat(writer.getChannelState().segments()).isEmpty();
     }
 
     @Test
@@ -85,30 +91,12 @@ class GateFilterHandlerTest {
         ChannelStateFilteringHandler.GateFilterHandler<Long> handler = createHandler(keepEven);
 
         Buffer sourceBuffer = createBufferWithRecords(1L, 2L, 3L, 4L, 5L);
-        CollectingSupplier supplier = new CollectingSupplier(() -> createEmptyBuffer());
-        handler.filterAndRewrite(0, 0, NEW_CHANNEL, sourceBuffer, supplier);
+        FetchedChannelStateWriter writer = newWriter();
+        handler.filterAndRewrite(0, 0, NEW_CHANNEL, sourceBuffer, writer);
+        writer.close();
 
-        List<Long> values = deserializeBuffers(supplier.collected);
+        List<Long> values = readRecordsFromWriter(writer.getChannelState(), NEW_CHANNEL);
         assertThat(values).containsExactly(2L, 4L);
-    }
-
-    @Test
-    void testSmallOutputBufferProducesMultipleBuffers() throws Exception {
-        // Use a very small output buffer size so records must span multiple buffers
-        int smallBufferSize = 8;
-        ChannelStateFilteringHandler.GateFilterHandler<Long> handler =
-                createHandler(RecordFilter.acceptAll());
-
-        Buffer sourceBuffer = createBufferWithRecords(1L, 2L, 3L);
-        CollectingSupplier supplier =
-                new CollectingSupplier(() -> createEmptyBuffer(smallBufferSize));
-        handler.filterAndRewrite(0, 0, NEW_CHANNEL, sourceBuffer, supplier);
-
-        // Each Long record needs 4 bytes length + ~9 bytes data > 8-byte buffer
-        assertThat(supplier.collected.size()).isGreaterThan(1);
-
-        List<Long> values = deserializeBuffers(supplier.collected);
-        assertThat(values).containsExactly(1L, 2L, 3L);
     }
 
     @Test
@@ -119,27 +107,37 @@ class GateFilterHandlerTest {
         Buffer emptyBuffer = createEmptyBuffer();
         emptyBuffer.setSize(0);
 
-        CollectingSupplier supplier = new CollectingSupplier(() -> createEmptyBuffer());
-        handler.filterAndRewrite(0, 0, NEW_CHANNEL, emptyBuffer, supplier);
+        FetchedChannelStateWriter writer = newWriter();
+        handler.filterAndRewrite(0, 0, NEW_CHANNEL, emptyBuffer, writer);
+        writer.close();
 
-        assertThat(supplier.collected).isEmpty();
+        assertThat(writer.getChannelState().segments()).isEmpty();
     }
 
-    private static final class CollectingSupplier
-            implements ChannelStateFilteringHandler.BufferSupplier {
-        final List<Buffer> collected = new ArrayList<>();
-        private final Supplier<Buffer> bufferFactory;
+    @Test
+    void testSourceBufferRecycledOnSuccess() throws Exception {
+        ChannelStateFilteringHandler.GateFilterHandler<Long> handler =
+                createHandler(RecordFilter.acceptAll());
 
-        CollectingSupplier(Supplier<Buffer> bufferFactory) {
-            this.bufferFactory = bufferFactory;
-        }
+        Buffer sourceBuffer = createBufferWithRecords(1L, 2L);
+        FetchedChannelStateWriter writer = newWriter();
+        handler.filterAndRewrite(0, 0, NEW_CHANNEL, sourceBuffer, writer);
+        writer.close();
 
-        @Override
-        public Buffer requestBufferBlocking(InputChannelInfo channelInfo) {
-            Buffer b = bufferFactory.get();
-            collected.add(b);
-            return b;
-        }
+        assertThat(sourceBuffer.isRecycled()).isTrue();
+    }
+
+    @Test
+    void testSourceBufferRecycledWhenAllRecordsFilteredOut() throws Exception {
+        RecordFilter<Long> rejectAll = record -> false;
+        ChannelStateFilteringHandler.GateFilterHandler<Long> handler = createHandler(rejectAll);
+
+        Buffer sourceBuffer = createBufferWithRecords(1L, 2L);
+        FetchedChannelStateWriter writer = newWriter();
+        handler.filterAndRewrite(0, 0, NEW_CHANNEL, sourceBuffer, writer);
+        writer.close();
+
+        assertThat(sourceBuffer.isRecycled()).isTrue();
     }
 
     // -------------------------------------------------------------------------------------------
@@ -164,23 +162,13 @@ class GateFilterHandlerTest {
     private Buffer createBufferWithRecords(Long... values) throws IOException {
         StreamElementSerializer<Long> serializer =
                 new StreamElementSerializer<>(LongSerializer.INSTANCE);
-        return serializeRecordsToBuffer(serializer, values);
-    }
-
-    /** Serializes records into a buffer using Flink's length-prefixed format. */
-    private Buffer serializeRecordsToBuffer(
-            StreamElementSerializer<Long> serializer, Long... values) throws IOException {
         DataOutputSerializer output = new DataOutputSerializer(BUFFER_SIZE);
 
         for (Long value : values) {
-            // Serialize using the same length-prefixed format as Flink
             DataOutputSerializer recordOutput = new DataOutputSerializer(64);
             serializer.serialize(new StreamRecord<>(value), recordOutput);
             int recordLength = recordOutput.length();
-
-            // Write 4-byte big-endian length prefix
             output.writeInt(recordLength);
-            // Write record bytes
             output.write(recordOutput.getSharedBuffer(), 0, recordLength);
         }
 
@@ -194,30 +182,77 @@ class GateFilterHandlerTest {
     }
 
     private Buffer createEmptyBuffer() {
-        return createEmptyBuffer(BUFFER_SIZE);
-    }
-
-    private Buffer createEmptyBuffer(int size) {
-        MemorySegment segment = MemorySegmentFactory.allocateUnpooledSegment(size);
+        MemorySegment segment = MemorySegmentFactory.allocateUnpooledSegment(BUFFER_SIZE);
         return new NetworkBuffer(segment, FreeingBufferRecycler.INSTANCE);
     }
 
-    private List<Long> deserializeBuffers(List<Buffer> buffers) throws IOException {
+    private FetchedChannelStateWriter newWriter() {
+        FetchedChannelState state = new FetchedChannelState();
+        state.acquire();
+        return new FetchedChannelStateWriter(state, tempDir);
+    }
+
+    /**
+     * Reads back all records from the spill file for the given channel. The on-disk segment body
+     * format written by the writer is: repeated (4B recordLen + N bytes of serialized
+     * StreamElement).
+     *
+     * <p>The {@link SpillingAdaptiveSpanningRecordDeserializer} expects the same length-prefixed
+     * format on the wire, so the entire segment body is fed as-is into a single buffer and then
+     * deserialized.
+     */
+    private List<Long> readRecordsFromWriter(FetchedChannelState state, InputChannelInfo channel)
+            throws IOException {
+        List<Long> values = new ArrayList<>();
         StreamElementSerializer<Long> serializer =
                 new StreamElementSerializer<>(LongSerializer.INSTANCE);
-        SpillingAdaptiveSpanningRecordDeserializer<DeserializationDelegate<StreamElement>>
-                deserializer =
-                        new SpillingAdaptiveSpanningRecordDeserializer<>(
-                                new String[] {System.getProperty("java.io.tmpdir")});
         DeserializationDelegate<StreamElement> delegate =
                 new NonReusingDeserializationDelegate<>(serializer);
 
-        List<Long> values = new ArrayList<>();
-        for (Buffer buffer : buffers) {
-            deserializer.setNextBuffer(buffer);
-            while (true) {
-                RecordDeserializer.DeserializationResult result =
-                        deserializer.getNextRecord(delegate);
+        for (FetchedSegment seg : state.segments()) {
+            if (!seg.channelInfo.equals(channel)) {
+                continue;
+            }
+            Path file = state.files().get(seg.fileIndex);
+            byte[] bodyBytes = new byte[(int) seg.length];
+            try (FileInputStream fis = new FileInputStream(file.toFile())) {
+                // Skip past the 8-byte segment header to the body.
+                long toSkip = seg.offset;
+                while (toSkip > 0) {
+                    long skipped = fis.skip(toSkip);
+                    if (skipped <= 0) {
+                        throw new IOException(
+                                "Could not skip to segment body at offset " + seg.offset);
+                    }
+                    toSkip -= skipped;
+                }
+                int totalRead = 0;
+                while (totalRead < bodyBytes.length) {
+                    int n = fis.read(bodyBytes, totalRead, bodyBytes.length - totalRead);
+                    if (n < 0) {
+                        throw new IOException("Unexpected EOF reading segment body");
+                    }
+                    totalRead += n;
+                }
+            }
+
+            // The body is a sequence of length-prefixed records in Flink's network wire format
+            // (4B BE int recordLength + N bytes of serialized StreamElement). Feed the entire body
+            // into the deserializer, which understands this format directly.
+            MemorySegment memSeg = MemorySegmentFactory.allocateUnpooledSegment(bodyBytes.length);
+            memSeg.put(0, bodyBytes);
+            NetworkBuffer buf = new NetworkBuffer(memSeg, FreeingBufferRecycler.INSTANCE);
+            buf.setSize(bodyBytes.length);
+
+            SpillingAdaptiveSpanningRecordDeserializer<DeserializationDelegate<StreamElement>>
+                    deserializer =
+                            new SpillingAdaptiveSpanningRecordDeserializer<>(
+                                    new String[] {System.getProperty("java.io.tmpdir")});
+            deserializer.setNextBuffer(buf);
+
+            RecordDeserializer.DeserializationResult result;
+            do {
+                result = deserializer.getNextRecord(delegate);
                 if (result.isFullRecord()) {
                     StreamElement element = delegate.getInstance();
                     if (element.isRecord()) {
@@ -226,10 +261,7 @@ class GateFilterHandlerTest {
                         values.add(record.getValue());
                     }
                 }
-                if (result.isBufferConsumed()) {
-                    break;
-                }
-            }
+            } while (!result.isBufferConsumed());
         }
         return values;
     }

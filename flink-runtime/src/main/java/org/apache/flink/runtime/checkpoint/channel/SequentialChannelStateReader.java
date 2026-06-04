@@ -42,9 +42,9 @@ public interface SequentialChannelStateReader extends AutoCloseable {
     void readOutputData(ResultPartitionWriter[] writers, boolean notifyAndBlockOnCompletion)
             throws IOException, InterruptedException;
 
-    /** Returns the {@link SpillFile} produced by {@link #readInputData}, if any. */
+    /** Returns the {@link FetchedChannelState} produced by {@link #readInputData}, if any. */
     @Nullable
-    SpillFile getProducedSpillFile();
+    FetchedChannelState getProducedChannelState();
 
     @Override
     void close() throws Exception;
@@ -62,7 +62,7 @@ public interface SequentialChannelStateReader extends AutoCloseable {
 
                 @Nullable
                 @Override
-                public SpillFile getProducedSpillFile() {
+                public FetchedChannelState getProducedChannelState() {
                     return null;
                 }
 

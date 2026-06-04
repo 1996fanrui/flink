@@ -238,9 +238,32 @@ public class ChannelStateWriterImpl implements ChannelStateWriter {
 
     @Override
     public void addInputDataFromSpill(
-            long checkpointId, CloseableIterator<SpillFileReader.Chunk> chunks) {
+            long checkpointId, CloseableIterator<FetchedSegmentCursor> segments) {
         LOG.debug("{} replaying input data from spill, checkpoint {}", taskName, checkpointId);
-        enqueue(replayInputDataFromSpill(jobVertexID, subtaskIndex, checkpointId, chunks), false);
+        // Short-circuit: if there is no spilled data for this checkpoint, avoid submitting a
+        // no-op task to the writer thread. Close the iterator here on the caller thread.
+        if (!segments.hasNext()) {
+            try {
+                segments.close();
+            } catch (Exception e) {
+                LOG.warn("Failed to close empty spill segments iterator", e);
+            }
+            return;
+        }
+        try {
+            enqueue(
+                    replayInputDataFromSpill(jobVertexID, subtaskIndex, checkpointId, segments),
+                    false);
+        } catch (RuntimeException e) {
+            // enqueue() already called request.cancel() which closes the segments iterator.
+            // Additionally fail the checkpoint's write result so callers observing
+            // getInputChannelStateHandles() learn about the failure rather than blocking.
+            ChannelStateWriteResult result = results.get(checkpointId);
+            if (result != null) {
+                result.fail(e);
+            }
+            throw e;
+        }
     }
 
     @Override

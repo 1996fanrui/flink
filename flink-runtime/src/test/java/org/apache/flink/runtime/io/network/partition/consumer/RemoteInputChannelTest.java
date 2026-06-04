@@ -2589,7 +2589,7 @@ class RemoteInputChannelTest {
             RemoteInputChannel channel = (RemoteInputChannel) inputGate.getChannel(0);
 
             channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(1));
-            // Mirror what SpillFileReader.snapshotAndInsertBarriers does: push the
+            // Mirror what snapshotAndInsertBarriers does: push the
             // RecoveryCheckpointBarrier sentinel so collectPreRecoveryBarrier finds it.
             channel.onRecoveredStateBuffer(
                     EventSerializer.toBuffer(new RecoveryCheckpointBarrier(1L), false));

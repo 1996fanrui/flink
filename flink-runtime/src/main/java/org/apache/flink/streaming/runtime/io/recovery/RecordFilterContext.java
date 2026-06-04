@@ -99,8 +99,8 @@ public class RecordFilterContext {
 
     /**
      * Network buffer memory segment size in bytes (from taskmanager.memory.segment-size). Used to
-     * size the reusable heap source buffer in {@code InputChannelRecoveredStateHandler} so it
-     * matches the network buffer size.
+     * size the reusable heap source buffer in {@code SpillingWithFilteringHandler} so it matches
+     * the network buffer size.
      */
     private final int memorySegmentSize;
 

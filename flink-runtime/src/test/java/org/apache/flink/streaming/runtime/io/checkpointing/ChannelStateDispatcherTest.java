@@ -22,10 +22,10 @@ import org.apache.flink.runtime.checkpoint.CheckpointException;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
 import org.apache.flink.runtime.checkpoint.CheckpointType;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
+import org.apache.flink.runtime.checkpoint.channel.FetchedSegmentCursor;
 import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointTrigger;
 import org.apache.flink.runtime.checkpoint.channel.ResultSubpartitionInfo;
-import org.apache.flink.runtime.checkpoint.channel.SpillFileReader;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.partition.consumer.CheckpointableInput;
@@ -59,7 +59,7 @@ class ChannelStateDispatcherTest {
     @Test
     void testStepOrderingFeatureOn() throws Exception {
         List<String> trace = new ArrayList<>();
-        CloseableIterator<SpillFileReader.Chunk> snap = CloseableIterator.empty();
+        CloseableIterator<FetchedSegmentCursor> snap = CloseableIterator.empty();
         RecordingTrigger trigger = new RecordingTrigger(trace, /* nonEmptySnapshot */ snap);
         RecordingWriter writer = new RecordingWriter(trace);
         CheckpointableInput input1 = new RecordingInput(trace, "in1");
@@ -101,7 +101,7 @@ class ChannelStateDispatcherTest {
     @Test
     void testEmptySnapshotInlineEarlyReturn() throws Exception {
         List<String> trace = new ArrayList<>();
-        CloseableIterator<SpillFileReader.Chunk> empty = CloseableIterator.empty();
+        CloseableIterator<FetchedSegmentCursor> empty = CloseableIterator.empty();
         RecordingTrigger trigger = new RecordingTrigger(trace, empty);
         RecordingWriter writer = new RecordingWriter(trace);
 
@@ -163,15 +163,15 @@ class ChannelStateDispatcherTest {
 
     private static final class RecordingTrigger implements RecoveryCheckpointTrigger {
         private final List<String> trace;
-        private final CloseableIterator<SpillFileReader.Chunk> snapshot;
+        private final CloseableIterator<FetchedSegmentCursor> snapshot;
 
-        RecordingTrigger(List<String> trace, CloseableIterator<SpillFileReader.Chunk> snapshot) {
+        RecordingTrigger(List<String> trace, CloseableIterator<FetchedSegmentCursor> snapshot) {
             this.trace = trace;
             this.snapshot = snapshot;
         }
 
         @Override
-        public CloseableIterator<SpillFileReader.Chunk> snapshotAndInsertBarriers(
+        public CloseableIterator<FetchedSegmentCursor> snapshotAndInsertBarriers(
                 long checkpointId) {
             trace.add("trigger.snapshotAndInsertBarriers:" + checkpointId);
             return snapshot;
@@ -225,13 +225,13 @@ class ChannelStateDispatcherTest {
 
         @Override
         public void addInputDataFromSpill(
-                long checkpointId, CloseableIterator<SpillFileReader.Chunk> chunks) {
+                long checkpointId, CloseableIterator<FetchedSegmentCursor> segments) {
             trace.add("writer.addInputDataFromSpill:" + checkpointId);
             lastCpId.set(checkpointId);
             addInputDataFromSpillCalls.incrementAndGet();
             try {
-                lastSnapshotWasEmpty.set(!chunks.hasNext());
-                chunks.close();
+                lastSnapshotWasEmpty.set(!segments.hasNext());
+                segments.close();
             } catch (Exception ignored) {
             }
         }
