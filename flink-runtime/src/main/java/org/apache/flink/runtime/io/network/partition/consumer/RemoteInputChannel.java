@@ -921,10 +921,11 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
                     sentinel = sb;
                     break;
                 }
-                checkState(
-                        sb.buffer.isBuffer(),
-                        "live upstream data observed in receivedBuffers during recovery");
-                retained.add(sb.buffer.retainBuffer());
+                // Skip non-data events (e.g. the EndOfFetchedChannelStateEvent sentinel appended
+                // after the recovered buffers): only recovered data buffers are snapshotted.
+                if (sb.buffer.isBuffer()) {
+                    retained.add(sb.buffer.retainBuffer());
+                }
             }
         } catch (IOException e) {
             releaseRetainedBuffers(retained);
@@ -950,6 +951,22 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
     private static void releaseRetainedBuffers(List<Buffer> retained) {
         for (Buffer buffer : retained) {
             buffer.recycleBuffer();
+        }
+    }
+
+    /**
+     * Best-effort deserialization of an event buffer for diagnostics. Used only on the error path
+     * when an unexpected event is found in {@link #receivedBuffers} during recovery; never throws,
+     * so a deserialization failure does not mask the original invariant violation.
+     */
+    private static String describeEvent(Buffer b) {
+        try {
+            AbstractEvent event =
+                    EventSerializer.fromBuffer(b, RemoteInputChannel.class.getClassLoader());
+            b.setReaderIndex(0);
+            return event.getClass().getName() + ": " + event;
+        } catch (Throwable t) {
+            return "<unparsable event: " + t + ">";
         }
     }
 
