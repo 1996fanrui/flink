@@ -8,7 +8,7 @@
 
 下面几条是本重构的**硬约束**。后续所有接口/数据结构设计都是手段，目标恒为满足这几条；任何设计若与之冲突，改设计、不改原则。
 
-1. **顺序遍历，逐段推进，按需从磁盘读。** 读侧顺着内存里的段定位表（每段一条 `[channelInfo, fileIndex, offset, length]`，§4.2）**逐段**推进：定位一段 → 按 `(offset, length)` 从磁盘**按需**读该段字节并完整消费 → 再下一段。**不允许**把文件里的段体数据一次性全读进内存。段定位表本身是写阶段构建的轻量表（每段一条，量级 = channel 切换次数，远小于 record 数），不是 per-record、也不缓存段体字节。
+1. **顺序遍历，逐段推进，按需从磁盘读。** 读侧顺序扫描文件：读段头拿到 `[channelInfo, bufferLength]` → 按需读 `bufferLength` 字节段体并完整消费 → 推进到下一段头（§4.2）。**不允许**把文件里的段体数据一次性全读进内存，也不维护内存段定位表——段长自描述在 disk 段头里。段头量级 = channel 切换次数，远小于 record 数。
 
 2. **一个 segment = 一个 input channel 的一团数据。** 段 = 同一个 channel 连续写入的字节流（per-channel，段头 metadata 只写一次）。
 
@@ -18,7 +18,7 @@
 
 5. **线程交接方式不变（强限制）。** 写侧线程产出结果、交给读侧/drainer 线程的**交接方式不允许变**：原来通过哪个 `CompletableFuture`（如 `CompletableFuture<List<RecoverableInputChannel>>`）、在哪个时机、经哪条调用链交接（writer 产出 `SpillFile` → `reader.getProducedSpillFile()` → `new SpillFileDrainer(...)` → 经 `CompletableFuture<RecoveryCheckpointTrigger>` 交给 barrier handler），重构后**完全保持**。只允许变 future / 交接对象**携带的数据结构**（`SpillFile` → `FetchedChannelState` + 文件路径 list）。交接的时序、future 的身份、wiring 一个字不许动（详见 §8.1）。
 
-6. **文件是纯物理切分；段不跨文件（硬约束）。** 多个文件按写入顺序首尾相接即一条完整的格式流，文件边界**不承载任何逻辑语义**——它只是 storage 分片，控制单文件大小（64MB 软上限）。在此前提下**强制：一个段绝不跨文件**——文件轮换只在一个段完整写完后判定（§3.3），段大则文件大。由此段定位 `(fileIndex, offset, length)` 必在单文件内，record 绝不被文件边界切断，读侧读一个段只需打开一个文件、`body()` 流绝不跨文件（§4.3）。
+6. **文件是纯物理切分；段不跨文件（硬约束）。** 多个文件按写入顺序首尾相接即一条完整的格式流，文件边界**不承载任何逻辑语义**——它只是 storage 分片，控制单文件大小（64MB 软上限）。在此前提下**强制：一个段绝不跨文件**——文件轮换只在一个段完整写完后判定（§3.3），段大则文件大。由此一个段必在单文件内，record 绝不被文件边界切断，读侧读一个段只需打开一个文件、`body()` 流绝不跨文件（§4.3）。
 
 ## 1. 动机
 
@@ -39,15 +39,14 @@ PR #23 中 Roman 对 spill 写读路径提了一组评论，归一到同一个�
 
 ## 2. 目标文件格式
 
-内存里只维护**轻量索引**（不再持有 segment 对象 / per-buffer 元数据）：
+内存里只维护**文件路径 list**（按写入顺序，写阶段封口后只读）。段的长度自描述在 disk 段头里，**不再维护内存段定位表**。
 
-- 文件路径 list（按写入顺序，写阶段封口后只读）
-
-磁盘格式（按 channel 段组织，metadata per 段写一次）：
+磁盘格式（按 channel 段组织，段头 per 段写一次，段头自带段体长度）：
 
 ```
-[ 4B BE int: input gate idx    ]   <-- 段头：channel 标识
+[ 4B BE int: input gate idx    ]   <-- 段头：channel 标识 + 段体长度
 [ 4B BE int: input channel idx ]
+[ 4B BE int: buffer length     ]   <-- 段体总字节数（段头之后到下一段头前）
   [ 4B BE int: record length ]      <-- 段体：N 条 length-prefixed record
   [ N bytes: serialized record ]
   [ 4B BE int: record length ]
@@ -55,17 +54,18 @@ PR #23 中 Roman 对 spill 写读路径提了一组评论，归一到同一个�
   ...
 [ 4B BE int: input gate idx    ]   <-- 下一段（channel 切换 或 文件轮换后的续写）
 [ 4B BE int: input channel idx ]
+[ 4B BE int: buffer length     ]
   [ 4B BE int: record length ]
   [ N bytes: serialized record ]
   ...
 ```
 
-- 一个「段」= 同一个 channel 连续写入的一批 record，段头只写一次 `[gateIdx][channelIdx]`。
+- 一个「段」= 同一个 channel 连续写入的一批 record（一个 channel = 一个 segment = 一个 buffer），段头只写一次 `[gateIdx][channelIdx][bufferLength]`。
 - channel 切换时关闭当前段、开新段（重写段头）。
-- 段内 record 数量不限、段总长不限（可远超 32KB）。**段不写自身总长、文件里无段分隔标记**——段的边界/长度由内存里的段定位表 `[channelInfo, fileIndex, offset, length]` 维护（§4.2），读侧靠它逐段读，不扫描文件定界。
+- 段内 record 数量不限、段总长不限（可远超 32KB）。**段长写在 disk 段头的 `bufferLength` 字段里**——读侧读段头拿到 `bufferLength`、读 `bufferLength` 字节段体、定位到下一段头，**不需要内存段定位表、不扫描 record 定界**。
 - 单文件超过 `DEFAULT_SEGMENT_SIZE_BYTES`（64MB）即轮换到下一个文件（§3.3）。
 
-> 与现状的本质差异：现状一个磁盘 entry = 一个 32KB output buffer 的 payload（per-buffer 头），段头随 buffer 反复写；新格式段头随 channel 切换写，record 直接流式追加，无 buffer 概念。
+> 与现状的本质差异：现状一个磁盘 entry = 一个 32KB output buffer 的 payload，段头随 buffer 反复写；新格式段头随 channel 切换写一次（含 `bufferLength`），段体 record 流式追加。段长从「内存定位表」改为「disk 段头自描述」，offset 维护在 disk 而非内存。
 
 ## 3. 写路径设计
 
@@ -78,34 +78,39 @@ PR #23 中 Roman 对 spill 写读路径提了一组评论，归一到同一个�
 | `SpillFileWriter.flush()` / `requestBufferBlocking` 的 buffer 满/channel 切换 flush 逻辑 | 删除，改为段切换 + record 直写 |
 | `SpillFileSegment`（持有 `FileChannel` + `currentEnd` 的内存对象） | 删除，改为文件路径 list（见 §5） |
 | `SpillFile.append(channelInfo, ByteBuffer payload)`（per-buffer payload 落盘） | 删除，改为 record 级直写 |
-| `SpillFile.headerBuffer` / `HEADER_BYTES`（per-record 12B 内联头） | 改为段头 `[gateIdx][channelIdx]`（8B，per 段一次）+ record 头 `[recordLen]`（4B，per record） |
+| `SpillFile.headerBuffer` / `HEADER_BYTES`（per-record 12B 内联头） | 改为段头 `[gateIdx][channelIdx][bufferLength]`（12B，per 段一次）+ record 头 `[recordLen]`（4B，per record） |
 
-### 3.2 writer 新形态（对接 OutputStream）
+### 3.2 writer 新形态（段体攒入 DataOutputSerializer，段封口回填 bufferLength）
+
+段头的 `bufferLength` 必须等整段写完才知道，故段体先攒在一个可回填的内存缓冲里，段封口时回填长度再 flush 到文件流。复用 `org.apache.flink.core.memory.DataOutputSerializer`（参照 `RecordWriter.serializeRecord`：`setPositionUnsafe(4)` 预留长度位 → 写内容 → `writeIntUnsafe(len, 0)` 回填）。
 
 writer 持有：
 
-- 当前 `OutputStream`（`BufferedOutputStream` 包 `FileOutputStream`），及其上的 `DataOutputView`（`DataOutputViewStreamWrapper`）
+- 当前 `OutputStream`（`BufferedOutputStream` 包 `FileOutputStream`）—— 段封口后把整段字节 flush 到这里
+- 当前段的 `DataOutputSerializer segmentBuffer` —— 攒当前 channel 段的段体（record 流），段封口时在头部回填 `bufferLength`
 - 当前段所属 `currentChannel`（`InputChannelInfo`），用于判断 channel 切换
 - `runningLength`（当前文件已写字节数，文件轮换的判据）
 - 已写文件路径 list
 
-两种写入入口（对应两个 spilling 实现，见 §6），都不再经过 network buffer：
+写入流程：
 
-- **filtering 模式**：`GateFilterHandler` 反序列化 → filter → 对每条存活 record，直接 `serializer.serialize(element, dataOutputView)` 写进流，再 `writeInt(recordLength)`。无中间 buffer、无 length 手写拼接。
-- **no-filtering（pass-through）模式**：上游 recovered buffer 的字节本身就是 length-prefixed record 序列，直接把整段字节拷进流（仍需在段头写一次 channel 标识）。
+- **开段**（首次写某 channel / channel 切换后）：`segmentBuffer.clear()`，写 `[gateIdx][channelIdx]`，再预留 4 字节给 `bufferLength`（`setPositionUnsafe` 占位）。
+- **filtering 模式**：`GateFilterHandler` 反序列化 → filter → 对每条存活 record，`serializer.serialize(element, segmentBuffer)` 写进段缓冲，再 `segmentBuffer.writeInt(recordLength)`（length-prefix）。
+- **no-filtering（pass-through）模式**：上游 recovered buffer 字节本身就是 length-prefixed record 序列，整段 `segmentBuffer.write(bytes)`。
+- **段封口**（channel 切换 / `close()`）：用 `writeIntUnsafe` 把段体实际字节数回填到段头的 `bufferLength` 位，把 `segmentBuffer` 整段 flush 到文件 `OutputStream`，`runningLength += 段总字节`，再判文件轮换（§3.3）。
 
-> Roman 伪代码（`ChannelStateFilteringHandler:363`）即此形态：`serializer.serialize(element, fosView); fosView.writeInt(recordLength); runningLength += ...; if (runningLength >= 64MB) rotate`。
+> 段体先攒内存（一个 channel 整段，可能 100KB）是「段长写进 disk 段头需回填」的必要代价——`DataOutputSerializer` 是内存缓冲、支持 `writeIntUnsafe` 原地回填，避免了对文件流 seek。段体上限 = 单 channel recovery 数据量（一般不大），且段封口即 flush、不跨段累积，无 OOM 风险。
 
 ### 3.3 段切换与文件轮换（段不跨文件，硬约束）
 
 **段不跨文件**是硬约束（§0 原则 6）：一个段（一个 channel 的一团字节）永远完整落在单个文件内。为此，**文件轮换只在一个段完整写完后判定**，绝不在段中间 / record 中间切：
 
-- **写入期**：record（filtering）或 pass-through 字节持续 append 到当前文件当前段，`runningLength` 累加。**期间不检查轮换**。
-- **段封口时**（channel 切换 → 当前段结束 / writer `close()`）：先结束当前段（更新该段定位项的 `length`），**再**检查 `runningLength >= DEFAULT_SEGMENT_SIZE_BYTES`：超过则关闭当前流、开新文件、`runningLength=0`、路径入 list。下一个段（无论同 channel 还是新 channel）写进新文件。
+- **写入期**：record（filtering）或 pass-through 字节持续 append 到当前段的 `segmentBuffer`（内存）。**期间不检查轮换、不碰文件流**。
+- **段封口时**（channel 切换 → 当前段结束 / writer `close()`）：回填段头 `bufferLength`，把整段 flush 到文件流，`runningLength += 段总字节`；**再**检查 `runningLength >= DEFAULT_SEGMENT_SIZE_BYTES`：超过则关闭当前流、开新文件、`runningLength=0`、路径入 list。下一个段（无论同 channel 还是新 channel）写进新文件。
 
 由此：
 
-- **段不跨文件**：轮换点永远落在两个段之间，段定位 `(fileIndex, offset, length)` 必在单文件内。
+- **段不跨文件**：轮换点永远落在两个段之间（段已整段 flush），一个段必在单文件内。
 - **record 不跨文件**：段不跨文件 ⇒ record 不被文件边界切断（filtering 与 pass-through 同此结论，pass-through 无需按 record 边界解析）。
 - **64MB 是软上限**：若单个 channel 段本身 > 64MB，该段仍完整写进一个文件，文件随之 > 64MB。单 channel recovery 数据一般不大，可接受；换来「段绝不跨文件、record 绝不被切」的读侧最简性。
 
@@ -113,7 +118,7 @@ writer 持有：
 
 ### 3.4 关闭
 
-`close()`：结束当前段（更新 `length`）、flush 并关闭当前流；路径 list 即最终产物，交给读侧。
+`close()`：封口当前段（回填 `bufferLength` + flush 整段）、关闭当前流；路径 list 即最终产物，交给读侧。
 
 ## 4. 读路径设计
 
@@ -123,26 +128,23 @@ writer 持有：
 
 这把「限长在读侧」（Roman 7:33pm）落成：写侧段长不限（一个 channel 100KB 连续写），drainer 交付的 network buffer 上限是一个 `memorySegmentSize`（通常 32KB），读侧就把段字节流**按 32KB 切块**填进一个个 buffer，buffer 满就交付、下一个 buffer 接着从同一段流读，直到段读完 / channel 切换。
 
-### 4.2 段边界由内存里的 `[channelInfo, offset, length]` 维护
+### 4.2 段边界由 disk 段头的 `bufferLength` 自描述
 
-文件里就是 §2 的纯格式：`[gateIdx][channelIdx]` + 段体多条 `[recordLen][record]`，**不写段长、不写哨兵**。段的边界/长度信息**在内存里**——这就是用户最早说的「maintain buffers metadata on memory：metadata + buffer length、buffer metadata offset」。写阶段每发生一次 channel 切换 / 文件轮换就追加一条段元数据，写封口后只读：
+文件就是 §2 的格式：段头 `[gateIdx][channelIdx][bufferLength]` + 段体多条 `[recordLen][record]`。段长写在 disk 段头里（offset 维护在 disk 而非内存）。读侧顺序扫描一个文件：
 
-```java
-/** One per-channel segment's locator. Built while writing, sealed before any read. */
-final class FetchedSegment {
-    final InputChannelInfo channelInfo; // metadata
-    final int fileIndex;                // which file in the path list
-    final long offset;                  // segment body start offset within that file
-    final long length;                  // segment body length in bytes
-}
+```
+read 段头 [gateIdx][channelIdx][bufferLength]   -> 当前段的 channel + 段体字节数
+read bufferLength 字节段体                        -> 完整消费（填 buffer / 写 stream），不解析 recordLen
+到达 bufferLength 即本段尾 -> 下一个 4B 是下一段头的 gateIdx，回到段头解析
+文件读尽 -> 切下一个文件（path list）
 ```
 
-- 读侧顺序遍历这串段元数据（一段接一段），每段拿 `(fileIndex, offset, length)` 去对应文件读 `length` 字节填进 buffer/stream。**段内不需要逐条解析 recordLen 来定界**——段有多长由 `length` 直接给出。
-- 数量级 = channel 切换次数，远小于 record 数 → 无 per-record 内存对象、无 OOM 风险（回应 `SpillFileReader:60`）。
-- 段不跨文件（§3.3），故 `(fileIndex, offset, length)` 唯一确定一段字节。
-- 一个文件内可含多段（§2 格式不变），相邻段在文件里物理连续，段边界纯由内存元数据界定，文件本身无需任何分隔标记。
+- 段内**不逐条解析 recordLen 来定界**——段有多长由段头 `bufferLength` 直接给出，读 `bufferLength` 字节即整段。
+- **不维护内存段定位表**：段头自描述，读侧靠顺序扫文件 + `bufferLength` 推进。段头量级 = channel 切换次数，远小于 record 数，无 per-record 内存对象、无 OOM（回应 `SpillFileReader:60`）。
+- 段不跨文件（§3.3），故每段必在单文件内、`body()` 不跨文件。
+- 一个文件内可含多段（§2），相邻段物理连续，段边界由段头 `bufferLength` 界定。
 
-> 「渐进迭代」（§0 原则 1）指的是：读侧顺着段元数据**逐段**推进，每段**按需**从磁盘读该段字节，不把文件数据一次性读进内存；段元数据本身是写阶段构建的轻量定位表（每段一条），不是 per-record。
+> 「渐进迭代」（§0 原则 1）：读侧顺序扫文件**逐段**推进，每段读段头拿 `bufferLength` 后**按需**读该段字节，不把文件一次性读进内存。
 
 ### 4.3 读接口：顺序迭代段 + 按段提供有界字节流
 
@@ -155,9 +157,10 @@ public final class FetchedChannelStateReader implements Closeable {
     static FetchedChannelStateReader openRoot(FetchedChannelState state);
 
     /**
-     * Sequentially iterates per-channel segments following the in-memory segment locators
-     * (channelInfo, fileIndex, offset, length), reading each segment's bytes from disk on demand.
-     * Advances one segment at a time; does not materialize file data in memory.
+     * Sequentially iterates per-channel segments by scanning the files in write order: read a
+     * segment header [gateIdx][channelIdx][bufferLength], expose the bufferLength-bounded body, then
+     * advance to the next header / next file. Advances one segment at a time; does not materialize
+     * file data in memory.
      *
      * <p>Each cursor stays valid only until the next {@code next()}; its body must be fully
      * consumed before advancing.
@@ -173,16 +176,16 @@ public final class FetchedChannelStateReader implements Closeable {
 /** A single per-channel segment during iteration. Body bytes are opaque to the reader. */
 public interface FetchedSegmentCursor {
     InputChannelInfo channelInfo();
-    /** Bounded over this segment's [offset, offset + length) bytes; read() returns -1 at segment end. */
+    /** Bounded to this segment's bufferLength bytes; read() returns -1 at segment end. */
     InputStream body();
-    /** Segment body length in bytes (from the locator), used by snapshot as the length prefix. */
+    /** Segment body length in bytes (from the segment header), used by snapshot as the length prefix. */
     long length();
     /** Commits bytes already read from body() to the reader cursor; called under the drainer lock. */
     void commitConsumed();
 }
 ```
 
-`body()` 是包装流：从 `FileChannel.open(files.get(fileIndex), READ)` 的 `offset` 起读，读满 `length` 字节即返回 EOF。消费方 `read()` 到 -1 即本段读尽，不越界到下一段。读侧不解析段体里的 record 边界（§0 原则 3）——段体对它是不透明净字节；recordLen 帧由 consumer 的 `SpanningWrapper` 那层处理。
+`body()` 是包装流：从当前文件 channel 段头之后的位置起读，读满段头声明的 `bufferLength` 字节即返回 EOF。消费方 `read()` 到 -1 即本段读尽，不越界到下一段头。读侧不解析段体里的 record 边界（§0 原则 3）——段体对它是不透明净字节；recordLen 帧由 consumer 的 `SpanningWrapper` 那层处理。`length()` 即段头读出的 `bufferLength`。
 
 **底层文件对外层完全透明**：因段不跨文件（§0 原则 6），一个 `body()` 流只读单个文件，**绝不跨文件**。文件切换只发生在「读完一个 cursor、`next()` 到下一个 cursor」时——此时若下一段在另一个文件，reader 内部关旧 `FileChannel`、开 `files.get(nextFileIndex)`，外层无感。外层看到的始终是「一串 segment / 一个个 `body()` 流」，从不接触文件路径、文件边界、跨文件拼接。
 
@@ -193,7 +196,7 @@ void drain() throws IOException, InterruptedException {
     ResolvedChannels channels = resolvedChannelsFuture.join();
     try (CloseableIterator<FetchedSegmentCursor> segs = rootReader.segments()) {
         while (segs.hasNext()) {
-            FetchedSegmentCursor seg = segs.next();          // advance to this segment's locator
+            FetchedSegmentCursor seg = segs.next();          // read next segment header from disk
             RecoverableInputChannel ch = channels.channelByInfo.get(seg.channelInfo());
             if (ch == null) {                                 // fail-loud (§9, 现状已有)
                 throw new IllegalStateException("Drain: no physical channel for " + seg.channelInfo());
@@ -318,7 +321,7 @@ NoSpillingHandler        SpillingNoFilteringHandler      SpillingWithFilteringHa
 | `SpillFileWriter` | `FetchedChannelStateWriter` |
 | `SpillFileReader` | `FetchedChannelStateReader` |
 | `SpillFileDrainer` | `FetchedChannelStateDrainer` |
-| `SpillFileReader.Chunk` | 删除（1 record/buffer = 1 对象）。读侧改为顺序迭代段 `CloseableIterator<FetchedSegmentCursor>`（对外）+ 内部段定位 `FetchedSegment`（§4.2/§4.3） |
+| `SpillFileReader.Chunk` | 删除（1 record/buffer = 1 对象）。读侧改为顺序迭代段 `CloseableIterator<FetchedSegmentCursor>`，段长由 disk 段头 `bufferLength` 自描述（§4.2/§4.3），无内存段定位结构 |
 
 删除/改名后全文搜索 `Spill*` 在注释、javadoc、测试、`requirements/` 之外的字符串引用，同步清理（包括 `peekActiveSpillFileForTesting`、`getProducedSpillFile` 等 VisibleForTesting 方法名）。
 
@@ -349,16 +352,16 @@ NoSpillingHandler        SpillingNoFilteringHandler      SpillingWithFilteringHa
 
 ## 9. 不变式（fail-loud）
 
-- 写侧：文件轮换只在一个段完整写完后判定（§3.3）→ 段不跨文件 → record 不被文件边界切断 → 段定位 `(fileIndex, offset, length)` 必在单文件内、唯一确定一段字节。
-- 写侧：段定位项的 `length` 必须与实际写入该段的字节严格一致（读侧只信段定位表、不扫描文件定界），不一致即数据损坏 → 写封口时可断言「每个文件内 Σ(段头 8B + length) == 文件物理大小」。
-- 读侧：按段定位 `offset/length` 读出的字节数不足 / 文件提前 EOF → fail-loud（段被截断）。读侧**不**解析段体里的 record（那是 consumer 反序列化器的事），故无 `recordLen` 校验。
+- 写侧：文件轮换只在一个段完整写完后判定（§3.3）→ 段不跨文件 → record 不被文件边界切断 → 一个段必在单文件内。
+- 写侧：段头 `bufferLength` 回填值必须与实际写入段体字节严格一致（读侧只信段头、不扫描 record 定界），不一致即数据损坏 → 写封口时可断言「每个文件内 Σ(段头 12B + bufferLength) == 文件物理大小」。
+- 读侧：按段头 `bufferLength` 读出的字节数不足 / 文件提前 EOF → fail-loud（段被截断）。读侧**不**解析段体里的 record（那是 consumer 反序列化器的事），故无 `recordLen` 校验。
 - 读侧：迭代严格顺序、逐段推进、按需读盘（§0 原则 1）——不把文件段体一次性读进内存。
 - 文件生命周期（**不变**）：靠 `acquire()/release()` 引用计数管理；**中途不清理任何文件**，仅当最后一次 `release()` 使引用计数归零（drain + 所有 snapshot reader 都读完释放）时，才一次性删除**全部**文件。本提案只把删除对象从 `SpillFileSegment` 换成 `Path`（§5），清理时机/计数语义一字不改。
 - drainer：段 `channelInfo` 在已解析 channel 集合中找不到 → 抛异常（现状已有）。
-- 段定位项数 = channel 切换次数，远小于 record 总数（无 per-record 内存对象）。
+- 段头数 = channel 切换次数，远小于 record 总数（无 per-record 内存对象）。
 
 ## 10. 开放问题
 
-1. **段定位表的构建时机**：写阶段每次 channel 切换 / 文件轮换时新建一条段定位项（写完段头后记 `offset`），channel 不变则持续累加 `length`。需确认 filtering 模式下「一条上游 buffer 产出 0..N 条存活 record、record 可能横跨上游 buffer」时，只要目标 channel 不变就不切段、`length` 跨多次 `filterAndRewrite` 调用持续累加，offset/length 计算正确。
-2. **pass-through 模式段合并**：no-filtering 下连续多个上游 buffer 同属一个 channel 时应合并为一个段（段头只写一次、`length` 跨调用累加），需确认 pass-through 写入能跨多次调用复用 `currentChannel` 不重复写段头、不重复建段定位项。
+1. **段头 `bufferLength` 回填时机**：段体先攒进 `DataOutputSerializer`（段头预留 4B），channel 不变则持续 append；段封口时 `writeIntUnsafe` 回填实际段体字节数再 flush。需确认 filtering 模式下「一条上游 buffer 产出 0..N 条存活 record、record 可能横跨上游 buffer」时，只要目标 channel 不变就不封段、record 持续 append 进同一 `segmentBuffer`，封口时 bufferLength 回填正确。
+2. **pass-through 模式段合并**：no-filtering 下连续多个上游 buffer 同属一个 channel 时应合并为一个段（段头只写一次、段体跨调用 append），需确认 pass-through 写入能跨多次调用复用 `currentChannel` 不重复开段、封口时统一回填 bufferLength。
 3. **drain 锁内 `seg.commitConsumed()` 与 snapshot 的位置一致性**：§4.4 把「锁外从 `body()` 读走字节」与「锁内提交 reader 游标」分离，需确认 snapshot 锁内看到的段游标位置始终是「已交付字节边界」，与现状 `advance()` 语义等价、无竞态。
