@@ -781,7 +781,7 @@ class LocalInputChannelTest {
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(10));
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(20));
         channel.onRecoveredStateBuffer(TestBufferFactory.createBuffer(30));
-        // Mirror SpillFileReader.snapshotAndInsertBarriers: push the sentinel before
+        // Mirror snapshotAndInsertBarriers: push the sentinel before
         // checkpointStarted scans recoveredQueue.
         channel.onRecoveredStateBuffer(
                 EventSerializer.toBuffer(new RecoveryCheckpointBarrier(1L), false));
@@ -1124,9 +1124,7 @@ class LocalInputChannelTest {
 
         Optional<InputChannel.BufferAndAvailability> sentinel = channel.getNextBuffer();
         assertThat(sentinel).isPresent();
-        assertThat(
-                        EventSerializer.fromBuffer(
-                                sentinel.get().buffer(), getClass().getClassLoader()))
+        assertThat(EventSerializer.fromBuffer(sentinel.get().buffer(), getClass().getClassLoader()))
                 .isInstanceOf(EndOfFetchedChannelStateEvent.class);
 
         channel.onRecoveredStateConsumed();

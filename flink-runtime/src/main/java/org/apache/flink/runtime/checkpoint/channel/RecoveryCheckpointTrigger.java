@@ -29,7 +29,7 @@ public interface RecoveryCheckpointTrigger {
      * Atomically snapshots the undrained spill slice and inserts matching {@link
      * RecoveryCheckpointBarrier}s into in-recovery channels.
      */
-    CloseableIterator<SpillFileReader.Chunk> snapshotAndInsertBarriers(long checkpointId)
+    CloseableIterator<FetchedSegmentCursor> snapshotAndInsertBarriers(long checkpointId)
             throws IOException;
 
     RecoveryCheckpointTrigger NO_OP = checkpointId -> CloseableIterator.empty();

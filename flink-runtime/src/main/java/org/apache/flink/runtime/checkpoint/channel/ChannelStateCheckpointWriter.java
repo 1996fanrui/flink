@@ -165,10 +165,10 @@ class ChannelStateCheckpointWriter {
     void writeInputFromSpill(
             JobVertexID jobVertexID,
             int subtaskIndex,
-            CloseableIterator<SpillFileReader.Chunk> chunks) {
+            CloseableIterator<FetchedSegmentCursor> segments) {
         if (isDone()) {
             try {
-                chunks.close();
+                segments.close();
             } catch (Exception ignored) {
             }
             return;
@@ -179,28 +179,28 @@ class ChannelStateCheckpointWriter {
                 () -> {
                     checkState(!pendingResult.isAllInputsReceived());
                     try {
-                        while (chunks.hasNext()) {
-                            SpillFileReader.Chunk chunk = chunks.next();
+                        String action = "ChannelStateCheckpointWriter#writeInputFromSpill";
+                        while (segments.hasNext()) {
+                            FetchedSegmentCursor seg = segments.next();
                             long offset = checkpointStream.getPos();
-                            String action = "ChannelStateCheckpointWriter#writeInputFromSpill";
                             try (AutoCloseable ignored =
-                                    NetworkActionsLogger.measureIO(action, chunk)) {
-                                serializer.writeData(dataStream, chunk.data, chunk.length);
+                                    NetworkActionsLogger.measureIO(action, seg.channelInfo())) {
+                                serializer.writeData(dataStream, seg.body(), seg.length());
                             }
                             long size = checkpointStream.getPos() - offset;
                             pendingResult
                                     .getInputChannelOffsets()
                                     .computeIfAbsent(
-                                            chunk.channelInfo, unused -> new StateContentMetaInfo())
+                                            seg.channelInfo(), unused -> new StateContentMetaInfo())
                                     .withDataAdded(offset, size);
                             NetworkActionsLogger.tracePersist(
                                     action,
-                                    chunk.length + " bytes",
-                                    chunk.channelInfo,
+                                    seg.length() + " bytes",
+                                    seg.channelInfo(),
                                     checkpointId);
                         }
                     } finally {
-                        chunks.close();
+                        segments.close();
                     }
                 });
     }

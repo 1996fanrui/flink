@@ -26,6 +26,8 @@ import org.apache.flink.util.CloseableIterator;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Iterator;
@@ -56,21 +58,21 @@ class ChannelStateWriterImplAddInputDataFromSpillTest {
 
             InputChannelInfo c0 = new InputChannelInfo(0, 0);
             InputChannelInfo c1 = new InputChannelInfo(0, 1);
-            TrackingChunkIterator chunks =
-                    new TrackingChunkIterator(
+            TrackingSegmentIterator segments =
+                    new TrackingSegmentIterator(
                             Arrays.asList(
-                                    new SpillFileReader.Chunk(c0, new byte[] {1, 2, 3}, 3),
-                                    new SpillFileReader.Chunk(c1, new byte[] {4, 5}, 2),
-                                    new SpillFileReader.Chunk(c0, new byte[] {6}, 1)));
+                                    stubCursor(c0, new byte[] {1, 2, 3}),
+                                    stubCursor(c1, new byte[] {4, 5}),
+                                    stubCursor(c0, new byte[] {6})));
 
-            writer.addInputDataFromSpill(CHECKPOINT_ID, chunks);
+            writer.addInputDataFromSpill(CHECKPOINT_ID, segments);
             // Request is queued but not yet processed — iteration must not have happened yet.
-            assertThat(chunks.iteratedCount.get()).isEqualTo(0);
+            assertThat(segments.iteratedCount.get()).isEqualTo(0);
 
             worker.processAllRequests();
-            assertThat(chunks.iteratedCount.get()).isEqualTo(3);
-            assertThat(chunks.closed.get())
-                    .as("chunks iterator must be closed by the request once demux is done")
+            assertThat(segments.iteratedCount.get()).isEqualTo(3);
+            assertThat(segments.closed.get())
+                    .as("segments iterator must be closed by the request once done")
                     .isTrue();
         }
     }
@@ -90,20 +92,18 @@ class ChannelStateWriterImplAddInputDataFromSpillTest {
             writer.start(CHECKPOINT_ID, CheckpointOptions.forCheckpointWithDefaultLocation());
 
             int submittedBefore = worker.submitCount.get();
-            TrackingChunkIterator empty = new TrackingChunkIterator(Collections.emptyList());
+            TrackingSegmentIterator empty = new TrackingSegmentIterator(Collections.emptyList());
             writer.addInputDataFromSpill(CHECKPOINT_ID, empty);
 
             assertThat(worker.submitCount.get())
                     .as("empty spill iterator must skip writer-thread submission")
                     .isEqualTo(submittedBefore);
-            assertThat(empty.closed.get()).as("empty chunks closed inline").isTrue();
+            assertThat(empty.closed.get()).as("empty segments closed inline").isTrue();
         }
     }
 
     @Test
     void testWriteFailurePropagatesViaWriteResult() throws Exception {
-        // start() must succeed first so the cpId result is registered; the failing executor is
-        // then armed for the subsequent addInputDataFromSpill enqueue only.
         SwappableExecutor worker = new SwappableExecutor(JOB_ID);
         try (ChannelStateWriterImpl writer =
                 new ChannelStateWriterImpl(
@@ -119,16 +119,15 @@ class ChannelStateWriterImplAddInputDataFromSpillTest {
             assertThat(result).isNotNull();
 
             worker.failNext.set(true);
-            TrackingChunkIterator chunks =
-                    new TrackingChunkIterator(
+            TrackingSegmentIterator segments =
+                    new TrackingSegmentIterator(
                             Collections.singletonList(
-                                    new SpillFileReader.Chunk(
-                                            new InputChannelInfo(0, 0), new byte[] {1}, 1)));
+                                    stubCursor(new InputChannelInfo(0, 0), new byte[] {1})));
 
-            assertThatThrownBy(() -> writer.addInputDataFromSpill(CHECKPOINT_ID, chunks))
+            assertThatThrownBy(() -> writer.addInputDataFromSpill(CHECKPOINT_ID, segments))
                     .isInstanceOf(RuntimeException.class);
-            assertThat(chunks.closed.get())
-                    .as("chunks iterator closed even on enqueue failure")
+            assertThat(segments.closed.get())
+                    .as("segments iterator closed even on enqueue failure")
                     .isTrue();
             assertThat(result.getInputChannelStateHandles().isCompletedExceptionally())
                     .as("input channel state future propagates the enqueue failure")
@@ -137,38 +136,72 @@ class ChannelStateWriterImplAddInputDataFromSpillTest {
     }
 
     @Test
-    void testChunksClosedOnSuccessAndFailure() throws Exception {
+    void testSegmentsClosedOnSuccessAndFailure() throws Exception {
         SyncChannelStateWriteRequestExecutor worker =
                 new SyncChannelStateWriteRequestExecutor(JOB_ID);
         try (ChannelStateWriterImpl writer = newWriter(worker)) {
             worker.registerSubtask(JOB_VERTEX_ID, SUBTASK_INDEX);
             writer.start(CHECKPOINT_ID, CheckpointOptions.forCheckpointWithDefaultLocation());
 
-            TrackingChunkIterator chunks =
-                    new TrackingChunkIterator(
+            TrackingSegmentIterator segments =
+                    new TrackingSegmentIterator(
                             Collections.singletonList(
-                                    new SpillFileReader.Chunk(
-                                            new InputChannelInfo(0, 0), new byte[] {1}, 1)));
-            writer.addInputDataFromSpill(CHECKPOINT_ID, chunks);
+                                    stubCursor(new InputChannelInfo(0, 0), new byte[] {1})));
+            writer.addInputDataFromSpill(CHECKPOINT_ID, segments);
             worker.processAllRequests();
-            assertThat(chunks.closed.get()).isTrue();
+            assertThat(segments.closed.get()).isTrue();
         }
     }
+
+    // -------------------------------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------------------------------
 
     private ChannelStateWriterImpl newWriter(SyncChannelStateWriteRequestExecutor worker) {
         return new ChannelStateWriterImpl(
                 JOB_VERTEX_ID, TASK_NAME, SUBTASK_INDEX, new ConcurrentHashMap<>(), worker, 5);
     }
 
-    private static final class TrackingChunkIterator
-            implements CloseableIterator<SpillFileReader.Chunk> {
+    /**
+     * Creates a minimal stub {@link FetchedSegmentCursor} backed by the given payload bytes. The
+     * body stream is a {@link ByteArrayInputStream} over {@code data}. Length equals {@code
+     * data.length}. {@link FetchedSegmentCursor#commitConsumed()} is a no-op.
+     */
+    private static FetchedSegmentCursor stubCursor(InputChannelInfo info, byte[] data) {
+        return new FetchedSegmentCursor() {
+            @Override
+            public InputChannelInfo channelInfo() {
+                return info;
+            }
 
-        private final Iterator<SpillFileReader.Chunk> backing;
+            @Override
+            public InputStream body() {
+                return new ByteArrayInputStream(data);
+            }
+
+            @Override
+            public long length() {
+                return data.length;
+            }
+
+            @Override
+            public void commitConsumed() {}
+        };
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // Tracking iterator
+    // -------------------------------------------------------------------------------------------
+
+    private static final class TrackingSegmentIterator
+            implements CloseableIterator<FetchedSegmentCursor> {
+
+        private final Iterator<FetchedSegmentCursor> backing;
         final AtomicInteger iteratedCount = new AtomicInteger(0);
         final AtomicBoolean closed = new AtomicBoolean(false);
 
-        TrackingChunkIterator(List<SpillFileReader.Chunk> chunks) {
-            this.backing = chunks.iterator();
+        TrackingSegmentIterator(List<FetchedSegmentCursor> cursors) {
+            this.backing = cursors.iterator();
         }
 
         @Override
@@ -177,7 +210,7 @@ class ChannelStateWriterImplAddInputDataFromSpillTest {
         }
 
         @Override
-        public SpillFileReader.Chunk next() {
+        public FetchedSegmentCursor next() {
             if (!backing.hasNext()) {
                 throw new NoSuchElementException();
             }
@@ -190,6 +223,10 @@ class ChannelStateWriterImplAddInputDataFromSpillTest {
             closed.set(true);
         }
     }
+
+    // -------------------------------------------------------------------------------------------
+    // Executor stubs
+    // -------------------------------------------------------------------------------------------
 
     private static final class QueueCountingExecutor implements ChannelStateWriteRequestExecutor {
 
@@ -217,11 +254,6 @@ class ChannelStateWriterImplAddInputDataFromSpillTest {
         public void releaseSubtask(JobVertexID jobVertexID, int subtaskIndex) {}
     }
 
-    /**
-     * Delegates to a sync executor by default; throws on the next submit when {@code failNext} is
-     * set. Used so {@code writer.start} can succeed while a later {@code addInputDataFromSpill}
-     * enqueue is forced to fail.
-     */
     private static final class SwappableExecutor implements ChannelStateWriteRequestExecutor {
 
         private final SyncChannelStateWriteRequestExecutor delegate;

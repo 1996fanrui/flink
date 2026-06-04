@@ -55,7 +55,7 @@ public class SequentialChannelStateReaderImpl implements SequentialChannelStateR
     private final ChannelStateSerializer serializer;
     private final ChannelStateChunkReader chunkReader;
 
-    @Nullable private SpillFile producedSpillFile;
+    @Nullable private FetchedChannelState producedChannelState;
 
     public SequentialChannelStateReaderImpl(TaskStateSnapshot taskStateSnapshot) {
         this.taskStateSnapshot = taskStateSnapshot;
@@ -75,12 +75,12 @@ public class SequentialChannelStateReaderImpl implements SequentialChannelStateR
 
         // Manual close ordering so the produced spill file can be published after
         // stateHandler.close() flushes the filter writer.
-        InputChannelRecoveredStateHandler stateHandler =
-                new InputChannelRecoveredStateHandler(
+        AbstractInputChannelRecoveredStateHandler stateHandler =
+                AbstractInputChannelRecoveredStateHandler.create(
                         inputGates,
                         taskStateSnapshot.getInputRescalingDescriptor(),
-                        filteringHandler,
                         filterContext.isCheckpointingDuringRecoveryEnabled(),
+                        filteringHandler,
                         filterContext.getMemorySegmentSize(),
                         filterContext.getTmpDirectories());
         try (ChannelStateFilteringHandler ignored = filteringHandler) {
@@ -104,14 +104,14 @@ public class SequentialChannelStateReaderImpl implements SequentialChannelStateR
             } finally {
                 stateHandler.close();
             }
-            this.producedSpillFile = stateHandler.getProducedSpillFile();
+            this.producedChannelState = stateHandler.getProducedChannelState();
         }
     }
 
     @Override
     @Nullable
-    public SpillFile getProducedSpillFile() {
-        return producedSpillFile;
+    public FetchedChannelState getProducedChannelState() {
+        return producedChannelState;
     }
 
     @Override

@@ -86,15 +86,15 @@ class RecoveredChannelStateHandlerFilterRoutingTest {
     }
 
     @Test
-    void testFilterOnRoutesOutputToSpillFile() throws Exception {
+    void testFilterOnRoutesOutputToChannelState() throws Exception {
         ChannelStateFilteringHandler filteringHandler = newPassThroughFilteringHandler();
         try (ChannelStateFilteringHandler ignored = filteringHandler;
-                InputChannelRecoveredStateHandler handler = newFilterOnHandler(filteringHandler)) {
+                SpillingWithFilteringHandler handler = newFilterOnHandler(filteringHandler)) {
             invokeRecoverWithRecords(handler, 1L, 2L, 3L);
 
-            SpillFile spillFile = handler.peekActiveSpillFileForTesting();
-            assertThat(spillFile)
-                    .as("filter-on path must lazily build a SpillFile on first recover()")
+            FetchedChannelState channelState = handler.peekActiveChannelStateForTesting();
+            assertThat(channelState)
+                    .as("filter-on path must lazily build a FetchedChannelState on first recover()")
                     .isNotNull();
         }
     }
@@ -106,7 +106,7 @@ class RecoveredChannelStateHandlerFilterRoutingTest {
         // segments for the accumulator path. Channel-side exclusive buffer reservation, if any,
         // happens at handler construction and is already reflected in the pre-recover snapshot.
         ChannelStateFilteringHandler filteringHandler = newPassThroughFilteringHandler();
-        InputChannelRecoveredStateHandler handler = newFilterOnHandler(filteringHandler);
+        SpillingWithFilteringHandler handler = newFilterOnHandler(filteringHandler);
         try (ChannelStateFilteringHandler ignored = filteringHandler) {
             int availableBeforeRecover = networkBufferPool.getNumberOfAvailableMemorySegments();
 
@@ -129,7 +129,7 @@ class RecoveredChannelStateHandlerFilterRoutingTest {
     void testFilterOnDoesNotInvokeChannelOnRecoveredStateBuffer() throws Exception {
         ChannelStateFilteringHandler filteringHandler = newPassThroughFilteringHandler();
         try (ChannelStateFilteringHandler ignored = filteringHandler;
-                InputChannelRecoveredStateHandler handler = newFilterOnHandler(filteringHandler)) {
+                SpillingWithFilteringHandler handler = newFilterOnHandler(filteringHandler)) {
             invokeRecoverWithRecords(handler, 1L, 2L, 3L);
 
             int queuedDuringRecovery = countQueuedRecoveredBuffers();
@@ -140,23 +140,20 @@ class RecoveredChannelStateHandlerFilterRoutingTest {
     }
 
     @Test
-    void testFilterOffDoesNotCreateSpillFile() throws Exception {
-        try (InputChannelRecoveredStateHandler handler = newFilterOffHandler()) {
+    void testFilterOffDoesNotCreateChannelState() throws Exception {
+        try (NoSpillingHandler handler = newFilterOffHandler()) {
             invokeRecoverWithRawBytes(handler, new byte[] {1, 2, 3, 4});
 
-            assertThat(handler.peekActiveSpillFileForTesting())
-                    .as("filter-off must not create a SpillFile")
-                    .isNull();
-            handler.close();
-            assertThat(handler.getProducedSpillFile())
-                    .as("filter-off close() must not publish a SpillFile either")
+            // NoSpillingHandler has no channelStateWriter, so peek always returns null.
+            assertThat(handler.getProducedChannelState())
+                    .as("filter-off close() must not publish a FetchedChannelState either")
                     .isNull();
         }
     }
 
     @Test
     void testFilterOffMaintainsMasterBehavior() throws Exception {
-        try (InputChannelRecoveredStateHandler handler = newFilterOffHandler()) {
+        try (NoSpillingHandler handler = newFilterOffHandler()) {
             invokeRecoverWithRawBytes(handler, new byte[] {1, 2, 3, 4});
 
             // Filter-off path enqueues the SubtaskConnectionDescriptor event plus the data
@@ -168,25 +165,27 @@ class RecoveredChannelStateHandlerFilterRoutingTest {
         }
     }
 
-    private InputChannelRecoveredStateHandler newFilterOnHandler(
+    private SpillingWithFilteringHandler newFilterOnHandler(
             ChannelStateFilteringHandler filteringHandler) {
-        return new InputChannelRecoveredStateHandler(
-                new InputGate[] {inputGate},
-                identityRescalingForOneGate(),
-                filteringHandler,
-                true,
-                MemoryManager.DEFAULT_PAGE_SIZE,
-                new String[] {tempDir.toString()});
+        return (SpillingWithFilteringHandler)
+                AbstractInputChannelRecoveredStateHandler.create(
+                        new InputGate[] {inputGate},
+                        identityRescalingForOneGate(),
+                        true,
+                        filteringHandler,
+                        MemoryManager.DEFAULT_PAGE_SIZE,
+                        new String[] {tempDir.toString()});
     }
 
-    private InputChannelRecoveredStateHandler newFilterOffHandler() {
-        return new InputChannelRecoveredStateHandler(
-                new InputGate[] {inputGate},
-                identityRescalingForOneGate(),
-                null,
-                false,
-                MemoryManager.DEFAULT_PAGE_SIZE,
-                null);
+    private NoSpillingHandler newFilterOffHandler() {
+        return (NoSpillingHandler)
+                AbstractInputChannelRecoveredStateHandler.create(
+                        new InputGate[] {inputGate},
+                        identityRescalingForOneGate(),
+                        false,
+                        null,
+                        MemoryManager.DEFAULT_PAGE_SIZE,
+                        null);
     }
 
     private static InflightDataRescalingDescriptor identityRescalingForOneGate() {
@@ -221,14 +220,14 @@ class RecoveredChannelStateHandlerFilterRoutingTest {
                 new ChannelStateFilteringHandler.GateFilterHandler<?>[] {gateHandler});
     }
 
-    private void invokeRecoverWithRecords(InputChannelRecoveredStateHandler handler, Long... values)
-            throws Exception {
+    private void invokeRecoverWithRecords(
+            AbstractInputChannelRecoveredStateHandler handler, Long... values) throws Exception {
         Buffer source = createRecordBuffer(values);
         invokeRecoverWithBuffer(handler, source);
     }
 
-    private void invokeRecoverWithRawBytes(InputChannelRecoveredStateHandler handler, byte[] data)
-            throws Exception {
+    private void invokeRecoverWithRawBytes(
+            AbstractInputChannelRecoveredStateHandler handler, byte[] data) throws Exception {
         MemorySegment seg = MemorySegmentFactory.allocateUnpooledSegment(data.length);
         seg.put(0, data);
         NetworkBuffer source = new NetworkBuffer(seg, FreeingBufferRecycler.INSTANCE);
@@ -240,8 +239,8 @@ class RecoveredChannelStateHandlerFilterRoutingTest {
      * Mirrors the chunkReader's getBuffer + recover sequence: handler-issued buffer is filled with
      * the source data, then handed back to recover.
      */
-    private void invokeRecoverWithBuffer(InputChannelRecoveredStateHandler handler, Buffer source)
-            throws Exception {
+    private void invokeRecoverWithBuffer(
+            AbstractInputChannelRecoveredStateHandler handler, Buffer source) throws Exception {
         RecoveredChannelStateHandler.BufferWithContext<Buffer> bwc = handler.getBuffer(channelInfo);
         try {
             Buffer dest = bwc.context;

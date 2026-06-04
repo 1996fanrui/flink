@@ -262,14 +262,14 @@ abstract class ChannelStateWriteRequest {
             JobVertexID jobVertexID,
             int subtaskIndex,
             long checkpointId,
-            CloseableIterator<SpillFileReader.Chunk> chunks) {
+            CloseableIterator<FetchedSegmentCursor> segments) {
         return new CheckpointInProgressRequest(
                 "writeInputFromSpill",
                 jobVertexID,
                 subtaskIndex,
                 checkpointId,
-                writer -> writer.writeInputFromSpill(jobVertexID, subtaskIndex, chunks),
-                throwable -> chunks.close());
+                writer -> writer.writeInputFromSpill(jobVertexID, subtaskIndex, segments),
+                throwable -> segments.close());
     }
 
     static ChannelStateWriteRequest registerSubtask(JobVertexID jobVertexID, int subtaskIndex) {

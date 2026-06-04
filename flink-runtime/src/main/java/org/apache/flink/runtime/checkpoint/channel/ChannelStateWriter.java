@@ -190,8 +190,8 @@ public interface ChannelStateWriter extends Closeable {
     ChannelStateWriteResult getAndRemoveWriteResult(long checkpointId)
             throws IllegalArgumentException;
 
-    /** Records input-channel state from a spill file and takes ownership of {@code chunks}. */
-    void addInputDataFromSpill(long checkpointId, CloseableIterator<SpillFileReader.Chunk> chunks);
+    /** Records input-channel state from a spill file and takes ownership of {@code segments}. */
+    void addInputDataFromSpill(long checkpointId, CloseableIterator<FetchedSegmentCursor> segments);
 
     ChannelStateWriter NO_OP = new NoOpChannelStateWriter();
 
@@ -236,9 +236,9 @@ public interface ChannelStateWriter extends Closeable {
 
         @Override
         public void addInputDataFromSpill(
-                long checkpointId, CloseableIterator<SpillFileReader.Chunk> chunks) {
+                long checkpointId, CloseableIterator<FetchedSegmentCursor> segments) {
             try {
-                chunks.close();
+                segments.close();
             } catch (Exception ignored) {
             }
         }

@@ -43,11 +43,11 @@ import org.apache.flink.runtime.checkpoint.SavepointType;
 import org.apache.flink.runtime.checkpoint.SnapshotType;
 import org.apache.flink.runtime.checkpoint.SubTaskInitializationMetricsBuilder;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
+import org.apache.flink.runtime.checkpoint.channel.FetchedChannelState;
+import org.apache.flink.runtime.checkpoint.channel.FetchedChannelStateDrainer;
 import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointTrigger;
 import org.apache.flink.runtime.checkpoint.channel.SequentialChannelStateReader;
-import org.apache.flink.runtime.checkpoint.channel.SpillFile;
-import org.apache.flink.runtime.checkpoint.channel.SpillFileDrainer;
 import org.apache.flink.runtime.checkpoint.filemerging.FileMergingSnapshotManager;
 import org.apache.flink.runtime.execution.CancelTaskException;
 import org.apache.flink.runtime.execution.Environment;
@@ -311,10 +311,10 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 
     /**
      * Completed (on the {@code channelIOExecutor}) once recovery setup decides whether a spill
-     * drainer is needed: with the drainer when recovery carries channel state, otherwise with {@link
-     * RecoveryCheckpointTrigger#NO_OP}. The barrier handler is built before the drainer exists, so
-     * it holds this future and resolves the trigger lazily; by the time a checkpoint can fire during
-     * recovery the future is already completed, so callers read it via {@code getNow}.
+     * drainer is needed: with the drainer when recovery carries channel state, otherwise with
+     * {@link RecoveryCheckpointTrigger#NO_OP}. The barrier handler is built before the drainer
+     * exists, so it holds this future and resolves the trigger lazily; by the time a checkpoint can
+     * fire during recovery the future is already completed, so callers read it via {@code getNow}.
      */
     private final CompletableFuture<RecoveryCheckpointTrigger> recoveryCheckpointTriggerFuture =
             new CompletableFuture<>();
@@ -951,19 +951,21 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
             IndexedInputGate[] inputGates,
             boolean checkpointingDuringRecoveryEnabled,
             @Nullable CompletableFuture<List<RecoverableInputChannel>> physicalChannelsFuture) {
-        SpillFileDrainer drainer = null;
+        FetchedChannelStateDrainer drainer = null;
         try {
             reader.readInputData(inputGates, createRecordFilterContext());
 
             if (checkpointingDuringRecoveryEnabled) {
-                SpillFile producedSpillFile = reader.getProducedSpillFile();
-                boolean needsRecovery = producedSpillFile != null;
+                FetchedChannelState producedChannelState = reader.getProducedChannelState();
+                boolean needsRecovery = producedChannelState != null;
                 for (IndexedInputGate gate : inputGates) {
                     gate.setNeedsRecovery(needsRecovery);
                 }
                 if (needsRecovery) {
-                    drainer = new SpillFileDrainer(producedSpillFile, physicalChannelsFuture);
-                    producedSpillFile.release();
+                    drainer =
+                            new FetchedChannelStateDrainer(
+                                    producedChannelState, physicalChannelsFuture);
+                    producedChannelState.release();
                 }
             }
 
@@ -976,14 +978,15 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
             recoveryCheckpointTriggerFuture.complete(
                     drainer != null ? drainer : RecoveryCheckpointTrigger.NO_OP);
         } catch (Throwable t) {
-            asyncExceptionHandler.handleAsyncException("Unable to set up recovered channel state", t);
+            asyncExceptionHandler.handleAsyncException(
+                    "Unable to set up recovered channel state", t);
             recoveryCheckpointTriggerFuture.completeExceptionally(t);
             if (checkpointingDuringRecoveryEnabled) {
                 if (drainer == null) {
                     try {
-                        SpillFile leakedSpillFile = reader.getProducedSpillFile();
-                        if (leakedSpillFile != null) {
-                            leakedSpillFile.release();
+                        FetchedChannelState leakedChannelState = reader.getProducedChannelState();
+                        if (leakedChannelState != null) {
+                            leakedChannelState.release();
                         }
                     } catch (Throwable ignored) {
                         // Preserve the original recovery failure.
@@ -1000,23 +1003,24 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
         try {
             drainer.drain();
         } catch (Throwable t) {
-            asyncExceptionHandler.handleAsyncException("Unable to drain recovered channel state", t);
+            asyncExceptionHandler.handleAsyncException(
+                    "Unable to drain recovered channel state", t);
         } finally {
             try {
                 drainer.close();
             } catch (Throwable closeError) {
                 asyncExceptionHandler.handleAsyncException(
-                        "Unable to close SpillFileDrainer after drain", closeError);
+                        "Unable to close FetchedChannelStateDrainer after drain", closeError);
             }
         }
     }
 
     /**
      * Wires each gate's {@code requestPartitions()} to run on the mailbox once its recovery trigger
-     * fires, and (when checkpointing-during-recovery is enabled) aggregates the per-gate completions
-     * into {@code physicalChannelsFuture}. The trigger stays synchronous (no {@code *Async}):
-     * completing on the {@code channelIOExecutor} that fired {@code bufferFilteringCompleteFuture}
-     * would let the poison mail outrun the suspend callback.
+     * fires, and (when checkpointing-during-recovery is enabled) aggregates the per-gate
+     * completions into {@code physicalChannelsFuture}. The trigger stays synchronous (no {@code
+     * *Async}): completing on the {@code channelIOExecutor} that fired {@code
+     * bufferFilteringCompleteFuture} would let the poison mail outrun the suspend callback.
      *
      * <p>Returns the futures the recovery mailbox loop must await before transitioning to RUNNING.
      */
@@ -1086,10 +1090,10 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 
     /**
      * Returns a trigger that resolves the real implementation lazily: the barrier handler is built
-     * before the spill drainer exists, so this defers reading {@link #recoveryCheckpointTriggerFuture}
-     * until a checkpoint actually fires, by which point recovery setup has completed it. Resolving at
-     * construction time would block; an unresolved future at snapshot time means an invariant broke,
-     * so it fails loud.
+     * before the spill drainer exists, so this defers reading {@link
+     * #recoveryCheckpointTriggerFuture} until a checkpoint actually fires, by which point recovery
+     * setup has completed it. Resolving at construction time would block; an unresolved future at
+     * snapshot time means an invariant broke, so it fails loud.
      */
     public RecoveryCheckpointTrigger getRecoveryCheckpointTrigger() {
         return cpId -> {

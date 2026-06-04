@@ -148,9 +148,9 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
 
     /**
      * Ordinary (non-priority) upstream events received while recovery is still in progress. They
-     * cannot enter {@link #receivedBuffers} ahead of the recovered buffers, so they are stashed here
-     * and appended once recovery delivery finishes. Credit is suppressed during recovery, so the
-     * upstream can only send events (never data buffers) before {@link
+     * cannot enter {@link #receivedBuffers} ahead of the recovered buffers, so they are stashed
+     * here and appended once recovery delivery finishes. Credit is suppressed during recovery, so
+     * the upstream can only send events (never data buffers) before {@link
      * #finishRecoveredBufferDelivery()}.
      */
     @GuardedBy("receivedBuffers")
@@ -312,8 +312,10 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
     @GuardedBy("receivedBuffers")
     private boolean appendRecoveredBuffer(Buffer buffer) {
         boolean wasEmpty = receivedBuffers.isEmpty();
-        // Recovered buffers carry no per-buffer subpartition id (NONE): they are snapshotted via the
-        // recovery path, never via getInflightBuffersUnsafe which is the only consumer of that field.
+        // Recovered buffers carry no per-buffer subpartition id (NONE): they are snapshotted via
+        // the
+        // recovery path, never via getInflightBuffersUnsafe which is the only consumer of that
+        // field.
         receivedBuffers.add(new SequenceBuffer(buffer, recoverySequenceNumber++, NONE));
         totalQueueSizeInBytes += buffer.getSize();
         return wasEmpty;
@@ -759,9 +761,11 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
                     recycleBuffer = false;
                 } else {
                     if (inRecovery) {
-                        // The upstream has no credit until recovery delivery finishes, so it can only
+                        // The upstream has no credit until recovery delivery finishes, so it can
+                        // only
                         // send events here, never data buffers. Stash ordinary events so they are
-                        // consumed after the recovered buffers; data buffers are a protocol violation.
+                        // consumed after the recovered buffers; data buffers are a protocol
+                        // violation.
                         checkState(
                                 !buffer.isBuffer(),
                                 "Received live data buffer during recovery on channel %s",
@@ -877,7 +881,8 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
                 }
                 channelStatePersister.startPersisting(barrier.getId(), toPersist);
                 if (inRecovery) {
-                    // Recovered inflight buffers are collected in one shot and the upstream sends no
+                    // Recovered inflight buffers are collected in one shot and the upstream sends
+                    // no
                     // data during recovery, so close the persist window immediately to keep the
                     // persister from carrying a pending state into later checkpoints.
                     channelStatePersister.stopPersisting(barrier.getId());
