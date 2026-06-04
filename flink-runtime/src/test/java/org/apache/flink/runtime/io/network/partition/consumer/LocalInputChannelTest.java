@@ -1110,16 +1110,26 @@ class LocalInputChannelTest {
     }
 
     @Test
-    void testInRecoveryBoundaryFlagTrueQueueEmptyFallsToMasterPath() throws Exception {
-        // flag=true, queue=empty → channel is NOT in recovery → master path takes over. Without a
-        // subpartition view, the master path raises IllegalStateException via
-        // checkAndWaitForSubpartitionView, which is the exact pre-Phase-2 behaviour and proves the
-        // recovery branch is not swallowing the call.
+    void testFinishWithNoRecoveredBuffersEmitsSentinelThenFallsToMasterPath() throws Exception {
+        // With no recovered buffers, finish still appends the EndOfFetchedChannelStateEvent
+        // sentinel; getNextBuffer returns it. Consuming the sentinel flips the channel out of
+        // recovery, after which the master path takes over: without a subpartition view it raises
+        // IllegalStateException via checkAndWaitForSubpartitionView, proving the recovery branch is
+        // no longer swallowing the call.
         SingleInputGate inputGate = new SingleInputGateBuilder().build();
         LocalInputChannel channel = newPushOnlyLocalChannel(inputGate, ChannelStateWriter.NO_OP);
         inputGate.setInputChannels(channel);
         channel.completeUpstreamReadyForTest();
         channel.finishRecoveredBufferDelivery();
+
+        Optional<InputChannel.BufferAndAvailability> sentinel = channel.getNextBuffer();
+        assertThat(sentinel).isPresent();
+        assertThat(
+                        EventSerializer.fromBuffer(
+                                sentinel.get().buffer(), getClass().getClassLoader()))
+                .isInstanceOf(EndOfFetchedChannelStateEvent.class);
+
+        channel.onRecoveredStateConsumed();
         assertThatThrownBy(channel::getNextBuffer)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("Queried for a buffer before requesting the subpartition");
@@ -1288,10 +1298,13 @@ class LocalInputChannelTest {
         RecordingChannelStateWriter stateWriter = new RecordingChannelStateWriter();
         LocalInputChannel channel = newPushOnlyLocalChannel(inputGate, stateWriter);
         inputGate.setInputChannels(channel);
-        // Channel starts in-recovery; flip it to not-in-recovery so checkpointStarted exercises
-        // the master path instead of the recovery branch.
+        // Channel starts in-recovery; finish appends the sentinel and consuming it flips the
+        // channel to not-in-recovery so checkpointStarted exercises the master path instead of the
+        // recovery branch.
         channel.completeUpstreamReadyForTest();
         channel.finishRecoveredBufferDelivery();
+        channel.getNextBuffer();
+        channel.onRecoveredStateConsumed();
 
         CheckpointOptions options =
                 CheckpointOptions.unaligned(CheckpointType.CHECKPOINT, getDefault());

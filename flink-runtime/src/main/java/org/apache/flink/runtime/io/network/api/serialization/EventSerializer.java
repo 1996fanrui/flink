@@ -44,6 +44,7 @@ import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.BufferConsumer;
 import org.apache.flink.runtime.io.network.buffer.FreeingBufferRecycler;
 import org.apache.flink.runtime.io.network.buffer.NetworkBuffer;
+import org.apache.flink.runtime.io.network.partition.consumer.EndOfFetchedChannelStateEvent;
 import org.apache.flink.runtime.io.network.partition.consumer.EndOfInputChannelStateEvent;
 import org.apache.flink.runtime.io.network.partition.consumer.EndOfOutputChannelStateEvent;
 import org.apache.flink.runtime.state.CheckpointStorageLocationReference;
@@ -90,6 +91,8 @@ public class EventSerializer {
 
     private static final int RECOVERY_CHECKPOINT_BARRIER_EVENT = 13;
 
+    private static final int END_OF_FETCHED_CHANNEL_STATE_EVENT = 14;
+
     private static final byte CHECKPOINT_TYPE_CHECKPOINT = 0;
 
     private static final byte CHECKPOINT_TYPE_SAVEPOINT = 1;
@@ -119,6 +122,8 @@ public class EventSerializer {
             return ByteBuffer.wrap(new byte[] {0, 0, 0, END_OF_OUTPUT_CHANNEL_STATE_EVENT});
         } else if (eventClass == EndOfInputChannelStateEvent.class) {
             return ByteBuffer.wrap(new byte[] {0, 0, 0, END_OF_INPUT_CHANNEL_STATE_EVENT});
+        } else if (eventClass == EndOfFetchedChannelStateEvent.class) {
+            return ByteBuffer.wrap(new byte[] {0, 0, 0, END_OF_FETCHED_CHANNEL_STATE_EVENT});
         } else if (eventClass == EndOfData.class) {
             return ByteBuffer.wrap(
                     new byte[] {
@@ -216,6 +221,8 @@ public class EventSerializer {
                 return EndOfOutputChannelStateEvent.INSTANCE;
             } else if (type == END_OF_INPUT_CHANNEL_STATE_EVENT) {
                 return EndOfInputChannelStateEvent.INSTANCE;
+            } else if (type == END_OF_FETCHED_CHANNEL_STATE_EVENT) {
+                return EndOfFetchedChannelStateEvent.INSTANCE;
             } else if (type == END_OF_USER_RECORDS_EVENT) {
                 return new EndOfData(StopMode.values()[buffer.get()]);
             } else if (type == CANCEL_CHECKPOINT_MARKER_EVENT) {
