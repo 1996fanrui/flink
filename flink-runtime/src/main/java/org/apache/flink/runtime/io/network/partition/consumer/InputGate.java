@@ -147,9 +147,7 @@ public abstract class InputGate
      * so it stays correct for {@link UnionInputGate} where the global index differs from a member
      * gate's local channel index.
      */
-    public InputChannel getChannel(InputChannelInfo channelInfo) {
-        return getChannel(channelInfo.getInputChannelIdx());
-    }
+    public abstract InputChannel getChannel(InputChannelInfo channelInfo);
 
     /** Returns the channel infos of this gate. */
     public List<InputChannelInfo> getChannelInfos() {
