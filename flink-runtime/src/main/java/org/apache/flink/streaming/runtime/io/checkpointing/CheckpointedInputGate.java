@@ -207,8 +207,7 @@ public class CheckpointedInputGate implements PullingAsyncDataInput<BufferOrEven
         } else if (eventClass == EndOfFetchedChannelStateEvent.class) {
             // Tail of the recovered buffers: only a RecoverableInputChannel can produce this
             // sentinel, so anything else here is a bug rather than something to tolerate.
-            InputChannel channel =
-                    inputGate.getChannel(bufferOrEvent.getChannelInfo().getInputChannelIdx());
+            InputChannel channel = inputGate.getChannel(bufferOrEvent.getChannelInfo());
             checkState(
                     channel instanceof RecoverableInputChannel,
                     "EndOfFetchedChannelStateEvent received on a non-recoverable channel %s",
@@ -306,6 +305,10 @@ public class CheckpointedInputGate implements PullingAsyncDataInput<BufferOrEven
 
     public InputChannel getChannel(int channelIndex) {
         return inputGate.getChannel(channelIndex);
+    }
+
+    public InputChannel getChannel(InputChannelInfo channelInfo) {
+        return inputGate.getChannel(channelInfo);
     }
 
     public List<InputChannelInfo> getChannelInfos() {
