@@ -108,9 +108,9 @@ public final class FetchedChannelStateDrainer implements RecoveryCheckpointTrigg
 
         synchronized (lock) {
             drainFinished = true;
-            for (RecoverableInputChannel ch : channels.allChannels) {
-                ch.finishRecoveredBufferDelivery();
-            }
+        }
+        for (RecoverableInputChannel ch : channels.allChannels) {
+            ch.finishRecoveredBufferDelivery();
         }
     }
 

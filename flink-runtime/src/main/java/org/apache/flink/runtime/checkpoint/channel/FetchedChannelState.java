@@ -35,23 +35,20 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 /**
  * Sealed container for recovered channel-state data written to spill files.
  *
- * <p>Holds a list of file paths (in write order) and an in-memory segment locator table. Each
- * {@link FetchedSegment} entry records the {@code (channelInfo, fileIndex, offset, length)} needed
- * to read one per-channel segment from disk on demand, without materializing the segment body in
- * memory.
+ * <p>Holds a list of file paths (in write order). Segment boundaries are self-described in disk
+ * segment headers ([4B gateIdx][4B channelIdx][4B bufferLength]), so no in-memory segment locator
+ * table is maintained. The reader scans files sequentially, reading each 12-byte header to obtain
+ * the channel info and body length.
  *
- * <p>The segment locator table is built by the writer ({@link FetchedChannelStateWriter}) during
- * writing and becomes read-only once the writer is closed. The file list grows as the writer
- * rotates to new files (one rotation per 64 MB soft limit), and is also sealed on writer close.
+ * <p>The file list grows as the writer rotates to new files (one rotation per 64 MB soft limit),
+ * and is sealed on writer close.
  *
  * <p>File lifecycle is managed by {@link #acquire()} / {@link #release()} reference counting. Files
  * are deleted only when the last lifecycle grant is released (i.e. when both the drain reader and
- * all snapshot readers have finished). This invariant is preserved from the previous
- * implementation; only the deletion target changes from segment {@link
- * java.nio.channels.FileChannel} objects to plain {@link Path} entries.
+ * all snapshot readers have finished).
  *
- * <p>Mutations (file and segment list appends) are single-writer and intentionally unsynchronized;
- * callers must serialize them via the channel IO executor.
+ * <p>Mutations (file list appends) are single-writer and intentionally unsynchronized; callers must
+ * serialize them via the channel IO executor.
  */
 @Internal
 public final class FetchedChannelState implements Closeable {
@@ -65,12 +62,6 @@ public final class FetchedChannelState implements Closeable {
 
     /** Ordered list of spill file paths, one entry per physical file. Read-only after sealing. */
     private final List<Path> files = new ArrayList<>();
-
-    /**
-     * Ordered segment locator table. One entry per channel switch. Read-only after sealing.
-     * Quantity = number of channel switches, far fewer than the total record count.
-     */
-    private final List<FetchedSegment> segmentLocators = new ArrayList<>();
 
     // close() and release() may be called from different threads; volatile ensures visibility.
     private volatile boolean closed = false;
@@ -86,24 +77,13 @@ public final class FetchedChannelState implements Closeable {
     /**
      * Registers a new spill file path. Called by the writer when it opens a new file.
      *
-     * @return the index of the newly added file (used to construct {@link FetchedSegment} entries).
+     * @return the index of the newly added file.
      */
     int addFile(Path filePath) {
         checkNotNull(filePath);
         int index = files.size();
         files.add(filePath);
         return index;
-    }
-
-    /**
-     * Appends a sealed segment locator entry to the in-memory table.
-     *
-     * <p>Called by the writer each time a channel segment is fully written (channel switch, file
-     * rotation, or writer close).
-     */
-    void appendSegment(FetchedSegment segment) {
-        checkNotNull(segment);
-        segmentLocators.add(segment);
     }
 
     // -------------------------------------------------------------------------------------------
@@ -121,14 +101,6 @@ public final class FetchedChannelState implements Closeable {
     /** Returns the ordered list of spill file paths. Read-only view. */
     public List<Path> files() {
         return Collections.unmodifiableList(files);
-    }
-
-    /**
-     * Returns the segment locator table built during writing. Each entry records the location of
-     * one per-channel segment on disk. Read-only view.
-     */
-    public List<FetchedSegment> segments() {
-        return Collections.unmodifiableList(segmentLocators);
     }
 
     // -------------------------------------------------------------------------------------------

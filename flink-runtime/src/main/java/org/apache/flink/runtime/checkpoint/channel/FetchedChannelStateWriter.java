@@ -18,7 +18,7 @@
 package org.apache.flink.runtime.checkpoint.channel;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.core.memory.DataOutputViewStreamWrapper;
+import org.apache.flink.core.memory.DataOutputSerializer;
 
 import java.io.BufferedOutputStream;
 import java.io.Closeable;
@@ -34,28 +34,35 @@ import static org.apache.flink.util.Preconditions.checkState;
 /**
  * Writes recovered channel-state data to spill files in a segment-per-channel format.
  *
- * <p>One instance is created per recovery and discarded after {@link #close()}. It maintains an
- * open {@link BufferedOutputStream} to the current spill file and writes directly to it without
- * using network buffers.
+ * <p>One instance is created per recovery and discarded after {@link #close()}. Segment boundaries
+ * are self-described in disk segment headers; no in-memory segment locator table is maintained.
  *
  * <h3>Disk format</h3>
  *
  * <pre>
- * [ 4B BE int: gate idx     ]   segment header, written once per channel segment
- * [ 4B BE int: channel idx  ]
+ * [ 4B BE int: gate idx      ]   segment header: written once per channel segment
+ * [ 4B BE int: channel idx   ]
+ * [ 4B BE int: buffer length ]   segment body byte count (backfilled at segment seal)
  *   [ 4B BE int: record length ]  repeated for every record in this segment
  *   [ N bytes: serialized record ]
- * [ 4B BE int: gate idx     ]   next segment header (new channel or post-rotation)
+ * [ 4B BE int: gate idx      ]   next segment header (channel switch or post-rotation)
  * ...
  * </pre>
+ *
+ * <h3>Segment buffering and bufferLength backfill</h3>
+ *
+ * <p>The segment body byte count is only known after the entire segment is written, so each segment
+ * is first accumulated in an in-memory {@link DataOutputSerializer}. The 12-byte header is written
+ * at segment open with a zero placeholder for {@code bufferLength}; at seal time {@link
+ * DataOutputSerializer#writeIntUnsafe} backfills the actual body length at offset 8, then the
+ * entire buffer is flushed to the file stream in one shot.
  *
  * <h3>Segment and file boundaries</h3>
  *
  * <p>A segment is one uninterrupted stream of records for a single channel. A segment switch
  * happens when a different channel is addressed. File rotation happens only after a segment is
  * fully sealed (never mid-segment or mid-record), so each segment's bytes fit entirely within one
- * file. This keeps the segment locator {@code (fileIndex, offset, length)} unambiguous and avoids
- * cross-file reads.
+ * file, and {@code body()} in the reader never crosses a file boundary.
  *
  * <p>Single-writer and intentionally unsynchronized; callers must serialize via the channel IO
  * executor.
@@ -63,30 +70,28 @@ import static org.apache.flink.util.Preconditions.checkState;
 @Internal
 public class FetchedChannelStateWriter implements Closeable {
 
-    private static final int BUFFER_SIZE = 64 * 1024;
+    /** Byte offset of the {@code bufferLength} field within a segment's header. */
+    static final int BUFFER_LENGTH_HEADER_OFFSET = 2 * Integer.BYTES;
+
+    /** Total size of the segment header in bytes: gateIdx + channelIdx + bufferLength. */
+    static final int SEGMENT_HEADER_BYTES = 3 * Integer.BYTES;
+
+    private static final int STREAM_BUFFER_SIZE = 64 * 1024;
 
     private final FetchedChannelState channelState;
-
     private final Path baseDir;
-
     private final long maxFileSizeBytes;
 
     /** Output stream to the current spill file. Null before the first segment is opened. */
     private BufferedOutputStream currentStream;
 
-    private DataOutputViewStreamWrapper dataView;
-
     /**
-     * Index of the currently open file in {@link FetchedChannelState#files()}, or {@code -1} if no
-     * file is open yet.
+     * In-memory accumulation buffer for the current segment. The 12-byte header occupies offsets
+     * [0, 12); the body follows from offset 12 onward. At segment seal time, {@code
+     * writeIntUnsafe(bodyLength, BUFFER_LENGTH_HEADER_OFFSET)} backfills the body length before
+     * flushing to the file stream.
      */
-    private int currentFileIndex = -1;
-
-    /**
-     * Total bytes written to the current file so far. Used to decide when to rotate. Rotation
-     * happens only after a complete segment is sealed.
-     */
-    private long runningLength = 0L;
+    private DataOutputSerializer segmentBuffer;
 
     /**
      * Channel whose segment is currently open. Null means no segment is in progress (beginning or
@@ -95,16 +100,10 @@ public class FetchedChannelStateWriter implements Closeable {
     private InputChannelInfo currentChannel;
 
     /**
-     * Byte offset within the current file where the body of the current segment starts. Excludes
-     * the 8-byte segment header (gateIdx + channelIdx).
+     * Total bytes flushed to the current file so far (includes sealed segments only). Used to
+     * decide when to rotate after sealing a segment.
      */
-    private long currentSegmentBodyOffset;
-
-    /**
-     * Number of body bytes written for the current open segment. Used to build the {@link
-     * FetchedSegment} entry when the segment is sealed.
-     */
-    private long currentSegmentBodyLength;
+    private long runningLength = 0L;
 
     private boolean closed = false;
 
@@ -114,6 +113,8 @@ public class FetchedChannelStateWriter implements Closeable {
         this.channelState = checkNotNull(channelState);
         this.baseDir = checkNotNull(baseDir);
         this.maxFileSizeBytes = maxFileSizeBytes;
+        // Initial capacity covers a typical small segment; grows as needed.
+        this.segmentBuffer = new DataOutputSerializer(256);
     }
 
     public FetchedChannelStateWriter(FetchedChannelState channelState, Path baseDir) {
@@ -127,10 +128,8 @@ public class FetchedChannelStateWriter implements Closeable {
     /**
      * Writes a single serialized record for the given channel using the filtering path.
      *
-     * <p>The caller is responsible for serializing the record into {@code serializedRecord} and
-     * providing its length. This method writes the 4-byte length prefix followed by the record
-     * bytes directly to the underlying stream. A segment header is emitted if this is the first
-     * write for this channel or if the channel has changed from the previous call.
+     * <p>Writes a 4-byte length prefix followed by the record bytes into the current segment
+     * buffer. A new segment is opened if this is the first write or if the channel has changed.
      *
      * @param channelInfo the target channel for this record
      * @param serializedRecord the serialized record bytes
@@ -144,17 +143,16 @@ public class FetchedChannelStateWriter implements Closeable {
 
         switchChannelIfNeeded(channelInfo);
 
-        dataView.writeInt(recordLength);
-        dataView.write(serializedRecord, 0, recordLength);
-        currentSegmentBodyLength += Integer.BYTES + recordLength;
-        runningLength += Integer.BYTES + recordLength;
+        segmentBuffer.writeInt(recordLength);
+        segmentBuffer.write(serializedRecord, 0, recordLength);
     }
 
     /**
-     * Writes a raw byte array for the given channel using the pass-through path.
+     * Writes raw bytes for the given channel using the pass-through path.
      *
-     * <p>The bytes are written verbatim (without any framing). A segment header is emitted if this
-     * is the first write for this channel or the channel has changed.
+     * <p>The bytes are written verbatim (without additional framing) into the current segment
+     * buffer. A new segment is opened if this is the first write or if the channel has changed.
+     * Consecutive pass-through calls for the same channel are merged into a single segment.
      *
      * @param channelInfo the target channel
      * @param data the raw bytes to write
@@ -169,45 +167,7 @@ public class FetchedChannelStateWriter implements Closeable {
 
         switchChannelIfNeeded(channelInfo);
 
-        dataView.write(data, offset, length);
-        currentSegmentBodyLength += length;
-        runningLength += length;
-    }
-
-    /**
-     * Returns the underlying {@link DataOutputViewStreamWrapper} for direct serialization.
-     *
-     * <p>Used by the filtering handler to serialize directly into the stream. The caller must call
-     * {@link #notifyBytesWritten} after writing to keep internal length tracking consistent.
-     * Channel switching and segment header emission are handled by {@link
-     * #prepareForChannel(InputChannelInfo)} which must be called before using the view.
-     */
-    DataOutputViewStreamWrapper getDataView() {
-        return dataView;
-    }
-
-    /**
-     * Ensures the writer is ready to accept data for {@code channelInfo}: opens a file if none is
-     * open, emits a segment header on channel switch, and returns the current data view.
-     *
-     * <p>Must be called before any direct writes via {@link #getDataView()}.
-     */
-    DataOutputViewStreamWrapper prepareForChannel(InputChannelInfo channelInfo) throws IOException {
-        checkNotNull(channelInfo);
-        checkState(!closed, "Writer is closed");
-        switchChannelIfNeeded(channelInfo);
-        return dataView;
-    }
-
-    /**
-     * Records that {@code bytes} bytes have been written directly through {@link #getDataView()}.
-     *
-     * <p>Must be called after each direct-view write to keep {@link #currentSegmentBodyLength} and
-     * {@link #runningLength} consistent.
-     */
-    void notifyBytesWritten(long bytes) {
-        currentSegmentBodyLength += bytes;
-        runningLength += bytes;
+        segmentBuffer.write(data, offset, length);
     }
 
     // -------------------------------------------------------------------------------------------
@@ -216,11 +176,11 @@ public class FetchedChannelStateWriter implements Closeable {
 
     private void switchChannelIfNeeded(InputChannelInfo channelInfo) throws IOException {
         if (currentChannel != null && currentChannel.equals(channelInfo)) {
-            // Same channel: no switch needed.
+            // Same channel: keep accumulating into the current segment.
             return;
         }
         if (currentChannel != null) {
-            // Seal the current segment before switching.
+            // Different channel: seal the open segment before starting a new one.
             sealCurrentSegment();
         }
         openSegmentForChannel(channelInfo);
@@ -228,40 +188,38 @@ public class FetchedChannelStateWriter implements Closeable {
 
     private void openSegmentForChannel(InputChannelInfo channelInfo) throws IOException {
         ensureFileOpen();
-
-        // Write segment header: gateIdx (4B) + channelIdx (4B).
-        dataView.writeInt(channelInfo.getGateIdx());
-        dataView.writeInt(channelInfo.getInputChannelIdx());
-        runningLength += 2 * Integer.BYTES;
-
-        // The body starts immediately after the 8-byte header.
-        currentSegmentBodyOffset = runningLength;
-        currentSegmentBodyLength = 0L;
+        segmentBuffer.clear();
+        // Write segment header: gateIdx (4B) + channelIdx (4B) + bufferLength placeholder (4B).
+        // bufferLength is backfilled at seal time via writeIntUnsafe at
+        // BUFFER_LENGTH_HEADER_OFFSET.
+        segmentBuffer.writeInt(channelInfo.getGateIdx());
+        segmentBuffer.writeInt(channelInfo.getInputChannelIdx());
+        segmentBuffer.writeInt(0); // placeholder; backfilled in sealCurrentSegment()
         currentChannel = channelInfo;
     }
 
     /**
-     * Seals the current segment by appending its locator to the channel-state table. Then checks if
-     * file rotation is due (only after a complete segment, never mid-segment).
+     * Seals the current segment: backfills the body length into the header, flushes the entire
+     * segment buffer to the file stream, then checks whether file rotation is due.
      */
     private void sealCurrentSegment() throws IOException {
         if (currentChannel == null) {
             return;
         }
-        // Body offset within the file is the start of body bytes, not the header start.
-        // The header is 8B; body starts at (start-of-header + 8B).
-        long headerStart = currentSegmentBodyOffset - 2 * Integer.BYTES;
-        long bodyOffsetInFile = headerStart + 2 * Integer.BYTES;
+        int totalBytes = segmentBuffer.length();
+        int bodyBytes = totalBytes - SEGMENT_HEADER_BYTES;
+        // Backfill bufferLength field at fixed offset 8 in the segment header.
+        // Math.toIntExact guards against the unlikely case of a single segment > 2 GB.
+        segmentBuffer.writeIntUnsafe(Math.toIntExact(bodyBytes), BUFFER_LENGTH_HEADER_OFFSET);
 
-        channelState.appendSegment(
-                new FetchedSegment(
-                        currentChannel,
-                        currentFileIndex,
-                        bodyOffsetInFile,
-                        currentSegmentBodyLength));
+        // Flush the complete segment (header + body) to the file stream in one shot.
+        byte[] raw = segmentBuffer.getSharedBuffer();
+        currentStream.write(raw, 0, totalBytes);
+        runningLength += totalBytes;
+
         currentChannel = null;
 
-        // Rotation is only checked after a complete segment is sealed (never mid-segment).
+        // File rotation is checked only after a complete segment is sealed, never mid-segment.
         if (runningLength >= maxFileSizeBytes) {
             rotateFile();
         }
@@ -279,21 +237,17 @@ public class FetchedChannelStateWriter implements Closeable {
         int index = channelState.files().size();
         Path filePath = baseDir.resolve("spill-segment-" + index + ".bin");
         FileOutputStream fos = new FileOutputStream(filePath.toFile());
-        currentStream = new BufferedOutputStream(fos, BUFFER_SIZE);
-        dataView = new DataOutputViewStreamWrapper(currentStream);
-        currentFileIndex = channelState.addFile(filePath);
+        currentStream = new BufferedOutputStream(fos, STREAM_BUFFER_SIZE);
+        channelState.addFile(filePath);
         runningLength = 0L;
     }
 
     private void rotateFile() throws IOException {
-        // Flush and close the current stream before opening a new file.
         currentStream.flush();
         currentStream.close();
         currentStream = null;
-        dataView = null;
-        currentFileIndex = -1;
         runningLength = 0L;
-        // Next write will open a new file via ensureFileOpen().
+        // The next write will open a new file via ensureFileOpen().
     }
 
     // -------------------------------------------------------------------------------------------
@@ -303,8 +257,8 @@ public class FetchedChannelStateWriter implements Closeable {
     /**
      * Seals the current open segment (if any), flushes, and closes the current file stream.
      *
-     * <p>After this call the associated {@link FetchedChannelState}'s segment and file lists are
-     * complete and ready for reading.
+     * <p>After this call the associated {@link FetchedChannelState}'s file list is complete and
+     * ready for reading.
      */
     @Override
     public void close() throws IOException {
@@ -319,7 +273,6 @@ public class FetchedChannelStateWriter implements Closeable {
             currentStream.flush();
             currentStream.close();
             currentStream = null;
-            dataView = null;
         }
     }
 

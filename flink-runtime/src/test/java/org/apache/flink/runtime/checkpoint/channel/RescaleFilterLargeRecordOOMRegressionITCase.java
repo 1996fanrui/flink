@@ -28,7 +28,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -42,10 +41,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * directly: bytes land on disk in bounded segments and the writer keeps no per-record heap
  * allocation.
  *
- * <p>The spill-on-disk invariant is verified via the segment locator table and by reading back the
- * data, not by counting files. Single-channel writes produce one continuous segment that may reside
- * in one file even if the total size exceeds the rotation cap — segments are never split across
- * files by design, and file rotation only happens after a segment is fully sealed.
+ * <p>Segment boundaries are self-described in the 12-byte disk headers
+ * ([gateIdx][channelIdx][bufferLength]); no in-memory segment locator table is maintained.
  */
 class RescaleFilterLargeRecordOOMRegressionITCase {
 
@@ -56,8 +53,8 @@ class RescaleFilterLargeRecordOOMRegressionITCase {
      * heap. The disk-landing invariant is confirmed by:
      *
      * <ol>
-     *   <li>A non-empty segment locator table with total body length equal to the written bytes.
      *   <li>Reading back the data via the reader and confirming byte count and content.
+     *   <li>The spill file's physical size exceeds the rotation cap (segment not split).
      * </ol>
      *
      * <p>File count is intentionally not asserted here: a single channel produces one segment, and
@@ -94,28 +91,16 @@ class RescaleFilterLargeRecordOOMRegressionITCase {
             }
         }
 
-        // --- Invariant 1: all bytes are captured in the segment locator table ---
-        List<FetchedSegment> segments = state.segments();
-        assertThat(segments).as("segment locators must be present").isNotEmpty();
-
-        long totalLocatedBytes = segments.stream().mapToLong(s -> s.length).sum();
-        assertThat(totalLocatedBytes)
-                .as("segment locator table must account for all written body bytes")
-                .isEqualTo(expectedBodyBytes);
-
-        // --- Invariant 2: data is physically on disk and can be read back correctly ---
-        // --- Invariant 3: single-channel writes produce exactly one file (segment not split) ---
-        // Both invariants are verified inside the reader's try block because the reader holds a
-        // lifecycle grant on the state; closing it releases the grant and triggers file deletion.
+        // Verify data is physically on disk and can be read back correctly.
+        // The reader holds a lifecycle grant; closing it triggers file deletion.
         long totalReadBytes = 0L;
         try (FetchedChannelStateReader reader = state.reader()) {
-            // Invariant 3: checked while files still exist (before reader close triggers cleanup).
-            // One channel => one segment => one file. File size may exceed the cap because segments
-            // are written atomically and rotation only happens after a segment is fully sealed.
+            // One channel => one segment => one file (segment not split across files).
             assertThat(state.files())
                     .as("single channel produces exactly one spill file")
                     .hasSize(1);
             long physicalFileSize = Files.size(state.files().get(0));
+            // File size = 12B header + expectedBodyBytes
             assertThat(physicalFileSize)
                     .as("physical file size exceeds the rotation cap (expected: segment not split)")
                     .isGreaterThan(segmentSize);
@@ -163,10 +148,7 @@ class RescaleFilterLargeRecordOOMRegressionITCase {
             }
         }
 
-        // Alternating channels produce multiple segments; total size exceeds cap => multiple files.
-        assertThat(state.segments())
-                .as("alternating channels must produce multiple segment locators")
-                .hasSizeGreaterThan(1);
+        // Alternating channels produce multiple segments (one file per seal above the cap).
         assertThat(state.files())
                 .as("total size exceeding the cap must trigger file rotation into multiple files")
                 .hasSizeGreaterThanOrEqualTo(2);
