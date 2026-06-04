@@ -52,4 +52,12 @@ public interface RecoverableInputChannel {
      * first await upstream readiness and must be invoked outside the drainer lock.
      */
     Buffer requestRecoveryBufferBlocking() throws InterruptedException, IOException;
+
+    /**
+     * Invoked by the consume path the moment it polls the {@code EndOfFetchedChannelStateEvent}
+     * sentinel, i.e. once all recovered buffers have been consumed. Implementations flip out of
+     * recovery, release any upstream events held back during recovery, and reopen the upstream so
+     * live data may flow again.
+     */
+    void onRecoveredStateConsumed() throws IOException;
 }
