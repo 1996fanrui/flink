@@ -34,12 +34,13 @@ import org.apache.flink.streaming.runtime.io.recovery.VirtualChannel;
 import org.apache.flink.streaming.runtime.streamrecord.StreamElement;
 import org.apache.flink.streaming.runtime.streamrecord.StreamElementSerializer;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
+import org.apache.flink.util.CloseableIterator;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -81,8 +82,8 @@ class GateFilterHandlerTest {
         handler.filterAndRewrite(0, 0, NEW_CHANNEL, sourceBuffer, writer);
         writer.close();
 
-        // No segments should be emitted when all records are filtered out.
-        assertThat(writer.getChannelState().segments()).isEmpty();
+        // No segments should be written when all records are filtered out.
+        assertThat(writer.getChannelState().files()).isEmpty();
     }
 
     @Test
@@ -111,7 +112,8 @@ class GateFilterHandlerTest {
         handler.filterAndRewrite(0, 0, NEW_CHANNEL, emptyBuffer, writer);
         writer.close();
 
-        assertThat(writer.getChannelState().segments()).isEmpty();
+        // No data written for an empty source buffer.
+        assertThat(writer.getChannelState().files()).isEmpty();
     }
 
     @Test
@@ -193,76 +195,76 @@ class GateFilterHandlerTest {
     }
 
     /**
-     * Reads back all records from the spill file for the given channel. The on-disk segment body
-     * format written by the writer is: repeated (4B recordLen + N bytes of serialized
-     * StreamElement).
-     *
-     * <p>The {@link SpillingAdaptiveSpanningRecordDeserializer} expects the same length-prefixed
-     * format on the wire, so the entire segment body is fed as-is into a single buffer and then
-     * deserialized.
+     * Reads back all records from the spill files for the given channel using the reader API. The
+     * on-disk segment body format is: repeated (4B recordLen + N bytes of serialized
+     * StreamElement). Segment boundaries are self-described in disk headers; no in-memory locator
+     * table is used.
      */
     private List<Long> readRecordsFromWriter(FetchedChannelState state, InputChannelInfo channel)
-            throws IOException {
+            throws Exception {
         List<Long> values = new ArrayList<>();
         StreamElementSerializer<Long> serializer =
                 new StreamElementSerializer<>(LongSerializer.INSTANCE);
         DeserializationDelegate<StreamElement> delegate =
                 new NonReusingDeserializationDelegate<>(serializer);
 
-        for (FetchedSegment seg : state.segments()) {
-            if (!seg.channelInfo.equals(channel)) {
-                continue;
+        try (FetchedChannelStateReader reader = state.reader();
+                CloseableIterator<FetchedSegmentCursor> segs = reader.segments()) {
+            while (segs.hasNext()) {
+                FetchedSegmentCursor seg = segs.next();
+                if (!seg.channelInfo().equals(channel)) {
+                    // Consume body to advance past it, then skip.
+                    drainStream(seg.body());
+                    continue;
+                }
+
+                try (InputStream body = seg.body()) {
+                    byte[] bodyBytes = readAll(body);
+                    MemorySegment memSeg =
+                            MemorySegmentFactory.allocateUnpooledSegment(bodyBytes.length);
+                    memSeg.put(0, bodyBytes);
+                    NetworkBuffer buf = new NetworkBuffer(memSeg, FreeingBufferRecycler.INSTANCE);
+                    buf.setSize(bodyBytes.length);
+
+                    SpillingAdaptiveSpanningRecordDeserializer<
+                                    DeserializationDelegate<StreamElement>>
+                            deserializer =
+                                    new SpillingAdaptiveSpanningRecordDeserializer<>(
+                                            new String[] {System.getProperty("java.io.tmpdir")});
+                    deserializer.setNextBuffer(buf);
+
+                    RecordDeserializer.DeserializationResult result;
+                    do {
+                        result = deserializer.getNextRecord(delegate);
+                        if (result.isFullRecord()) {
+                            StreamElement element = delegate.getInstance();
+                            if (element.isRecord()) {
+                                @SuppressWarnings("unchecked")
+                                StreamRecord<Long> record = (StreamRecord<Long>) element;
+                                values.add(record.getValue());
+                            }
+                        }
+                    } while (!result.isBufferConsumed());
+                }
             }
-            Path file = state.files().get(seg.fileIndex);
-            byte[] bodyBytes = new byte[(int) seg.length];
-            try (FileInputStream fis = new FileInputStream(file.toFile())) {
-                // Skip past the 8-byte segment header to the body.
-                long toSkip = seg.offset;
-                while (toSkip > 0) {
-                    long skipped = fis.skip(toSkip);
-                    if (skipped <= 0) {
-                        throw new IOException(
-                                "Could not skip to segment body at offset " + seg.offset);
-                    }
-                    toSkip -= skipped;
-                }
-                int totalRead = 0;
-                while (totalRead < bodyBytes.length) {
-                    int n = fis.read(bodyBytes, totalRead, bodyBytes.length - totalRead);
-                    if (n < 0) {
-                        throw new IOException("Unexpected EOF reading segment body");
-                    }
-                    totalRead += n;
-                }
-            }
-
-            // The body is a sequence of length-prefixed records in Flink's network wire format
-            // (4B BE int recordLength + N bytes of serialized StreamElement). Feed the entire body
-            // into the deserializer, which understands this format directly.
-            MemorySegment memSeg = MemorySegmentFactory.allocateUnpooledSegment(bodyBytes.length);
-            memSeg.put(0, bodyBytes);
-            NetworkBuffer buf = new NetworkBuffer(memSeg, FreeingBufferRecycler.INSTANCE);
-            buf.setSize(bodyBytes.length);
-
-            SpillingAdaptiveSpanningRecordDeserializer<DeserializationDelegate<StreamElement>>
-                    deserializer =
-                            new SpillingAdaptiveSpanningRecordDeserializer<>(
-                                    new String[] {System.getProperty("java.io.tmpdir")});
-            deserializer.setNextBuffer(buf);
-
-            RecordDeserializer.DeserializationResult result;
-            do {
-                result = deserializer.getNextRecord(delegate);
-                if (result.isFullRecord()) {
-                    StreamElement element = delegate.getInstance();
-                    if (element.isRecord()) {
-                        @SuppressWarnings("unchecked")
-                        StreamRecord<Long> record = (StreamRecord<Long>) element;
-                        values.add(record.getValue());
-                    }
-                }
-            } while (!result.isBufferConsumed());
         }
         return values;
+    }
+
+    private static byte[] readAll(InputStream in) throws IOException {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        byte[] buf = new byte[4096];
+        int n;
+        while ((n = in.read(buf)) != -1) {
+            out.write(buf, 0, n);
+        }
+        return out.toByteArray();
+    }
+
+    private static void drainStream(InputStream in) throws IOException {
+        byte[] buf = new byte[4096];
+        while (in.read(buf) != -1) {
+            // discard
+        }
     }
 }

@@ -26,7 +26,9 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -34,8 +36,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Unit tests for {@link FetchedChannelStateReader}: segment iteration, body boundedness, cross-file
- * transparency, snapshot derivation, and fail-loud on truncated segments.
+ * Unit tests for {@link FetchedChannelStateReader}: sequential segment scanning, body boundedness,
+ * cross-file transparency, snapshot derivation, and fail-loud on truncated segments.
+ *
+ * <p>Segment boundaries are self-described in disk headers; no in-memory segment locator table is
+ * used.
  */
 class FetchedChannelStateReaderTest {
 
@@ -99,13 +104,37 @@ class FetchedChannelStateReaderTest {
             while (segs.hasNext()) {
                 FetchedSegmentCursor seg = segs.next();
                 channels.add(seg.channelInfo());
-                // Consume the body to avoid resource leaks and ensure iteration works.
                 readAll(seg.body());
             }
         }
 
         // Segments are produced at channel switches: c0, c1, c0
         assertThat(channels).containsExactly(c0, c1, c0);
+    }
+
+    @Test
+    void testSameChannelContinuousWritesMergedIntoOneSegment() throws Exception {
+        InputChannelInfo ch = new InputChannelInfo(0, 0);
+
+        FetchedChannelState state = newState();
+        try (FetchedChannelStateWriter writer = newWriter(state)) {
+            writer.writeRecord(ch, bytes(1), 1);
+            writer.writeRecord(ch, bytes(2, 3), 2);
+        }
+
+        List<InputChannelInfo> channels = new ArrayList<>();
+        try (FetchedChannelStateReader reader = state.reader();
+                CloseableIterator<FetchedSegmentCursor> segs = reader.segments()) {
+            while (segs.hasNext()) {
+                FetchedSegmentCursor seg = segs.next();
+                channels.add(seg.channelInfo());
+                readAll(seg.body());
+            }
+        }
+
+        // Both writes on the same channel -> one segment.
+        assertThat(channels).hasSize(1);
+        assertThat(channels.get(0)).isEqualTo(ch);
     }
 
     // -------------------------------------------------------------------------------------------
@@ -139,7 +168,7 @@ class FetchedChannelStateReaderTest {
     }
 
     @Test
-    void testBodyLengthMatchesSegmentLocatorLength() throws Exception {
+    void testBodyLengthMatchesDiskHeaderBufferLength() throws Exception {
         InputChannelInfo ch = new InputChannelInfo(0, 0);
         byte[] record = bytes(1, 2, 3, 4, 5);
 
@@ -167,15 +196,14 @@ class FetchedChannelStateReaderTest {
 
         // Use tiny rotation threshold so first segment triggers a file rotation.
         FetchedChannelState state = newState();
-        // Write with a small segment size to force rotation after first segment
         try (FetchedChannelStateWriter writer =
                 new FetchedChannelStateWriter(state, tempDir, 1 /* 1 byte threshold */)) {
             writer.writeRecord(c0, bytes(10, 11, 12), 3);
             writer.writeRecord(c1, bytes(20, 21), 2);
         }
 
-        // Two segments, possibly in different files.
-        assertThat(state.segments()).hasSize(2);
+        // Two segments in different files.
+        assertThat(state.files()).hasSize(2);
 
         List<InputChannelInfo> channels = new ArrayList<>();
         try (FetchedChannelStateReader reader = state.reader();
@@ -259,16 +287,16 @@ class FetchedChannelStateReaderTest {
 
         FetchedChannelState state = newState();
         try (FetchedChannelStateWriter writer = newWriter(state)) {
-            // Write two records into the same channel so they end up in one segment
+            // Two records in the same channel -> one segment
             writer.writeRecord(ch, bytes(10, 11), 2);
         }
-        // Verify: one segment
-        assertThat(state.segments()).hasSize(1);
-        long fullLength = state.segments().get(0).length;
+        // Verify: one file with one segment
+        assertThat(state.files()).hasSize(1);
 
         try (FetchedChannelStateReader root = state.reader();
                 CloseableIterator<FetchedSegmentCursor> rootSegs = root.segments()) {
             FetchedSegmentCursor seg = rootSegs.next();
+            long fullLength = seg.length();
             InputStream body = seg.body();
 
             // Read only 1 byte without committing, then snapshot — snapshot should start from 0
@@ -309,16 +337,20 @@ class FetchedChannelStateReaderTest {
             writer.writeRecord(ch, bytes(1, 2, 3, 4, 5, 6, 7, 8), 8);
         }
 
-        // Truncate the spill file to simulate corruption.
+        // Truncate the spill file to just the header (12 bytes) so the body is missing.
         Path spill = state.files().get(0);
-        java.nio.file.Files.write(
-                spill, new byte[4], java.nio.file.StandardOpenOption.TRUNCATE_EXISTING);
+        byte[] headerOnly = Files.readAllBytes(spill);
+        // Keep only the 12-byte header, discard body.
+        Files.write(
+                spill,
+                java.util.Arrays.copyOf(headerOnly, FetchedChannelStateWriter.SEGMENT_HEADER_BYTES),
+                StandardOpenOption.TRUNCATE_EXISTING);
 
         try (FetchedChannelStateReader reader = state.reader();
                 CloseableIterator<FetchedSegmentCursor> segs = reader.segments()) {
             assertThat(segs.hasNext()).isTrue();
             FetchedSegmentCursor seg = segs.next();
-            // Segment locator says length > bytes available: must throw EOFException or IOException
+            // bufferLength from header says > 0 bytes, but file has nothing after the header.
             assertThatThrownBy(() -> readAll(seg.body()))
                     .isInstanceOfAny(EOFException.class, IOException.class);
         }
