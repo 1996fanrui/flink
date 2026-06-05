@@ -34,14 +34,10 @@ import org.apache.flink.streaming.runtime.io.recovery.VirtualChannel;
 import org.apache.flink.streaming.runtime.streamrecord.StreamElement;
 import org.apache.flink.streaming.runtime.streamrecord.StreamElementSerializer;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.apache.flink.util.CloseableIterator;
 
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -52,11 +48,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /** Tests for {@link ChannelStateFilteringHandler.GateFilterHandler}. */
 class GateFilterHandlerTest {
 
-    @TempDir Path tempDir;
-
     private static final int BUFFER_SIZE = 1024;
     private static final SubtaskConnectionDescriptor KEY = new SubtaskConnectionDescriptor(0, 0);
-    private static final InputChannelInfo NEW_CHANNEL = new InputChannelInfo(0, 0);
 
     @Test
     void testAllRecordsPassFilter() throws Exception {
@@ -64,11 +57,10 @@ class GateFilterHandlerTest {
                 createHandler(RecordFilter.acceptAll());
 
         Buffer sourceBuffer = createBufferWithRecords(1L, 2L, 3L);
-        FetchedChannelStateWriter writer = newWriter();
-        handler.filterAndRewrite(0, 0, NEW_CHANNEL, sourceBuffer, writer);
-        writer.close();
+        DataOutputSerializer output = new DataOutputSerializer(BUFFER_SIZE);
+        handler.filterAndRewrite(0, 0, sourceBuffer, output);
 
-        List<Long> values = readRecordsFromWriter(writer.getChannelState(), NEW_CHANNEL);
+        List<Long> values = readRecordsFromSerializer(output);
         assertThat(values).containsExactly(1L, 2L, 3L);
     }
 
@@ -78,12 +70,11 @@ class GateFilterHandlerTest {
         ChannelStateFilteringHandler.GateFilterHandler<Long> handler = createHandler(rejectAll);
 
         Buffer sourceBuffer = createBufferWithRecords(1L, 2L, 3L);
-        FetchedChannelStateWriter writer = newWriter();
-        handler.filterAndRewrite(0, 0, NEW_CHANNEL, sourceBuffer, writer);
-        writer.close();
+        DataOutputSerializer output = new DataOutputSerializer(BUFFER_SIZE);
+        handler.filterAndRewrite(0, 0, sourceBuffer, output);
 
-        // No segments should be written when all records are filtered out.
-        assertThat(writer.getChannelState().files()).isEmpty();
+        // No bytes should be written when all records are filtered out.
+        assertThat(output.length()).isZero();
     }
 
     @Test
@@ -92,11 +83,10 @@ class GateFilterHandlerTest {
         ChannelStateFilteringHandler.GateFilterHandler<Long> handler = createHandler(keepEven);
 
         Buffer sourceBuffer = createBufferWithRecords(1L, 2L, 3L, 4L, 5L);
-        FetchedChannelStateWriter writer = newWriter();
-        handler.filterAndRewrite(0, 0, NEW_CHANNEL, sourceBuffer, writer);
-        writer.close();
+        DataOutputSerializer output = new DataOutputSerializer(BUFFER_SIZE);
+        handler.filterAndRewrite(0, 0, sourceBuffer, output);
 
-        List<Long> values = readRecordsFromWriter(writer.getChannelState(), NEW_CHANNEL);
+        List<Long> values = readRecordsFromSerializer(output);
         assertThat(values).containsExactly(2L, 4L);
     }
 
@@ -108,12 +98,11 @@ class GateFilterHandlerTest {
         Buffer emptyBuffer = createEmptyBuffer();
         emptyBuffer.setSize(0);
 
-        FetchedChannelStateWriter writer = newWriter();
-        handler.filterAndRewrite(0, 0, NEW_CHANNEL, emptyBuffer, writer);
-        writer.close();
+        DataOutputSerializer output = new DataOutputSerializer(BUFFER_SIZE);
+        handler.filterAndRewrite(0, 0, emptyBuffer, output);
 
         // No data written for an empty source buffer.
-        assertThat(writer.getChannelState().files()).isEmpty();
+        assertThat(output.length()).isZero();
     }
 
     @Test
@@ -122,9 +111,8 @@ class GateFilterHandlerTest {
                 createHandler(RecordFilter.acceptAll());
 
         Buffer sourceBuffer = createBufferWithRecords(1L, 2L);
-        FetchedChannelStateWriter writer = newWriter();
-        handler.filterAndRewrite(0, 0, NEW_CHANNEL, sourceBuffer, writer);
-        writer.close();
+        DataOutputSerializer output = new DataOutputSerializer(BUFFER_SIZE);
+        handler.filterAndRewrite(0, 0, sourceBuffer, output);
 
         assertThat(sourceBuffer.isRecycled()).isTrue();
     }
@@ -135,9 +123,8 @@ class GateFilterHandlerTest {
         ChannelStateFilteringHandler.GateFilterHandler<Long> handler = createHandler(rejectAll);
 
         Buffer sourceBuffer = createBufferWithRecords(1L, 2L);
-        FetchedChannelStateWriter writer = newWriter();
-        handler.filterAndRewrite(0, 0, NEW_CHANNEL, sourceBuffer, writer);
-        writer.close();
+        DataOutputSerializer output = new DataOutputSerializer(BUFFER_SIZE);
+        handler.filterAndRewrite(0, 0, sourceBuffer, output);
 
         assertThat(sourceBuffer.isRecycled()).isTrue();
     }
@@ -188,83 +175,44 @@ class GateFilterHandlerTest {
         return new NetworkBuffer(segment, FreeingBufferRecycler.INSTANCE);
     }
 
-    private FetchedChannelStateWriter newWriter() {
-        FetchedChannelState state = new FetchedChannelState();
-        state.acquire();
-        return new FetchedChannelStateWriter(state, tempDir);
-    }
-
     /**
-     * Reads back all records from the spill files for the given channel using the reader API. The
-     * on-disk segment body format is: repeated (4B recordLen + N bytes of serialized
-     * StreamElement). Segment boundaries are self-described in disk headers; no in-memory locator
-     * table is used.
+     * Deserializes the records the handler appended into {@code output}. The body format is repeated
+     * (4B recordLen + N bytes of serialized StreamElement), which the deserializer reads directly.
      */
-    private List<Long> readRecordsFromWriter(FetchedChannelState state, InputChannelInfo channel)
-            throws Exception {
+    private List<Long> readRecordsFromSerializer(DataOutputSerializer output) throws Exception {
         List<Long> values = new ArrayList<>();
         StreamElementSerializer<Long> serializer =
                 new StreamElementSerializer<>(LongSerializer.INSTANCE);
         DeserializationDelegate<StreamElement> delegate =
                 new NonReusingDeserializationDelegate<>(serializer);
 
-        try (FetchedChannelStateReader reader = state.reader();
-                CloseableIterator<FetchedSegmentCursor> segs = reader.segments()) {
-            while (segs.hasNext()) {
-                FetchedSegmentCursor seg = segs.next();
-                if (!seg.channelInfo().equals(channel)) {
-                    // Consume body to advance past it, then skip.
-                    drainStream(seg.body());
-                    continue;
-                }
+        byte[] bodyBytes = output.getCopyOfBuffer();
+        if (bodyBytes.length == 0) {
+            return values;
+        }
+        MemorySegment memSeg = MemorySegmentFactory.allocateUnpooledSegment(bodyBytes.length);
+        memSeg.put(0, bodyBytes);
+        NetworkBuffer buf = new NetworkBuffer(memSeg, FreeingBufferRecycler.INSTANCE);
+        buf.setSize(bodyBytes.length);
 
-                try (InputStream body = seg.body()) {
-                    byte[] bodyBytes = readAll(body);
-                    MemorySegment memSeg =
-                            MemorySegmentFactory.allocateUnpooledSegment(bodyBytes.length);
-                    memSeg.put(0, bodyBytes);
-                    NetworkBuffer buf = new NetworkBuffer(memSeg, FreeingBufferRecycler.INSTANCE);
-                    buf.setSize(bodyBytes.length);
+        SpillingAdaptiveSpanningRecordDeserializer<DeserializationDelegate<StreamElement>>
+                deserializer =
+                        new SpillingAdaptiveSpanningRecordDeserializer<>(
+                                new String[] {System.getProperty("java.io.tmpdir")});
+        deserializer.setNextBuffer(buf);
 
-                    SpillingAdaptiveSpanningRecordDeserializer<
-                                    DeserializationDelegate<StreamElement>>
-                            deserializer =
-                                    new SpillingAdaptiveSpanningRecordDeserializer<>(
-                                            new String[] {System.getProperty("java.io.tmpdir")});
-                    deserializer.setNextBuffer(buf);
-
-                    RecordDeserializer.DeserializationResult result;
-                    do {
-                        result = deserializer.getNextRecord(delegate);
-                        if (result.isFullRecord()) {
-                            StreamElement element = delegate.getInstance();
-                            if (element.isRecord()) {
-                                @SuppressWarnings("unchecked")
-                                StreamRecord<Long> record = (StreamRecord<Long>) element;
-                                values.add(record.getValue());
-                            }
-                        }
-                    } while (!result.isBufferConsumed());
+        RecordDeserializer.DeserializationResult result;
+        do {
+            result = deserializer.getNextRecord(delegate);
+            if (result.isFullRecord()) {
+                StreamElement element = delegate.getInstance();
+                if (element.isRecord()) {
+                    @SuppressWarnings("unchecked")
+                    StreamRecord<Long> record = (StreamRecord<Long>) element;
+                    values.add(record.getValue());
                 }
             }
-        }
+        } while (!result.isBufferConsumed());
         return values;
-    }
-
-    private static byte[] readAll(InputStream in) throws IOException {
-        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
-        byte[] buf = new byte[4096];
-        int n;
-        while ((n = in.read(buf)) != -1) {
-            out.write(buf, 0, n);
-        }
-        return out.toByteArray();
-    }
-
-    private static void drainStream(InputStream in) throws IOException {
-        byte[] buf = new byte[4096];
-        while (in.read(buf) != -1) {
-            // discard
-        }
     }
 }

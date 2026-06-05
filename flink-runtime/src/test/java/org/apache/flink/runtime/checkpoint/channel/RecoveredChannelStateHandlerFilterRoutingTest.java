@@ -92,10 +92,9 @@ class RecoveredChannelStateHandlerFilterRoutingTest {
                 SpillingWithFilteringHandler handler = newFilterOnHandler(filteringHandler)) {
             invokeRecoverWithRecords(handler, 1L, 2L, 3L);
 
-            FetchedChannelState channelState = handler.peekActiveChannelStateForTesting();
-            assertThat(channelState)
-                    .as("filter-on path must lazily build a FetchedChannelState on first recover()")
-                    .isNotNull();
+            assertThat(handler.peekSpillFilesForTesting())
+                    .as("filter-on path must spill the surviving records to a file")
+                    .isNotEmpty();
         }
     }
 

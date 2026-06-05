@@ -74,9 +74,8 @@ class RescaleFilterLargeRecordOOMRegressionITCase {
                 .as("workload exceeds the segment-size cap")
                 .isGreaterThan(segmentSize);
 
-        FetchedChannelState state = new FetchedChannelState();
-        try (FetchedChannelStateWriter writer =
-                new FetchedChannelStateWriter(state, tempDir, segmentSize)) {
+        FetchedChannelState state;
+        try (TestSpillWriter writer = new TestSpillWriter(tempDir, segmentSize)) {
             InputChannelInfo channelInfo = new InputChannelInfo(0, 0);
             byte[] reusableRecord = new byte[largeRecordSize];
             for (int i = 0; i < reusableRecord.length; i++) {
@@ -89,6 +88,7 @@ class RescaleFilterLargeRecordOOMRegressionITCase {
                 reusableRecord[0] = (byte) i;
                 writer.writeRecord(channelInfo, reusableRecord, reusableRecord.length);
             }
+            state = writer.getChannelState();
         }
 
         // Verify data is physically on disk and can be read back correctly.
@@ -136,9 +136,8 @@ class RescaleFilterLargeRecordOOMRegressionITCase {
         final int recordSize = 64 * 1024;
         final int roundCount = 10; // each round writes one record per channel
 
-        FetchedChannelState state = new FetchedChannelState();
-        try (FetchedChannelStateWriter writer =
-                new FetchedChannelStateWriter(state, tempDir, segmentSize)) {
+        FetchedChannelState state;
+        try (TestSpillWriter writer = new TestSpillWriter(tempDir, segmentSize)) {
             InputChannelInfo c0 = new InputChannelInfo(0, 0);
             InputChannelInfo c1 = new InputChannelInfo(0, 1);
             byte[] record = new byte[recordSize];
@@ -146,6 +145,7 @@ class RescaleFilterLargeRecordOOMRegressionITCase {
                 writer.writeRecord(c0, record, record.length);
                 writer.writeRecord(c1, record, record.length);
             }
+            state = writer.getChannelState();
         }
 
         // Alternating channels produce multiple segments (one file per seal above the cap).

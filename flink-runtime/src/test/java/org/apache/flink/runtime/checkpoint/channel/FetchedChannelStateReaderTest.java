@@ -52,11 +52,12 @@ class FetchedChannelStateReaderTest {
 
     @Test
     void testSegmentsEmptyWhenNoDataWritten() throws Exception {
-        FetchedChannelState state = newState();
-        try (FetchedChannelStateWriter writer = newWriter(state)) {
+        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
             // nothing written
         }
 
+        // A writer that never spills produces no state; an empty state has no segments.
+        FetchedChannelState state = new FetchedChannelState(java.util.Collections.emptyList());
         try (FetchedChannelStateReader reader = state.reader();
                 CloseableIterator<FetchedSegmentCursor> segs = reader.segments()) {
             assertThat(segs.hasNext()).isFalse();
@@ -68,9 +69,10 @@ class FetchedChannelStateReaderTest {
         InputChannelInfo ch = new InputChannelInfo(0, 0);
         byte[] record = bytes(1, 2, 3, 4);
 
-        FetchedChannelState state = newState();
-        try (FetchedChannelStateWriter writer = newWriter(state)) {
+        FetchedChannelState state;
+        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
             writer.writeRecord(ch, record, record.length);
+            state = writer.getChannelState();
         }
 
         try (FetchedChannelStateReader reader = state.reader();
@@ -91,11 +93,12 @@ class FetchedChannelStateReaderTest {
         InputChannelInfo c0 = new InputChannelInfo(0, 0);
         InputChannelInfo c1 = new InputChannelInfo(0, 1);
 
-        FetchedChannelState state = newState();
-        try (FetchedChannelStateWriter writer = newWriter(state)) {
+        FetchedChannelState state;
+        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
             writer.writeRecord(c0, bytes(10), 1);
             writer.writeRecord(c1, bytes(20), 1);
             writer.writeRecord(c0, bytes(30), 1);
+            state = writer.getChannelState();
         }
 
         List<InputChannelInfo> channels = new ArrayList<>();
@@ -116,10 +119,11 @@ class FetchedChannelStateReaderTest {
     void testSameChannelContinuousWritesMergedIntoOneSegment() throws Exception {
         InputChannelInfo ch = new InputChannelInfo(0, 0);
 
-        FetchedChannelState state = newState();
-        try (FetchedChannelStateWriter writer = newWriter(state)) {
+        FetchedChannelState state;
+        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
             writer.writeRecord(ch, bytes(1), 1);
             writer.writeRecord(ch, bytes(2, 3), 2);
+            state = writer.getChannelState();
         }
 
         List<InputChannelInfo> channels = new ArrayList<>();
@@ -145,9 +149,10 @@ class FetchedChannelStateReaderTest {
     void testBodyReturnsMinus1AtSegmentEnd() throws Exception {
         InputChannelInfo ch = new InputChannelInfo(0, 0);
 
-        FetchedChannelState state = newState();
-        try (FetchedChannelStateWriter writer = newWriter(state)) {
+        FetchedChannelState state;
+        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
             writer.writeRecord(ch, bytes(1, 2), 2);
+            state = writer.getChannelState();
         }
 
         try (FetchedChannelStateReader reader = state.reader();
@@ -172,9 +177,10 @@ class FetchedChannelStateReaderTest {
         InputChannelInfo ch = new InputChannelInfo(0, 0);
         byte[] record = bytes(1, 2, 3, 4, 5);
 
-        FetchedChannelState state = newState();
-        try (FetchedChannelStateWriter writer = newWriter(state)) {
+        FetchedChannelState state;
+        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
             writer.writeRecord(ch, record, record.length);
+            state = writer.getChannelState();
         }
 
         try (FetchedChannelStateReader reader = state.reader();
@@ -195,11 +201,11 @@ class FetchedChannelStateReaderTest {
         InputChannelInfo c1 = new InputChannelInfo(0, 1);
 
         // Use tiny rotation threshold so first segment triggers a file rotation.
-        FetchedChannelState state = newState();
-        try (FetchedChannelStateWriter writer =
-                new FetchedChannelStateWriter(state, tempDir, 1 /* 1 byte threshold */)) {
+        FetchedChannelState state;
+        try (TestSpillWriter writer = new TestSpillWriter(tempDir, 1L /* 1 byte threshold */)) {
             writer.writeRecord(c0, bytes(10, 11, 12), 3);
             writer.writeRecord(c1, bytes(20, 21), 2);
+            state = writer.getChannelState();
         }
 
         // Two segments in different files.
@@ -228,10 +234,11 @@ class FetchedChannelStateReaderTest {
         InputChannelInfo c0 = new InputChannelInfo(0, 0);
         InputChannelInfo c1 = new InputChannelInfo(0, 1);
 
-        FetchedChannelState state = newState();
-        try (FetchedChannelStateWriter writer = newWriter(state)) {
+        FetchedChannelState state;
+        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
             writer.writeRecord(c0, bytes(1), 1);
             writer.writeRecord(c1, bytes(2), 1);
+            state = writer.getChannelState();
         }
 
         try (FetchedChannelStateReader root = state.reader()) {
@@ -254,10 +261,11 @@ class FetchedChannelStateReaderTest {
         InputChannelInfo c0 = new InputChannelInfo(0, 0);
         InputChannelInfo c1 = new InputChannelInfo(0, 1);
 
-        FetchedChannelState state = newState();
-        try (FetchedChannelStateWriter writer = newWriter(state)) {
+        FetchedChannelState state;
+        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
             writer.writeRecord(c0, bytes(1), 1);
             writer.writeRecord(c1, bytes(2), 1);
+            state = writer.getChannelState();
         }
 
         try (FetchedChannelStateReader root = state.reader();
@@ -285,10 +293,11 @@ class FetchedChannelStateReaderTest {
     void testSnapshotFromMidSegmentStartsAtCommittedByteOffset() throws Exception {
         InputChannelInfo ch = new InputChannelInfo(0, 0);
 
-        FetchedChannelState state = newState();
-        try (FetchedChannelStateWriter writer = newWriter(state)) {
+        FetchedChannelState state;
+        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
             // Two records in the same channel -> one segment
             writer.writeRecord(ch, bytes(10, 11), 2);
+            state = writer.getChannelState();
         }
         // Verify: one file with one segment
         assertThat(state.files()).hasSize(1);
@@ -332,9 +341,10 @@ class FetchedChannelStateReaderTest {
     void testBodyThrowsEOFExceptionOnTruncatedFile() throws Exception {
         InputChannelInfo ch = new InputChannelInfo(0, 0);
 
-        FetchedChannelState state = newState();
-        try (FetchedChannelStateWriter writer = newWriter(state)) {
+        FetchedChannelState state;
+        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
             writer.writeRecord(ch, bytes(1, 2, 3, 4, 5, 6, 7, 8), 8);
+            state = writer.getChannelState();
         }
 
         // Truncate the spill file to just the header (12 bytes) so the body is missing.
@@ -343,7 +353,7 @@ class FetchedChannelStateReaderTest {
         // Keep only the 12-byte header, discard body.
         Files.write(
                 spill,
-                java.util.Arrays.copyOf(headerOnly, FetchedChannelStateWriter.SEGMENT_HEADER_BYTES),
+                java.util.Arrays.copyOf(headerOnly, AbstractSpillingHandler.SEGMENT_HEADER_BYTES),
                 StandardOpenOption.TRUNCATE_EXISTING);
 
         try (FetchedChannelStateReader reader = state.reader();
@@ -364,19 +374,22 @@ class FetchedChannelStateReaderTest {
     void testReaderAcquiresAndReleasesRefCount() throws Exception {
         InputChannelInfo ch = new InputChannelInfo(0, 0);
 
-        FetchedChannelState state = newState();
-        try (FetchedChannelStateWriter writer = newWriter(state)) {
+        FetchedChannelState state;
+        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
             writer.writeRecord(ch, bytes(1), 1);
+            state = writer.getChannelState();
         }
 
         Path spill = state.files().get(0);
 
         FetchedChannelStateReader reader = state.reader();
+        // Drop the handoff grant so the reader's grant is the only one outstanding.
+        state.release();
         assertThat(java.nio.file.Files.exists(spill)).isTrue();
 
         reader.close();
 
-        // After closing root reader (and not calling acquire() externally), file is cleaned up.
+        // After closing the only reader, the file is cleaned up.
         assertThat(java.nio.file.Files.exists(spill)).isFalse();
     }
 
@@ -384,15 +397,18 @@ class FetchedChannelStateReaderTest {
     void testSnapshotKeepsFilesAliveUntilSnapshotClosed() throws Exception {
         InputChannelInfo ch = new InputChannelInfo(0, 0);
 
-        FetchedChannelState state = newState();
-        try (FetchedChannelStateWriter writer = newWriter(state)) {
+        FetchedChannelState state;
+        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
             writer.writeRecord(ch, bytes(1), 1);
+            state = writer.getChannelState();
         }
 
         Path spill = state.files().get(0);
 
         FetchedChannelStateReader root = state.reader();
         FetchedChannelStateReader snap = root.snapshot();
+        // Drop the handoff grant so only the two reader grants remain outstanding.
+        state.release();
 
         root.close(); // One grant released; file must still exist because snap holds another.
         assertThat(java.nio.file.Files.exists(spill)).isTrue();
@@ -404,15 +420,6 @@ class FetchedChannelStateReaderTest {
     // -------------------------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------------------------
-
-    private FetchedChannelState newState() {
-        return new FetchedChannelState();
-    }
-
-    private FetchedChannelStateWriter newWriter(FetchedChannelState state) throws IOException {
-        return new FetchedChannelStateWriter(
-                state, tempDir, FetchedChannelState.DEFAULT_SEGMENT_SIZE_BYTES);
-    }
 
     private static byte[] readAll(InputStream in) throws IOException {
         java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();

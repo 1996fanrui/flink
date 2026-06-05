@@ -43,8 +43,6 @@ interface ChannelStateSerializer {
 
     void writeData(DataOutputStream stream, Buffer... flinkBuffers) throws IOException;
 
-    void writeData(DataOutputStream stream, byte[] bytes, int length) throws IOException;
-
     /**
      * Writes an int length prefix followed by exactly {@code length} bytes copied from {@code
      * input}. Throws {@link java.io.EOFException} if the input stream ends before {@code length}
@@ -174,18 +172,6 @@ class ChannelStateSerializerImpl implements ChannelStateSerializer {
             ByteBuf nettyByteBuf = buffer.asByteBuf();
             nettyByteBuf.getBytes(nettyByteBuf.readerIndex(), stream, nettyByteBuf.readableBytes());
         }
-    }
-
-    @Override
-    public void writeData(DataOutputStream stream, byte[] bytes, int length) throws IOException {
-        Preconditions.checkArgument(length >= 0, "negative state size");
-        Preconditions.checkArgument(
-                length <= bytes.length,
-                "state size %s exceeds source byte array length %s",
-                length,
-                bytes.length);
-        stream.writeInt(length);
-        stream.write(bytes, 0, length);
     }
 
     @Override

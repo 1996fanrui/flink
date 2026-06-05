@@ -2165,7 +2165,8 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
         boolean checkpointingDuringRecoveryEnabled =
                 CheckpointingOptions.isCheckpointingDuringRecoveryEnabled(getJobConfiguration());
         if (!checkpointingDuringRecoveryEnabled) {
-            return RecordFilterContext.disabled();
+            return RecordFilterContext.disabled(
+                    getEnvironment().getIOManager().getSpillingDirectoriesPaths());
         }
 
         ClassLoader cl = getUserCodeClassLoader();

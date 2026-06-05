@@ -36,7 +36,6 @@ import java.util.Random;
 
 import static org.apache.flink.runtime.checkpoint.channel.ChannelStateByteBuffer.wrap;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** {@link ChannelStateSerializerImpl} test. */
 class ChannelStateSerializerImplTest {
@@ -80,36 +79,6 @@ class ChannelStateSerializerImplTest {
                         .isEqualTo(data);
             }
         }
-    }
-
-    @Test
-    void testReadWriteByteArrayPrefix() throws IOException {
-        byte[] data = generateData(123);
-        ChannelStateSerializer serializer = new ChannelStateSerializerImpl();
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        DataOutputStream out = new DataOutputStream(baos);
-
-        serializer.writeHeader(out);
-        serializer.writeData(out, data, 17);
-        out.close();
-
-        ByteArrayInputStream in = new ByteArrayInputStream(baos.toByteArray());
-        serializer.readHeader(in);
-        assertThat(serializer.readLength(in)).isEqualTo(17);
-        byte[] readBuf = new byte[17];
-        assertThat(serializer.readData(in, wrap(readBuf), Integer.MAX_VALUE)).isEqualTo(17);
-        assertThat(readBuf).isEqualTo(Arrays.copyOf(data, 17));
-    }
-
-    @Test
-    void testWriteByteArrayRejectsInvalidLength() {
-        ChannelStateSerializer serializer = new ChannelStateSerializerImpl();
-        DataOutputStream out = new DataOutputStream(new ByteArrayOutputStream());
-
-        assertThatThrownBy(() -> serializer.writeData(out, new byte[1], 2))
-                .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> serializer.writeData(out, new byte[1], -1))
-                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test

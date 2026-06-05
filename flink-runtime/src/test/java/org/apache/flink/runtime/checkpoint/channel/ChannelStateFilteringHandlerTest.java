@@ -33,25 +33,11 @@ import java.nio.file.Path;
 import java.util.HashSet;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link ChannelStateFilteringHandler}. */
 class ChannelStateFilteringHandlerTest {
 
     @TempDir Path tempDir;
-
-    @Test
-    void testCreateFromContextRequiresSpillDirectoriesWhenFilteringIsNeeded() {
-        InputGate inputGate = new SingleInputGateBuilder().setNumberOfChannels(1).build();
-        RecordFilterContext context = createRecordFilterContext(new String[0]);
-
-        assertThatThrownBy(
-                        () ->
-                                ChannelStateFilteringHandler.createFromContext(
-                                        context, new InputGate[] {inputGate}))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Spilling temporary directories must not be empty");
-    }
 
     @Test
     void testCreateFromContextUsesProvidedSpillDirectories() {

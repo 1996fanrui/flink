@@ -42,7 +42,7 @@ class FetchedChannelStateRefCountTest {
         FetchedChannelState state = newStateWithData();
         List<Path> files = state.files();
 
-        state.acquire();
+        // The produced state already holds one handoff grant.
         state.acquire();
         assertFilesExist(files, true);
 
@@ -57,7 +57,7 @@ class FetchedChannelStateRefCountTest {
     void testReachingZeroDeletesFiles() throws IOException {
         FetchedChannelState state = newStateWithData();
         List<Path> files = state.files();
-        state.acquire();
+        // The produced state already holds one handoff grant.
         assertFilesExist(files, true);
 
         state.release();
@@ -68,7 +68,7 @@ class FetchedChannelStateRefCountTest {
     void testReleaseAfterZeroIsNoOp() throws IOException {
         FetchedChannelState state = newStateWithData();
         List<Path> files = state.files();
-        state.acquire();
+        // Release the single handoff grant the produced state already holds.
         state.release();
         assertFilesExist(files, false);
 
@@ -83,7 +83,7 @@ class FetchedChannelStateRefCountTest {
         FetchedChannelState state = newStateWithData();
         List<Path> files = state.files();
 
-        state.acquire();
+        // The produced state already holds one handoff grant.
         state.acquire();
         state.acquire();
 
@@ -99,7 +99,7 @@ class FetchedChannelStateRefCountTest {
     void testForceCloseStillCleansFiles() throws IOException {
         FetchedChannelState state = newStateWithData();
         List<Path> files = state.files();
-        state.acquire();
+        // The produced state already holds one handoff grant.
         state.acquire();
         assertFilesExist(files, true);
 
@@ -119,8 +119,10 @@ class FetchedChannelStateRefCountTest {
         FetchedChannelState state = newStateWithData();
         List<Path> files = state.files();
 
-        // Opening a reader acquires one grant.
+        // Opening a reader acquires one grant; the produced state already holds the handoff grant.
         FetchedChannelStateReader reader = state.reader();
+        // Drop the handoff grant so the reader's grant is the only one outstanding.
+        state.release();
         assertFilesExist(files, true);
 
         // Closing releases that grant, which reaches zero and deletes files.
@@ -133,15 +135,12 @@ class FetchedChannelStateRefCountTest {
     // -------------------------------------------------------------------------------------------
 
     private FetchedChannelState newStateWithData() throws IOException {
-        FetchedChannelState state = new FetchedChannelState();
         InputChannelInfo ch = new InputChannelInfo(0, 0);
-        try (FetchedChannelStateWriter writer =
-                new FetchedChannelStateWriter(
-                        state, tempDir, FetchedChannelState.DEFAULT_SEGMENT_SIZE_BYTES)) {
+        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
             writer.writeRecord(ch, new byte[] {1, 2, 3}, 3);
             writer.writeRecord(new InputChannelInfo(0, 1), new byte[] {4, 5}, 2);
+            return writer.getChannelState();
         }
-        return state;
     }
 
     private static void assertFilesExist(List<Path> files, boolean expected) {

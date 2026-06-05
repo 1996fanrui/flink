@@ -35,7 +35,7 @@ import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.NoSuchElementException;
 
-import static org.apache.flink.runtime.checkpoint.channel.FetchedChannelStateWriter.SEGMENT_HEADER_BYTES;
+import static org.apache.flink.runtime.checkpoint.channel.AbstractSpillingHandler.SEGMENT_HEADER_BYTES;
 import static org.apache.flink.util.Preconditions.checkState;
 
 /**

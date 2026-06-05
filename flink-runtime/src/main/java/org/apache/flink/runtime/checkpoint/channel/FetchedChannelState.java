@@ -53,15 +53,8 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 @Internal
 public final class FetchedChannelState implements Closeable {
 
-    /**
-     * Soft upper bound on a single spill file's size in bytes. File rotation is checked only after
-     * a segment is fully sealed, so a file may exceed this limit when a single channel segment is
-     * larger than 64 MB.
-     */
-    public static final long DEFAULT_SEGMENT_SIZE_BYTES = 64L * 1024 * 1024;
-
-    /** Ordered list of spill file paths, one entry per physical file. Read-only after sealing. */
-    private final List<Path> files = new ArrayList<>();
+    /** Ordered list of spill file paths, one entry per physical file. Sealed at construction. */
+    private final List<Path> files;
 
     // close() and release() may be called from different threads; volatile ensures visibility.
     private volatile boolean closed = false;
@@ -70,20 +63,9 @@ public final class FetchedChannelState implements Closeable {
 
     private final AtomicBoolean cleanedUp = new AtomicBoolean(false);
 
-    // -------------------------------------------------------------------------------------------
-    // Write-phase API (called by FetchedChannelStateWriter, single-writer)
-    // -------------------------------------------------------------------------------------------
-
-    /**
-     * Registers a new spill file path. Called by the writer when it opens a new file.
-     *
-     * @return the index of the newly added file.
-     */
-    int addFile(Path filePath) {
-        checkNotNull(filePath);
-        int index = files.size();
-        files.add(filePath);
-        return index;
+    /** Wraps an already-written, ordered list of spill files. The list is sealed; it never grows. */
+    FetchedChannelState(List<Path> files) {
+        this.files = new ArrayList<>(checkNotNull(files));
     }
 
     // -------------------------------------------------------------------------------------------

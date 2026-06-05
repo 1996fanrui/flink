@@ -65,14 +65,13 @@ class FetchedChannelStateDrainerConcurrencyTest {
         InputChannelInfo c0 = new InputChannelInfo(0, 0);
         InputChannelInfo c1 = new InputChannelInfo(0, 1);
 
-        FetchedChannelState state = new FetchedChannelState();
-        try (FetchedChannelStateWriter writer =
-                new FetchedChannelStateWriter(
-                        state, runDir, FetchedChannelState.DEFAULT_SEGMENT_SIZE_BYTES)) {
+        FetchedChannelState state;
+        try (TestSpillWriter writer = new TestSpillWriter(runDir)) {
             for (int i = 0; i < RECORD_COUNT; i++) {
                 InputChannelInfo ch = (i % 2 == 0) ? c0 : c1;
                 writer.writeRecord(ch, payloadFor(i), 8);
             }
+            state = writer.getChannelState();
         }
 
         ThreadSafeRecordingChannel chan0 = new ThreadSafeRecordingChannel(c0);

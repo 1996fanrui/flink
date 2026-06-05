@@ -32,7 +32,9 @@ import org.apache.flink.runtime.memory.MemoryManager;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Path;
 import java.util.HashSet;
 
 import static org.apache.flink.runtime.checkpoint.InflightDataRescalingDescriptorUtil.mappings;
@@ -42,6 +44,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Test of different implementation of {@link AbstractInputChannelRecoveredStateHandler}. */
 class InputChannelRecoveredStateHandlerTest extends RecoveredChannelStateHandlerTest {
+    @TempDir private Path tmpDir;
+
     private static final int preAllocatedSegments = 3;
     private NetworkBufferPool networkBufferPool;
     private SingleInputGate inputGate;
@@ -144,7 +148,7 @@ class InputChannelRecoveredStateHandlerTest extends RecoveredChannelStateHandler
                         true,
                         stubFilteringHandler,
                         MemoryManager.DEFAULT_PAGE_SIZE,
-                        null);
+                        new String[] {tmpDir.toAbsolutePath().toString()});
     }
 
     private AbstractInputChannelRecoveredStateHandler buildSpillingNoFilteringHandler(
@@ -329,26 +333,11 @@ class InputChannelRecoveredStateHandlerTest extends RecoveredChannelStateHandler
     }
 
     @Test
-    void testCheckpointingDuringRecoveryRequiresSpillDirectories() throws Exception {
-        assertRecoverRequiresSpillDirectories(null);
-        assertRecoverRequiresSpillDirectories(new String[0]);
-    }
-
-    private void assertRecoverRequiresSpillDirectories(String[] spillTmpDirectories)
-            throws Exception {
-        try (AbstractInputChannelRecoveredStateHandler handler =
-                buildSpillingNoFilteringHandler(spillTmpDirectories)) {
-            RecoveredChannelStateHandler.BufferWithContext<Buffer> bufferWithContext =
-                    handler.getBuffer(channelInfo);
-            bufferWithContext
-                    .context
-                    .getMemorySegment()
-                    .put(bufferWithContext.context.getMemorySegmentOffset(), new byte[] {1});
-            bufferWithContext.context.setSize(1);
-
-            assertThatThrownBy(() -> handler.recover(channelInfo, 1, bufferWithContext))
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining("Spilling temporary directories must not be empty");
-        }
+    void testSpillingHandlerRequiresSpillDirectories() {
+        assertThatThrownBy(() -> buildSpillingNoFilteringHandler(null))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> buildSpillingNoFilteringHandler(new String[0]))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("spillTmpDirectories must not be empty");
     }
 }

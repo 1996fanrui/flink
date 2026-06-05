@@ -69,12 +69,13 @@ class FetchedChannelStateDrainerTest {
         InputChannelInfo c0 = new InputChannelInfo(0, 0);
         InputChannelInfo c1 = new InputChannelInfo(0, 1);
 
-        FetchedChannelState state = newState();
-        try (FetchedChannelStateWriter writer = newWriter(state)) {
+        FetchedChannelState state;
+        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
             writer.writeRecord(c0, payload(11), payload(11).length);
             writer.writeRecord(c1, payload(22), payload(22).length);
             writer.writeRecord(c0, payload(33), payload(33).length);
             writer.writeRecord(c1, payload(44), payload(44).length);
+            state = writer.getChannelState();
         }
 
         RecordingChannel chan0 = new RecordingChannel(c0);
@@ -97,10 +98,11 @@ class FetchedChannelStateDrainerTest {
         InputChannelInfo c0 = new InputChannelInfo(0, 0);
         InputChannelInfo c1 = new InputChannelInfo(0, 1);
 
-        FetchedChannelState state = newState();
-        try (FetchedChannelStateWriter writer = newWriter(state)) {
+        FetchedChannelState state;
+        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
             writer.writeRecord(c0, payload(1), payload(1).length);
             writer.writeRecord(c1, payload(2), payload(2).length);
+            state = writer.getChannelState();
         }
 
         int[] seq = {0};
@@ -143,10 +145,11 @@ class FetchedChannelStateDrainerTest {
         InputChannelInfo c0 = new InputChannelInfo(0, 0);
         InputChannelInfo c1 = new InputChannelInfo(0, 1);
 
-        FetchedChannelState state = newState();
-        try (FetchedChannelStateWriter writer = newWriter(state)) {
+        FetchedChannelState state;
+        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
             writer.writeRecord(c0, payload(1), payload(1).length);
             writer.writeRecord(c1, payload(2), payload(2).length);
+            state = writer.getChannelState();
         }
 
         RecordingChannel chan0 = new RecordingChannel(c0);
@@ -194,9 +197,10 @@ class FetchedChannelStateDrainerTest {
         InputChannelInfo c0 = new InputChannelInfo(0, 0);
         InputChannelInfo c1 = new InputChannelInfo(0, 1);
 
-        FetchedChannelState state = newState();
-        try (FetchedChannelStateWriter writer = newWriter(state)) {
+        FetchedChannelState state;
+        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
             writer.writeRecord(c0, payload(1), payload(1).length);
+            state = writer.getChannelState();
         }
 
         RecordingChannel chan0 = new RecordingChannel(c0);
@@ -240,24 +244,14 @@ class FetchedChannelStateDrainerTest {
     // Helpers
     // -------------------------------------------------------------------------------------------
 
-    private FetchedChannelState newState() {
-        return new FetchedChannelState();
-    }
-
-    private FetchedChannelStateWriter newWriter(FetchedChannelState state) throws IOException {
-        return new FetchedChannelStateWriter(
-                state, tempDir, FetchedChannelState.DEFAULT_SEGMENT_SIZE_BYTES);
-    }
-
     private FetchedChannelState writeRecords(InputChannelInfo ch, byte[]... payloads)
             throws IOException {
-        FetchedChannelState state = newState();
-        try (FetchedChannelStateWriter writer = newWriter(state)) {
+        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
             for (byte[] p : payloads) {
                 writer.writeRecord(ch, p, p.length);
             }
+            return writer.getChannelState();
         }
-        return state;
     }
 
     private FetchedChannelStateDrainer newDrainer(

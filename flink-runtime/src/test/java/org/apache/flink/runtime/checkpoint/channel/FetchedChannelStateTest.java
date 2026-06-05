@@ -23,6 +23,8 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.Collections;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -34,30 +36,27 @@ class FetchedChannelStateTest {
 
     @Test
     void testInitialStateIsEmpty() {
-        FetchedChannelState state = new FetchedChannelState();
+        FetchedChannelState state = new FetchedChannelState(Collections.emptyList());
         assertThat(state.files()).isEmpty();
         assertThat(state.isClosed()).isFalse();
     }
 
     @Test
-    void testAddFileReturnsIncreasingIndex() throws IOException {
-        try (FetchedChannelState state = new FetchedChannelState()) {
-            Path file0 = tempDir.resolve("spill-0.bin");
-            Path file1 = tempDir.resolve("spill-1.bin");
+    void testFileListPreservesOrder() throws IOException {
+        Path file0 = tempDir.resolve("spill-0.bin");
+        Path file1 = tempDir.resolve("spill-1.bin");
 
-            int idx0 = state.addFile(file0);
-            int idx1 = state.addFile(file1);
-
-            assertThat(idx0).isEqualTo(0);
-            assertThat(idx1).isEqualTo(1);
+        try (FetchedChannelState state =
+                new FetchedChannelState(Arrays.asList(file0, file1))) {
             assertThat(state.files()).containsExactly(file0, file1);
         }
     }
 
     @Test
     void testFilesListIsUnmodifiable() throws IOException {
-        try (FetchedChannelState state = new FetchedChannelState()) {
-            state.addFile(tempDir.resolve("f0.bin"));
+        try (FetchedChannelState state =
+                new FetchedChannelState(
+                        Collections.singletonList(tempDir.resolve("f0.bin")))) {
             assertThatThrownBy(() -> state.files().add(tempDir.resolve("f1.bin")))
                     .isInstanceOf(UnsupportedOperationException.class);
         }
@@ -65,10 +64,10 @@ class FetchedChannelStateTest {
 
     @Test
     void testAcquireReleaseDoesNotDeleteFilesBeforeLastRelease() throws IOException {
-        FetchedChannelState state = new FetchedChannelState();
         Path realFile = tempDir.resolve("spill-0.bin");
         realFile.toFile().createNewFile();
-        state.addFile(realFile);
+        FetchedChannelState state =
+                new FetchedChannelState(Collections.singletonList(realFile));
 
         state.acquire();
         state.acquire();
@@ -85,14 +84,12 @@ class FetchedChannelStateTest {
 
     @Test
     void testCloseDeletesAllFiles() throws IOException {
-        FetchedChannelState state = new FetchedChannelState();
         Path file0 = tempDir.resolve("f0.bin");
         Path file1 = tempDir.resolve("f1.bin");
         file0.toFile().createNewFile();
         file1.toFile().createNewFile();
 
-        state.addFile(file0);
-        state.addFile(file1);
+        FetchedChannelState state = new FetchedChannelState(Arrays.asList(file0, file1));
 
         state.close();
 
@@ -103,7 +100,7 @@ class FetchedChannelStateTest {
 
     @Test
     void testCloseIsIdempotent() throws IOException {
-        FetchedChannelState state = new FetchedChannelState();
+        FetchedChannelState state = new FetchedChannelState(Collections.emptyList());
         state.close();
         assertThat(state.isClosed()).isTrue();
         // Second close must not throw.
@@ -113,7 +110,7 @@ class FetchedChannelStateTest {
 
     @Test
     void testCloseAfterReleaseIsIdempotent() throws IOException {
-        FetchedChannelState state = new FetchedChannelState();
+        FetchedChannelState state = new FetchedChannelState(Collections.emptyList());
         state.acquire();
         state.release();
         assertThat(state.isClosed()).isTrue();

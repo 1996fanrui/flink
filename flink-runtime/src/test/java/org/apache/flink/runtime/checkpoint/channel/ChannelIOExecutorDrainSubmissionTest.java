@@ -157,13 +157,10 @@ class ChannelIOExecutorDrainSubmissionTest {
 
     private FetchedChannelState writeRecords(InputChannelInfo ch, byte[] payload)
             throws IOException {
-        FetchedChannelState state = new FetchedChannelState();
-        try (FetchedChannelStateWriter writer =
-                new FetchedChannelStateWriter(
-                        state, tempDir, FetchedChannelState.DEFAULT_SEGMENT_SIZE_BYTES)) {
+        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
             writer.writeRecord(ch, payload, payload.length);
+            return writer.getChannelState();
         }
-        return state;
     }
 
     private static final class CapturingChannel implements RecoverableInputChannel {

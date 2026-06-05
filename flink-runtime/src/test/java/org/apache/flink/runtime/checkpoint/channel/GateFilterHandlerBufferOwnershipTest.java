@@ -35,10 +35,8 @@ import org.apache.flink.streaming.runtime.streamrecord.StreamElementSerializer;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
-import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -51,11 +49,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class GateFilterHandlerBufferOwnershipTest {
 
-    @TempDir Path tempDir;
-
     private static final int BUFFER_SIZE = 1024;
     private static final SubtaskConnectionDescriptor KEY = new SubtaskConnectionDescriptor(0, 0);
-    private static final InputChannelInfo NEW_CHANNEL = new InputChannelInfo(0, 0);
 
     @Test
     void testSourceBufferRecycledOnSuccess() throws Exception {
@@ -63,9 +58,7 @@ class GateFilterHandlerBufferOwnershipTest {
                 createHandler(RecordFilter.acceptAll());
 
         Buffer sourceBuffer = createBufferWithRecords(1L, 2L);
-        FetchedChannelStateWriter writer = newWriter();
-        handler.filterAndRewrite(0, 0, NEW_CHANNEL, sourceBuffer, writer);
-        writer.close();
+        handler.filterAndRewrite(0, 0, sourceBuffer, new DataOutputSerializer(BUFFER_SIZE));
 
         assertThat(sourceBuffer.isRecycled()).isTrue();
     }
@@ -76,9 +69,7 @@ class GateFilterHandlerBufferOwnershipTest {
         ChannelStateFilteringHandler.GateFilterHandler<Long> handler = createHandler(rejectAll);
 
         Buffer sourceBuffer = createBufferWithRecords(1L, 2L);
-        FetchedChannelStateWriter writer = newWriter();
-        handler.filterAndRewrite(0, 0, NEW_CHANNEL, sourceBuffer, writer);
-        writer.close();
+        handler.filterAndRewrite(0, 0, sourceBuffer, new DataOutputSerializer(BUFFER_SIZE));
 
         assertThat(sourceBuffer.isRecycled()).isTrue();
     }
@@ -90,9 +81,11 @@ class GateFilterHandlerBufferOwnershipTest {
                 createHandler(RecordFilter.acceptAll());
 
         Buffer sourceBuffer = createBufferWithRecords(1L);
-        FetchedChannelStateWriter writer = newWriter();
 
-        assertThatThrownBy(() -> handler.filterAndRewrite(1, 1, NEW_CHANNEL, sourceBuffer, writer))
+        assertThatThrownBy(
+                        () ->
+                                handler.filterAndRewrite(
+                                        1, 1, sourceBuffer, new DataOutputSerializer(BUFFER_SIZE)))
                 .isInstanceOf(IllegalStateException.class);
 
         // sourceBuffer must be recycled even when lookup fails before setNextBuffer.
@@ -114,15 +107,16 @@ class GateFilterHandlerBufferOwnershipTest {
                 new ChannelStateFilteringHandler(
                         new ChannelStateFilteringHandler.GateFilterHandler<?>[] {gateHandler});
 
-        // A writer that throws on the second write to trigger mid-processing failure.
-        FetchedChannelStateWriter failingWriter = newFailingWriter();
+        // A serializer that throws while writing the second record's length prefix, triggering a
+        // mid-processing failure after the first record has already been emitted.
+        DataOutputSerializer failingSerializer = new FailingAfterFirstRecordSerializer();
         Buffer sourceBuffer = createBufferWithRecords(1L, 2L, 3L, 4L, 5L);
 
         assertThatThrownBy(
                         () -> {
                             try (ChannelStateFilteringHandler ignored = filteringHandler) {
                                 filteringHandler.filterAndRewrite(
-                                        0, 0, 0, NEW_CHANNEL, sourceBuffer, failingWriter);
+                                        0, 0, 0, sourceBuffer, failingSerializer);
                             }
                         })
                 .isInstanceOf(IOException.class)
@@ -177,38 +171,26 @@ class GateFilterHandlerBufferOwnershipTest {
         }
     }
 
-    private FetchedChannelStateWriter newWriter() {
-        FetchedChannelState state = new FetchedChannelState();
-        state.acquire();
-        return new FetchedChannelStateWriter(state, tempDir);
-    }
-
     /**
-     * A writer that throws an IOException on the second call to writeRecord, simulating a failure
-     * mid-stream to verify that the source buffer is still recycled via the filtering handler's
-     * close() cleanup chain.
+     * A {@link DataOutputSerializer} that throws an IOException while writing the second record's
+     * length prefix, simulating a failure mid-stream to verify that the source buffer is still
+     * recycled via the filtering handler's close() cleanup chain. Each surviving record begins with
+     * a {@code writeInt} placeholder for its length, so the second {@code writeInt} marks the start
+     * of the second record.
      */
-    private FetchedChannelStateWriter newFailingWriter() {
-        FetchedChannelState state = new FetchedChannelState();
-        state.acquire();
-        return new FailingAfterFirstWriteWriter(state, tempDir);
-    }
+    private static final class FailingAfterFirstRecordSerializer extends DataOutputSerializer {
+        private int writeIntCount = 0;
 
-    private static final class FailingAfterFirstWriteWriter extends FetchedChannelStateWriter {
-        private int writeCount = 0;
-
-        FailingAfterFirstWriteWriter(FetchedChannelState state, Path baseDir) {
-            super(state, baseDir);
+        FailingAfterFirstRecordSerializer() {
+            super(BUFFER_SIZE);
         }
 
         @Override
-        public void writeRecord(
-                InputChannelInfo channelInfo, byte[] serializedRecord, int recordLength)
-                throws IOException {
-            if (++writeCount > 1) {
+        public void writeInt(int v) throws IOException {
+            if (++writeIntCount > 1) {
                 throw new IOException("Simulated write failure");
             }
-            super.writeRecord(channelInfo, serializedRecord, recordLength);
+            super.writeInt(v);
         }
     }
 }
