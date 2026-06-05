@@ -19,16 +19,12 @@
 
 package org.apache.flink.runtime.checkpoint.channel;
 
-import org.apache.flink.util.CloseableIterator;
-
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.NoSuchElementException;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -87,31 +83,12 @@ class UnalignedCheckpointDuringRecoveryITCase {
     }
 
     @Test
-    void testEmptyDiskSnapshotIsConsumedOnceByStep3() throws Exception {
-        AtomicBoolean closed = new AtomicBoolean(false);
-        CloseableIterator<FetchedSegmentCursor> empty =
-                new CloseableIterator<FetchedSegmentCursor>() {
-                    @Override
-                    public boolean hasNext() {
-                        return false;
-                    }
-
-                    @Override
-                    public FetchedSegmentCursor next() {
-                        throw new NoSuchElementException();
-                    }
-
-                    @Override
-                    public void close() {
-                        closed.set(true);
-                    }
-                };
-
-        // Empty branch contract: in-line close, no writer-thread submission. Unit-level
-        // coverage is in ChannelStateWriterImplAddInputDataFromSpillTest; this guards the
-        // fixture itself against silently dropping close().
-        empty.close();
-        assertThat(closed.get()).isTrue();
+    void testEmptyDiskSnapshotReaderCloseIsClean() throws Exception {
+        // An empty reader (no spill files) must be closeable without error. This guards the
+        // fixture against silently swallowing close() failures on the zero-segment path.
+        FetchedChannelStateReader emptyReader = FetchedChannelStateReader.emptyReader();
+        assertThat(emptyReader.nextSegment()).isEmpty();
+        emptyReader.close();
     }
 
     private byte[] concat(byte[] a, byte[] b) {

@@ -18,107 +18,206 @@
 package org.apache.flink.runtime.checkpoint.channel;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.util.CloseableIterator;
 
 import javax.annotation.Nullable;
 
+import java.io.ByteArrayInputStream;
 import java.io.Closeable;
 import java.io.DataInputStream;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.NoSuchElementException;
+import java.util.Optional;
 
 import static org.apache.flink.runtime.checkpoint.channel.AbstractSpillingHandler.SEGMENT_HEADER_BYTES;
 import static org.apache.flink.util.Preconditions.checkState;
 
 /**
- * Forward reader over a {@link FetchedChannelState}'s spill files.
+ * Forward reader over a {@link FetchedChannelState}'s spill files. This is our own segment reader,
+ * on purpose <em>not</em> a Java {@link java.util.Iterator}: our access pattern ("a body must be
+ * fully read before the next segment", "body ownership is handed to the consumer", "consume and
+ * commit are separate steps") does not fit the {@code hasNext/next} contract.
  *
- * <p>Reading is strictly sequential by design: a reader is positioned once at construction (offset
- * 0 for the root reader, or the current drain position for a {@link #snapshot()}), then consumes
- * forward only. It never seeks backward and never re-positions mid-iteration. Multiple files are
- * read in order: when one file is exhausted, the next is opened and read from its start. This
- * mirrors the only two access patterns: the drain thread reads the root reader front to back, and
- * each checkpoint derives a fresh snapshot reader that resumes from the drain position and reads
- * forward.
+ * <p>Reading is strictly sequential and never seeks mid-iteration. There is exactly one place that
+ * skips bytes: the very first {@link #nextSegment()} call, where a snapshot reader started mid-body
+ * discards the already-delivered prefix to land on the not-yet-delivered remainder. Every later
+ * call does no skipping at all — the previous body was read to its end, so the stream already sits
+ * on the next segment's header. This "skip only on first positioning" rule is what keeps the
+ * steady-state path free of any seek/skip.
  *
- * <p>Because access is sequential, the body of one segment must be fully consumed before the next
- * segment is read; skipping ahead or rewinding is a contract violation and fails loud.
+ * <p>The reader holds <b>two</b> {@link Position}s and nothing else duplicates them:
  *
- * <p>The reader owns one lifecycle grant ({@link FetchedChannelState#acquire()}) and releases it on
- * {@link #close()}.
+ * <ul>
+ *   <li>{@code current} — the live read position; its {@code readOffset} is exactly where the open
+ *       file stream sits, advancing as the header and the consumer's body reads consume bytes (the
+ *       latter outside the drainer lock).
+ *   <li>{@code committed} — the delivered boundary; {@link SpillSegment#commit()} copies {@code
+ *       current} into it (under the drainer lock). {@link #snapshot()} derives a new reader from
+ *       it.
+ * </ul>
  *
- * <p>Thread-safety: the root reader's {@link #snapshot()} and the drain cursor advancement via
- * {@link FetchedSegmentCursor#commitConsumed()} must be called under the drainer lock. Disk reads
- * happen outside that lock.
+ * <p>The "previous body fully read before advancing" rule is checked at the {@link #nextSegment()}
+ * entry (the first call is exempt — there is no previous segment). Body ownership is handed to the
+ * consumer, so the reader does not track body progress except through {@code current}.
+ *
+ * <p>Thread-safety: {@link #snapshot()} and {@link SpillSegment#commit()} must be called under the
+ * drainer lock. Disk reads happen outside that lock; reading body bytes advances {@code current}
+ * but does not touch {@code committed}.
  */
 @Internal
 public final class FetchedChannelStateReader implements Closeable {
 
+    /**
+     * Shared empty channel state (no spill files) backing {@link #emptyReader()}. Safe to share:
+     * its only mutable state is a reference counter whose cleanup deletes an empty file list, a
+     * no-op.
+     */
+    private static final FetchedChannelState EMPTY_STATE =
+            new FetchedChannelState(java.util.Collections.emptyList());
+
+    /**
+     * Returns a reader with no segments — its first {@link #nextSegment()} is empty. Each call
+     * hands out a fresh reader (readers have independent lifecycle and must each be closed), but
+     * they all share {@link #EMPTY_STATE}, so no per-call channel state is allocated.
+     */
+    public static FetchedChannelStateReader emptyReader() {
+        return EMPTY_STATE.reader();
+    }
+
     private final FetchedChannelState channelState;
     private final List<Path> files;
 
-    /**
-     * File index of the segment at the current drain cursor. Together with {@link #fileOffset} and
-     * {@link #committedBytesInSegment} this captures exactly where a {@link #snapshot()} resumes.
-     */
-    private int fileIndex;
+    /** Live read position; {@code readOffset} is where the open stream physically sits. */
+    private final Position current;
 
-    /** Byte offset within {@link #fileIndex} of the current segment's header. */
-    private long fileOffset;
+    /** Delivered boundary; {@link SpillSegment#commit()} copies {@link #current} into it. */
+    private final Position committed;
 
-    /**
-     * Number of bytes within the body of the current segment that have been committed (delivered
-     * under lock). Starts at 0 for each new segment; advances on each {@link
-     * FetchedSegmentCursor#commitConsumed()} call. Used to resume a {@link #snapshot()} in the
-     * middle of a partially drained segment.
-     */
-    private long committedBytesInSegment;
+    /** Open stream over {@code current.fileIndex}, or {@code null} before the first read. */
+    @Nullable private InputStream fileStream;
 
+    /** Size of the file currently open. */
+    private long currentFileSize;
+
+    /** Body view of the segment returned by the last {@link #nextSegment()}, or {@code null}. */
+    @Nullable private BoundedSegmentStream currentBody;
+
+    private boolean positioned;
     private boolean closed;
 
-    FetchedChannelStateReader(
-            FetchedChannelState channelState,
-            int fileIndex,
-            long fileOffset,
-            long committedBytesInSegment) {
+    FetchedChannelStateReader(FetchedChannelState channelState, Position committed) {
         this.channelState = channelState;
         this.files = channelState.files();
-        this.fileIndex = fileIndex;
-        this.fileOffset = fileOffset;
-        this.committedBytesInSegment = committedBytesInSegment;
+        this.committed = committed;
+        this.current = committed.copy();
         channelState.acquire();
     }
 
     /**
-     * Returns an iterator over all remaining segments, starting from the current cursor position.
-     * Each {@link FetchedSegmentCursor} exposes the channel info, a bounded body stream, and the
-     * commit primitive.
+     * Advances to the next segment and returns it, or {@link Optional#empty()} when no segment
+     * remains. Advancing and probing are one step; there is no separate {@code hasNext}.
      *
-     * <p>The iterator reads files sequentially from the cursor position forward and is single-use;
-     * it must be closed when done.
+     * <p>Entry rule (the first call is exempt): the previous segment's body must be fully read,
+     * otherwise this is a contract violation and fails loud (no skip-ahead).
+     *
+     * <p>Two distinct paths, by design:
+     *
+     * <ul>
+     *   <li><b>First call</b> ({@link #firstSegment()}): open the file, seek to the committed
+     *       header offset, and — for a snapshot resuming mid-body — discard the already-delivered
+     *       prefix. This is the only place bytes are skipped.
+     *   <li><b>Every later call</b> ({@link #followingSegment()}): the previous body was read to
+     *       its end, so the stream already sits on this segment's header. Just read the header. No
+     *       skip.
+     * </ul>
      */
-    public CloseableIterator<FetchedSegmentCursor> segments() {
+    public Optional<SpillSegment> nextSegment() {
         checkState(!closed, "FetchedChannelStateReader is closed");
-        return new SegmentIterator();
+        checkState(
+                currentBody == null || currentBody.remaining() == 0,
+                "Previous segment body not fully consumed before advancing: %s bytes left",
+                currentBody == null ? 0 : currentBody.remaining());
+        try {
+            if (!positioned) {
+                positioned = true;
+                return firstSegment();
+            }
+            return followingSegment();
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to read segment", e);
+        }
     }
 
     /**
-     * Derives an independent reader starting from the current drain position. The snapshot reader
-     * owns its own {@link FetchedChannelState} lifecycle grant and its own sequential stream.
+     * First positioning — the only path that may skip bytes. Opens the file at the committed header
+     * offset and reads the header. A snapshot may resume in the middle of a segment: the committed
+     * {@code readOffset} says how many body bytes were already delivered, and that prefix is
+     * skipped so the returned body starts at the not-yet-delivered remainder. If the segment was
+     * already fully delivered (prefix == whole body), it is exhausted here and we move on to the
+     * next one.
+     */
+    private Optional<SpillSegment> firstSegment() throws IOException {
+        // The committed read offset may sit mid-body (after a partial commit), but the header lives
+        // at segmentStartOffset. Capture how much was already delivered, then rewind the live read
+        // offset to the header so we open the file there and read the header, not mid-body.
+        int deliveredPrefix = (int) current.deliveredBodyBytes();
+        current.rewindToSegmentStart();
+
+        if (!openCurrentFile()) {
+            return Optional.empty();
+        }
+        SegmentHeader header = readHeaderAtCurrent();
+        checkState(
+                deliveredPrefix <= header.bufferLength,
+                "Delivered offset %s exceeds segment length %s",
+                deliveredPrefix,
+                header.bufferLength);
+
+        if (deliveredPrefix == header.bufferLength) {
+            // This segment was already fully delivered before the snapshot; nothing remains in it.
+            // Skip its whole body to reach the next segment's header, then take the steady path.
+            skipBody(header.bufferLength);
+            return followingSegment();
+        }
+
+        // Discard the already-delivered prefix (the one and only skip in this class), then hand out
+        // the remainder. alreadyDelivered is carried so commit() records the boundary from the
+        // head.
+        skipBody(deliveredPrefix);
+        currentBody =
+                new BoundedSegmentStream(header.bufferLength - deliveredPrefix, deliveredPrefix);
+        return Optional.of(new Segment(header.channelInfo, currentBody));
+    }
+
+    /**
+     * Steady-state path — no skipping. The previous body was read to its end, so the stream sits
+     * exactly on this segment's header (or at the current file's end, in which case we roll to the
+     * next file). Reads the header and returns the whole-body view.
+     */
+    private Optional<SpillSegment> followingSegment() throws IOException {
+        if (!openCurrentFile()) {
+            return Optional.empty();
+        }
+        SegmentHeader header = readHeaderAtCurrent();
+        currentBody = new BoundedSegmentStream(header.bufferLength);
+        return Optional.of(new Segment(header.channelInfo, currentBody));
+    }
+
+    /**
+     * Derives an independent reader starting from the committed position. The snapshot reader owns
+     * its own {@link FetchedChannelState} lifecycle grant and reads forward independently.
      *
-     * <p>Must be called under the drainer lock so that {@link #fileIndex}, {@link #fileOffset}, and
-     * {@link #committedBytesInSegment} reflect the latest committed state.
+     * <p>Must be called under the drainer lock so that the copied position reflects the latest
+     * committed state.
      *
      * @return a new independent reader; caller must {@link #close()} it when done
      */
     public FetchedChannelStateReader snapshot() {
         checkState(!closed, "FetchedChannelStateReader is closed");
-        return new FetchedChannelStateReader(
-                channelState, fileIndex, fileOffset, committedBytesInSegment);
+        return new FetchedChannelStateReader(channelState, committed.copy());
     }
 
     @Override
@@ -127,380 +226,324 @@ public final class FetchedChannelStateReader implements Closeable {
             return;
         }
         closed = true;
-        channelState.release();
+        try {
+            closeFileStream();
+        } finally {
+            channelState.release();
+        }
     }
 
     // -------------------------------------------------------------------------------------------
-    // SegmentIterator
+    // Sequential IO over the spill files; all of it advances current.readOffset / current.fileIndex
     // -------------------------------------------------------------------------------------------
 
     /**
-     * Iterates per-channel segments over a single forward stream that spans the spill files in
-     * order. The stream is opened once, positioned at the reader's cursor, and consumed strictly
-     * forward: each segment's 12-byte header is read, then its body is exposed as a bounded view of
-     * the same stream. Advancing requires the previous body to be fully consumed and committed.
-     */
-    private final class SegmentIterator implements CloseableIterator<FetchedSegmentCursor> {
-
-        /** Single forward stream spanning files [fileIndex .. last], opened at the cursor. */
-        private final SequentialSpillStream stream;
-
-        /**
-         * For the first segment (snapshot resume), this many body bytes were already committed and
-         * must be skipped; 0 for every subsequent segment.
-         */
-        private int pendingStartOffsetInSegment;
-
-        /** Bounded body view of the current segment; must be exhausted before advancing. */
-        @Nullable private BoundedSegmentStream currentBody;
-
-        private boolean iterClosed;
-
-        SegmentIterator() {
-            this.stream =
-                    new SequentialSpillStream(
-                            files, fileIndex, fileOffset + committedBytesInSegment);
-            // committedBytesInSegment is folded into the stream position above so reads start at
-            // the
-            // first undelivered byte; it is also the in-segment skip for the resumed first segment.
-            this.pendingStartOffsetInSegment = (int) committedBytesInSegment;
-        }
-
-        @Override
-        public boolean hasNext() {
-            checkState(!iterClosed, "SegmentIterator is closed");
-            ensurePreviousBodyConsumed();
-            return stream.hasRemaining();
-        }
-
-        @Override
-        public FetchedSegmentCursor next() {
-            checkState(!iterClosed, "SegmentIterator is closed");
-            ensurePreviousBodyConsumed();
-            if (!stream.hasRemaining()) {
-                throw new NoSuchElementException();
-            }
-
-            ParsedHeader header;
-            try {
-                header = stream.readHeader();
-            } catch (IOException e) {
-                throw new RuntimeException("Failed to read segment header", e);
-            }
-
-            // Resume skip applies only to the first segment of a snapshot reader.
-            int skip = pendingStartOffsetInSegment;
-            pendingStartOffsetInSegment = 0;
-
-            int remainingLength = header.bufferLength - skip;
-            checkState(
-                    remainingLength >= 0,
-                    "Resume offset %s exceeds segment length %s",
-                    skip,
-                    header.bufferLength);
-
-            currentBody = new BoundedSegmentStream(stream, remainingLength);
-
-            InputChannelInfo channelInfo = new InputChannelInfo(header.gateIdx, header.channelIdx);
-            int fullSegmentLength = header.bufferLength;
-            long headerStartInFile = header.headerOffset;
-            int headerFileIndex = header.fileIndex;
-            int alreadyConsumedInSegment = skip;
-            BoundedSegmentStream body = currentBody;
-
-            return new FetchedSegmentCursor() {
-                @Override
-                public InputChannelInfo channelInfo() {
-                    return channelInfo;
-                }
-
-                @Override
-                public InputStream body() {
-                    return body;
-                }
-
-                @Override
-                public int length() {
-                    return remainingLength;
-                }
-
-                @Override
-                public void commitConsumed() {
-                    int consumed = alreadyConsumedInSegment + body.bytesRead();
-                    if (consumed >= fullSegmentLength) {
-                        // Whole segment consumed: cursor moves to the next segment's header.
-                        fileIndex = header.nextFileIndex;
-                        fileOffset = header.nextHeaderOffset;
-                        committedBytesInSegment = 0L;
-                    } else {
-                        // Partial consume: cursor stays at this segment's header, recording how far
-                        // into the body we have durably delivered.
-                        fileIndex = headerFileIndex;
-                        fileOffset = headerStartInFile;
-                        committedBytesInSegment = consumed;
-                    }
-                }
-            };
-        }
-
-        /**
-         * Enforces the sequential contract: the previously returned segment body must be fully read
-         * before the iterator can peek or advance. Skipping ahead with an unconsumed body is a
-         * caller bug.
-         */
-        private void ensurePreviousBodyConsumed() {
-            if (currentBody != null) {
-                checkState(
-                        currentBody.remaining() == 0,
-                        "Previous segment body not fully consumed before advancing: %s bytes left",
-                        currentBody.remaining());
-                currentBody = null;
-            }
-        }
-
-        @Override
-        public void close() {
-            iterClosed = true;
-            try {
-                stream.close();
-            } catch (IOException e) {
-                throw new RuntimeException("Failed to close spill stream", e);
-            }
-        }
-    }
-
-    // -------------------------------------------------------------------------------------------
-    // ParsedHeader
-    // -------------------------------------------------------------------------------------------
-
-    private static final class ParsedHeader {
-        /** File index this header was read from. */
-        final int fileIndex;
-
-        /** Byte offset of the header start within {@link #fileIndex}. */
-        final long headerOffset;
-
-        final int gateIdx;
-        final int channelIdx;
-
-        /** Segment body length in bytes; persisted on disk as a 4-byte int. */
-        final int bufferLength;
-
-        /** File index where the next segment header starts. */
-        final int nextFileIndex;
-
-        /** Byte offset of the next segment header within {@link #nextFileIndex}. */
-        final long nextHeaderOffset;
-
-        ParsedHeader(
-                int fileIndex,
-                long headerOffset,
-                int gateIdx,
-                int channelIdx,
-                int bufferLength,
-                int nextFileIndex,
-                long nextHeaderOffset) {
-            this.fileIndex = fileIndex;
-            this.headerOffset = headerOffset;
-            this.gateIdx = gateIdx;
-            this.channelIdx = channelIdx;
-            this.bufferLength = bufferLength;
-            this.nextFileIndex = nextFileIndex;
-            this.nextHeaderOffset = nextHeaderOffset;
-        }
-    }
-
-    // -------------------------------------------------------------------------------------------
-    // SequentialSpillStream
-    // -------------------------------------------------------------------------------------------
-
-    /**
-     * A single forward {@link InputStream} over the spill files {@code [startFileIndex .. last]},
-     * read in order. One file is open at a time; when it is exhausted the next file is opened and
-     * read from its start. The stream never seeks backward after the initial positioning.
+     * Ensures a file is open with the stream positioned at {@code current}'s read offset, ready to
+     * read this segment's header. Rolls to the next file when the current one is exhausted. Returns
+     * false when no segment remains.
      *
-     * <p>It tracks, for each byte produced, which file and in-file offset it came from, so the
-     * reader can record exact resume coordinates without re-seeking. Header reads and body reads
-     * both pull from this same stream.
+     * <p>{@code current.segmentStartOffset} is set to where the header begins, so a later {@link
+     * SpillSegment#commit()} records the right segment for the snapshot to resume from.
      */
-    private static final class SequentialSpillStream implements Closeable {
-
-        private final List<Path> files;
-
-        /** File index currently open and being read. */
-        private int currentFileIndex;
-
-        /** Next read offset within {@link #currentFileIndex}. */
-        private long offsetInFile;
-
-        /** Open stream over {@link #currentFileIndex}, or {@code null} before the first read. */
-        @Nullable private InputStream fileStream;
-
-        /** Size of the file currently open. */
-        private long currentFileSize;
-
-        SequentialSpillStream(List<Path> files, int startFileIndex, long startOffsetInFile) {
-            this.files = files;
-            this.currentFileIndex = startFileIndex;
-            this.offsetInFile = startOffsetInFile;
+    private boolean openCurrentFile() throws IOException {
+        if (current.fileIndex >= files.size()) {
+            return false;
         }
-
-        /**
-         * Returns true if more segment data remains, advancing past exhausted files as needed.
-         * After this returns true, {@link #currentFileIndex}/{@link #offsetInFile} point at
-         * readable data.
-         */
-        boolean hasRemaining() {
-            try {
-                while (currentFileIndex < files.size()) {
-                    ensureOpen();
-                    if (offsetInFile < currentFileSize) {
-                        return true;
-                    }
-                    advanceToNextFile();
-                }
-                return false;
-            } catch (IOException e) {
-                throw new RuntimeException("Failed to scan spill files", e);
-            }
+        openFileAndSeek();
+        if (current.readOffset < currentFileSize) {
+            current.startSegmentHere();
+            return true;
         }
-
-        /** Reads one 12-byte segment header from the current position. */
-        ParsedHeader readHeader() throws IOException {
-            int headerFileIndex = currentFileIndex;
-            long headerOffset = offsetInFile;
-
-            byte[] headerBytes = new byte[SEGMENT_HEADER_BYTES];
-            readFully(headerBytes);
-            DataInputStream h = new DataInputStream(new java.io.ByteArrayInputStream(headerBytes));
-            int gateIdx = h.readInt();
-            int channelIdx = h.readInt();
-            int bufferLength = h.readInt();
-            checkState(bufferLength >= 0, "negative segment length: %s", bufferLength);
-
-            // The body occupies the next bufferLength bytes within the same file. The next header
-            // begins right after the body.
-            return new ParsedHeader(
-                    headerFileIndex,
-                    headerOffset,
-                    gateIdx,
-                    channelIdx,
-                    bufferLength,
-                    currentFileIndex,
-                    offsetInFile + bufferLength);
+        // Current file fully read: move to the next file's first segment.
+        closeFileStream();
+        current.rollToNextFile();
+        if (current.fileIndex >= files.size()) {
+            return false;
         }
-
-        /**
-         * Reads up to {@code len} body bytes into {@code buf}. A segment body never crosses a file
-         * boundary, so this reads only from the current file. Returns -1 only when the bounded body
-         * view has signalled exhaustion; an unexpected mid-body EOF throws.
-         */
-        int readBody(byte[] buf, int off, int len) throws IOException {
-            ensureOpen();
-            int n = fileStream.read(buf, off, len);
-            if (n > 0) {
-                offsetInFile += n;
-            }
-            return n;
+        openFileAndSeek();
+        if (current.readOffset < currentFileSize) {
+            current.startSegmentHere();
+            return true;
         }
+        return false;
+    }
 
-        private void readFully(byte[] buf) throws IOException {
-            ensureOpen();
-            int read = 0;
-            while (read < buf.length) {
-                int n = fileStream.read(buf, read, buf.length - read);
-                if (n < 0) {
+    /** Reads the 12-byte header at the current read offset; advances past it. */
+    private SegmentHeader readHeaderAtCurrent() throws IOException {
+        byte[] headerBytes = new byte[SEGMENT_HEADER_BYTES];
+        readFully(headerBytes);
+        DataInputStream h = new DataInputStream(new ByteArrayInputStream(headerBytes));
+        int gateIdx = h.readInt();
+        int channelIdx = h.readInt();
+        int bufferLength = h.readInt();
+        checkState(bufferLength >= 0, "negative segment length: %s", bufferLength);
+        return new SegmentHeader(new InputChannelInfo(gateIdx, channelIdx), bufferLength);
+    }
+
+    /**
+     * Ensures the file at {@code current.fileIndex} is open with the stream positioned at {@code
+     * current.readOffset}. If a stream is already open it is left as-is: sequential reading
+     * guarantees it is already there.
+     */
+    private void openFileAndSeek() throws IOException {
+        if (fileStream != null) {
+            return;
+        }
+        Path path = files.get(current.fileIndex);
+        currentFileSize = Files.size(path);
+        InputStream in = Files.newInputStream(path);
+        try {
+            skipOnStream(in, current.readOffset, path);
+        } catch (IOException e) {
+            in.close();
+            throw e;
+        }
+        fileStream = in;
+    }
+
+    /** Skips {@code count} body bytes on the open stream, advancing the read offset. */
+    private void skipBody(long count) throws IOException {
+        if (count > 0) {
+            skipOnStream(fileStream, count, files.get(current.fileIndex));
+            current.advanceReadOffset(count);
+        }
+    }
+
+    /** Skips exactly {@code count} bytes on {@code in}, failing loud if the file ends early. */
+    private void skipOnStream(InputStream in, long count, Path path) throws IOException {
+        long skipped = 0;
+        while (skipped < count) {
+            long s = in.skip(count - skipped);
+            if (s <= 0) {
+                // skip can return 0 near EOF; read-and-discard as a fallback.
+                if (in.read() < 0) {
                     throw new EOFException(
-                            "Truncated segment header in file "
-                                    + files.get(currentFileIndex)
-                                    + " at offset "
-                                    + offsetInFile
-                                    + ": expected "
-                                    + buf.length
-                                    + " bytes, got "
-                                    + read);
+                            "Cannot position to offset " + count + " in spill file " + path);
                 }
-                read += n;
-                offsetInFile += n;
-            }
-        }
-
-        private void ensureOpen() throws IOException {
-            if (fileStream == null) {
-                Path path = files.get(currentFileIndex);
-                currentFileSize = java.nio.file.Files.size(path);
-                InputStream in = java.nio.file.Files.newInputStream(path);
-                long skipped = 0;
-                while (skipped < offsetInFile) {
-                    long s = in.skip(offsetInFile - skipped);
-                    if (s <= 0) {
-                        // skip can return 0 near EOF; read-and-discard as a fallback.
-                        if (in.read() < 0) {
-                            in.close();
-                            throw new EOFException(
-                                    "Cannot position to offset "
-                                            + offsetInFile
-                                            + " in spill file "
-                                            + path);
-                        }
-                        skipped++;
-                    } else {
-                        skipped += s;
-                    }
-                }
-                fileStream = in;
-            }
-        }
-
-        private void advanceToNextFile() throws IOException {
-            if (fileStream != null) {
-                fileStream.close();
-                fileStream = null;
-            }
-            currentFileIndex++;
-            offsetInFile = 0L;
-        }
-
-        @Override
-        public void close() throws IOException {
-            if (fileStream != null) {
-                fileStream.close();
-                fileStream = null;
+                skipped++;
+            } else {
+                skipped += s;
             }
         }
     }
 
+    private void readFully(byte[] buf) throws IOException {
+        int read = 0;
+        while (read < buf.length) {
+            int n = fileStream.read(buf, read, buf.length - read);
+            if (n < 0) {
+                throw new EOFException(
+                        "Truncated segment header in file "
+                                + files.get(current.fileIndex)
+                                + " at offset "
+                                + current.readOffset
+                                + ": expected "
+                                + buf.length
+                                + " bytes, got "
+                                + read);
+            }
+            read += n;
+            current.advanceReadOffset(n);
+        }
+    }
+
+    /** Reads up to {@code len} body bytes from the current file; called only by the body view. */
+    private int readBody(byte[] buf, int off, int len) throws IOException {
+        int n = fileStream.read(buf, off, len);
+        if (n > 0) {
+            current.advanceReadOffset(n);
+        }
+        return n;
+    }
+
+    private void closeFileStream() throws IOException {
+        if (fileStream != null) {
+            fileStream.close();
+            fileStream = null;
+        }
+    }
+
     // -------------------------------------------------------------------------------------------
-    // BoundedSegmentStream
+    // Position: the three progress values locating where a snapshot resumes
     // -------------------------------------------------------------------------------------------
 
     /**
-     * A forward-only view over the next {@code length} body bytes of a {@link
-     * SequentialSpillStream}. Reads return EOF after {@code length} bytes. If the underlying stream
-     * ends before {@code length} bytes are available, an {@link EOFException} is thrown
-     * (fail-loud). Closing this view does not close the underlying stream; it is owned by the
-     * iterator.
+     * One progress point, expressed with the three values that fully locate where a snapshot
+     * resumes. The reader holds two of these: {@code current} (live read position) and {@code
+     * committed} (delivered boundary). They are the same shape but different in meaning; neither
+     * keeps a shadow copy of the other.
+     *
+     * <ul>
+     *   <li>{@code fileIndex} — file holding the current segment.
+     *   <li>{@code segmentStartOffset} — byte offset of the current segment's header. A snapshot
+     *       reads the segment metadata (channel, full body length) from here, because the segment
+     *       may already be partially delivered yet the snapshot still needs the whole-segment
+     *       header.
+     *   <li>{@code readOffset} — for {@code current}, exactly where the open stream sits (the live
+     *       read offset); for {@code committed}, the delivered boundary. For a brand-new segment
+     *       {@code readOffset == segmentStartOffset} (header not yet passed); after the header and
+     *       n body bytes it is {@code segmentStartOffset + SEGMENT_HEADER_BYTES + n}.
+     * </ul>
      */
-    private static final class BoundedSegmentStream extends InputStream {
+    static final class Position {
+        private int fileIndex;
+        private long segmentStartOffset;
+        private long readOffset;
 
-        private final SequentialSpillStream stream;
-        private final int length;
-
-        private int position;
-
-        BoundedSegmentStream(SequentialSpillStream stream, int length) {
-            this.stream = stream;
-            this.length = length;
+        Position(int fileIndex, long segmentStartOffset, long readOffset) {
+            this.fileIndex = fileIndex;
+            this.segmentStartOffset = segmentStartOffset;
+            this.readOffset = readOffset;
         }
 
-        /** Number of body bytes read from this view so far. */
-        int bytesRead() {
-            return position;
+        static Position atStart() {
+            return new Position(0, 0L, 0L);
         }
 
-        /** Number of body bytes not yet read from this view. */
+        Position copy() {
+            return new Position(fileIndex, segmentStartOffset, readOffset);
+        }
+
+        /**
+         * Already-delivered body bytes of the current segment, clamped to 0 before the header is
+         * crossed (where {@code readOffset <= segmentStartOffset}). Only the first-positioning path
+         * uses it, to size the prefix a snapshot must discard.
+         */
+        long deliveredBodyBytes() {
+            return Math.max(0L, readOffset - segmentStartOffset - SEGMENT_HEADER_BYTES);
+        }
+
+        /** Advances the live read offset by {@code delta} bytes just read/skipped. */
+        void advanceReadOffset(long delta) {
+            readOffset += delta;
+        }
+
+        /**
+         * Rewinds the live read offset back to the current segment's header. Used only on first
+         * positioning: a snapshot's committed offset may sit mid-body, but the header must be read
+         * first, so the read offset returns to {@code segmentStartOffset} before opening the file.
+         */
+        void rewindToSegmentStart() {
+            readOffset = segmentStartOffset;
+        }
+
+        /**
+         * Marks the current read offset as the start of the segment about to be read (its header
+         * begins here). Called right before reading a header.
+         */
+        void startSegmentHere() {
+            segmentStartOffset = readOffset;
+        }
+
+        /** Rolls to the start of the next file once the current one is exhausted. */
+        void rollToNextFile() {
+            fileIndex++;
+            segmentStartOffset = 0L;
+            readOffset = 0L;
+        }
+
+        /**
+         * Copies this position into {@code target} but pins {@code target}'s read offset to {@code
+         * deliveredBody} body bytes of the current segment — i.e. {@code commit} records "delivered
+         * up to here", not "physically read up to here".
+         */
+        void copyAsDelivered(Position target, long deliveredBody) {
+            target.fileIndex = fileIndex;
+            target.segmentStartOffset = segmentStartOffset;
+            target.readOffset = segmentStartOffset + SEGMENT_HEADER_BYTES + deliveredBody;
+        }
+    }
+
+    /** Parsed segment header: channel and full body length. */
+    private static final class SegmentHeader {
+        private final InputChannelInfo channelInfo;
+        private final int bufferLength;
+
+        private SegmentHeader(InputChannelInfo channelInfo, int bufferLength) {
+            this.channelInfo = channelInfo;
+            this.bufferLength = bufferLength;
+        }
+    }
+
+    /**
+     * The single {@link SpillSegment} implementation. Exposes one segment's channel, body, and
+     * length; {@link #commit()} copies the reader's {@code current} position into {@code
+     * committed}, pinned to however many body bytes have been read. Reading the body and committing
+     * are separate steps so the consumer can read outside the drainer lock and commit inside it.
+     *
+     * <p>Only the root (drain) reader commits.
+     */
+    private final class Segment implements SpillSegment {
+        private final InputChannelInfo channelInfo;
+        private final BoundedSegmentStream body;
+
+        private Segment(InputChannelInfo channelInfo, BoundedSegmentStream body) {
+            this.channelInfo = channelInfo;
+            this.body = body;
+        }
+
+        @Override
+        public InputChannelInfo channelInfo() {
+            return channelInfo;
+        }
+
+        @Override
+        public InputStream body() {
+            return body;
+        }
+
+        @Override
+        public int length() {
+            return body.deliverableLength();
+        }
+
+        @Override
+        public void commit() {
+            current.copyAsDelivered(committed, body.deliveredFromSegmentHead());
+        }
+    }
+
+    /**
+     * A forward-only, bounded view over one segment's not-yet-delivered body remainder. It hands
+     * out {@code remainingLength} bytes and reaches EOF after them; it never reads into the next
+     * segment or file. The underlying stream is already positioned at the first byte this view
+     * hands out (the prefix, if any, was skipped before construction). If the file ends before the
+     * segment end, an {@link EOFException} is thrown (fail-loud). Closing this view does not close
+     * the underlying file; the reader owns it.
+     */
+    private final class BoundedSegmentStream extends InputStream {
+
+        /** Body bytes already delivered before this view (the skipped prefix); 0 for the root. */
+        private final int alreadyDelivered;
+
+        private final int remainingLength;
+        private int read;
+
+        private BoundedSegmentStream(int remainingLength) {
+            this(remainingLength, 0);
+        }
+
+        private BoundedSegmentStream(int remainingLength, int alreadyDelivered) {
+            this.remainingLength = remainingLength;
+            this.alreadyDelivered = alreadyDelivered;
+        }
+
+        /** Body bytes not yet handed out (between the read position and the segment end). */
         int remaining() {
-            return length - position;
+            return remainingLength - read;
+        }
+
+        /** Number of body bytes this view will hand out: the not-yet-delivered remainder. */
+        int deliverableLength() {
+            return remainingLength;
+        }
+
+        /**
+         * Total delivered body bytes measured from the segment head: the skipped prefix plus what
+         * has been read through this view. This is what {@link Segment#commit()} records.
+         */
+        int deliveredFromSegmentHead() {
+            return alreadyDelivered + read;
         }
 
         @Override
@@ -512,26 +555,26 @@ public final class FetchedChannelStateReader implements Closeable {
 
         @Override
         public int read(byte[] buf, int off, int len) throws IOException {
-            if (position >= length) {
+            if (read >= remainingLength) {
                 return -1;
             }
-            int toRead = Math.min(len, length - position);
-            int n = stream.readBody(buf, off, toRead);
+            int toRead = Math.min(len, remainingLength - read);
+            int n = readBody(buf, off, toRead);
             if (n < 0) {
                 throw new EOFException(
                         "Unexpected EOF in segment body after "
-                                + position
+                                + read
                                 + "/"
-                                + length
+                                + remainingLength
                                 + " bytes");
             }
-            position += n;
+            read += n;
             return n;
         }
 
         @Override
         public void close() {
-            // Do not close the underlying stream; it is owned by the iterator.
+            // Do not close the underlying file; it is owned by the reader.
         }
     }
 }

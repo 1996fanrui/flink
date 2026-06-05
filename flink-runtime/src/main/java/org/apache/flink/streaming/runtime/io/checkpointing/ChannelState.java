@@ -20,12 +20,11 @@ package org.apache.flink.streaming.runtime.io.checkpointing;
 
 import org.apache.flink.runtime.checkpoint.CheckpointException;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
-import org.apache.flink.runtime.checkpoint.channel.FetchedSegmentCursor;
+import org.apache.flink.runtime.checkpoint.channel.FetchedChannelStateReader;
 import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointTrigger;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
 import org.apache.flink.runtime.io.network.partition.consumer.CheckpointableInput;
-import org.apache.flink.util.CloseableIterator;
 import org.apache.flink.util.ExceptionUtils;
 
 import java.io.IOException;
@@ -126,7 +125,7 @@ final class ChannelState {
     public void onCheckpointStartedForAllInputs(CheckpointBarrier barrier)
             throws CheckpointException, IOException {
         long cpId = barrier.getId();
-        CloseableIterator<FetchedSegmentCursor> snap = null;
+        FetchedChannelStateReader snap = null;
         try {
             snap = recoveryCheckpointTrigger.snapshotAndInsertBarriers(cpId);
 

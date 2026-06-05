@@ -75,11 +75,10 @@ public class MockChannelStateWriter implements ChannelStateWriter {
     }
 
     @Override
-    public void addInputDataFromSpill(
-            long checkpointId, CloseableIterator<FetchedSegmentCursor> segments) {
+    public void addInputDataFromSpill(long checkpointId, FetchedChannelStateReader reader) {
         checkCheckpointId(checkpointId);
         try {
-            segments.close();
+            reader.close();
         } catch (Exception e) {
             rethrow(e);
         }

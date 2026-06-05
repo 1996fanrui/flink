@@ -20,7 +20,6 @@ package org.apache.flink.runtime.checkpoint.channel;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.partition.consumer.RecoverableInputChannel;
-import org.apache.flink.util.CloseableIterator;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -28,6 +27,7 @@ import java.io.InputStream;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
@@ -49,6 +49,12 @@ public final class FetchedChannelStateDrainer implements RecoveryCheckpointTrigg
 
     private final Object lock = new Object();
 
+    /**
+     * Set under {@link #lock} once {@link #drain()} has consumed every segment. After that the
+     * {@link #rootReader} is closed by {@link #close()}, so a later {@link
+     * #snapshotAndInsertBarriers} must not derive from it; it returns an empty reader instead.
+     * Guarded by the lock so the check is atomic with barrier insertion.
+     */
     private boolean drainFinished;
 
     public FetchedChannelStateDrainer(
@@ -75,37 +81,29 @@ public final class FetchedChannelStateDrainer implements RecoveryCheckpointTrigg
     /**
      * Drains all segments from the spill file into the corresponding recovery buffer queues. Each
      * segment is split into chunks of at most {@code memorySegmentSize} bytes; a full chunk is
-     * delivered under the drainer lock paired with a cursor commit. After all segments are drained,
-     * every channel's {@link RecoverableInputChannel#finishRecoveredBufferDelivery()} is called.
+     * delivered under the drainer lock paired with a segment commit. After all segments are
+     * drained, every channel's {@link RecoverableInputChannel#finishRecoveredBufferDelivery()} is
+     * called.
      *
      * <p>Disk reads and buffer allocations happen outside the lock; only the "deliver + commit"
      * pair is locked to guarantee atomicity with snapshot.
      */
     public void drain() throws IOException, InterruptedException {
         ResolvedChannels channels = resolvedChannelsFuture.join();
-        CloseableIterator<FetchedSegmentCursor> segs = rootReader.segments();
-        try {
-            while (segs.hasNext()) {
-                FetchedSegmentCursor seg = segs.next();
-                RecoverableInputChannel ch = channels.channelByInfo.get(seg.channelInfo());
-                if (ch == null) {
-                    throw new IllegalStateException(
-                            "Drain: no physical channel found for " + seg.channelInfo());
-                }
-                drainSegment(seg, ch);
+        Optional<SpillSegment> next;
+        while ((next = rootReader.nextSegment()).isPresent()) {
+            SpillSegment seg = next.get();
+            RecoverableInputChannel ch = channels.channelByInfo.get(seg.channelInfo());
+            if (ch == null) {
+                throw new IllegalStateException(
+                        "Drain: no physical channel found for " + seg.channelInfo());
             }
-        } finally {
-            try {
-                segs.close();
-            } catch (Exception e) {
-                org.apache.flink.util.ExceptionUtils.rethrowIfFatalError(e);
-                if (e instanceof IOException) {
-                    throw (IOException) e;
-                }
-                throw new IOException("Failed to close segment iterator", e);
-            }
+            drainSegment(seg, ch);
         }
 
+        // Mark drain done before rootReader is closed, so a concurrent snapshot returns empty
+        // rather than deriving from the soon-to-be-closed rootReader. Under the lock to stay atomic
+        // with snapshotAndInsertBarriers' check.
         synchronized (lock) {
             drainFinished = true;
         }
@@ -120,7 +118,7 @@ public final class FetchedChannelStateDrainer implements RecoveryCheckpointTrigg
      * the lock and a fresh one is requested; a partial tail buffer (if non-empty) is also
      * delivered.
      */
-    private void drainSegment(FetchedSegmentCursor seg, RecoverableInputChannel ch)
+    private void drainSegment(SpillSegment seg, RecoverableInputChannel ch)
             throws IOException, InterruptedException {
         InputStream in = seg.body();
         Buffer buf = ch.requestRecoveryBufferBlocking();
@@ -131,7 +129,7 @@ public final class FetchedChannelStateDrainer implements RecoveryCheckpointTrigg
                 // Buffer is full: deliver under lock and request a fresh one.
                 synchronized (lock) {
                     ch.onRecoveredStateBuffer(buf);
-                    seg.commitConsumed();
+                    seg.commit();
                 }
                 buf = ch.requestRecoveryBufferBlocking();
                 cap = buf.getMaxCapacity();
@@ -144,7 +142,7 @@ public final class FetchedChannelStateDrainer implements RecoveryCheckpointTrigg
             // Deliver the partial tail buffer.
             synchronized (lock) {
                 ch.onRecoveredStateBuffer(buf);
-                seg.commitConsumed();
+                seg.commit();
             }
         } else {
             buf.recycleBuffer();
@@ -168,56 +166,32 @@ public final class FetchedChannelStateDrainer implements RecoveryCheckpointTrigg
 
     /**
      * Atomically snapshots the undrained portion of the spill and inserts {@link
-     * RecoveryCheckpointBarrier}s into all in-recovery channels. Returns an iterator over the
-     * remaining segments for replay into the checkpoint stream.
+     * RecoveryCheckpointBarrier}s into all in-recovery channels. Returns an independent reader over
+     * the remaining segments for replay into the checkpoint stream; the caller owns and must close
+     * it.
      *
-     * <p>If the drain has already finished, returns an empty iterator (no more data to snapshot).
+     * <p>If the drain has already finished, the root reader is closed and there is nothing left to
+     * snapshot; an empty reader is returned so the caller's normal flow handles it uniformly.
      */
     @Override
-    public CloseableIterator<FetchedSegmentCursor> snapshotAndInsertBarriers(long checkpointId)
+    public FetchedChannelStateReader snapshotAndInsertBarriers(long checkpointId)
             throws IOException {
         ResolvedChannels channels = resolvedChannelsFuture.join();
 
-        // Barrier insertion, drainFinished check, and snapshot must all occur within the same
-        // critical section so that the snapshot cursor reflects exactly the drain position at the
-        // moment barriers were inserted, with no window for the drain thread to advance between.
-        FetchedChannelStateReader sub;
+        // Barrier insertion and snapshot must occur within the same critical section so that the
+        // snapshot's committed position reflects exactly the drain position at the moment barriers
+        // were inserted, with no window for the drain thread to advance between.
         synchronized (lock) {
             for (RecoverableInputChannel ch : channels.allChannels) {
                 ch.insertRecoveryCheckpointBarrierIfInRecovery(checkpointId);
             }
-
             if (drainFinished) {
-                return CloseableIterator.empty();
+                // Drain consumed everything and rootReader is (being) closed; nothing left to
+                // snapshot. Return an empty reader so the caller's normal flow handles it.
+                return FetchedChannelStateReader.emptyReader();
             }
-
-            sub = rootReader.snapshot();
+            return rootReader.snapshot();
         }
-
-        // sub.segments() opens file channels (disk IO) and must stay outside the lock.
-        CloseableIterator<FetchedSegmentCursor> iter = sub.segments();
-
-        // Wrap the iterator so that closing it also closes the snapshot reader.
-        return new CloseableIterator<FetchedSegmentCursor>() {
-            @Override
-            public boolean hasNext() {
-                return iter.hasNext();
-            }
-
-            @Override
-            public FetchedSegmentCursor next() {
-                return iter.next();
-            }
-
-            @Override
-            public void close() throws Exception {
-                try {
-                    iter.close();
-                } finally {
-                    sub.close();
-                }
-            }
-        };
     }
 
     @Override

@@ -22,7 +22,7 @@ import org.apache.flink.runtime.checkpoint.CheckpointException;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
 import org.apache.flink.runtime.checkpoint.CheckpointType;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
-import org.apache.flink.runtime.checkpoint.channel.FetchedSegmentCursor;
+import org.apache.flink.runtime.checkpoint.channel.FetchedChannelStateReader;
 import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointTrigger;
 import org.apache.flink.runtime.checkpoint.channel.ResultSubpartitionInfo;
@@ -59,8 +59,9 @@ class ChannelStateDispatcherTest {
     @Test
     void testStepOrderingFeatureOn() throws Exception {
         List<String> trace = new ArrayList<>();
-        CloseableIterator<FetchedSegmentCursor> snap = CloseableIterator.empty();
-        RecordingTrigger trigger = new RecordingTrigger(trace, /* nonEmptySnapshot */ snap);
+        // An empty reader is sufficient to verify ordering.
+        FetchedChannelStateReader snap = FetchedChannelStateReader.emptyReader();
+        RecordingTrigger trigger = new RecordingTrigger(trace, snap);
         RecordingWriter writer = new RecordingWriter(trace);
         CheckpointableInput input1 = new RecordingInput(trace, "in1");
         CheckpointableInput input2 = new RecordingInput(trace, "in2");
@@ -99,10 +100,12 @@ class ChannelStateDispatcherTest {
     }
 
     @Test
-    void testEmptySnapshotInlineEarlyReturn() throws Exception {
+    void testEmptySnapshotStillSubmitted() throws Exception {
+        // Empty readers (no spill files) are no longer short-circuited; they still reach
+        // addInputDataFromSpill on the writer thread.
         List<String> trace = new ArrayList<>();
-        CloseableIterator<FetchedSegmentCursor> empty = CloseableIterator.empty();
-        RecordingTrigger trigger = new RecordingTrigger(trace, empty);
+        FetchedChannelStateReader emptySnap = FetchedChannelStateReader.emptyReader();
+        RecordingTrigger trigger = new RecordingTrigger(trace, emptySnap);
         RecordingWriter writer = new RecordingWriter(trace);
 
         ChannelState state =
@@ -113,6 +116,8 @@ class ChannelStateDispatcherTest {
 
         state.onCheckpointStartedForAllInputs(newUnalignedBarrier());
 
+        // Empty reader must still reach the writer (no inline short-circuit).
+        assertThat(writer.addInputDataFromSpillCalls.get()).isEqualTo(1);
         assertThat(writer.lastSnapshotWasEmpty.get()).isTrue();
     }
 
@@ -163,16 +168,15 @@ class ChannelStateDispatcherTest {
 
     private static final class RecordingTrigger implements RecoveryCheckpointTrigger {
         private final List<String> trace;
-        private final CloseableIterator<FetchedSegmentCursor> snapshot;
+        private final FetchedChannelStateReader snapshot;
 
-        RecordingTrigger(List<String> trace, CloseableIterator<FetchedSegmentCursor> snapshot) {
+        RecordingTrigger(List<String> trace, FetchedChannelStateReader snapshot) {
             this.trace = trace;
             this.snapshot = snapshot;
         }
 
         @Override
-        public CloseableIterator<FetchedSegmentCursor> snapshotAndInsertBarriers(
-                long checkpointId) {
+        public FetchedChannelStateReader snapshotAndInsertBarriers(long checkpointId) {
             trace.add("trigger.snapshotAndInsertBarriers:" + checkpointId);
             return snapshot;
         }
@@ -224,14 +228,15 @@ class ChannelStateDispatcherTest {
         }
 
         @Override
-        public void addInputDataFromSpill(
-                long checkpointId, CloseableIterator<FetchedSegmentCursor> segments) {
+        public void addInputDataFromSpill(long checkpointId, FetchedChannelStateReader reader) {
             trace.add("writer.addInputDataFromSpill:" + checkpointId);
             lastCpId.set(checkpointId);
             addInputDataFromSpillCalls.incrementAndGet();
             try {
-                lastSnapshotWasEmpty.set(!segments.hasNext());
-                segments.close();
+                // Peek whether the reader has any segments by attempting the first advance.
+                // The first nextSegment() call is exempt from the "previous body consumed" rule.
+                lastSnapshotWasEmpty.set(reader.nextSegment().isEmpty());
+                reader.close();
             } catch (Exception ignored) {
             }
         }

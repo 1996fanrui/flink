@@ -25,7 +25,6 @@ import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.FreeingBufferRecycler;
 import org.apache.flink.runtime.io.network.buffer.NetworkBuffer;
 import org.apache.flink.runtime.io.network.partition.consumer.RecoverableInputChannel;
-import org.apache.flink.util.CloseableIterator;
 
 import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.io.TempDir;
@@ -97,7 +96,7 @@ class FetchedChannelStateDrainerConcurrencyTest {
                         });
 
         // Take snapshots concurrently while drain runs.
-        List<CloseableIterator<FetchedSegmentCursor>> snapshots = new ArrayList<>();
+        List<FetchedChannelStateReader> snapshots = new ArrayList<>();
         for (int i = 0; i < SNAPSHOTS; i++) {
             snapshots.add(drainer.snapshotAndInsertBarriers(i + 1));
             Thread.yield();
@@ -111,7 +110,7 @@ class FetchedChannelStateDrainerConcurrencyTest {
         }
 
         // Close all snapshots
-        for (CloseableIterator<FetchedSegmentCursor> snap : snapshots) {
+        for (FetchedChannelStateReader snap : snapshots) {
             snap.close();
         }
 

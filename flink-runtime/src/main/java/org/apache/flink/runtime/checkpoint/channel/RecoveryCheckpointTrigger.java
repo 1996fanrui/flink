@@ -18,7 +18,6 @@
 package org.apache.flink.runtime.checkpoint.channel;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.util.CloseableIterator;
 
 import java.io.IOException;
 
@@ -27,10 +26,11 @@ public interface RecoveryCheckpointTrigger {
 
     /**
      * Atomically snapshots the undrained spill slice and inserts matching {@link
-     * RecoveryCheckpointBarrier}s into in-recovery channels.
+     * RecoveryCheckpointBarrier}s into in-recovery channels. Returns an independent reader over the
+     * remaining segments; the caller owns and must close it.
      */
-    CloseableIterator<FetchedSegmentCursor> snapshotAndInsertBarriers(long checkpointId)
-            throws IOException;
+    FetchedChannelStateReader snapshotAndInsertBarriers(long checkpointId) throws IOException;
 
-    RecoveryCheckpointTrigger NO_OP = checkpointId -> CloseableIterator.empty();
+    /** Returns an empty reader (no spill files, so no segments) and inserts no barriers. */
+    RecoveryCheckpointTrigger NO_OP = checkpointId -> FetchedChannelStateReader.emptyReader();
 }

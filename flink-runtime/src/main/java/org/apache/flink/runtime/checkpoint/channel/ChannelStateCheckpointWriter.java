@@ -26,7 +26,6 @@ import org.apache.flink.runtime.state.AbstractChannelStateHandle.StateContentMet
 import org.apache.flink.runtime.state.CheckpointStateOutputStream;
 import org.apache.flink.runtime.state.CheckpointStreamFactory;
 import org.apache.flink.runtime.state.StreamStateHandle;
-import org.apache.flink.util.CloseableIterator;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.function.RunnableWithException;
 
@@ -42,6 +41,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 
 import static org.apache.flink.runtime.checkpoint.CheckpointFailureReason.CHANNEL_STATE_SHARED_STREAM_EXCEPTION;
@@ -163,12 +163,10 @@ class ChannelStateCheckpointWriter {
     }
 
     void writeInputFromSpill(
-            JobVertexID jobVertexID,
-            int subtaskIndex,
-            CloseableIterator<FetchedSegmentCursor> segments) {
+            JobVertexID jobVertexID, int subtaskIndex, FetchedChannelStateReader reader) {
         if (isDone()) {
             try {
-                segments.close();
+                reader.close();
             } catch (Exception ignored) {
             }
             return;
@@ -180,8 +178,9 @@ class ChannelStateCheckpointWriter {
                     checkState(!pendingResult.isAllInputsReceived());
                     try {
                         String action = "ChannelStateCheckpointWriter#writeInputFromSpill";
-                        while (segments.hasNext()) {
-                            FetchedSegmentCursor seg = segments.next();
+                        Optional<SpillSegment> next;
+                        while ((next = reader.nextSegment()).isPresent()) {
+                            SpillSegment seg = next.get();
                             long offset = checkpointStream.getPos();
                             try (AutoCloseable ignored =
                                     NetworkActionsLogger.measureIO(action, seg.channelInfo())) {
@@ -200,7 +199,7 @@ class ChannelStateCheckpointWriter {
                                     checkpointId);
                         }
                     } finally {
-                        segments.close();
+                        reader.close();
                     }
                 });
     }

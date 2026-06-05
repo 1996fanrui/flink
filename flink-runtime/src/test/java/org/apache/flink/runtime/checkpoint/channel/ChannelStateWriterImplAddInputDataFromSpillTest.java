@@ -21,19 +21,12 @@ package org.apache.flink.runtime.checkpoint.channel;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
-import org.apache.flink.util.CloseableIterator;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
-import java.io.ByteArrayInputStream;
-import java.io.InputStream;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.Iterator;
-import java.util.List;
-import java.util.NoSuchElementException;
+import java.nio.file.Path;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -46,6 +39,8 @@ class ChannelStateWriterImplAddInputDataFromSpillTest {
     private static final long CHECKPOINT_ID = 7L;
     private static final String TASK_NAME = "test";
 
+    @TempDir Path tempDir;
+
     @Test
     void testNonEmptySnapshotAsyncDemux() throws Exception {
         SyncChannelStateWriteRequestExecutor worker =
@@ -56,27 +51,31 @@ class ChannelStateWriterImplAddInputDataFromSpillTest {
 
             InputChannelInfo c0 = new InputChannelInfo(0, 0);
             InputChannelInfo c1 = new InputChannelInfo(0, 1);
-            TrackingSegmentIterator segments =
-                    new TrackingSegmentIterator(
-                            Arrays.asList(
-                                    stubCursor(c0, new byte[] {1, 2, 3}),
-                                    stubCursor(c1, new byte[] {4, 5}),
-                                    stubCursor(c0, new byte[] {6})));
 
-            writer.addInputDataFromSpill(CHECKPOINT_ID, segments);
-            // Request is queued but not yet processed — iteration must not have happened yet.
-            assertThat(segments.iteratedCount.get()).isEqualTo(0);
+            FetchedChannelState state;
+            try (TestSpillWriter spillWriter = new TestSpillWriter(tempDir)) {
+                spillWriter.writeRecord(c0, new byte[] {1, 2, 3}, 3);
+                spillWriter.writeRecord(c1, new byte[] {4, 5}, 2);
+                spillWriter.writeRecord(c0, new byte[] {6}, 1);
+                state = spillWriter.getChannelState();
+            }
+            FetchedChannelStateReader reader = state.reader();
+            // Drop the handoff grant; the reader now holds the only outstanding grant.
+            state.release();
+
+            writer.addInputDataFromSpill(CHECKPOINT_ID, reader);
+            // Request is queued but not yet processed — state must still be alive.
+            assertThat(state.isClosed()).isFalse();
 
             worker.processAllRequests();
-            assertThat(segments.iteratedCount.get()).isEqualTo(3);
-            assertThat(segments.closed.get())
-                    .as("segments iterator must be closed by the request once done")
-                    .isTrue();
+            // After processing, the reader is closed by the request, releasing the last grant.
+            assertThat(state.isClosed()).isTrue();
         }
     }
 
     @Test
-    void testEmptySnapshotInlineEarlyReturn() throws Exception {
+    void testEmptySnapshotStillSubmitted() throws Exception {
+        // Empty readers are no longer short-circuited; they are submitted to the writer thread.
         QueueCountingExecutor worker = new QueueCountingExecutor(JOB_ID);
         try (ChannelStateWriterImpl writer =
                 new ChannelStateWriterImpl(
@@ -90,31 +89,40 @@ class ChannelStateWriterImplAddInputDataFromSpillTest {
             writer.start(CHECKPOINT_ID, CheckpointOptions.forCheckpointWithDefaultLocation());
 
             int submittedBefore = worker.submitCount.get();
-            TrackingSegmentIterator empty = new TrackingSegmentIterator(Collections.emptyList());
-            writer.addInputDataFromSpill(CHECKPOINT_ID, empty);
+            FetchedChannelState emptyState =
+                    new FetchedChannelState(java.util.Collections.emptyList());
+            FetchedChannelStateReader emptyReader = emptyState.reader();
+            emptyState.release();
+
+            writer.addInputDataFromSpill(CHECKPOINT_ID, emptyReader);
 
             assertThat(worker.submitCount.get())
-                    .as("empty spill iterator must skip writer-thread submission")
-                    .isEqualTo(submittedBefore);
-            assertThat(empty.closed.get()).as("empty segments closed inline").isTrue();
+                    .as("empty reader must still be submitted to the writer thread")
+                    .isGreaterThan(submittedBefore);
         }
     }
 
     @Test
-    void testSegmentsClosedOnSuccessAndFailure() throws Exception {
+    void testSegmentsClosedOnSuccess() throws Exception {
         SyncChannelStateWriteRequestExecutor worker =
                 new SyncChannelStateWriteRequestExecutor(JOB_ID);
         try (ChannelStateWriterImpl writer = newWriter(worker)) {
             worker.registerSubtask(JOB_VERTEX_ID, SUBTASK_INDEX);
             writer.start(CHECKPOINT_ID, CheckpointOptions.forCheckpointWithDefaultLocation());
 
-            TrackingSegmentIterator segments =
-                    new TrackingSegmentIterator(
-                            Collections.singletonList(
-                                    stubCursor(new InputChannelInfo(0, 0), new byte[] {1})));
-            writer.addInputDataFromSpill(CHECKPOINT_ID, segments);
+            FetchedChannelState state;
+            try (TestSpillWriter spillWriter = new TestSpillWriter(tempDir)) {
+                spillWriter.writeRecord(new InputChannelInfo(0, 0), new byte[] {1}, 1);
+                state = spillWriter.getChannelState();
+            }
+            FetchedChannelStateReader reader = state.reader();
+            state.release();
+
+            writer.addInputDataFromSpill(CHECKPOINT_ID, reader);
             worker.processAllRequests();
-            assertThat(segments.closed.get()).isTrue();
+
+            // After processing, the last grant is released and the state is cleaned up.
+            assertThat(state.isClosed()).isTrue();
         }
     }
 
@@ -125,68 +133,6 @@ class ChannelStateWriterImplAddInputDataFromSpillTest {
     private ChannelStateWriterImpl newWriter(SyncChannelStateWriteRequestExecutor worker) {
         return new ChannelStateWriterImpl(
                 JOB_VERTEX_ID, TASK_NAME, SUBTASK_INDEX, new ConcurrentHashMap<>(), worker, 5);
-    }
-
-    /**
-     * Creates a minimal stub {@link FetchedSegmentCursor} backed by the given payload bytes. The
-     * body stream is a {@link ByteArrayInputStream} over {@code data}. Length equals {@code
-     * data.length}. {@link FetchedSegmentCursor#commitConsumed()} is a no-op.
-     */
-    private static FetchedSegmentCursor stubCursor(InputChannelInfo info, byte[] data) {
-        return new FetchedSegmentCursor() {
-            @Override
-            public InputChannelInfo channelInfo() {
-                return info;
-            }
-
-            @Override
-            public InputStream body() {
-                return new ByteArrayInputStream(data);
-            }
-
-            @Override
-            public int length() {
-                return data.length;
-            }
-
-            @Override
-            public void commitConsumed() {}
-        };
-    }
-
-    // -------------------------------------------------------------------------------------------
-    // Tracking iterator
-    // -------------------------------------------------------------------------------------------
-
-    private static final class TrackingSegmentIterator
-            implements CloseableIterator<FetchedSegmentCursor> {
-
-        private final Iterator<FetchedSegmentCursor> backing;
-        final AtomicInteger iteratedCount = new AtomicInteger(0);
-        final AtomicBoolean closed = new AtomicBoolean(false);
-
-        TrackingSegmentIterator(List<FetchedSegmentCursor> cursors) {
-            this.backing = cursors.iterator();
-        }
-
-        @Override
-        public boolean hasNext() {
-            return backing.hasNext();
-        }
-
-        @Override
-        public FetchedSegmentCursor next() {
-            if (!backing.hasNext()) {
-                throw new NoSuchElementException();
-            }
-            iteratedCount.incrementAndGet();
-            return backing.next();
-        }
-
-        @Override
-        public void close() {
-            closed.set(true);
-        }
     }
 
     // -------------------------------------------------------------------------------------------

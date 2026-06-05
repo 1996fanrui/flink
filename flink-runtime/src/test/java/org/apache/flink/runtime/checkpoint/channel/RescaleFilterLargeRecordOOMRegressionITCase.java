@@ -19,8 +19,6 @@
 
 package org.apache.flink.runtime.checkpoint.channel;
 
-import org.apache.flink.util.CloseableIterator;
-
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -28,6 +26,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -105,18 +104,17 @@ class RescaleFilterLargeRecordOOMRegressionITCase {
                     .as("physical file size exceeds the rotation cap (expected: segment not split)")
                     .isGreaterThan(segmentSize);
 
-            try (CloseableIterator<FetchedSegmentCursor> it = reader.segments()) {
-                while (it.hasNext()) {
-                    FetchedSegmentCursor cursor = it.next();
-                    try (InputStream body = cursor.body()) {
-                        byte[] buf = new byte[4096];
-                        int read;
-                        while ((read = body.read(buf)) != -1) {
-                            totalReadBytes += read;
-                        }
+            Optional<SpillSegment> next;
+            while ((next = reader.nextSegment()).isPresent()) {
+                SpillSegment seg = next.get();
+                try (InputStream body = seg.body()) {
+                    byte[] buf = new byte[4096];
+                    int read;
+                    while ((read = body.read(buf)) != -1) {
+                        totalReadBytes += read;
                     }
-                    cursor.commitConsumed();
                 }
+                seg.commit();
             }
         }
         assertThat(totalReadBytes)

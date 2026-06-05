@@ -26,7 +26,6 @@ import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.FreeingBufferRecycler;
 import org.apache.flink.runtime.io.network.buffer.NetworkBuffer;
 import org.apache.flink.runtime.io.network.partition.consumer.RecoverableInputChannel;
-import org.apache.flink.util.CloseableIterator;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -36,6 +35,7 @@ import java.io.InputStream;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -128,15 +128,15 @@ class FetchedChannelStateDrainerTest {
         FetchedChannelStateDrainer drainer = newDrainer(state, cInfo, chan);
 
         long cpId = 42L;
-        CloseableIterator<FetchedSegmentCursor> snap = drainer.snapshotAndInsertBarriers(cpId);
+        FetchedChannelStateReader snap = drainer.snapshotAndInsertBarriers(cpId);
 
         // Snapshot must cover all segments (at least 1 segment for cInfo).
         // The sequential reader requires each segment body to be fully consumed before advancing,
         // mirroring the real consumer (ChannelStateCheckpointWriter#writeInputFromSpill).
         int count = 0;
-        while (snap.hasNext()) {
-            FetchedSegmentCursor seg = snap.next();
-            drainBody(seg.body());
+        Optional<SpillSegment> next;
+        while ((next = snap.nextSegment()).isPresent()) {
+            drainBody(next.get().body());
             count++;
         }
         snap.close();
@@ -161,7 +161,7 @@ class FetchedChannelStateDrainerTest {
         FetchedChannelStateDrainer drainer = newDrainer(state, c0, chan0, c1, chan1);
 
         long cpId = 7L;
-        CloseableIterator<FetchedSegmentCursor> snap = drainer.snapshotAndInsertBarriers(cpId);
+        FetchedChannelStateReader snap = drainer.snapshotAndInsertBarriers(cpId);
         snap.close();
 
         assertThat(chan0.recovered).hasSize(1);
@@ -185,8 +185,8 @@ class FetchedChannelStateDrainerTest {
         int recoveredBefore = chan.recovered.size();
 
         long cpId = 6L;
-        CloseableIterator<FetchedSegmentCursor> snap = drainer.snapshotAndInsertBarriers(cpId);
-        assertThat(snap.hasNext()).isFalse();
+        FetchedChannelStateReader snap = drainer.snapshotAndInsertBarriers(cpId);
+        assertThat(snap.nextSegment()).isEmpty();
         snap.close();
 
         // Barrier must be inserted even though disk slice is empty
@@ -214,7 +214,7 @@ class FetchedChannelStateDrainerTest {
         FetchedChannelStateDrainer drainer = newDrainer(state, c0, chan0, c1, chan1);
 
         long cpId = 11L;
-        CloseableIterator<FetchedSegmentCursor> snap = drainer.snapshotAndInsertBarriers(cpId);
+        FetchedChannelStateReader snap = drainer.snapshotAndInsertBarriers(cpId);
         snap.close();
 
         assertThat(chan0.recovered).hasSize(1);
@@ -235,13 +235,35 @@ class FetchedChannelStateDrainerTest {
         chan.inRecovery = false;
         int recoveredBefore = chan.recovered.size();
 
-        CloseableIterator<FetchedSegmentCursor> snap = drainer.snapshotAndInsertBarriers(99L);
-        assertThat(snap.hasNext()).isFalse();
+        FetchedChannelStateReader snap = drainer.snapshotAndInsertBarriers(99L);
+        assertThat(snap.nextSegment()).isEmpty();
         snap.close();
 
         // No barrier added since channel left recovery
         assertThat(chan.recovered).hasSize(recoveredBefore);
         drainer.close();
+    }
+
+    @Test
+    void testSnapshotAfterDrainerClosedReturnsEmptyWithoutTouchingClosedRootReader()
+            throws Exception {
+        // Mirrors production order: drain() then close() (which closes the root reader) run before
+        // a
+        // late checkpoint fires snapshotAndInsertBarriers. The drain-finished flag must
+        // short-circuit
+        // so the closed root reader is never snapshotted.
+        InputChannelInfo cInfo = new InputChannelInfo(0, 0);
+        FetchedChannelState state = writeRecords(cInfo, payload(1), payload(2));
+
+        RecordingChannel chan = new RecordingChannel(cInfo);
+        FetchedChannelStateDrainer drainer = newDrainer(state, cInfo, chan);
+
+        drainer.drain();
+        drainer.close();
+
+        FetchedChannelStateReader snap = drainer.snapshotAndInsertBarriers(99L);
+        assertThat(snap.nextSegment()).isEmpty();
+        snap.close();
     }
 
     // -------------------------------------------------------------------------------------------
