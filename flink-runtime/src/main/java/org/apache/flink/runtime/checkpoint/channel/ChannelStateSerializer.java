@@ -48,9 +48,9 @@ interface ChannelStateSerializer {
      * input}. Throws {@link java.io.EOFException} if the input stream ends before {@code length}
      * bytes are read.
      *
-     * @param length must be non-negative and fit in an {@code int}
+     * @param length must be non-negative
      */
-    void writeData(DataOutputStream stream, InputStream input, long length) throws IOException;
+    void writeData(DataOutputStream stream, InputStream input, int length) throws IOException;
 
     void readHeader(InputStream stream) throws IOException;
 
@@ -175,21 +175,14 @@ class ChannelStateSerializerImpl implements ChannelStateSerializer {
     }
 
     @Override
-    public void writeData(DataOutputStream stream, InputStream input, long length)
+    public void writeData(DataOutputStream stream, InputStream input, int length)
             throws IOException {
         Preconditions.checkArgument(length >= 0, "negative state size");
-        stream.writeInt(Math.toIntExact(length));
-        long remaining = length;
-        byte[] scratch = new byte[8 * 1024];
-        while (remaining > 0) {
-            int toRead = (int) Math.min(scratch.length, remaining);
-            int n = input.read(scratch, 0, toRead);
-            if (n < 0) {
-                throw new java.io.EOFException(
-                        "Unexpected EOF: expected " + remaining + " more bytes of segment body");
-            }
-            stream.write(scratch, 0, n);
-            remaining -= n;
+        stream.writeInt(length);
+        long copied = input.transferTo(stream);
+        if (copied != length) {
+            throw new java.io.EOFException(
+                    "Unexpected EOF: expected " + length + " bytes of segment body, got " + copied);
         }
     }
 

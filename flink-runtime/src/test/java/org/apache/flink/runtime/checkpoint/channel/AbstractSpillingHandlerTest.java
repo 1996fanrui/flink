@@ -100,7 +100,8 @@ class AbstractSpillingHandlerTest {
     void testOpenSegmentWithoutBodyProducesNoFile() throws Exception {
         try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
             writer.openSegment(new InputChannelInfo(0, 0));
-            assertThat(writer.getChannelState().files()).isEmpty();
+            // No body was ever spilled, so no state (and therefore no file) is produced.
+            assertThat(writer.getChannelState()).isNull();
         }
     }
 
@@ -110,7 +111,8 @@ class AbstractSpillingHandlerTest {
             writer.openSegment(new InputChannelInfo(0, 0));
             writer.openSegment(new InputChannelInfo(0, 1));
             writer.openSegment(new InputChannelInfo(1, 0));
-            assertThat(writer.getChannelState().files()).isEmpty();
+            // Only empty channel switches occurred, so no state (and no file) is produced.
+            assertThat(writer.getChannelState()).isNull();
         }
     }
 
@@ -150,7 +152,8 @@ class AbstractSpillingHandlerTest {
     @Test
     void testSingleLargeSegmentStaysInOneFile() throws Exception {
         try (TestSpillWriter writer = new TestSpillWriter(tempDir, 1L)) {
-            writer.writeRecord(new InputChannelInfo(0, 0), bytes(1, 2, 3, 4, 5, 6, 7, 8, 9, 10), 10);
+            writer.writeRecord(
+                    new InputChannelInfo(0, 0), bytes(1, 2, 3, 4, 5, 6, 7, 8, 9, 10), 10);
             assertThat(writer.getChannelState().files()).hasSize(1);
         }
     }

@@ -20,7 +20,6 @@ package org.apache.flink.runtime.checkpoint.channel;
 
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
-import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter.ChannelStateWriteResult;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.util.CloseableIterator;
 
@@ -38,7 +37,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ChannelStateWriterImplAddInputDataFromSpillTest {
 
@@ -103,39 +101,6 @@ class ChannelStateWriterImplAddInputDataFromSpillTest {
     }
 
     @Test
-    void testWriteFailurePropagatesViaWriteResult() throws Exception {
-        SwappableExecutor worker = new SwappableExecutor(JOB_ID);
-        try (ChannelStateWriterImpl writer =
-                new ChannelStateWriterImpl(
-                        JOB_VERTEX_ID,
-                        TASK_NAME,
-                        SUBTASK_INDEX,
-                        new ConcurrentHashMap<>(),
-                        worker,
-                        5)) {
-            worker.registerSubtask(JOB_VERTEX_ID, SUBTASK_INDEX);
-            writer.start(CHECKPOINT_ID, CheckpointOptions.forCheckpointWithDefaultLocation());
-            ChannelStateWriteResult result = writer.getWriteResult(CHECKPOINT_ID);
-            assertThat(result).isNotNull();
-
-            worker.failNext.set(true);
-            TrackingSegmentIterator segments =
-                    new TrackingSegmentIterator(
-                            Collections.singletonList(
-                                    stubCursor(new InputChannelInfo(0, 0), new byte[] {1})));
-
-            assertThatThrownBy(() -> writer.addInputDataFromSpill(CHECKPOINT_ID, segments))
-                    .isInstanceOf(RuntimeException.class);
-            assertThat(segments.closed.get())
-                    .as("segments iterator closed even on enqueue failure")
-                    .isTrue();
-            assertThat(result.getInputChannelStateHandles().isCompletedExceptionally())
-                    .as("input channel state future propagates the enqueue failure")
-                    .isTrue();
-        }
-    }
-
-    @Test
     void testSegmentsClosedOnSuccessAndFailure() throws Exception {
         SyncChannelStateWriteRequestExecutor worker =
                 new SyncChannelStateWriteRequestExecutor(JOB_ID);
@@ -180,7 +145,7 @@ class ChannelStateWriterImplAddInputDataFromSpillTest {
             }
 
             @Override
-            public long length() {
+            public int length() {
                 return data.length;
             }
 
@@ -253,47 +218,4 @@ class ChannelStateWriterImplAddInputDataFromSpillTest {
         @Override
         public void releaseSubtask(JobVertexID jobVertexID, int subtaskIndex) {}
     }
-
-    private static final class SwappableExecutor implements ChannelStateWriteRequestExecutor {
-
-        private final SyncChannelStateWriteRequestExecutor delegate;
-        final AtomicBoolean failNext = new AtomicBoolean(false);
-
-        SwappableExecutor(JobID jobID) {
-            this.delegate = new SyncChannelStateWriteRequestExecutor(jobID);
-        }
-
-        @Override
-        public void submit(ChannelStateWriteRequest e) throws Exception {
-            if (failNext.getAndSet(false)) {
-                throw new TestException();
-            }
-            delegate.submit(e);
-        }
-
-        @Override
-        public void submitPriority(ChannelStateWriteRequest e) throws Exception {
-            if (failNext.getAndSet(false)) {
-                throw new TestException();
-            }
-            delegate.submitPriority(e);
-        }
-
-        @Override
-        public void start() throws IllegalStateException {
-            delegate.start();
-        }
-
-        @Override
-        public void registerSubtask(JobVertexID jobVertexID, int subtaskIndex) {
-            delegate.registerSubtask(jobVertexID, subtaskIndex);
-        }
-
-        @Override
-        public void releaseSubtask(JobVertexID jobVertexID, int subtaskIndex) {
-            delegate.releaseSubtask(jobVertexID, subtaskIndex);
-        }
-    }
-
-    private static final class TestException extends RuntimeException {}
 }

@@ -176,8 +176,9 @@ class GateFilterHandlerTest {
     }
 
     /**
-     * Deserializes the records the handler appended into {@code output}. The body format is repeated
-     * (4B recordLen + N bytes of serialized StreamElement), which the deserializer reads directly.
+     * Deserializes the records the handler appended into {@code output}. The body format is
+     * repeated (4B recordLen + N bytes of serialized StreamElement), which the deserializer reads
+     * directly.
      */
     private List<Long> readRecordsFromSerializer(DataOutputSerializer output) throws Exception {
         List<Long> values = new ArrayList<>();

@@ -227,9 +227,9 @@ class NoSpillingHandler extends AbstractInputChannelRecoveredStateHandler {
 
 /**
  * Intermediate abstract base for the two spilling variants. Owns the on-disk spill format end to
- * end: a single reusable {@link DataOutputSerializer} accumulates one channel's segment, the segment
- * header is backfilled with the body length at seal time, and sealed segments are flushed to the
- * current file stream with 64 MB-bounded rotation.
+ * end: a single reusable {@link DataOutputSerializer} accumulates one channel's segment, the
+ * segment header is backfilled with the body length at seal time, and sealed segments are flushed
+ * to the current file stream with 64 MB-bounded rotation.
  *
  * <h3>Disk format</h3>
  *
@@ -278,7 +278,9 @@ abstract class AbstractSpillingHandler extends AbstractInputChannelRecoveredStat
      */
     private final List<Path> files = new ArrayList<>();
 
-    /** Unique directory for this handler's spill files; created lazily when the first file opens. */
+    /**
+     * Unique directory for this handler's spill files; created lazily when the first file opens.
+     */
     private final Path baseDir;
 
     /**
@@ -306,7 +308,8 @@ abstract class AbstractSpillingHandler extends AbstractInputChannelRecoveredStat
                 maxFileSizeBytes > 0, "maxFileSizeBytes must be positive: %s", maxFileSizeBytes);
         this.spillTmpDirectories = spillTmpDirectories;
         this.maxFileSizeBytes = maxFileSizeBytes;
-        this.baseDir = Paths.get(spillTmpDirectories[0], "flink-channel-spill-" + UUID.randomUUID());
+        this.baseDir =
+                Paths.get(spillTmpDirectories[0], "flink-channel-spill-" + UUID.randomUUID());
     }
 
     /**
@@ -328,14 +331,14 @@ abstract class AbstractSpillingHandler extends AbstractInputChannelRecoveredStat
         segmentSerializer.clear();
         segmentSerializer.writeInt(channelInfo.getGateIdx());
         segmentSerializer.writeInt(channelInfo.getInputChannelIdx());
-        segmentSerializer.writeInt(0); // bufferLength placeholder; backfilled in sealCurrentSegment()
+        segmentSerializer.writeInt(0); // bufferLength placeholder
         currentChannel = channelInfo;
     }
 
     /**
      * Backfills the body length into the segment header and flushes the whole segment to the file
-     * stream. Empty segments (filtered out entirely, or a zero-byte pass-through) are dropped without
-     * opening a file, so no empty file is created.
+     * stream. Empty segments (filtered out entirely, or a zero-byte pass-through) are dropped
+     * without opening a file, so no empty file is created.
      */
     private void sealCurrentSegment() throws IOException {
         if (currentChannel == null) {
@@ -367,12 +370,12 @@ abstract class AbstractSpillingHandler extends AbstractInputChannelRecoveredStat
         if (currentStream != null) {
             return;
         }
-        Files.createDirectories(baseDir); // create the spill dir on the first file; no-op afterwards
+        // create the spill dir on the first file; no-op afterwards
+        Files.createDirectories(baseDir);
         Path filePath = baseDir.resolve("spill-segment-" + files.size() + ".bin");
         currentStream =
                 new OffsetAwareOutputStream(
-                        new BufferedOutputStream(new FileOutputStream(filePath.toFile())),
-                        0L);
+                        new BufferedOutputStream(new FileOutputStream(filePath.toFile())), 0L);
         files.add(filePath);
     }
 
@@ -442,7 +445,8 @@ class SpillingNoFilteringHandler extends AbstractSpillingHandler {
 
     private void recoverPassThroughToSpill(InputChannelInfo channelInfo, Buffer source)
             throws IOException {
-        // The recovered bytes are already a length-prefixed record sequence, so append them verbatim
+        // The recovered bytes are already a length-prefixed record sequence, so append them
+        // verbatim
         // into the segment without re-framing.
         DataOutputSerializer segmentSerializer = segmentSerializerFor(channelInfo);
         ByteBuffer src = source.getNioBufferReadable();
@@ -547,7 +551,7 @@ class SpillingWithFilteringHandler extends AbstractSpillingHandler {
                         oldSubtaskIndex,
                         channelInfo.getInputChannelIdx(),
                         buffer.retainBuffer(),
-                        segmentSerializerFor( getMappedChannels(channelInfo).getChannelInfo()));
+                        segmentSerializerFor(getMappedChannels(channelInfo).getChannelInfo()));
             }
         } finally {
             buffer.recycleBuffer();

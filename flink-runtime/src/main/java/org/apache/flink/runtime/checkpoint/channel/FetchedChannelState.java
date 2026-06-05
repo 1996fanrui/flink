@@ -63,7 +63,9 @@ public final class FetchedChannelState implements Closeable {
 
     private final AtomicBoolean cleanedUp = new AtomicBoolean(false);
 
-    /** Wraps an already-written, ordered list of spill files. The list is sealed; it never grows. */
+    /**
+     * Wraps an already-written, ordered list of spill files. The list is sealed; it never grows.
+     */
     FetchedChannelState(List<Path> files) {
         this.files = new ArrayList<>(checkNotNull(files));
     }
@@ -77,7 +79,7 @@ public final class FetchedChannelState implements Closeable {
      * lifecycle grant and must be closed when done.
      */
     public FetchedChannelStateReader reader() {
-        return FetchedChannelStateReader.openRoot(this);
+        return new FetchedChannelStateReader(this, 0, 0L, 0L);
     }
 
     /** Returns the ordered list of spill file paths. Read-only view. */

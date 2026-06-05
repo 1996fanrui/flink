@@ -29,8 +29,8 @@ import java.nio.file.Path;
 /**
  * Test-only helper that produces spill files in the {@link AbstractSpillingHandler} on-disk format,
  * exposing the same {@code writeRecord} / {@code writePassThrough} surface the readers and drainers
- * are tested against. It drives a minimal concrete {@link AbstractSpillingHandler} so tests need not
- * stand up real input gates or run the recovery loop.
+ * are tested against. It drives a minimal concrete {@link AbstractSpillingHandler} so tests need
+ * not stand up real input gates or run the recovery loop.
  */
 final class TestSpillWriter implements Closeable {
 
@@ -64,8 +64,8 @@ final class TestSpillWriter implements Closeable {
     }
 
     /**
-     * Seals the spilled segments and returns the produced state, already holding one lifecycle grant
-     * for the caller. Returns {@code null} if nothing was ever written.
+     * Seals the spilled segments and returns the produced state, already holding one lifecycle
+     * grant for the caller. Returns {@code null} if nothing was ever written.
      */
     FetchedChannelState getChannelState() throws IOException {
         handler.close();

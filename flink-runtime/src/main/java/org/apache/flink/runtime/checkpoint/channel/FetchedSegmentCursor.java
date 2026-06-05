@@ -47,11 +47,11 @@ public interface FetchedSegmentCursor {
     InputStream body();
 
     /**
-     * Segment body length in bytes, as recorded in the in-memory segment locator table. Used by the
-     * snapshot path as the length prefix when writing to the checkpoint stream. Equals the number
-     * of bytes available in {@link #body()} before EOF.
+     * Segment body length in bytes. Used by the snapshot path as the length prefix when writing to
+     * the checkpoint stream. Equals the number of bytes available in {@link #body()} before EOF.
+     * Bounded by the spill file size limit, so it always fits in an {@code int}.
      */
-    long length();
+    int length();
 
     /**
      * Commits bytes already consumed from {@link #body()} to the reader's drain cursor so that a

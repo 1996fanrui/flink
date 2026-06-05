@@ -32,6 +32,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -129,10 +130,13 @@ class FetchedChannelStateDrainerTest {
         long cpId = 42L;
         CloseableIterator<FetchedSegmentCursor> snap = drainer.snapshotAndInsertBarriers(cpId);
 
-        // Snapshot must cover all segments (at least 1 segment for cInfo)
+        // Snapshot must cover all segments (at least 1 segment for cInfo).
+        // The sequential reader requires each segment body to be fully consumed before advancing,
+        // mirroring the real consumer (ChannelStateCheckpointWriter#writeInputFromSpill).
         int count = 0;
         while (snap.hasNext()) {
-            snap.next();
+            FetchedSegmentCursor seg = snap.next();
+            drainBody(seg.body());
             count++;
         }
         snap.close();
@@ -274,6 +278,14 @@ class FetchedChannelStateDrainerTest {
 
     private static byte[] payload(int id) {
         return new byte[] {(byte) (id & 0xff), (byte) ((id >> 8) & 0xff), (byte) 0xAB, (byte) 0xCD};
+    }
+
+    /** Fully consumes a segment body so the sequential reader may advance to the next segment. */
+    private static void drainBody(InputStream body) throws IOException {
+        byte[] buf = new byte[256];
+        while (body.read(buf) != -1) {
+            // discard
+        }
     }
 
     // -------------------------------------------------------------------------------------------

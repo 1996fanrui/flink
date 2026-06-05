@@ -209,7 +209,8 @@ public class ChannelStateFilteringHandler implements Closeable {
                                 : VirtualChannelRecordFilterFactory.createPassThroughFilter();
 
                 RecordDeserializer<DeserializationDelegate<StreamElement>> deserializer =
-                        createDeserializer(filterContext.getTmpDirectories());
+                        new SpillingAdaptiveSpanningRecordDeserializer<>(
+                                filterContext.getTmpDirectories());
 
                 VirtualChannel<T> vc = new VirtualChannel<>(deserializer, recordFilter);
                 gateVirtualChannels.put(key, vc);
@@ -238,11 +239,6 @@ public class ChannelStateFilteringHandler implements Closeable {
             }
         }
         return oldIndexes.stream().mapToInt(Integer::intValue).toArray();
-    }
-
-    private static RecordDeserializer<DeserializationDelegate<StreamElement>> createDeserializer(
-            String[] tmpDirectories) {
-        return new SpillingAdaptiveSpanningRecordDeserializer<>(tmpDirectories);
     }
 
     // -------------------------------------------------------------------------------------------
@@ -313,9 +309,10 @@ public class ChannelStateFilteringHandler implements Closeable {
         }
 
         /**
-         * Appends one stream element as a length-prefixed record. Reserves the 4B prefix, serializes
-         * the element, then backfills the length, because {@code outputSerializer} already holds the
-         * segment header and earlier records, so the prefix cannot be written from a fixed offset.
+         * Appends one stream element as a length-prefixed record. Reserves the 4B prefix,
+         * serializes the element, then backfills the length, because {@code outputSerializer}
+         * already holds the segment header and earlier records, so the prefix cannot be written
+         * from a fixed offset.
          */
         private void serializeElement(StreamElement element, DataOutputSerializer outputSerializer)
                 throws IOException {

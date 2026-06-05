@@ -250,20 +250,7 @@ public class ChannelStateWriterImpl implements ChannelStateWriter {
             }
             return;
         }
-        try {
-            enqueue(
-                    replayInputDataFromSpill(jobVertexID, subtaskIndex, checkpointId, segments),
-                    false);
-        } catch (RuntimeException e) {
-            // enqueue() already called request.cancel() which closes the segments iterator.
-            // Additionally fail the checkpoint's write result so callers observing
-            // getInputChannelStateHandles() learn about the failure rather than blocking.
-            ChannelStateWriteResult result = results.get(checkpointId);
-            if (result != null) {
-                result.fail(e);
-            }
-            throw e;
-        }
+        enqueue(replayInputDataFromSpill(jobVertexID, subtaskIndex, checkpointId, segments), false);
     }
 
     @Override

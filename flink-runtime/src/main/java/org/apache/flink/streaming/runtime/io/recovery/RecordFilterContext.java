@@ -112,8 +112,8 @@ public class RecordFilterContext {
      * @param rescalingDescriptor Descriptor containing rescaling information. Not null.
      * @param subtaskIndex Current subtask index.
      * @param maxParallelism Maximum parallelism.
-     * @param tmpDirectories Temporary directories for spilling spanning records. Not null or
-     *     empty; sourced from {@code IOManager.getSpillingDirectoriesPaths()}, which is guaranteed
+     * @param tmpDirectories Temporary directories for spilling spanning records. Not null or empty;
+     *     sourced from {@code IOManager.getSpillingDirectoriesPaths()}, which is guaranteed
      *     non-empty by the task manager I/O configuration.
      * @param checkpointingDuringRecoveryEnabled Whether unaligned checkpointing during recovery is
      *     enabled.
@@ -131,9 +131,7 @@ public class RecordFilterContext {
         this.rescalingDescriptor = checkNotNull(rescalingDescriptor);
         this.subtaskIndex = subtaskIndex;
         this.maxParallelism = maxParallelism;
-        checkArgument(
-                checkNotNull(tmpDirectories).length > 0,
-                "tmpDirectories must not be empty");
+        checkArgument(checkNotNull(tmpDirectories).length > 0, "tmpDirectories must not be empty");
         this.tmpDirectories = tmpDirectories.clone();
         this.checkpointingDuringRecoveryEnabled = checkpointingDuringRecoveryEnabled;
         checkArgument(
@@ -241,7 +239,8 @@ public class RecordFilterContext {
      *
      * @param tmpDirectories Temporary directories for spilling spanning records. Not null or empty;
      *     callers pass the real I/O manager spilling directories so the resulting context satisfies
-     *     the same invariant as an enabled context, regardless of which downstream path consumes it.
+     *     the same invariant as an enabled context, regardless of which downstream path consumes
+     *     it.
      * @return A disabled RecordFilterContext.
      */
     public static RecordFilterContext disabled(String[] tmpDirectories) {

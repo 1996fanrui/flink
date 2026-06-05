@@ -23,15 +23,11 @@ import org.apache.flink.util.CloseableIterator;
 import javax.annotation.Nullable;
 
 import java.io.Closeable;
+import java.io.DataInputStream;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.nio.channels.Channels;
-import java.nio.channels.FileChannel;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.NoSuchElementException;
 
@@ -41,13 +37,19 @@ import static org.apache.flink.util.Preconditions.checkState;
 /**
  * Forward reader over a {@link FetchedChannelState}'s spill files.
  *
- * <p>Iterates per-channel segments by scanning the files sequentially. Each segment header ([4B
- * gateIdx][4B channelIdx][4B bufferLength]) is read from disk on demand; no segment body data or
- * in-memory segment locator table is held. The reader owns one lifecycle grant ({@link
- * FetchedChannelState#acquire()}) and releases it on {@link #close()}.
+ * <p>Reading is strictly sequential by design: a reader is positioned once at construction (offset
+ * 0 for the root reader, or the current drain position for a {@link #snapshot()}), then consumes
+ * forward only. It never seeks backward and never re-positions mid-iteration. Multiple files are
+ * read in order: when one file is exhausted, the next is opened and read from its start. This
+ * mirrors the only two access patterns: the drain thread reads the root reader front to back, and
+ * each checkpoint derives a fresh snapshot reader that resumes from the drain position and reads
+ * forward.
  *
- * <p>The root reader is driven by the drain thread. Snapshot readers (created via {@link
- * #snapshot()}) are independent, single-consumer, and own their own lifecycle grant.
+ * <p>Because access is sequential, the body of one segment must be fully consumed before the next
+ * segment is read; skipping ahead or rewinding is a contract violation and fails loud.
+ *
+ * <p>The reader owns one lifecycle grant ({@link FetchedChannelState#acquire()}) and releases it on
+ * {@link #close()}.
  *
  * <p>Thread-safety: the root reader's {@link #snapshot()} and the drain cursor advancement via
  * {@link FetchedSegmentCursor#commitConsumed()} must be called under the drainer lock. Disk reads
@@ -60,30 +62,25 @@ public final class FetchedChannelStateReader implements Closeable {
     private final List<Path> files;
 
     /**
-     * Index of the file currently being (or about to be) read. Advances when a file is exhausted.
+     * File index of the segment at the current drain cursor. Together with {@link #fileOffset} and
+     * {@link #committedBytesInSegment} this captures exactly where a {@link #snapshot()} resumes.
      */
     private int fileIndex;
 
-    /**
-     * Byte offset within the current file for the next read. Points to the start of the next
-     * segment header (or past EOF when the file is exhausted). Updated after every segment seal.
-     */
+    /** Byte offset within {@link #fileIndex} of the current segment's header. */
     private long fileOffset;
 
     /**
      * Number of bytes within the body of the current segment that have been committed (delivered
      * under lock). Starts at 0 for each new segment; advances on each {@link
-     * FetchedSegmentCursor#commitConsumed()} call. Used by {@link #snapshot()} to derive the
-     * correct start position within a partially drained segment.
+     * FetchedSegmentCursor#commitConsumed()} call. Used to resume a {@link #snapshot()} in the
+     * middle of a partially drained segment.
      */
     private long committedBytesInSegment;
 
-    @Nullable private FileChannel activeFileChannel;
-    private int activeFileIndex = -1;
-
     private boolean closed;
 
-    private FetchedChannelStateReader(
+    FetchedChannelStateReader(
             FetchedChannelState channelState,
             int fileIndex,
             long fileOffset,
@@ -97,23 +94,12 @@ public final class FetchedChannelStateReader implements Closeable {
     }
 
     /**
-     * Opens a root reader covering all segments from the beginning.
-     *
-     * @param state a sealed (writer-closed) {@link FetchedChannelState}
-     * @return a new root reader; caller must {@link #close()} it when done
-     */
-    public static FetchedChannelStateReader openRoot(FetchedChannelState state) {
-        return new FetchedChannelStateReader(state, 0, 0L, 0L);
-    }
-
-    /**
      * Returns an iterator over all remaining segments, starting from the current cursor position.
      * Each {@link FetchedSegmentCursor} exposes the channel info, a bounded body stream, and the
      * commit primitive.
      *
-     * <p>Segments are discovered by reading 12-byte headers sequentially from disk; no in-memory
-     * segment locator table is used. The returned iterator is single-use and must be closed when
-     * done.
+     * <p>The iterator reads files sequentially from the cursor position forward and is single-use;
+     * it must be closed when done.
      */
     public CloseableIterator<FetchedSegmentCursor> segments() {
         checkState(!closed, "FetchedChannelStateReader is closed");
@@ -122,7 +108,7 @@ public final class FetchedChannelStateReader implements Closeable {
 
     /**
      * Derives an independent reader starting from the current drain position. The snapshot reader
-     * owns its own {@link FetchedChannelState} lifecycle grant and has an independent file channel.
+     * owns its own {@link FetchedChannelState} lifecycle grant and its own sequential stream.
      *
      * <p>Must be called under the drainer lock so that {@link #fileIndex}, {@link #fileOffset}, and
      * {@link #committedBytesInSegment} reflect the latest committed state.
@@ -141,37 +127,7 @@ public final class FetchedChannelStateReader implements Closeable {
             return;
         }
         closed = true;
-        try {
-            closeActiveChannel();
-        } finally {
-            channelState.release();
-        }
-    }
-
-    // -------------------------------------------------------------------------------------------
-    // Internal helpers
-    // -------------------------------------------------------------------------------------------
-
-    /**
-     * Opens (or reuses) the {@link FileChannel} for the given file index. Closes the currently open
-     * channel first if a different file is needed.
-     */
-    private FileChannel channelFor(int fileIdx) throws IOException {
-        if (activeFileIndex != fileIdx) {
-            closeActiveChannel();
-            Path path = files.get(fileIdx);
-            activeFileChannel = FileChannel.open(path, StandardOpenOption.READ);
-            activeFileIndex = fileIdx;
-        }
-        return activeFileChannel;
-    }
-
-    private void closeActiveChannel() throws IOException {
-        if (activeFileChannel != null) {
-            activeFileChannel.close();
-            activeFileChannel = null;
-            activeFileIndex = -1;
-        }
+        channelState.release();
     }
 
     // -------------------------------------------------------------------------------------------
@@ -179,89 +135,78 @@ public final class FetchedChannelStateReader implements Closeable {
     // -------------------------------------------------------------------------------------------
 
     /**
-     * Iterates per-channel segments by reading 12-byte headers sequentially from the spill files.
-     *
-     * <p>State machine: the iterator tracks which file and offset the next segment header lives at.
-     * When a file is exhausted it advances to the next file. Snapshot readers start from a
-     * partially-consumed segment: the first segment's body is trimmed by {@code
-     * committedBytesInSegment}.
+     * Iterates per-channel segments over a single forward stream that spans the spill files in
+     * order. The stream is opened once, positioned at the reader's cursor, and consumed strictly
+     * forward: each segment's 12-byte header is read, then its body is exposed as a bounded view of
+     * the same stream. Advancing requires the previous body to be fully consumed and committed.
      */
     private final class SegmentIterator implements CloseableIterator<FetchedSegmentCursor> {
 
-        /** File index for the next segment header to read. */
-        private int iterFileIndex = fileIndex;
-
-        /** Byte offset in {@code iterFileIndex} for the next segment header. */
-        private long iterFileOffset = fileOffset;
+        /** Single forward stream spanning files [fileIndex .. last], opened at the cursor. */
+        private final SequentialSpillStream stream;
 
         /**
-         * For the first segment (snapshot resume), this many bytes have already been committed and
-         * should be skipped; for all subsequent segments it is 0.
+         * For the first segment (snapshot resume), this many body bytes were already committed and
+         * must be skipped; 0 for every subsequent segment.
          */
-        private long startOffsetInSegment = committedBytesInSegment;
+        private int pendingStartOffsetInSegment;
 
-        /**
-         * Header parsed ahead of time: populated by {@link #tryReadNextHeader()} and consumed by
-         * {@link #next()}. Null when we have not yet peeked the next header.
-         */
-        @Nullable private ParsedHeader peekedHeader;
-
-        /** Whether we have already tried reading the next header (and possibly found EOF). */
-        private boolean headerPeeked;
+        /** Bounded body view of the current segment; must be exhausted before advancing. */
+        @Nullable private BoundedSegmentStream currentBody;
 
         private boolean iterClosed;
+
+        SegmentIterator() {
+            this.stream =
+                    new SequentialSpillStream(
+                            files, fileIndex, fileOffset + committedBytesInSegment);
+            // committedBytesInSegment is folded into the stream position above so reads start at
+            // the
+            // first undelivered byte; it is also the in-segment skip for the resumed first segment.
+            this.pendingStartOffsetInSegment = (int) committedBytesInSegment;
+        }
 
         @Override
         public boolean hasNext() {
             checkState(!iterClosed, "SegmentIterator is closed");
-            if (!headerPeeked) {
-                peekedHeader = tryReadNextHeader();
-                headerPeeked = true;
-            }
-            if (peekedHeader == null) {
-                return false;
-            }
-            // Skip segments where the committed offset equals the body length (fully consumed).
-            return startOffsetInSegment < peekedHeader.bufferLength;
+            ensurePreviousBodyConsumed();
+            return stream.hasRemaining();
         }
 
         @Override
         public FetchedSegmentCursor next() {
             checkState(!iterClosed, "SegmentIterator is closed");
-            if (!hasNext()) {
+            ensurePreviousBodyConsumed();
+            if (!stream.hasRemaining()) {
                 throw new NoSuchElementException();
             }
-            ParsedHeader header = peekedHeader;
-            peekedHeader = null;
-            headerPeeked = false;
 
-            long myFileIndex = header.fileIndex;
-            long bodyStartInFile = header.bodyStartOffset;
-            long remainingLength = header.bufferLength - startOffsetInSegment;
-            long bodyReadStart = bodyStartInFile + startOffsetInSegment;
-
-            FileChannel fc;
+            ParsedHeader header;
             try {
-                fc = channelFor((int) myFileIndex);
+                header = stream.readHeader();
             } catch (IOException e) {
-                throw new RuntimeException(
-                        "Failed to open spill file " + myFileIndex + " at offset " + bodyReadStart,
-                        e);
+                throw new RuntimeException("Failed to read segment header", e);
             }
 
-            BoundedSegmentStream bodyStream =
-                    new BoundedSegmentStream(fc, bodyReadStart, remainingLength, myFileIndex);
+            // Resume skip applies only to the first segment of a snapshot reader.
+            int skip = pendingStartOffsetInSegment;
+            pendingStartOffsetInSegment = 0;
 
-            // After this segment's body, the next header begins immediately after the full body.
-            long nextOffset = bodyStartInFile + header.bufferLength;
-            long nextFileIdx = myFileIndex;
+            int remainingLength = header.bufferLength - skip;
+            checkState(
+                    remainingLength >= 0,
+                    "Resume offset %s exceeds segment length %s",
+                    skip,
+                    header.bufferLength);
 
-            // Reset snapshot start offset; only the first next() call may use it.
-            startOffsetInSegment = 0L;
+            currentBody = new BoundedSegmentStream(stream, remainingLength);
 
             InputChannelInfo channelInfo = new InputChannelInfo(header.gateIdx, header.channelIdx);
-            long fullSegmentLength = header.bufferLength;
-            long myStartOffsetInSegment = header.bufferLength - remainingLength;
+            int fullSegmentLength = header.bufferLength;
+            long headerStartInFile = header.headerOffset;
+            int headerFileIndex = header.fileIndex;
+            int alreadyConsumedInSegment = skip;
+            BoundedSegmentStream body = currentBody;
 
             return new FetchedSegmentCursor() {
                 @Override
@@ -271,109 +216,56 @@ public final class FetchedChannelStateReader implements Closeable {
 
                 @Override
                 public InputStream body() {
-                    return bodyStream;
+                    return body;
                 }
 
                 @Override
-                public long length() {
+                public int length() {
                     return remainingLength;
                 }
 
                 @Override
                 public void commitConsumed() {
-                    // committedBytesInSegment in the outer reader tracks how many bytes of the
-                    // current segment have been durably delivered. Once the segment is fully
-                    // committed, advance the file cursor past this segment.
-                    long consumed = myStartOffsetInSegment + bodyStream.bytesRead();
+                    int consumed = alreadyConsumedInSegment + body.bytesRead();
                     if (consumed >= fullSegmentLength) {
-                        // Whole segment consumed: advance outer cursor past this segment's end.
-                        fileIndex = (int) nextFileIdx;
-                        fileOffset = nextOffset;
+                        // Whole segment consumed: cursor moves to the next segment's header.
+                        fileIndex = header.nextFileIndex;
+                        fileOffset = header.nextHeaderOffset;
                         committedBytesInSegment = 0L;
-                        // Also advance the iterator so the next hasNext() reads the right header.
-                        iterFileIndex = (int) nextFileIdx;
-                        iterFileOffset = nextOffset;
                     } else {
-                        // Partial consume: outer cursor stays at this segment's header start but
-                        // committedBytesInSegment records how far into the body we've delivered.
-                        fileIndex = (int) myFileIndex;
-                        fileOffset = bodyStartInFile - SEGMENT_HEADER_BYTES;
+                        // Partial consume: cursor stays at this segment's header, recording how far
+                        // into the body we have durably delivered.
+                        fileIndex = headerFileIndex;
+                        fileOffset = headerStartInFile;
                         committedBytesInSegment = consumed;
                     }
                 }
             };
         }
 
+        /**
+         * Enforces the sequential contract: the previously returned segment body must be fully read
+         * before the iterator can peek or advance. Skipping ahead with an unconsumed body is a
+         * caller bug.
+         */
+        private void ensurePreviousBodyConsumed() {
+            if (currentBody != null) {
+                checkState(
+                        currentBody.remaining() == 0,
+                        "Previous segment body not fully consumed before advancing: %s bytes left",
+                        currentBody.remaining());
+                currentBody = null;
+            }
+        }
+
         @Override
         public void close() {
             iterClosed = true;
-        }
-
-        /**
-         * Attempts to read the next 12-byte segment header from the current iterator position.
-         * Advances to the next file when the current file is exhausted. Returns {@code null} when
-         * all files have been read. Throws {@link IOException} wrapped in a {@link
-         * RuntimeException} on partial header reads (truncated file).
-         */
-        @Nullable
-        private ParsedHeader tryReadNextHeader() {
-            while (iterFileIndex < files.size()) {
-                try {
-                    FileChannel fc = channelFor(iterFileIndex);
-                    long fileSize = fc.size();
-                    if (iterFileOffset >= fileSize) {
-                        // This file is exhausted; move to the next one.
-                        iterFileIndex++;
-                        iterFileOffset = 0L;
-                        continue;
-                    }
-                    // Read 12-byte header: [gateIdx][channelIdx][bufferLength]
-                    ByteBuffer headerBuf = ByteBuffer.allocate(SEGMENT_HEADER_BYTES);
-                    headerBuf.order(ByteOrder.BIG_ENDIAN);
-                    fc.position(iterFileOffset);
-                    int bytesRead = 0;
-                    while (bytesRead < SEGMENT_HEADER_BYTES) {
-                        int n = fc.read(headerBuf);
-                        if (n < 0) {
-                            break;
-                        }
-                        bytesRead += n;
-                    }
-                    if (bytesRead < SEGMENT_HEADER_BYTES) {
-                        throw new RuntimeException(
-                                new EOFException(
-                                        "Truncated segment header in file "
-                                                + files.get(iterFileIndex)
-                                                + " at offset "
-                                                + iterFileOffset
-                                                + ": expected "
-                                                + SEGMENT_HEADER_BYTES
-                                                + " bytes, got "
-                                                + bytesRead));
-                    }
-                    headerBuf.flip();
-                    int gateIdx = headerBuf.getInt();
-                    int channelIdx = headerBuf.getInt();
-                    int bufferLength = headerBuf.getInt();
-
-                    long bodyStartOffset = iterFileOffset + SEGMENT_HEADER_BYTES;
-                    ParsedHeader header =
-                            new ParsedHeader(
-                                    iterFileIndex,
-                                    iterFileOffset,
-                                    bodyStartOffset,
-                                    gateIdx,
-                                    channelIdx,
-                                    bufferLength);
-
-                    // Advance iterator cursor past this segment for the next call.
-                    iterFileOffset = bodyStartOffset + bufferLength;
-                    return header;
-                } catch (IOException e) {
-                    throw new RuntimeException("Failed to read segment header", e);
-                }
+            try {
+                stream.close();
+            } catch (IOException e) {
+                throw new RuntimeException("Failed to close spill stream", e);
             }
-            return null;
         }
     }
 
@@ -382,31 +274,199 @@ public final class FetchedChannelStateReader implements Closeable {
     // -------------------------------------------------------------------------------------------
 
     private static final class ParsedHeader {
+        /** File index this header was read from. */
         final int fileIndex;
 
-        /** Byte offset of the header start within the file. */
+        /** Byte offset of the header start within {@link #fileIndex}. */
         final long headerOffset;
-
-        /** Byte offset of the first body byte within the file (headerOffset + 12). */
-        final long bodyStartOffset;
 
         final int gateIdx;
         final int channelIdx;
-        final long bufferLength;
+
+        /** Segment body length in bytes; persisted on disk as a 4-byte int. */
+        final int bufferLength;
+
+        /** File index where the next segment header starts. */
+        final int nextFileIndex;
+
+        /** Byte offset of the next segment header within {@link #nextFileIndex}. */
+        final long nextHeaderOffset;
 
         ParsedHeader(
                 int fileIndex,
                 long headerOffset,
-                long bodyStartOffset,
                 int gateIdx,
                 int channelIdx,
-                long bufferLength) {
+                int bufferLength,
+                int nextFileIndex,
+                long nextHeaderOffset) {
             this.fileIndex = fileIndex;
             this.headerOffset = headerOffset;
-            this.bodyStartOffset = bodyStartOffset;
             this.gateIdx = gateIdx;
             this.channelIdx = channelIdx;
             this.bufferLength = bufferLength;
+            this.nextFileIndex = nextFileIndex;
+            this.nextHeaderOffset = nextHeaderOffset;
+        }
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // SequentialSpillStream
+    // -------------------------------------------------------------------------------------------
+
+    /**
+     * A single forward {@link InputStream} over the spill files {@code [startFileIndex .. last]},
+     * read in order. One file is open at a time; when it is exhausted the next file is opened and
+     * read from its start. The stream never seeks backward after the initial positioning.
+     *
+     * <p>It tracks, for each byte produced, which file and in-file offset it came from, so the
+     * reader can record exact resume coordinates without re-seeking. Header reads and body reads
+     * both pull from this same stream.
+     */
+    private static final class SequentialSpillStream implements Closeable {
+
+        private final List<Path> files;
+
+        /** File index currently open and being read. */
+        private int currentFileIndex;
+
+        /** Next read offset within {@link #currentFileIndex}. */
+        private long offsetInFile;
+
+        /** Open stream over {@link #currentFileIndex}, or {@code null} before the first read. */
+        @Nullable private InputStream fileStream;
+
+        /** Size of the file currently open. */
+        private long currentFileSize;
+
+        SequentialSpillStream(List<Path> files, int startFileIndex, long startOffsetInFile) {
+            this.files = files;
+            this.currentFileIndex = startFileIndex;
+            this.offsetInFile = startOffsetInFile;
+        }
+
+        /**
+         * Returns true if more segment data remains, advancing past exhausted files as needed.
+         * After this returns true, {@link #currentFileIndex}/{@link #offsetInFile} point at
+         * readable data.
+         */
+        boolean hasRemaining() {
+            try {
+                while (currentFileIndex < files.size()) {
+                    ensureOpen();
+                    if (offsetInFile < currentFileSize) {
+                        return true;
+                    }
+                    advanceToNextFile();
+                }
+                return false;
+            } catch (IOException e) {
+                throw new RuntimeException("Failed to scan spill files", e);
+            }
+        }
+
+        /** Reads one 12-byte segment header from the current position. */
+        ParsedHeader readHeader() throws IOException {
+            int headerFileIndex = currentFileIndex;
+            long headerOffset = offsetInFile;
+
+            byte[] headerBytes = new byte[SEGMENT_HEADER_BYTES];
+            readFully(headerBytes);
+            DataInputStream h = new DataInputStream(new java.io.ByteArrayInputStream(headerBytes));
+            int gateIdx = h.readInt();
+            int channelIdx = h.readInt();
+            int bufferLength = h.readInt();
+            checkState(bufferLength >= 0, "negative segment length: %s", bufferLength);
+
+            // The body occupies the next bufferLength bytes within the same file. The next header
+            // begins right after the body.
+            return new ParsedHeader(
+                    headerFileIndex,
+                    headerOffset,
+                    gateIdx,
+                    channelIdx,
+                    bufferLength,
+                    currentFileIndex,
+                    offsetInFile + bufferLength);
+        }
+
+        /**
+         * Reads up to {@code len} body bytes into {@code buf}. A segment body never crosses a file
+         * boundary, so this reads only from the current file. Returns -1 only when the bounded body
+         * view has signalled exhaustion; an unexpected mid-body EOF throws.
+         */
+        int readBody(byte[] buf, int off, int len) throws IOException {
+            ensureOpen();
+            int n = fileStream.read(buf, off, len);
+            if (n > 0) {
+                offsetInFile += n;
+            }
+            return n;
+        }
+
+        private void readFully(byte[] buf) throws IOException {
+            ensureOpen();
+            int read = 0;
+            while (read < buf.length) {
+                int n = fileStream.read(buf, read, buf.length - read);
+                if (n < 0) {
+                    throw new EOFException(
+                            "Truncated segment header in file "
+                                    + files.get(currentFileIndex)
+                                    + " at offset "
+                                    + offsetInFile
+                                    + ": expected "
+                                    + buf.length
+                                    + " bytes, got "
+                                    + read);
+                }
+                read += n;
+                offsetInFile += n;
+            }
+        }
+
+        private void ensureOpen() throws IOException {
+            if (fileStream == null) {
+                Path path = files.get(currentFileIndex);
+                currentFileSize = java.nio.file.Files.size(path);
+                InputStream in = java.nio.file.Files.newInputStream(path);
+                long skipped = 0;
+                while (skipped < offsetInFile) {
+                    long s = in.skip(offsetInFile - skipped);
+                    if (s <= 0) {
+                        // skip can return 0 near EOF; read-and-discard as a fallback.
+                        if (in.read() < 0) {
+                            in.close();
+                            throw new EOFException(
+                                    "Cannot position to offset "
+                                            + offsetInFile
+                                            + " in spill file "
+                                            + path);
+                        }
+                        skipped++;
+                    } else {
+                        skipped += s;
+                    }
+                }
+                fileStream = in;
+            }
+        }
+
+        private void advanceToNextFile() throws IOException {
+            if (fileStream != null) {
+                fileStream.close();
+                fileStream = null;
+            }
+            currentFileIndex++;
+            offsetInFile = 0L;
+        }
+
+        @Override
+        public void close() throws IOException {
+            if (fileStream != null) {
+                fileStream.close();
+                fileStream = null;
+            }
         }
     }
 
@@ -415,61 +475,39 @@ public final class FetchedChannelStateReader implements Closeable {
     // -------------------------------------------------------------------------------------------
 
     /**
-     * An {@link InputStream} bounded to a specific byte range {@code [offset, offset + length)} in
-     * a {@link FileChannel}. Reads return EOF after {@code length} bytes. If the underlying file
+     * A forward-only view over the next {@code length} body bytes of a {@link
+     * SequentialSpillStream}. Reads return EOF after {@code length} bytes. If the underlying stream
      * ends before {@code length} bytes are available, an {@link EOFException} is thrown
-     * (fail-loud).
+     * (fail-loud). Closing this view does not close the underlying stream; it is owned by the
+     * iterator.
      */
     private static final class BoundedSegmentStream extends InputStream {
 
-        private final FileChannel fc;
-        private final long startOffset;
-        private final long length;
-        private final long fileIndex;
+        private final SequentialSpillStream stream;
+        private final int length;
 
-        private long position;
-        private long bytesRead;
+        private int position;
 
-        private final InputStream channelStream;
-
-        BoundedSegmentStream(FileChannel fc, long startOffset, long length, long fileIndex) {
-            this.fc = fc;
-            this.startOffset = startOffset;
+        BoundedSegmentStream(SequentialSpillStream stream, int length) {
+            this.stream = stream;
             this.length = length;
-            this.fileIndex = fileIndex;
-            this.position = 0;
-            this.bytesRead = 0;
-            try {
-                fc.position(startOffset);
-            } catch (IOException e) {
-                throw new RuntimeException(
-                        "Failed to seek to offset " + startOffset + " in file index " + fileIndex,
-                        e);
-            }
-            this.channelStream = Channels.newInputStream(fc);
+        }
+
+        /** Number of body bytes read from this view so far. */
+        int bytesRead() {
+            return position;
+        }
+
+        /** Number of body bytes not yet read from this view. */
+        int remaining() {
+            return length - position;
         }
 
         @Override
         public int read() throws IOException {
-            if (position >= length) {
-                return -1;
-            }
-            int b = channelStream.read();
-            if (b < 0) {
-                throw new EOFException(
-                        "Unexpected EOF in segment body (file index="
-                                + fileIndex
-                                + ", startOffset="
-                                + startOffset
-                                + ") after "
-                                + bytesRead
-                                + "/"
-                                + length
-                                + " bytes");
-            }
-            position++;
-            bytesRead++;
-            return b;
+            byte[] one = new byte[1];
+            int n = read(one, 0, 1);
+            return n < 0 ? -1 : (one[0] & 0xFF);
         }
 
         @Override
@@ -477,33 +515,23 @@ public final class FetchedChannelStateReader implements Closeable {
             if (position >= length) {
                 return -1;
             }
-            int toRead = (int) Math.min(len, length - position);
-            int n = channelStream.read(buf, off, toRead);
+            int toRead = Math.min(len, length - position);
+            int n = stream.readBody(buf, off, toRead);
             if (n < 0) {
                 throw new EOFException(
-                        "Unexpected EOF in segment body (file index="
-                                + fileIndex
-                                + ", startOffset="
-                                + startOffset
-                                + ") after "
-                                + bytesRead
+                        "Unexpected EOF in segment body after "
+                                + position
                                 + "/"
                                 + length
                                 + " bytes");
             }
             position += n;
-            bytesRead += n;
             return n;
-        }
-
-        /** Returns the number of bytes read from this stream so far. */
-        long bytesRead() {
-            return bytesRead;
         }
 
         @Override
         public void close() {
-            // Do not close the underlying FileChannel; it is managed by the outer reader.
+            // Do not close the underlying stream; it is owned by the iterator.
         }
     }
 }

@@ -46,8 +46,7 @@ class FetchedChannelStateTest {
         Path file0 = tempDir.resolve("spill-0.bin");
         Path file1 = tempDir.resolve("spill-1.bin");
 
-        try (FetchedChannelState state =
-                new FetchedChannelState(Arrays.asList(file0, file1))) {
+        try (FetchedChannelState state = new FetchedChannelState(Arrays.asList(file0, file1))) {
             assertThat(state.files()).containsExactly(file0, file1);
         }
     }
@@ -55,8 +54,7 @@ class FetchedChannelStateTest {
     @Test
     void testFilesListIsUnmodifiable() throws IOException {
         try (FetchedChannelState state =
-                new FetchedChannelState(
-                        Collections.singletonList(tempDir.resolve("f0.bin")))) {
+                new FetchedChannelState(Collections.singletonList(tempDir.resolve("f0.bin")))) {
             assertThatThrownBy(() -> state.files().add(tempDir.resolve("f1.bin")))
                     .isInstanceOf(UnsupportedOperationException.class);
         }
@@ -66,8 +64,7 @@ class FetchedChannelStateTest {
     void testAcquireReleaseDoesNotDeleteFilesBeforeLastRelease() throws IOException {
         Path realFile = tempDir.resolve("spill-0.bin");
         realFile.toFile().createNewFile();
-        FetchedChannelState state =
-                new FetchedChannelState(Collections.singletonList(realFile));
+        FetchedChannelState state = new FetchedChannelState(Collections.singletonList(realFile));
 
         state.acquire();
         state.acquire();
