@@ -954,22 +954,6 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
         }
     }
 
-    /**
-     * Best-effort deserialization of an event buffer for diagnostics. Used only on the error path
-     * when an unexpected event is found in {@link #receivedBuffers} during recovery; never throws,
-     * so a deserialization failure does not mask the original invariant violation.
-     */
-    private static String describeEvent(Buffer b) {
-        try {
-            AbstractEvent event =
-                    EventSerializer.fromBuffer(b, RemoteInputChannel.class.getClassLoader());
-            b.setReaderIndex(0);
-            return event.getClass().getName() + ": " + event;
-        } catch (Throwable t) {
-            return "<unparsable event: " + t + ">";
-        }
-    }
-
     private static boolean isRecoveryCheckpointBarrier(Buffer b, long checkpointId)
             throws IOException {
         if (b.isBuffer()) {
