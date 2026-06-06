@@ -18,6 +18,8 @@
 
 package org.apache.flink.runtime.checkpoint.channel;
 
+import org.apache.flink.runtime.checkpoint.channel.FetchedChannelStateReader.SpillSegment;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
