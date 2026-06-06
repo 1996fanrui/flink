@@ -29,7 +29,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
@@ -63,11 +62,6 @@ import static org.apache.flink.util.Preconditions.checkState;
  */
 @Internal
 final class FetchedChannelStateReaderImpl implements FetchedChannelStateReader {
-
-    public static final FetchedChannelStateReader EMPTY_READER =
-            new FetchedChannelStateReaderImpl(
-                    new FetchedChannelState(Collections.emptyList()),
-                    FetchedChannelStateReaderImpl.Position.atStart());
 
     private final FetchedChannelState channelState;
     private final List<Path> files;

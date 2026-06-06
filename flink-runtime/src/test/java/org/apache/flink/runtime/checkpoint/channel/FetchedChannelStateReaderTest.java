@@ -652,6 +652,22 @@ class FetchedChannelStateReaderTest {
         }
     }
 
+    @Test
+    void testEmptyReaderHandsOutIndependentInstancesSoCloseDoesNotLeak() throws Exception {
+        // emptyReader() is obtained and closed once per checkpoint. close() is single-use (it flips
+        // the closed flag permanently), so each call must yield a fresh instance; otherwise the
+        // first consumer's close would make every later consumer's nextSegment() fail loud.
+        FetchedChannelStateReader first = FetchedChannelStateReader.emptyReader();
+        assertThat(first.nextSegment()).isEmpty();
+        first.close();
+
+        FetchedChannelStateReader second = FetchedChannelStateReader.emptyReader();
+        assertThat(second).isNotSameAs(first);
+        // Must still work after the previously obtained empty reader was closed.
+        assertThat(second.nextSegment()).isEmpty();
+        second.close();
+    }
+
     // -------------------------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------------------------

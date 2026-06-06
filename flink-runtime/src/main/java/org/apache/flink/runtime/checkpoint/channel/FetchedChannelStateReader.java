@@ -21,9 +21,8 @@ import org.apache.flink.annotation.Internal;
 
 import java.io.Closeable;
 import java.io.InputStream;
+import java.util.Collections;
 import java.util.Optional;
-
-import static org.apache.flink.runtime.checkpoint.channel.FetchedChannelStateReaderImpl.EMPTY_READER;
 
 /**
  * Forward reader over a {@link FetchedChannelState}'s spill files. This is our own segment reader,
@@ -68,13 +67,13 @@ public interface FetchedChannelStateReader extends Closeable {
 
     /**
      * Returns a reader with no segments — its first {@link #nextSegment()} is empty. Each call
-     * hands out a fresh reader (readers have independent lifecycle and must each be closed), but
-     * they all share one empty channel state, so no per-call channel state is allocated. Used
+     * hands out a fresh instance: readers have independent lifecycle and {@link #close()} is
+     * single-use, so a shared instance would let one consumer's close break later consumers. Used
      * wherever there is nothing to snapshot (e.g. after drain finished, or the no-op recovery
      * trigger).
      */
     static FetchedChannelStateReader emptyReader() {
-        return EMPTY_READER;
+        return new FetchedChannelState(Collections.emptyList()).reader();
     }
 
     /**

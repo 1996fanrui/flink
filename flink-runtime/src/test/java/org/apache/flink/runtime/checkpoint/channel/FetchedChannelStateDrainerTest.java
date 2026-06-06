@@ -67,6 +67,72 @@ class FetchedChannelStateDrainerTest {
     }
 
     @Test
+    void testDrainSegmentLargerThanBufferSplitsIntoFullChunksThenPartialTail() throws Exception {
+        InputChannelInfo cInfo = new InputChannelInfo(0, 0);
+
+        // Buffer capacity deliberately smaller than the segment body so the drainer must fill
+        // multiple buffers and a final partial tail. 50 bytes over a 16-byte buffer => 16+16+16+2.
+        int bufferCapacity = 16;
+        byte[] body = sequentialBytes(50);
+
+        FetchedChannelState state;
+        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
+            // Pass-through so the segment body equals the verbatim bytes (no length framing).
+            writer.writePassThrough(cInfo, body, 0, body.length);
+            state = writer.getChannelState();
+        }
+
+        RecordingChannel rec = new RecordingChannel(cInfo, bufferCapacity);
+        FetchedChannelStateDrainer drainer = newDrainer(state, cInfo, rec);
+
+        drainer.drain();
+        drainer.close();
+
+        // ceil(50 / 16) = 4 buffers delivered.
+        assertThat(rec.recovered).hasSize(4);
+        // Every buffer except the last is filled to capacity; the last carries the remainder.
+        for (int i = 0; i < rec.recovered.size() - 1; i++) {
+            assertThat(rec.recovered.get(i).getSize()).isEqualTo(bufferCapacity);
+        }
+        assertThat(rec.recovered.get(rec.recovered.size() - 1).getSize())
+                .isEqualTo(body.length % bufferCapacity);
+
+        // Buffers concatenated in delivery order must reproduce the segment body byte-for-byte.
+        assertThat(concat(rec.recovered)).isEqualTo(body);
+        assertThat(rec.finishCalls).isEqualTo(1);
+    }
+
+    @Test
+    void testDrainSegmentExactMultipleOfBufferHasNoPartialTail() throws Exception {
+        InputChannelInfo cInfo = new InputChannelInfo(0, 0);
+
+        // Body length is an exact multiple of the buffer capacity: the final read hits EOF on a
+        // freshly requested buffer, which must be recycled rather than delivered empty.
+        int bufferCapacity = 16;
+        byte[] body = sequentialBytes(bufferCapacity * 3);
+
+        FetchedChannelState state;
+        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
+            writer.writePassThrough(cInfo, body, 0, body.length);
+            state = writer.getChannelState();
+        }
+
+        RecordingChannel rec = new RecordingChannel(cInfo, bufferCapacity);
+        FetchedChannelStateDrainer drainer = newDrainer(state, cInfo, rec);
+
+        drainer.drain();
+        drainer.close();
+
+        // Exactly 3 full buffers, no trailing empty buffer.
+        assertThat(rec.recovered).hasSize(3);
+        for (Buffer b : rec.recovered) {
+            assertThat(b.getSize()).isEqualTo(bufferCapacity);
+        }
+        assertThat(concat(rec.recovered)).isEqualTo(body);
+        assertThat(rec.finishCalls).isEqualTo(1);
+    }
+
+    @Test
     void testDrainDemuxByChannelInfo() throws Exception {
         InputChannelInfo c0 = new InputChannelInfo(0, 0);
         InputChannelInfo c1 = new InputChannelInfo(0, 1);
@@ -303,6 +369,27 @@ class FetchedChannelStateDrainerTest {
         return new byte[] {(byte) (id & 0xff), (byte) ((id >> 8) & 0xff), (byte) 0xAB, (byte) 0xCD};
     }
 
+    /** Builds {@code n} bytes whose values count up modulo 256, so order mismatches are visible. */
+    private static byte[] sequentialBytes(int n) {
+        byte[] out = new byte[n];
+        for (int i = 0; i < n; i++) {
+            out[i] = (byte) i;
+        }
+        return out;
+    }
+
+    /** Concatenates the readable bytes of the given buffers in order. */
+    private static byte[] concat(List<Buffer> buffers) {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        for (Buffer b : buffers) {
+            java.nio.ByteBuffer nio = b.getNioBufferReadable();
+            byte[] chunk = new byte[nio.remaining()];
+            nio.get(chunk);
+            out.write(chunk, 0, chunk.length);
+        }
+        return out.toByteArray();
+    }
+
     /** Fully consumes a segment body so the sequential reader may advance to the next segment. */
     private static void drainBody(InputStream body) throws IOException {
         byte[] buf = new byte[256];
@@ -315,23 +402,34 @@ class FetchedChannelStateDrainerTest {
     // RecordingChannel stub
     // -------------------------------------------------------------------------------------------
 
+    private static final int DEFAULT_RECOVERY_BUFFER_CAPACITY = 4096;
+
     private static final class RecordingChannel implements RecoverableInputChannel {
         private final InputChannelInfo channelInfo;
         final List<Buffer> recovered = new ArrayList<>();
         int finishCalls = 0;
         private final int[] sequence;
+        private final int bufferCapacity;
         int maxDataSeq = Integer.MIN_VALUE;
         int finishSeq = -1;
         boolean inRecovery = true;
 
         RecordingChannel(InputChannelInfo channelInfo) {
-            this.channelInfo = channelInfo;
-            this.sequence = null;
+            this(channelInfo, null, DEFAULT_RECOVERY_BUFFER_CAPACITY);
         }
 
         RecordingChannel(InputChannelInfo channelInfo, int[] sharedSequence) {
+            this(channelInfo, sharedSequence, DEFAULT_RECOVERY_BUFFER_CAPACITY);
+        }
+
+        RecordingChannel(InputChannelInfo channelInfo, int bufferCapacity) {
+            this(channelInfo, null, bufferCapacity);
+        }
+
+        RecordingChannel(InputChannelInfo channelInfo, int[] sharedSequence, int bufferCapacity) {
             this.channelInfo = channelInfo;
             this.sequence = sharedSequence;
+            this.bufferCapacity = bufferCapacity;
         }
 
         @Override
@@ -367,7 +465,7 @@ class FetchedChannelStateDrainerTest {
 
         @Override
         public Buffer requestRecoveryBufferBlocking() {
-            MemorySegment seg = MemorySegmentFactory.allocateUnpooledSegment(4096);
+            MemorySegment seg = MemorySegmentFactory.allocateUnpooledSegment(bufferCapacity);
             return new NetworkBuffer(seg, FreeingBufferRecycler.INSTANCE);
         }
 
