@@ -144,17 +144,18 @@
 
 ### 8.1 角色划分
 
-对外只有一个 **Reader**（它就是我们自己的"迭代器"——不是 Java `Iterator`）。Reader 内部直接持有文件流和两份进度，不再拆出独立的 Cursor / Source 角色：
+对外只有一个 **Reader**（它就是我们自己的"迭代器"——不是 Java `Iterator`）。Reader 拆成**接口 + 实现**：caller 只依赖接口 `FetchedChannelStateReader`（契约面最小：`nextSegment()` / `snapshot()` / `close()` / 静态 `emptyReader()`），实现细节（文件流、两份进度、有界段体流）全在 `FetchedChannelStateReaderImpl` 里。不再拆出独立的 Cursor / Source 角色。段类型 `SpillSegment` 是 Reader 接口内的嵌套接口（`FetchedChannelStateReader.SpillSegment`），语义上"段属于 reader"。
 
 | 角色 | 职责 | 持有什么 |
 |------|------|----------|
-| **Reader** | 读取器本体：`nextSegment()` 一段段往前读、`commit` 时更新提交进度、`snapshot()` 派生 | 文件流 + **current position**（实时读取进度）+ **committed position**（提交进度）+ 一份生命周期占用 |
-| **段（SpillSegment）** | `nextSegment()` 的产出物：暴露所属通道、段体输入流、`commit()`。所有权一旦交出，Reader 不再过问其读取 | 段体（有界输入流） |
+| **Reader（接口）** | 对外契约：`nextSegment()` 逐段读、`snapshot()` 派生、`close()`、静态 `emptyReader()` | —（接口） |
+| **ReaderImpl（实现）** | 读取器本体：顺序 IO、维护两份进度、`commit` 时更新提交进度 | 文件流 + **current position**（实时读取进度）+ **committed position**（提交进度）+ 一份生命周期占用 |
+| **段（SpillSegment，嵌套接口）** | `nextSegment()` 的产出物：暴露所属通道、段体输入流、`length()`、`commit()`。所有权一旦交出，Reader 不再过问其读取 | 段体（有界输入流） |
 | **消费者（Consumer）** | 外部调用者：drain 消费者 / snapshot 消费者。逐段取出、读段体；drain 消费者还负责 commit | 段体的所有权（拿走后自己读） |
 
 ### 8.2 接口形态（不复用 Java Iterator）
 
-我们的场景有三条硬约束与 `Iterator` 契约冲突：① 一段必须读尽才能取下一段；② 段体所有权移交给消费者、消费者锁外读；③ 消费与提交分离。强套 `hasNext/next` 会让"hasNext 该不该有副作用"永远扯不清。因此**抛弃 Java Iterator，直接在 Reader 上自定义接口**：
+我们的场景有三条硬约束与 `Iterator` 契约冲突：① 一段必须读尽才能取下一段；② 段体所有权移交给消费者、消费者锁外读；③ 消费与提交分离。强套 `hasNext/next` 会让"hasNext 该不该有副作用"永远扯不清。因此**抛弃 Java Iterator，自定义 Reader 接口**（实现见 `FetchedChannelStateReaderImpl`）：
 
 ```
 Reader
@@ -210,7 +211,7 @@ Reader 内部保存**两个 Position**，语义不同、互不重复：
 
 ## 9. 当前问题
 
-历史实现把进度在**同一条链路里重复存了好几份**：reader、迭代器、内部 position 各存一份本应相同的进度，各自维护、互相漂移，是结构混乱的根源。根因是把读取逻辑硬塞进 Java `Iterator` 的 `hasNext/next` 契约（而我们的场景并不符合该契约），并让进度散落在多个对象上。重新设计按 §8 收敛：**抛弃 Java Iterator，把 `nextSegment()` 直接挂在 Reader 上**；**Reader 内部只保存两个 Position——current（实时读取，绑定文件流）与 committed（提交进度）**，`commit()` 就是据 current 把 committed 推进到"已交付边界"的一次同步，不再有第三份副本。
+历史实现把进度在**同一条链路里重复存了好几份**：reader、迭代器、内部 position 各存一份本应相同的进度，各自维护、互相漂移，是结构混乱的根源。根因是把读取逻辑硬塞进 Java `Iterator` 的 `hasNext/next` 契约（而我们的场景并不符合该契约），并让进度散落在多个对象上。重新设计按 §8 收敛：**抛弃 Java Iterator，把 `nextSegment()` 直接挂在 Reader 上**（Reader 拆成接口 + `Impl`，caller 只依赖接口）；**Reader 内部只保存两个 Position——current（实时读取，绑定文件流）与 committed（提交进度）**，`commit()` 就是据 current 把 committed 推进到"已交付边界"的一次同步，不再有第三份副本。
 
 ## 9.1 角色关系与所有权
 
