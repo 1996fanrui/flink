@@ -28,7 +28,7 @@
 - 非异常情况下，每个读取器实例对**同一个文件只打开一次、且只顺序读取一次**，不重复打开、不重复读。
 
 ### F2. 段的顺序遍历
-- 读取器对外表现为一个**段的来源（source）**：消费方逐个取出段，读取段体。它不复用 Java `Iterator` 契约（我们的"读完才能前进、所有权移交、提交分离"不符合 `hasNext/next` 语义），而是按场景自定义接口（见 §8）。
+- 读取器（**Reader**）对外逐段产出：消费方调 `nextSegment()` 逐个取出段、读取段体。它不复用 Java `Iterator` 契约（我们的"读完才能前进、所有权移交、提交分离"不符合 `hasNext/next` 语义），而是按场景自定义接口（见 §8）。
 - 取出的顺序严格等同于数据在文件中的物理排列顺序。
 
 ### F3. 快照派生
@@ -158,26 +158,30 @@
 
 ```
 Reader
+  static Reader emptyReader()
+      返回一个无段的 Reader（共享一份空 channel state，无 spill 文件），
+      首次 nextSegment() 即 empty。用于"没有可快照数据"的场景（见 §8.3、§9.2）。
   Optional<SpillSegment> nextSegment()
       前进到下一段并产出；无更多段时返回 Optional.empty()（前进与探测合一，
       不存在独立的 hasNext）。
-      入口约束（首次调用免）：current position 必须已把上一段读尽，否则 fail-loud（C3）。
+      入口约束（首次调用免）：上一段的 body 必须已读尽，否则 fail-loud（C3）。
       它只推进段边界、读段头、产出段对象；不读段体、不动 current 的段内偏移。
   Reader snapshot()
-      据当前 reader 与 committed position 生成一个新 Reader（见 §8.3）。
+      据当前 reader 的 committed position 生成一个新 Reader（见 §8.3）。
   close()
 
 SpillSegment
   InputChannelInfo channelInfo()   段所属通道
   InputStream      body()          有界段体流，所有权交消费者，锁外读
-  void             commit()        锁内：committed position = current position 拷贝
+  int              length()        本段对外交付的 body 字节数（snapshot 续读时即剩余量）
+  void             commit()        锁内：把 committed 推进到"本段已读出的 body 字节"边界
 ```
 
 **关键语义**：
 
 - **`nextSegment()` 不动 current 的段内偏移**——它推进的是**段边界**（current 指向下一段段头），段体的读取（current 段内偏移前移）只发生在消费者读 `body()` 时。别把这两个动作混为一谈。
-- **段体所有权移交后，Reader 彻底不管**它读到哪。约束 ③ 的检查落在**下一次 `nextSegment()` 入口**：检查 current position 已把上一段读尽。**首次 `nextSegment()` 免检**（root / snapshot 都一样，前面没有"上一段"）。
-- **`commit()` 挂在段上**：drain 消费者投递完一批后，调 `segment.commit()`，它把 Reader 的 **committed position** 拷成当前 **current position**。
+- **段体所有权移交后，Reader 彻底不管**它读到哪。约束 ③ 的检查落在**下一次 `nextSegment()` 入口**：检查上一段 body 是否已读尽（实现上看上一段 body view 的剩余字节是否为 0；因 body 读取与 current.readOffset 同步推进，这等价于"current 已到上一段段尾"）。**首次 `nextSegment()` 免检**（root / snapshot 都一样，前面没有"上一段"）。
+- **`commit()` 挂在段上**：drain 消费者投递完一批后，调 `segment.commit()`。它把 committed 的 file/段起始拷自 current，但 **readOffset 钉到"本段已读出/已交付的 body 字节数"**（含 snapshot 起步时已 skip 的 prefix），即"已交付边界"——而非 current 的实时 readOffset（current 可能已 fill 进 buffer 但那批尚未 deliver，领先于已交付边界）。
 - 空数据时，首次 `nextSegment()` 直接 `Optional.empty()`。
 - **不提供 `hasNext` / `hasRemaining` 之类的预探测**：唯一的前进入口就是 `nextSegment()`。需要"这份 snapshot 空不空"判断的地方（如 writer 短路）一律取消——空 Reader 照常走流程，首次 `nextSegment()` 即 empty 后正常关闭，不做提前短路。
 
@@ -193,19 +197,20 @@ Reader 内部保存**两个 Position**，语义不同、互不重复：
 
 | Position | 语义 | 何时推进 |
 |----------|------|----------|
-| **current** | 实时读取进度：current 当前物理读到哪了（绑定文件流） | 顺序读时实时推进，锁外 |
-| **committed** | 提交进度：已确认交付进 input channel 的边界 | 仅 drain 在锁内 `commit()` 时，由 current 拷贝而来 |
+| **current** | 实时读取进度：current 当前物理读到哪了（绑定文件流） | 读段头 / 消费者读 body / 首次定位 skip 时实时推进，锁外 |
+| **committed** | 提交进度：已确认交付进 input channel 的边界 | 仅 drain 在锁内 `commit()` 时，由 current 的 file/段起始 + "本段已交付 body 字节"算出 |
 
 二者的差值，正是"已从磁盘读出、但尚未确认交付"的中间态（见 §6.2）：current 领先，committed 只在 commit 时追上。这不是重复存储，而是两个不同语义各存一份。
 
 **快照如何工作**：
 
-- `snapshot()` 在锁内据当前 reader 与其 **committed position** 生成一个新 Reader：新 Reader 的 current 从 committed 的位置起步，从那里顺序读完剩余数据。锁保证读到的 committed 是某次完整 commit 后的稳定值。
+- `snapshot()` 在锁内据当前 reader 的 **committed position** 生成一个新 Reader（构造时把 committed 拷给新 Reader 的 current 作起点）。锁保证读到的 committed 是某次完整 commit 后的稳定值。
+- 新 Reader 的 committed 可能落在某段**中间**（drain 做了部分 commit）。它的**首次** `nextSegment()` 会：先把 current 回退到该段段头（committed 的 readOffset 在段中，但段头在 segmentStartOffset），读段头，再 **skip 丢弃已交付的 prefix**，让 body 从未交付的剩余处开始。这是**唯一**会 skip 丢字节的地方；之后每次 `nextSegment()` 都不 skip（上一段 body 已被读尽，流自然停在下一段段头）。
 - snapshot Reader **自己也有 current / committed 两个 position**，current 顺序读时实时推进；但它**不投递、不 commit**，committed 字段从不被使用，不写回 root、不影响 root。读完即弃。
 
 ## 9. 当前问题
 
-历史实现把进度在**同一条链路里重复存了好几份**：reader、迭代器、内部 position 各存一份本应相同的进度，各自维护、互相漂移，是结构混乱的根源。根因是把读取逻辑硬塞进 Java `Iterator` 的 `hasNext/next` 契约（而我们的场景并不符合该契约），并让进度散落在多个对象上。重新设计按 §8 收敛：**抛弃 Java Iterator，把 `nextSegment()` 直接挂在 Reader 上**；**Reader 内部只保存两个 Position——current（实时读取，绑定文件流）与 committed（提交进度）**，`commit()` 就是把 committed 拷成 current 的一次同步，不再有第三份副本。
+历史实现把进度在**同一条链路里重复存了好几份**：reader、迭代器、内部 position 各存一份本应相同的进度，各自维护、互相漂移，是结构混乱的根源。根因是把读取逻辑硬塞进 Java `Iterator` 的 `hasNext/next` 契约（而我们的场景并不符合该契约），并让进度散落在多个对象上。重新设计按 §8 收敛：**抛弃 Java Iterator，把 `nextSegment()` 直接挂在 Reader 上**；**Reader 内部只保存两个 Position——current（实时读取，绑定文件流）与 committed（提交进度）**，`commit()` 就是据 current 把 committed 推进到"已交付边界"的一次同步，不再有第三份副本。
 
 ## 9.1 角色关系与所有权
 
@@ -227,7 +232,7 @@ flowchart TD
     Cur -->|"段体流"| Seg
     DrainCons -->|"投递缓冲块"| Channels
     DrainCons -->|"投递后调 segment.commit() (锁内)"| Com
-    Cur -.->|"commit: committed = current 拷贝"| Com
+    Cur -.->|"commit: committed ← 已交付 body 边界"| Com
 
     Com -->|"snapshot(): 据 committed<br/>生成新 Reader (锁内)"| SnapReader["snapshot Reader<br/>(自己的 current/committed)"]
     Files --> SnapReader
@@ -238,8 +243,19 @@ flowchart TD
 
 - **进度只有两份，都在 Reader 内**：current（实时读取，唯一实时来源，绑定文件流）与 committed（提交进度），没有第三份副本。
 - **段体所有权一交出（粗箭头）就归消费者**，Reader 不再跟踪它读到哪——只在下次 `nextSegment()` 入口检查 current 已把上一段读尽（首次免检）。
-- **`commit()` 挂在段上**：drain 消费者调 `segment.commit()`，把 committed 拷成当前 current。
+- **`commit()` 挂在段上**：drain 消费者调 `segment.commit()`，据 current 的 file/段起始把 committed 推进到"本段已交付 body 字节"边界（不是 current 的实时 readOffset）。
 - **snapshot 是另一个独立 Reader**（自己的 current/committed），据 root 的 committed 起步，只读不回写。
+
+## 9.2 drain 结束后的快照
+
+drain 线程跑完所有段后会 **close root reader**（释放文件资源）。但触发 checkpoint 的快照请求可能**晚于** drain 结束才到来——此时若再 `root.snapshot()` 会撞到"reader 已关闭"。
+
+约定：drain 跑完时在锁内置一个 `drainFinished` 标志（与快照请求的临界区互斥）。快照请求在锁内先看这个标志：
+
+- 未结束 → 正常 `root.snapshot()` 派生。
+- 已结束 → 不碰已关闭的 root，直接返回 **`Reader.emptyReader()`**（一个无段的空 Reader）。已交付完毕，本就没有剩余数据可快照；空 Reader 让上层消费链路无需特判（首次 `nextSegment()` 即 empty）。
+
+`emptyReader()` 共享一份静态的空 channel state（无文件），但每次返回**新的** Reader 实例（Reader 有独立生命周期，必须各自 close）；`NO_OP` 触发器也复用它。
 
 ## 10. 明确的非目标
 
