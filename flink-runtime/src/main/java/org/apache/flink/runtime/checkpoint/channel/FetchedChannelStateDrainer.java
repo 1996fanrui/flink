@@ -121,7 +121,7 @@ public final class FetchedChannelStateDrainer implements RecoveryCheckpointTrigg
      */
     private void drainSegment(SpillSegment seg, RecoverableInputChannel ch)
             throws IOException, InterruptedException {
-        InputStream in = seg.body();
+        InputStream in = seg.bodyStream();
         Buffer buf = ch.requestRecoveryBufferBlocking();
         int cap = buf.getMaxCapacity();
 

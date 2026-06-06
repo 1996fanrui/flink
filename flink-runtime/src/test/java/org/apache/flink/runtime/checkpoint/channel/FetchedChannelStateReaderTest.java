@@ -77,7 +77,7 @@ class FetchedChannelStateReaderTest {
             assertThat(seg.channelInfo()).isEqualTo(ch);
 
             // Body contains [4B recordLen][4B record data]
-            byte[] bodyBytes = readAll(seg.body());
+            byte[] bodyBytes = readAll(seg.bodyStream());
             assertThat(bodyBytes).hasSize(seg.length());
             assertThat(reader.nextSegment()).isEmpty();
         }
@@ -102,7 +102,7 @@ class FetchedChannelStateReaderTest {
             while ((next = reader.nextSegment()).isPresent()) {
                 SpillSegment seg = next.get();
                 channels.add(seg.channelInfo());
-                readAll(seg.body());
+                readAll(seg.bodyStream());
             }
         }
 
@@ -127,7 +127,7 @@ class FetchedChannelStateReaderTest {
             while ((next = reader.nextSegment()).isPresent()) {
                 SpillSegment seg = next.get();
                 channels.add(seg.channelInfo());
-                readAll(seg.body());
+                readAll(seg.bodyStream());
             }
         }
 
@@ -152,7 +152,7 @@ class FetchedChannelStateReaderTest {
 
         try (FetchedChannelStateReader reader = state.reader()) {
             SpillSegment seg = reader.nextSegment().orElseThrow(AssertionError::new);
-            InputStream body = seg.body();
+            InputStream body = seg.bodyStream();
             // Read exactly length bytes
             byte[] data = new byte[seg.length()];
             int totalRead = 0;
@@ -179,7 +179,7 @@ class FetchedChannelStateReaderTest {
 
         try (FetchedChannelStateReader reader = state.reader()) {
             SpillSegment seg = reader.nextSegment().orElseThrow(AssertionError::new);
-            byte[] bodyBytes = readAll(seg.body());
+            byte[] bodyBytes = readAll(seg.bodyStream());
             assertThat(bodyBytes.length).isEqualTo(seg.length());
         }
     }
@@ -211,7 +211,7 @@ class FetchedChannelStateReaderTest {
                 SpillSegment seg = next.get();
                 channels.add(seg.channelInfo());
                 // Body read must not throw even if the segment is in a different file.
-                readAll(seg.body());
+                readAll(seg.bodyStream());
             }
         }
 
@@ -242,7 +242,7 @@ class FetchedChannelStateReaderTest {
                 while ((next = snap.nextSegment()).isPresent()) {
                     SpillSegment seg = next.get();
                     channels.add(seg.channelInfo());
-                    readAll(seg.body());
+                    readAll(seg.bodyStream());
                 }
                 assertThat(channels).containsExactly(c0, c1);
             }
@@ -264,7 +264,7 @@ class FetchedChannelStateReaderTest {
         try (FetchedChannelStateReader root = state.reader()) {
             // Consume and commit first segment
             SpillSegment first = root.nextSegment().orElseThrow(AssertionError::new);
-            readAll(first.body());
+            readAll(first.bodyStream());
             first.commit();
 
             // Snapshot must start from second segment
@@ -274,7 +274,7 @@ class FetchedChannelStateReaderTest {
                 while ((next = snap.nextSegment()).isPresent()) {
                     SpillSegment seg = next.get();
                     channels.add(seg.channelInfo());
-                    readAll(seg.body());
+                    readAll(seg.bodyStream());
                 }
                 assertThat(channels).containsExactly(c1);
             }
@@ -297,7 +297,7 @@ class FetchedChannelStateReaderTest {
         try (FetchedChannelStateReader root = state.reader()) {
             SpillSegment seg = root.nextSegment().orElseThrow(AssertionError::new);
             int fullLength = seg.length();
-            InputStream body = seg.body();
+            InputStream body = seg.bodyStream();
 
             // Read only 1 byte without committing, then snapshot — snapshot should start from 0
             // (no bytes committed yet).
@@ -307,7 +307,7 @@ class FetchedChannelStateReaderTest {
                 SpillSegment snapSeg =
                         snapBeforeCommit.nextSegment().orElseThrow(AssertionError::new);
                 assertThat(snapSeg.length()).isEqualTo(fullLength);
-                readAll(snapSeg.body());
+                readAll(snapSeg.bodyStream());
             }
 
             // Read rest of body and commit
@@ -336,7 +336,7 @@ class FetchedChannelStateReaderTest {
         try (FetchedChannelStateReader root = state.reader()) {
             SpillSegment seg = root.nextSegment().orElseThrow(AssertionError::new);
             int fullLength = seg.length();
-            InputStream body = seg.body();
+            InputStream body = seg.bodyStream();
 
             // Read and commit only a 3-byte prefix.
             byte[] prefix = new byte[3];
@@ -348,7 +348,7 @@ class FetchedChannelStateReaderTest {
                 SpillSegment snapSeg = snap.nextSegment().orElseThrow(AssertionError::new);
                 assertThat(snapSeg.channelInfo()).isEqualTo(ch);
                 assertThat(snapSeg.length()).isEqualTo(fullLength - 3);
-                byte[] tail = readAll(snapSeg.body());
+                byte[] tail = readAll(snapSeg.bodyStream());
                 assertThat(tail).isEqualTo(bytes(4, 5, 6, 7, 8));
                 assertThat(snap.nextSegment()).isEmpty();
             }
@@ -373,11 +373,11 @@ class FetchedChannelStateReaderTest {
                 FetchedChannelStateReader snap = root.snapshot()) {
             SpillSegment s0 = snap.nextSegment().orElseThrow(AssertionError::new);
             assertThat(s0.channelInfo()).isEqualTo(c0);
-            assertThat(readAll(s0.body())).isEqualTo(bytes(1, 2, 3));
+            assertThat(readAll(s0.bodyStream())).isEqualTo(bytes(1, 2, 3));
 
             SpillSegment s1 = snap.nextSegment().orElseThrow(AssertionError::new);
             assertThat(s1.channelInfo()).isEqualTo(c1);
-            assertThat(readAll(s1.body())).isEqualTo(bytes(4, 5));
+            assertThat(readAll(s1.bodyStream())).isEqualTo(bytes(4, 5));
 
             assertThat(snap.nextSegment()).isEmpty();
         }
@@ -400,7 +400,7 @@ class FetchedChannelStateReaderTest {
             assertThat(first.channelInfo()).isEqualTo(c0);
             // Deliver and commit a 3-byte prefix of the first segment.
             byte[] prefix = new byte[3];
-            assertThat(first.body().read(prefix)).isEqualTo(3);
+            assertThat(first.bodyStream().read(prefix)).isEqualTo(3);
             first.commit();
 
             // Snapshot resumes the first segment's tail, then must reset the skip to 0 for the
@@ -408,11 +408,11 @@ class FetchedChannelStateReaderTest {
             try (FetchedChannelStateReader snap = root.snapshot()) {
                 SpillSegment resumed = snap.nextSegment().orElseThrow(AssertionError::new);
                 assertThat(resumed.channelInfo()).isEqualTo(c0);
-                assertThat(readAll(resumed.body())).isEqualTo(bytes(4, 5, 6, 7, 8));
+                assertThat(readAll(resumed.bodyStream())).isEqualTo(bytes(4, 5, 6, 7, 8));
 
                 SpillSegment following = snap.nextSegment().orElseThrow(AssertionError::new);
                 assertThat(following.channelInfo()).isEqualTo(c1);
-                assertThat(readAll(following.body())).isEqualTo(bytes(9, 10));
+                assertThat(readAll(following.bodyStream())).isEqualTo(bytes(9, 10));
 
                 assertThat(snap.nextSegment()).isEmpty();
             }
@@ -431,7 +431,7 @@ class FetchedChannelStateReaderTest {
 
         try (FetchedChannelStateReader root = state.reader()) {
             SpillSegment seg = root.nextSegment().orElseThrow(AssertionError::new);
-            InputStream body = seg.body();
+            InputStream body = seg.bodyStream();
 
             // Commit in two chunks: 2 bytes, then 2 more (4 delivered of 6).
             body.read(new byte[2]);
@@ -443,7 +443,7 @@ class FetchedChannelStateReaderTest {
             try (FetchedChannelStateReader snap = root.snapshot()) {
                 SpillSegment snapSeg = snap.nextSegment().orElseThrow(AssertionError::new);
                 assertThat(snapSeg.length()).isEqualTo(2);
-                assertThat(readAll(snapSeg.body())).isEqualTo(bytes(5, 6));
+                assertThat(readAll(snapSeg.bodyStream())).isEqualTo(bytes(5, 6));
                 assertThat(snap.nextSegment()).isEmpty();
             }
         }
@@ -466,18 +466,18 @@ class FetchedChannelStateReaderTest {
         try (FetchedChannelStateReader root = state.reader()) {
             SpillSegment first = root.nextSegment().orElseThrow(AssertionError::new);
             // Commit a 1-byte prefix of the file-0 segment.
-            first.body().read(new byte[1]);
+            first.bodyStream().read(new byte[1]);
             first.commit();
 
             try (FetchedChannelStateReader snap = root.snapshot()) {
                 SpillSegment resumed = snap.nextSegment().orElseThrow(AssertionError::new);
                 assertThat(resumed.channelInfo()).isEqualTo(c0);
-                assertThat(readAll(resumed.body())).isEqualTo(bytes(2, 3, 4));
+                assertThat(readAll(resumed.bodyStream())).isEqualTo(bytes(2, 3, 4));
 
                 // Crossing into file 1 must reset the skip to 0.
                 SpillSegment following = snap.nextSegment().orElseThrow(AssertionError::new);
                 assertThat(following.channelInfo()).isEqualTo(c1);
-                assertThat(readAll(following.body())).isEqualTo(bytes(5, 6, 7));
+                assertThat(readAll(following.bodyStream())).isEqualTo(bytes(5, 6, 7));
 
                 assertThat(snap.nextSegment()).isEmpty();
             }
@@ -501,7 +501,7 @@ class FetchedChannelStateReaderTest {
             Optional<SpillSegment> next;
             while ((next = root.nextSegment()).isPresent()) {
                 SpillSegment seg = next.get();
-                readAll(seg.body());
+                readAll(seg.bodyStream());
                 seg.commit();
                 count++;
             }
@@ -540,7 +540,7 @@ class FetchedChannelStateReaderTest {
         try (FetchedChannelStateReader reader = state.reader()) {
             SpillSegment seg = reader.nextSegment().orElseThrow(AssertionError::new);
             // bufferLength from header says > 0 bytes, but file has nothing after the header.
-            assertThatThrownBy(() -> readAll(seg.body()))
+            assertThatThrownBy(() -> readAll(seg.bodyStream()))
                     .isInstanceOfAny(EOFException.class, IOException.class);
         }
     }
@@ -632,7 +632,7 @@ class FetchedChannelStateReaderTest {
         try (FetchedChannelStateReader reader = state.reader()) {
             SpillSegment seg = reader.nextSegment().orElseThrow(AssertionError::new);
             // Read only part of the body — do not exhaust it.
-            seg.body().read();
+            seg.bodyStream().read();
 
             // Advancing to the next segment while the previous body is not fully consumed must fail
             // loud.

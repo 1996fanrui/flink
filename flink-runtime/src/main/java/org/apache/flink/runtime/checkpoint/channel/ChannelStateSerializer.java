@@ -43,13 +43,6 @@ interface ChannelStateSerializer {
 
     void writeData(DataOutputStream stream, Buffer... flinkBuffers) throws IOException;
 
-    /**
-     * Writes an int length prefix followed by exactly {@code length} bytes copied from {@code
-     * input}. Throws {@link java.io.EOFException} if the input stream ends before {@code length}
-     * bytes are read.
-     *
-     * @param length must be non-negative
-     */
     void writeData(DataOutputStream stream, InputStream input, int length) throws IOException;
 
     void readHeader(InputStream stream) throws IOException;

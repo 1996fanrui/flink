@@ -137,7 +137,7 @@ class FetchedChannelStateDrainerTest {
         int count = 0;
         Optional<SpillSegment> next;
         while ((next = snap.nextSegment()).isPresent()) {
-            drainBody(next.get().body());
+            drainBody(next.get().bodyStream());
             count++;
         }
         snap.close();

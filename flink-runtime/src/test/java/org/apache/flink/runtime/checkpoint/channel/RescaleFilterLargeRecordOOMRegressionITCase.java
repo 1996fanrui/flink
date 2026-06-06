@@ -109,7 +109,7 @@ class RescaleFilterLargeRecordOOMRegressionITCase {
             Optional<SpillSegment> next;
             while ((next = reader.nextSegment()).isPresent()) {
                 SpillSegment seg = next.get();
-                try (InputStream body = seg.body()) {
+                try (InputStream body = seg.bodyStream()) {
                     byte[] buf = new byte[4096];
                     int read;
                     while ((read = body.read(buf)) != -1) {

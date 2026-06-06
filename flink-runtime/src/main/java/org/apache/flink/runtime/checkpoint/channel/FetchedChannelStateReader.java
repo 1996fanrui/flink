@@ -21,8 +21,9 @@ import org.apache.flink.annotation.Internal;
 
 import java.io.Closeable;
 import java.io.InputStream;
-import java.util.Collections;
 import java.util.Optional;
+
+import static org.apache.flink.runtime.checkpoint.channel.FetchedChannelStateReaderImpl.EMPTY_READER;
 
 /**
  * Forward reader over a {@link FetchedChannelState}'s spill files. This is our own segment reader,
@@ -73,33 +74,21 @@ public interface FetchedChannelStateReader extends Closeable {
      * trigger).
      */
     static FetchedChannelStateReader emptyReader() {
-        return EmptyStateHolder.EMPTY_STATE.reader();
-    }
-
-    /**
-     * Lazily-initialized holder for the shared empty channel state (no spill files). Safe to share:
-     * its only mutable state is a reference counter whose cleanup deletes an empty file list, a
-     * no-op. Held in a nested type because interfaces cannot have private static fields.
-     */
-    class EmptyStateHolder {
-        private static final FetchedChannelState EMPTY_STATE =
-                new FetchedChannelState(Collections.emptyList());
-
-        private EmptyStateHolder() {}
+        return EMPTY_READER;
     }
 
     /**
      * One per-channel segment produced by {@link #nextSegment()}.
      *
      * <p>The segment body bytes are opaque to the reader; record framing is handled by the
-     * consumer's deserializer. A consumer reads {@link #body()} to EOF (after {@link #length()}
-     * bytes), and the drain consumer additionally calls {@link #commit()} under the drainer lock
-     * after each delivery so that a later {@link FetchedChannelStateReader#snapshot()} resumes from
-     * the delivered boundary.
+     * consumer's deserializer. A consumer reads {@link #bodyStream()} to EOF (after {@link
+     * #length()} bytes), and the drain consumer additionally calls {@link #commit()} under the
+     * drainer lock after each delivery so that a later {@link FetchedChannelStateReader#snapshot()}
+     * resumes from the delivered boundary.
      *
-     * <p>Ownership of {@link #body()} passes to the consumer: the reader no longer tracks how far
-     * it has been read. The "previous body must be fully read" rule (no skip-ahead) is enforced at
-     * the next {@link FetchedChannelStateReader#nextSegment()} call, not here.
+     * <p>Ownership of {@link #bodyStream()} passes to the consumer: the reader no longer tracks how
+     * far it has been read. The "previous body must be fully read" rule (no skip-ahead) is enforced
+     * at the next {@link FetchedChannelStateReader#nextSegment()} call, not here.
      *
      * <p>A segment is valid only until the next {@code nextSegment()} call on the parent reader.
      */
@@ -116,7 +105,7 @@ public interface FetchedChannelStateReader extends Closeable {
          * <p>The stream is single-use, not thread-safe, and must be fully consumed before the next
          * {@link FetchedChannelStateReader#nextSegment()}.
          */
-        InputStream body();
+        InputStream bodyStream();
 
         /**
          * Number of body bytes this segment hands out before EOF. For the snapshot path this is the
@@ -127,9 +116,10 @@ public interface FetchedChannelStateReader extends Closeable {
 
         /**
          * Advances the reader's committed position to match how many body bytes have been read from
-         * {@link #body()} so far. Must be called under the drainer lock after each buffer delivery
-         * so that a subsequent {@link FetchedChannelStateReader#snapshot()} sees the correct
-         * delivered boundary. Only the drain (root) reader commits; the snapshot reader never does.
+         * {@link #bodyStream()} so far. Must be called under the drainer lock after each buffer
+         * delivery so that a subsequent {@link FetchedChannelStateReader#snapshot()} sees the
+         * correct delivered boundary. Only the drain (root) reader commits; the snapshot reader
+         * never does.
          */
         void commit();
     }

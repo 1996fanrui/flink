@@ -185,7 +185,7 @@ class ChannelStateCheckpointWriter {
                             long offset = checkpointStream.getPos();
                             try (AutoCloseable ignored =
                                     NetworkActionsLogger.measureIO(action, seg.channelInfo())) {
-                                serializer.writeData(dataStream, seg.body(), seg.length());
+                                serializer.writeData(dataStream, seg.bodyStream(), seg.length());
                             }
                             long size = checkpointStream.getPos() - offset;
                             pendingResult
