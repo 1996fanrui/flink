@@ -43,7 +43,6 @@ import javax.annotation.Nullable;
 import java.io.BufferedOutputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -446,18 +445,14 @@ class SpillingNoFilteringHandler extends AbstractSpillingHandler {
     private void recoverPassThroughToSpill(InputChannelInfo channelInfo, Buffer source)
             throws IOException {
         // The recovered bytes are already a length-prefixed record sequence, so append them
-        // verbatim
-        // into the segment without re-framing.
-        DataOutputSerializer segmentSerializer = segmentSerializerFor(channelInfo);
-        ByteBuffer src = source.getNioBufferReadable();
-        if (src.hasArray()) {
-            segmentSerializer.write(
-                    src.array(), src.arrayOffset() + src.position(), src.remaining());
-        } else {
-            byte[] tmp = new byte[src.remaining()];
-            src.get(tmp);
-            segmentSerializer.write(tmp, 0, tmp.length);
-        }
+        // verbatim into the segment without re-framing. Writing straight from the backing
+        // MemorySegment lets it absorb the heap/off-heap distinction, avoiding both a branch on the
+        // NIO buffer kind and the intermediate copy a direct buffer would otherwise require.
+        segmentSerializerFor(channelInfo)
+                .write(
+                        source.getMemorySegment(),
+                        source.getMemorySegmentOffset() + source.getReaderIndex(),
+                        source.readableBytes());
     }
 }
 
