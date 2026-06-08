@@ -47,6 +47,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
+import javax.annotation.concurrent.GuardedBy;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
@@ -105,6 +106,7 @@ public class LocalInputChannel extends InputChannel
      * (see {@link #onRecoveredStateConsumed()}). While {@code true} the consume path serves
      * recovered buffers and does not poll ordinary upstream data.
      */
+    @GuardedBy("recoveredBuffers")
     private boolean inRecovery;
 
     /**
@@ -479,24 +481,31 @@ public class LocalInputChannel extends InputChannel
     public Optional<BufferAndAvailability> getNextBuffer() throws IOException {
         checkError();
 
+        // Read inRecovery and poll the recovered buffer under a single lock acquisition to avoid
+        // grabbing the monitor twice on the hot path.
         boolean inRecovery;
+        Buffer recoveredBuf = null;
         synchronized (recoveredBuffers) {
             inRecovery = this.inRecovery;
+            if (inRecovery && !hasPendingPriorityEvent && !recoveredBuffers.isEmpty()) {
+                recoveredBuf = recoveredBuffers.poll();
+            }
         }
 
         if (inRecovery) {
+            // Always return an already-polled recovered buffer first: hasPendingPriorityEvent may
+            // be flipped to true by a concurrent notifyPriorityEvent() after the poll, and
+            // re-reading
+            // it here would otherwise drop this buffer. A pending priority event is served on the
+            // next getNextBuffer() call instead.
+            if (recoveredBuf != null) {
+                return wrapRecoveredBufferAsAvailability(recoveredBuf);
+            }
             if (hasPendingPriorityEvent) {
                 return pullPriorityFromSubpartitionView();
             }
-            Buffer buf;
-            synchronized (recoveredBuffers) {
-                if (recoveredBuffers.isEmpty()) {
-                    // Drain not finished yet; block normal upstream data until delivery completes.
-                    return Optional.empty();
-                }
-                buf = recoveredBuffers.poll();
-            }
-            return wrapRecoveredBufferAsAvailability(buf);
+            // Drain not finished yet; block normal upstream data until delivery completes.
+            return Optional.empty();
         }
 
         if (!toBeConsumedBuffers.isEmpty()) {
