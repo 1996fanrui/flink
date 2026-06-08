@@ -88,9 +88,14 @@ class RecoveredChannelStateHandlerFilterRoutingTest {
     @Test
     void testFilterOnRoutesOutputToChannelState() throws Exception {
         ChannelStateFilteringHandler filteringHandler = newPassThroughFilteringHandler();
-        try (ChannelStateFilteringHandler ignored = filteringHandler;
-                SpillingWithFilteringHandler handler = newFilterOnHandler(filteringHandler)) {
+        try (ChannelStateFilteringHandler ignored = filteringHandler) {
+            SpillingWithFilteringHandler handler = newFilterOnHandler(filteringHandler);
             invokeRecoverWithRecords(handler, 1L, 2L, 3L);
+
+            // Surviving records accumulate in the in-memory segment serializer; they are only
+            // sealed and flushed to a spill file on channel switch or close. With a single channel
+            // and no switch, close() is what seals the segment, so the assertion must follow it.
+            handler.close();
 
             assertThat(handler.peekSpillFilesForTesting())
                     .as("filter-on path must spill the surviving records to a file")
