@@ -39,7 +39,7 @@ public interface RecoverableInputChannel {
      * Marks producer-side recovery delivery complete. Implementations wait for upstream readiness
      * before flipping this state so channels without spill entries still observe the same handoff.
      */
-    void finishRecoveredBufferDelivery() throws IOException;
+    void finishRecoveredBufferDelivery() throws IOException, InterruptedException;
 
     /**
      * Inserts a {@code RecoveryCheckpointBarrier} for {@code checkpointId} into this channel's

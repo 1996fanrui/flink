@@ -63,7 +63,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
-import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -156,7 +156,14 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
     @GuardedBy("receivedBuffers")
     private final ArrayDeque<SequenceBuffer> recoveryEventStash = new ArrayDeque<>();
 
-    private final CompletableFuture<Void> upstreamReady = new CompletableFuture<>();
+    /**
+     * One-shot latch that opens once the upstream reader is registered and the connection is live
+     * (signalled by the first {@link #onBuffer} or by {@link #releaseAllResources()}).
+     * Recovery-side awaiters block on it before handing off; once open, {@link
+     * CountDownLatch#countDown()} on the hot path is a cheap idempotent no-op, unlike completing a
+     * {@code CompletableFuture}.
+     */
+    private final CountDownLatch upstreamReady = new CountDownLatch(1);
 
     private long totalQueueSizeInBytes;
 
@@ -206,7 +213,7 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
 
     @VisibleForTesting
     void completeUpstreamReadyForTest() {
-        upstreamReady.complete(null);
+        upstreamReady.countDown();
     }
 
     /**
@@ -245,10 +252,15 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
     }
 
     @Override
-    public void finishRecoveredBufferDelivery() throws IOException {
-        upstreamReady.join();
+    public void finishRecoveredBufferDelivery() throws IOException, InterruptedException {
+        upstreamReady.await();
         boolean wasEmpty;
         synchronized (receivedBuffers) {
+            // A release may have opened the latch instead of the first buffer; bail out so we never
+            // append to a queue that releaseAllResources() already cleared.
+            if (isReleased.get()) {
+                return;
+            }
             checkState(inRecovery, "Recovery delivery already finished.");
             // Append the sentinel after the last recovered buffer. The consume path flips out of
             // recovery (unstash + reopen credit) only once it polls this sentinel, guaranteeing all
@@ -283,7 +295,10 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
 
     @Override
     public Buffer requestRecoveryBufferBlocking() throws InterruptedException, IOException {
-        upstreamReady.join();
+        upstreamReady.await();
+        // If a release opened the latch instead of the first buffer, requestBufferBlocking()
+        // detects
+        // the released channel and throws CancelTaskException.
         return bufferManager.requestBufferBlocking();
     }
 
@@ -464,8 +479,8 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
     void releaseAllResources() throws IOException {
         if (isReleased.compareAndSet(false, true)) {
             // Unblock any thread awaiting upstreamReady (drain still in flight) so it falls
-            // through to the synchronized block and recycles its buffer instead of deadlocking.
-            upstreamReady.completeExceptionally(new CancelTaskException("Channel released."));
+            // through and observes the released state instead of deadlocking.
+            upstreamReady.countDown();
 
             final ArrayDeque<Buffer> releasedBuffers;
             synchronized (receivedBuffers) {
@@ -720,8 +735,9 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
         boolean recycleBuffer = true;
 
         // The first buffer from the producer proves the upstream reader is registered and the
-        // connection is live; release any recovery-side awaiter. Idempotent on later buffers.
-        upstreamReady.complete(null);
+        // connection is live; release any recovery-side awaiter. On later buffers this is a cheap
+        // idempotent no-op (the latch count is already zero).
+        upstreamReady.countDown();
 
         try {
             if (expectedSequenceNumber != sequenceNumber) {
