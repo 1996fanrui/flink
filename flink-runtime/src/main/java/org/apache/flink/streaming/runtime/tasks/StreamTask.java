@@ -920,8 +920,9 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
         // start checkpointing. If we implement incremental checkpointing of input channel state
         // we must make sure it supports CheckpointType#FULL_CHECKPOINT.
         List<CompletableFuture<?>> recoveredFutures =
-                wireGateConversion(
-                        inputGates, checkpointingDuringRecoveryEnabled, physicalChannelsFuture);
+                checkpointingDuringRecoveryEnabled
+                        ? wireGateConversionWithCheckpointing(inputGates, physicalChannelsFuture)
+                        : wireGateConversion(inputGates);
 
         // Return allOf future instead of thenRun future. thenRun() returns a NEW future that
         // completes only after the callback finishes. CompletableFuture executes thenRun callbacks
@@ -1018,31 +1019,49 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
     }
 
     /**
-     * Wires each gate's {@code requestPartitions()} to run on the mailbox once its recovery trigger
-     * fires, and (when checkpointing-during-recovery is enabled) aggregates the per-gate
-     * completions into {@code physicalChannelsFuture}. The trigger stays synchronous (no {@code
-     * *Async}): completing on the {@code channelIOExecutor} that fired {@code
+     * Wires each gate's {@code requestPartitions()} to run on the mailbox once its state-consumed
+     * trigger fires. Used when checkpointing-during-recovery is disabled, so no physical-channel
+     * conversion needs to be tracked.
+     *
+     * <p>Returns the futures the recovery mailbox loop must await before transitioning to RUNNING.
+     */
+    private List<CompletableFuture<?>> wireGateConversion(IndexedInputGate[] inputGates) {
+        List<CompletableFuture<?>> recoveredFutures = new ArrayList<>(inputGates.length);
+        for (InputGate inputGate : inputGates) {
+            CompletableFuture<?> requestPartitionsTrigger = inputGate.getStateConsumedFuture();
+            recoveredFutures.add(requestPartitionsTrigger);
+            requestPartitionsTrigger.thenRun(
+                    () ->
+                            mainMailboxExecutor.execute(
+                                    inputGate::requestPartitions,
+                                    "Input gate request partitions"));
+        }
+        return recoveredFutures;
+    }
+
+    /**
+     * Wires each gate's {@code requestPartitions()} to run on the mailbox once its
+     * buffer-filtering-complete trigger fires, and aggregates the per-gate completions into {@code
+     * physicalChannelsFuture}. Used when checkpointing-during-recovery is enabled. The trigger stays
+     * synchronous (no {@code *Async}): completing on the {@code channelIOExecutor} that fired {@code
      * bufferFilteringCompleteFuture} would let the poison mail outrun the suspend callback.
      *
      * <p>Returns the futures the recovery mailbox loop must await before transitioning to RUNNING.
      */
-    private List<CompletableFuture<?>> wireGateConversion(
+    private List<CompletableFuture<?>> wireGateConversionWithCheckpointing(
             IndexedInputGate[] inputGates,
-            boolean checkpointingDuringRecoveryEnabled,
-            @Nullable CompletableFuture<List<RecoverableInputChannel>> physicalChannelsFuture) {
+            CompletableFuture<List<RecoverableInputChannel>> physicalChannelsFuture) {
         List<CompletableFuture<?>> recoveredFutures = new ArrayList<>(inputGates.length);
         // Keep the recovery mailbox loop alive until physical channels are converted; otherwise a
         // checkpoint barrier mail could block on the channels future that only a later conversion
         // mail can complete.
-        if (checkpointingDuringRecoveryEnabled && inputGates.length > 0) {
+        if (inputGates.length > 0) {
             recoveredFutures.add(physicalChannelsFuture);
         }
         List<CompletableFuture<Void>> perGateConverted = new ArrayList<>(inputGates.length);
         for (InputGate inputGate : inputGates) {
             CompletableFuture<?> requestPartitionsTrigger =
-                    checkpointingDuringRecoveryEnabled
-                            ? inputGate.getBufferFilteringCompleteFuture()
-                            : inputGate.getStateConsumedFuture();
+                    inputGate.getBufferFilteringCompleteFuture();
             recoveredFutures.add(requestPartitionsTrigger);
 
             CompletableFuture<Void> gateConverted = new CompletableFuture<>();
@@ -1061,18 +1080,16 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                                     },
                                     "Input gate request partitions"));
         }
-        if (checkpointingDuringRecoveryEnabled) {
-            CompletableFuture.allOf(perGateConverted.toArray(new CompletableFuture[0]))
-                    .thenApply(ignored -> collectPhysicalChannels(inputGates))
-                    .whenComplete(
-                            (physicalChannels, failure) -> {
-                                if (failure != null) {
-                                    physicalChannelsFuture.completeExceptionally(failure);
-                                } else {
-                                    physicalChannelsFuture.complete(physicalChannels);
-                                }
-                            });
-        }
+        CompletableFuture.allOf(perGateConverted.toArray(new CompletableFuture[0]))
+                .thenApply(ignored -> collectPhysicalChannels(inputGates))
+                .whenComplete(
+                        (physicalChannels, failure) -> {
+                            if (failure != null) {
+                                physicalChannelsFuture.completeExceptionally(failure);
+                            } else {
+                                physicalChannelsFuture.complete(physicalChannels);
+                            }
+                        });
         return recoveredFutures;
     }
 
