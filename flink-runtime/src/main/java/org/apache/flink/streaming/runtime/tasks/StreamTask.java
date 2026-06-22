@@ -310,13 +310,14 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
     private final ExecutorService channelIOExecutor;
 
     /**
-     * Completed (on the {@code channelIOExecutor}) once recovery setup decides whether a spill
-     * drainer is needed: with the drainer when recovery carries channel state, otherwise with
-     * {@link RecoveryCheckpointTrigger#NO_OP}. The barrier handler is built before the drainer
-     * exists, so it holds this future and resolves the trigger lazily; by the time a checkpoint can
-     * fire during recovery the future is already completed, so callers read it via {@code getNow}.
+     * Completed (on the {@code channelIOExecutor}) once recovery setup finishes, carrying the
+     * resolved checkpoint trigger: the spill drainer when recovery carries channel state, otherwise
+     * {@link RecoveryCheckpointTrigger#NO_OP}. Two consumers ride on this single completion: the
+     * barrier handler, built before the drainer exists, holds the future and reads the trigger
+     * lazily via {@code getNow} once a checkpoint fires; and gate conversion waits on its completion
+     * to run {@code requestPartitions()} (buffer filtering is done by then).
      */
-    private final CompletableFuture<RecoveryCheckpointTrigger> recoveryCheckpointTriggerFuture =
+    private final CompletableFuture<RecoveryCheckpointTrigger> recoverySetupCompleteFuture =
             new CompletableFuture<>();
 
     // ========================================================
@@ -900,12 +901,11 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                 CheckpointingOptions.isCheckpointingDuringRecoveryEnabled(getJobConfiguration());
 
         // Must set the flag on input gates BEFORE starting the async read task, because
-        // finishReadRecoveredState() checks this flag to complete bufferFilteringCompleteFuture.
+        // finishReadRecoveredState() reads this flag to decide whether to enqueue the legacy
+        // end-of-state sentinel.
         for (IndexedInputGate inputGate : inputGates) {
             inputGate.setCheckpointingDuringRecoveryEnabled(checkpointingDuringRecoveryEnabled);
         }
-
-        final CompletableFuture<Void> bufferFilteringCompleteFuture = new CompletableFuture<>();
 
         final CompletableFuture<List<RecoverableInputChannel>> physicalChannelsFuture =
                 new CompletableFuture<>();
@@ -916,7 +916,6 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                                 reader,
                                 inputGates,
                                 checkpointingDuringRecoveryEnabled,
-                                bufferFilteringCompleteFuture,
                                 physicalChannelsFuture));
 
         // We wait for all input channel state to recover before we go into RUNNING state, and thus
@@ -924,15 +923,14 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
         // we must make sure it supports CheckpointType#FULL_CHECKPOINT.
         List<CompletableFuture<?>> recoveredFutures =
                 checkpointingDuringRecoveryEnabled
-                        ? wireGateConversionWithCheckpointing(
-                                inputGates, bufferFilteringCompleteFuture, physicalChannelsFuture)
+                        ? wireGateConversionWithCheckpointing(inputGates, physicalChannelsFuture)
                         : wireGateConversion(inputGates);
 
         // Return allOf future instead of thenRun future. thenRun() returns a NEW future that
         // completes only after the callback finishes. CompletableFuture executes thenRun callbacks
         // synchronously on the thread that calls complete(). When recoveredFutures contains
-        // bufferFilteringCompleteFuture (checkpointingDuringRecovery enabled), complete() is called
-        // on channelIOExecutor (in finishReadRecoveredState), so thenRun(suspend) also runs on
+        // recoverySetupCompleteFuture (checkpointingDuringRecovery enabled), complete() is called
+        // on channelIOExecutor (in recoverChannelState), so thenRun(suspend) also runs on
         // channelIOExecutor. suspend() sends a poison mail, and the mailbox thread can pick it up
         // and exit runMailboxLoop() before the thenRun future completes — causing
         // checkState(isDone) to fail. With stateConsumedFuture (the default), complete() runs on
@@ -956,7 +954,6 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
             SequentialChannelStateReader reader,
             IndexedInputGate[] inputGates,
             boolean checkpointingDuringRecoveryEnabled,
-            CompletableFuture<Void> bufferFilteringCompleteFuture,
             @Nullable CompletableFuture<List<RecoverableInputChannel>> physicalChannelsFuture) {
         FetchedChannelStateDrainer drainer = null;
         try {
@@ -979,16 +976,16 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
             for (IndexedInputGate gate : inputGates) {
                 gate.finishReadRecoveredState();
             }
-            bufferFilteringCompleteFuture.complete(null);
-            // Resolve the trigger for the barrier handler: the drainer when recovery carries
-            // channel state, NO_OP otherwise. Completed before any checkpoint can fire during
-            // recovery, so the handler reads it via getNow.
-            recoveryCheckpointTriggerFuture.complete(
+            // Recovery setup is done: resolve the trigger for the barrier handler (the drainer when
+            // recovery carries channel state, NO_OP otherwise) and, by the same completion, release
+            // gate conversion. Completed before any checkpoint can fire during recovery, so the
+            // handler reads it via getNow.
+            recoverySetupCompleteFuture.complete(
                     drainer != null ? drainer : RecoveryCheckpointTrigger.NO_OP);
         } catch (Throwable t) {
             asyncExceptionHandler.handleAsyncException(
                     "Unable to set up recovered channel state", t);
-            recoveryCheckpointTriggerFuture.completeExceptionally(t);
+            recoverySetupCompleteFuture.completeExceptionally(t);
             if (checkpointingDuringRecoveryEnabled) {
                 if (drainer == null) {
                     try {
@@ -1045,17 +1042,16 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
     }
 
     /**
-     * Wires each gate's {@code requestPartitions()} to run on the mailbox once its
-     * buffer-filtering-complete trigger fires, and aggregates the per-gate completions into {@code
-     * physicalChannelsFuture}. Used when checkpointing-during-recovery is enabled. The trigger
-     * stays synchronous (no {@code *Async}): completing on the {@code channelIOExecutor} that fired
-     * {@code bufferFilteringCompleteFuture} would let the poison mail outrun the suspend callback.
+     * Wires each gate's {@code requestPartitions()} to run on the mailbox once recovery setup
+     * completes, and aggregates the per-gate completions into {@code physicalChannelsFuture}. Used
+     * when checkpointing-during-recovery is enabled. The trigger stays synchronous (no {@code
+     * *Async}): completing on the {@code channelIOExecutor} that fired {@code
+     * recoverySetupCompleteFuture} would let the poison mail outrun the suspend callback.
      *
      * <p>Returns the futures the recovery mailbox loop must await before transitioning to RUNNING.
      */
     private List<CompletableFuture<?>> wireGateConversionWithCheckpointing(
             IndexedInputGate[] inputGates,
-            CompletableFuture<Void> bufferFilteringCompleteFuture,
             CompletableFuture<List<RecoverableInputChannel>> physicalChannelsFuture) {
         List<CompletableFuture<?>> recoveredFutures = new ArrayList<>(inputGates.length);
         // Keep the recovery mailbox loop alive until physical channels are converted; otherwise a
@@ -1064,9 +1060,9 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
         if (inputGates.length > 0) {
             recoveredFutures.add(physicalChannelsFuture);
         }
-        recoveredFutures.add(bufferFilteringCompleteFuture);
+        recoveredFutures.add(recoverySetupCompleteFuture);
         CompletableFuture<Void> gateConverted = new CompletableFuture<>();
-        bufferFilteringCompleteFuture.thenRun(
+        recoverySetupCompleteFuture.thenRun(
                 () ->
                         mainMailboxExecutor.execute(
                                 () -> {
@@ -1110,17 +1106,17 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 
     /**
      * Returns a trigger that resolves the real implementation lazily: the barrier handler is built
-     * before the spill drainer exists, so this defers reading {@link
-     * #recoveryCheckpointTriggerFuture} until a checkpoint actually fires, by which point recovery
-     * setup has completed it. Resolving at construction time would block; an unresolved future at
-     * snapshot time means an invariant broke, so it fails loud.
+     * before the spill drainer exists, so this defers reading {@link #recoverySetupCompleteFuture}
+     * until a checkpoint actually fires, by which point recovery setup has completed it. Resolving
+     * at construction time would block; an unresolved future at snapshot time means an invariant
+     * broke, so it fails loud.
      */
     public RecoveryCheckpointTrigger getRecoveryCheckpointTrigger() {
         return cpId -> {
             checkState(
-                    recoveryCheckpointTriggerFuture.isDone(),
+                    recoverySetupCompleteFuture.isDone(),
                     "Recovery checkpoint trigger is not resolved at checkpoint start.");
-            return recoveryCheckpointTriggerFuture.getNow(null).snapshotAndInsertBarriers(cpId);
+            return recoverySetupCompleteFuture.getNow(null).snapshotAndInsertBarriers(cpId);
         };
     }
 
