@@ -314,8 +314,8 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
      * resolved checkpoint trigger: the spill drainer when recovery carries channel state, otherwise
      * {@link RecoveryCheckpointTrigger#NO_OP}. Two consumers ride on this single completion: the
      * barrier handler, built before the drainer exists, holds the future and reads the trigger
-     * lazily via {@code getNow} once a checkpoint fires; and gate conversion waits on its completion
-     * to run {@code requestPartitions()} (buffer filtering is done by then).
+     * lazily via {@code getNow} once a checkpoint fires; and gate conversion waits on its
+     * completion to run {@code requestPartitions()} (buffer filtering is done by then).
      */
     private final CompletableFuture<RecoveryCheckpointTrigger> recoverySetupCompleteFuture =
             new CompletableFuture<>();
