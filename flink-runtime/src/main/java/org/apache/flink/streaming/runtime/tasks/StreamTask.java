@@ -907,6 +907,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 
         final CompletableFuture<List<RecoverableInputChannel>> physicalChannelsFuture =
                 checkpointingDuringRecoveryEnabled ? new CompletableFuture<>() : null;
+
         channelIOExecutor.execute(
                 () ->
                         recoverChannelState(
@@ -956,16 +957,16 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
             reader.readInputData(inputGates, createRecordFilterContext());
 
             if (checkpointingDuringRecoveryEnabled) {
-                FetchedChannelState producedChannelState = reader.getProducedChannelState();
-                boolean needsRecovery = producedChannelState != null;
+                Optional<FetchedChannelState> producedChannelState =
+                        reader.getProducedChannelState();
+                boolean needsRecovery = producedChannelState.isPresent();
                 for (IndexedInputGate gate : inputGates) {
                     gate.setNeedsRecovery(needsRecovery);
                 }
                 if (needsRecovery) {
-                    drainer =
-                            new FetchedChannelStateDrainer(
-                                    producedChannelState, physicalChannelsFuture);
-                    producedChannelState.release();
+                    FetchedChannelState channelState = producedChannelState.get();
+                    drainer = new FetchedChannelStateDrainer(channelState, physicalChannelsFuture);
+                    channelState.release();
                 }
             }
 
@@ -984,9 +985,10 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
             if (checkpointingDuringRecoveryEnabled) {
                 if (drainer == null) {
                     try {
-                        FetchedChannelState leakedChannelState = reader.getProducedChannelState();
-                        if (leakedChannelState != null) {
-                            leakedChannelState.release();
+                        Optional<FetchedChannelState> producedChannelState =
+                                reader.getProducedChannelState();
+                        if (producedChannelState.isPresent()) {
+                            producedChannelState.get().release();
                         }
                     } catch (Throwable ignored) {
                         // Preserve the original recovery failure.

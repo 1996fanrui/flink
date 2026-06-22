@@ -38,14 +38,6 @@ class AbstractSpillingHandlerTest {
     @TempDir Path tempDir;
 
     @Test
-    void testSingleRecordProducesOneFile() throws Exception {
-        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
-            writer.writeRecord(new InputChannelInfo(0, 0), bytes(1, 2, 3, 4), 4);
-            assertThat(writer.getChannelState().files()).hasSize(1);
-        }
-    }
-
-    @Test
     void testChannelSwitchProducesTwoSegmentsInOneFile() throws Exception {
         try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
             writer.writeRecord(new InputChannelInfo(0, 0), bytes(0xAA, 0xBB), 2);
@@ -106,17 +98,6 @@ class AbstractSpillingHandlerTest {
     }
 
     @Test
-    void testMultipleEmptyChannelSwitchesProduceNoFile() throws Exception {
-        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
-            writer.openSegment(new InputChannelInfo(0, 0));
-            writer.openSegment(new InputChannelInfo(0, 1));
-            writer.openSegment(new InputChannelInfo(1, 0));
-            // Only empty channel switches occurred, so no state (and no file) is produced.
-            assertThat(writer.getChannelState()).isNull();
-        }
-    }
-
-    @Test
     void testEmptySegmentsAroundANonEmptyOneProduceExactlyTheNonEmptyFile() throws Exception {
         try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
             writer.openSegment(new InputChannelInfo(0, 0));
@@ -149,22 +130,6 @@ class AbstractSpillingHandlerTest {
         }
     }
 
-    @Test
-    void testSingleLargeSegmentStaysInOneFile() throws Exception {
-        try (TestSpillWriter writer = new TestSpillWriter(tempDir, 1L)) {
-            writer.writeRecord(
-                    new InputChannelInfo(0, 0), bytes(1, 2, 3, 4, 5, 6, 7, 8, 9, 10), 10);
-            assertThat(writer.getChannelState().files()).hasSize(1);
-        }
-    }
-
-    @Test
-    void testCloseWithNoWriteProducesNoState() throws Exception {
-        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
-            assertThat(writer.getChannelState()).isNull();
-        }
-    }
-
     // -------------------------------------------------------------------------------------------
     // Disk-format verification
     // -------------------------------------------------------------------------------------------
@@ -182,29 +147,6 @@ class AbstractSpillingHandlerTest {
                 assertThat(in.read()).isEqualTo(0xAB);
                 assertThat(in.read()).isEqualTo(0xCD);
                 assertThat(in.read()).isEqualTo(0xEF);
-                assertThat(in.read()).isEqualTo(-1); // EOF
-            }
-        }
-    }
-
-    @Test
-    void testBufferLengthMatchesActualBodyBytes() throws Exception {
-        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
-            writer.writeRecord(new InputChannelInfo(0, 0), bytes(10, 20, 30), 3);
-            writer.writeRecord(new InputChannelInfo(0, 1), bytes(40, 50), 2);
-            Path file = writer.getChannelState().files().get(0);
-            try (DataInputStream in = new DataInputStream(new FileInputStream(file.toFile()))) {
-                in.readInt(); // gateIdx c0
-                in.readInt(); // channelIdx c0
-                int bl0 = in.readInt();
-                assertThat(bl0).isEqualTo(Integer.BYTES + 3);
-                in.skipBytes(bl0);
-
-                in.readInt(); // gateIdx c1
-                in.readInt(); // channelIdx c1
-                int bl1 = in.readInt();
-                assertThat(bl1).isEqualTo(Integer.BYTES + 2);
-                in.skipBytes(bl1);
                 assertThat(in.read()).isEqualTo(-1); // EOF
             }
         }

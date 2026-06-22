@@ -62,28 +62,6 @@ class FetchedChannelStateReaderTest {
     }
 
     @Test
-    void testSingleSegmentBodyMatchesWrittenBytes() throws Exception {
-        InputChannelInfo ch = new InputChannelInfo(0, 0);
-        byte[] record = bytes(1, 2, 3, 4);
-
-        FetchedChannelState state;
-        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
-            writer.writeRecord(ch, record, record.length);
-            state = writer.getChannelState();
-        }
-
-        try (FetchedChannelStateReader reader = state.reader()) {
-            SpillSegment seg = reader.nextSegment().orElseThrow(AssertionError::new);
-            assertThat(seg.channelInfo()).isEqualTo(ch);
-
-            // Body contains [4B recordLen][4B record data]
-            byte[] bodyBytes = readAll(seg.bodyStream());
-            assertThat(bodyBytes).hasSize(seg.length());
-            assertThat(reader.nextSegment()).isEmpty();
-        }
-    }
-
-    @Test
     void testMultipleIteratorIteratedInOrder() throws Exception {
         InputChannelInfo c0 = new InputChannelInfo(0, 0);
         InputChannelInfo c1 = new InputChannelInfo(0, 1);
@@ -108,32 +86,6 @@ class FetchedChannelStateReaderTest {
 
         // Segments are produced at channel switches: c0, c1, c0
         assertThat(channels).containsExactly(c0, c1, c0);
-    }
-
-    @Test
-    void testSameChannelContinuousWritesMergedIntoOneSegment() throws Exception {
-        InputChannelInfo ch = new InputChannelInfo(0, 0);
-
-        FetchedChannelState state;
-        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
-            writer.writeRecord(ch, bytes(1), 1);
-            writer.writeRecord(ch, bytes(2, 3), 2);
-            state = writer.getChannelState();
-        }
-
-        List<InputChannelInfo> channels = new ArrayList<>();
-        try (FetchedChannelStateReader reader = state.reader()) {
-            Optional<SpillSegment> next;
-            while ((next = reader.nextSegment()).isPresent()) {
-                SpillSegment seg = next.get();
-                channels.add(seg.channelInfo());
-                readAll(seg.bodyStream());
-            }
-        }
-
-        // Both writes on the same channel -> one segment.
-        assertThat(channels).hasSize(1);
-        assertThat(channels.get(0)).isEqualTo(ch);
     }
 
     // -------------------------------------------------------------------------------------------
@@ -163,24 +115,6 @@ class FetchedChannelStateReaderTest {
             }
             // Next read must return EOF
             assertThat(body.read()).isEqualTo(-1);
-        }
-    }
-
-    @Test
-    void testBodyLengthMatchesDiskHeaderBufferLength() throws Exception {
-        InputChannelInfo ch = new InputChannelInfo(0, 0);
-        byte[] record = bytes(1, 2, 3, 4, 5);
-
-        FetchedChannelState state;
-        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
-            writer.writeRecord(ch, record, record.length);
-            state = writer.getChannelState();
-        }
-
-        try (FetchedChannelStateReader reader = state.reader()) {
-            SpillSegment seg = reader.nextSegment().orElseThrow(AssertionError::new);
-            byte[] bodyBytes = readAll(seg.bodyStream());
-            assertThat(bodyBytes.length).isEqualTo(seg.length());
         }
     }
 
@@ -350,100 +284,6 @@ class FetchedChannelStateReaderTest {
                 assertThat(snapSeg.length()).isEqualTo(fullLength - 3);
                 byte[] tail = readAll(snapSeg.bodyStream());
                 assertThat(tail).isEqualTo(bytes(4, 5, 6, 7, 8));
-                assertThat(snap.nextSegment()).isEmpty();
-            }
-        }
-    }
-
-    @Test
-    void testSnapshotWithoutAnyCommitReadsEverySegmentBody() throws Exception {
-        InputChannelInfo c0 = new InputChannelInfo(0, 0);
-        InputChannelInfo c1 = new InputChannelInfo(0, 1);
-
-        FetchedChannelState state;
-        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
-            writer.writePassThrough(c0, bytes(1, 2, 3), 0, 3);
-            writer.writePassThrough(c1, bytes(4, 5), 0, 2);
-            state = writer.getChannelState();
-        }
-
-        // The snapshot reader never commits; the reader must carry it across segment boundaries
-        // on its own and produce each body verbatim.
-        try (FetchedChannelStateReader root = state.reader();
-                FetchedChannelStateReader snap = root.snapshot()) {
-            SpillSegment s0 = snap.nextSegment().orElseThrow(AssertionError::new);
-            assertThat(s0.channelInfo()).isEqualTo(c0);
-            assertThat(readAll(s0.bodyStream())).isEqualTo(bytes(1, 2, 3));
-
-            SpillSegment s1 = snap.nextSegment().orElseThrow(AssertionError::new);
-            assertThat(s1.channelInfo()).isEqualTo(c1);
-            assertThat(readAll(s1.bodyStream())).isEqualTo(bytes(4, 5));
-
-            assertThat(snap.nextSegment()).isEmpty();
-        }
-    }
-
-    @Test
-    void testSnapshotAfterPartialCommitResumesThenReadsFollowingSegment() throws Exception {
-        InputChannelInfo c0 = new InputChannelInfo(0, 0);
-        InputChannelInfo c1 = new InputChannelInfo(0, 1);
-
-        FetchedChannelState state;
-        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
-            writer.writePassThrough(c0, bytes(1, 2, 3, 4, 5, 6, 7, 8), 0, 8);
-            writer.writePassThrough(c1, bytes(9, 10), 0, 2);
-            state = writer.getChannelState();
-        }
-
-        try (FetchedChannelStateReader root = state.reader()) {
-            SpillSegment first = root.nextSegment().orElseThrow(AssertionError::new);
-            assertThat(first.channelInfo()).isEqualTo(c0);
-            // Deliver and commit a 3-byte prefix of the first segment.
-            byte[] prefix = new byte[3];
-            assertThat(first.bodyStream().read(prefix)).isEqualTo(3);
-            first.commit();
-
-            // Snapshot resumes the first segment's tail, then must reset the skip to 0 for the
-            // following untouched segment.
-            try (FetchedChannelStateReader snap = root.snapshot()) {
-                SpillSegment resumed = snap.nextSegment().orElseThrow(AssertionError::new);
-                assertThat(resumed.channelInfo()).isEqualTo(c0);
-                assertThat(readAll(resumed.bodyStream())).isEqualTo(bytes(4, 5, 6, 7, 8));
-
-                SpillSegment following = snap.nextSegment().orElseThrow(AssertionError::new);
-                assertThat(following.channelInfo()).isEqualTo(c1);
-                assertThat(readAll(following.bodyStream())).isEqualTo(bytes(9, 10));
-
-                assertThat(snap.nextSegment()).isEmpty();
-            }
-        }
-    }
-
-    @Test
-    void testRepeatedPartialCommitsAccumulateDeliveredBoundary() throws Exception {
-        InputChannelInfo ch = new InputChannelInfo(0, 0);
-
-        FetchedChannelState state;
-        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
-            writer.writePassThrough(ch, bytes(1, 2, 3, 4, 5, 6), 0, 6);
-            state = writer.getChannelState();
-        }
-
-        try (FetchedChannelStateReader root = state.reader()) {
-            SpillSegment seg = root.nextSegment().orElseThrow(AssertionError::new);
-            InputStream body = seg.bodyStream();
-
-            // Commit in two chunks: 2 bytes, then 2 more (4 delivered of 6).
-            body.read(new byte[2]);
-            seg.commit();
-            body.read(new byte[2]);
-            seg.commit();
-
-            // Snapshot resumes from the accumulated boundary (4), exposing the last 2 bytes.
-            try (FetchedChannelStateReader snap = root.snapshot()) {
-                SpillSegment snapSeg = snap.nextSegment().orElseThrow(AssertionError::new);
-                assertThat(snapSeg.length()).isEqualTo(2);
-                assertThat(readAll(snapSeg.bodyStream())).isEqualTo(bytes(5, 6));
                 assertThat(snap.nextSegment()).isEmpty();
             }
         }

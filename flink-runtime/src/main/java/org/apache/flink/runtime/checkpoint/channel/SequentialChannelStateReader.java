@@ -22,9 +22,8 @@ import org.apache.flink.runtime.io.network.api.writer.ResultPartitionWriter;
 import org.apache.flink.runtime.io.network.partition.consumer.InputGate;
 import org.apache.flink.streaming.runtime.io.recovery.RecordFilterContext;
 
-import javax.annotation.Nullable;
-
 import java.io.IOException;
+import java.util.Optional;
 
 /** Reads channel state saved during checkpoint/savepoint. */
 @Internal
@@ -43,8 +42,7 @@ public interface SequentialChannelStateReader extends AutoCloseable {
             throws IOException, InterruptedException;
 
     /** Returns the {@link FetchedChannelState} produced by {@link #readInputData}, if any. */
-    @Nullable
-    FetchedChannelState getProducedChannelState();
+    Optional<FetchedChannelState> getProducedChannelState();
 
     @Override
     void close() throws Exception;
@@ -60,10 +58,9 @@ public interface SequentialChannelStateReader extends AutoCloseable {
                 public void readOutputData(
                         ResultPartitionWriter[] writers, boolean notifyAndBlockOnCompletion) {}
 
-                @Nullable
                 @Override
-                public FetchedChannelState getProducedChannelState() {
-                    return null;
+                public Optional<FetchedChannelState> getProducedChannelState() {
+                    return Optional.empty();
                 }
 
                 @Override

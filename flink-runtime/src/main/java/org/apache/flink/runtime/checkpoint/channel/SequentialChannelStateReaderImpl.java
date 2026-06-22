@@ -38,6 +38,7 @@ import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -109,9 +110,8 @@ public class SequentialChannelStateReaderImpl implements SequentialChannelStateR
     }
 
     @Override
-    @Nullable
-    public FetchedChannelState getProducedChannelState() {
-        return producedChannelState;
+    public Optional<FetchedChannelState> getProducedChannelState() {
+        return Optional.ofNullable(producedChannelState);
     }
 
     @Override
