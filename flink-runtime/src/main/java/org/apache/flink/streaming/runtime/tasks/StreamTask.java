@@ -905,8 +905,10 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
             inputGate.setCheckpointingDuringRecoveryEnabled(checkpointingDuringRecoveryEnabled);
         }
 
+        final CompletableFuture<Void> bufferFilteringCompleteFuture = new CompletableFuture<>();
+
         final CompletableFuture<List<RecoverableInputChannel>> physicalChannelsFuture =
-                checkpointingDuringRecoveryEnabled ? new CompletableFuture<>() : null;
+                new CompletableFuture<>();
 
         channelIOExecutor.execute(
                 () ->
@@ -914,6 +916,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                                 reader,
                                 inputGates,
                                 checkpointingDuringRecoveryEnabled,
+                                bufferFilteringCompleteFuture,
                                 physicalChannelsFuture));
 
         // We wait for all input channel state to recover before we go into RUNNING state, and thus
@@ -921,7 +924,8 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
         // we must make sure it supports CheckpointType#FULL_CHECKPOINT.
         List<CompletableFuture<?>> recoveredFutures =
                 checkpointingDuringRecoveryEnabled
-                        ? wireGateConversionWithCheckpointing(inputGates, physicalChannelsFuture)
+                        ? wireGateConversionWithCheckpointing(
+                                inputGates, bufferFilteringCompleteFuture, physicalChannelsFuture)
                         : wireGateConversion(inputGates);
 
         // Return allOf future instead of thenRun future. thenRun() returns a NEW future that
@@ -952,6 +956,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
             SequentialChannelStateReader reader,
             IndexedInputGate[] inputGates,
             boolean checkpointingDuringRecoveryEnabled,
+            CompletableFuture<Void> bufferFilteringCompleteFuture,
             @Nullable CompletableFuture<List<RecoverableInputChannel>> physicalChannelsFuture) {
         FetchedChannelStateDrainer drainer = null;
         try {
@@ -974,6 +979,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
             for (IndexedInputGate gate : inputGates) {
                 gate.finishReadRecoveredState();
             }
+            bufferFilteringCompleteFuture.complete(null);
             // Resolve the trigger for the barrier handler: the drainer when recovery carries
             // channel state, NO_OP otherwise. Completed before any checkpoint can fire during
             // recovery, so the handler reads it via getNow.
@@ -1033,8 +1039,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
             requestPartitionsTrigger.thenRun(
                     () ->
                             mainMailboxExecutor.execute(
-                                    inputGate::requestPartitions,
-                                    "Input gate request partitions"));
+                                    inputGate::requestPartitions, "Input gate request partitions"));
         }
         return recoveredFutures;
     }
@@ -1042,14 +1047,15 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
     /**
      * Wires each gate's {@code requestPartitions()} to run on the mailbox once its
      * buffer-filtering-complete trigger fires, and aggregates the per-gate completions into {@code
-     * physicalChannelsFuture}. Used when checkpointing-during-recovery is enabled. The trigger stays
-     * synchronous (no {@code *Async}): completing on the {@code channelIOExecutor} that fired {@code
-     * bufferFilteringCompleteFuture} would let the poison mail outrun the suspend callback.
+     * physicalChannelsFuture}. Used when checkpointing-during-recovery is enabled. The trigger
+     * stays synchronous (no {@code *Async}): completing on the {@code channelIOExecutor} that fired
+     * {@code bufferFilteringCompleteFuture} would let the poison mail outrun the suspend callback.
      *
      * <p>Returns the futures the recovery mailbox loop must await before transitioning to RUNNING.
      */
     private List<CompletableFuture<?>> wireGateConversionWithCheckpointing(
             IndexedInputGate[] inputGates,
+            CompletableFuture<Void> bufferFilteringCompleteFuture,
             CompletableFuture<List<RecoverableInputChannel>> physicalChannelsFuture) {
         List<CompletableFuture<?>> recoveredFutures = new ArrayList<>(inputGates.length);
         // Keep the recovery mailbox loop alive until physical channels are converted; otherwise a
@@ -1058,29 +1064,24 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
         if (inputGates.length > 0) {
             recoveredFutures.add(physicalChannelsFuture);
         }
-        List<CompletableFuture<Void>> perGateConverted = new ArrayList<>(inputGates.length);
-        for (InputGate inputGate : inputGates) {
-            CompletableFuture<?> requestPartitionsTrigger =
-                    inputGate.getBufferFilteringCompleteFuture();
-            recoveredFutures.add(requestPartitionsTrigger);
-
-            CompletableFuture<Void> gateConverted = new CompletableFuture<>();
-            perGateConverted.add(gateConverted);
-            requestPartitionsTrigger.thenRun(
-                    () ->
-                            mainMailboxExecutor.execute(
-                                    () -> {
-                                        try {
+        recoveredFutures.add(bufferFilteringCompleteFuture);
+        CompletableFuture<Void> gateConverted = new CompletableFuture<>();
+        bufferFilteringCompleteFuture.thenRun(
+                () ->
+                        mainMailboxExecutor.execute(
+                                () -> {
+                                    try {
+                                        for (InputGate inputGate : inputGates) {
                                             inputGate.requestPartitions();
-                                            gateConverted.complete(null);
-                                        } catch (Throwable t) {
-                                            gateConverted.completeExceptionally(t);
-                                            throw t;
                                         }
-                                    },
-                                    "Input gate request partitions"));
-        }
-        CompletableFuture.allOf(perGateConverted.toArray(new CompletableFuture[0]))
+                                        gateConverted.complete(null);
+                                    } catch (Throwable t) {
+                                        gateConverted.completeExceptionally(t);
+                                        throw t;
+                                    }
+                                },
+                                "Input gate request partitions"));
+        gateConverted
                 .thenApply(ignored -> collectPhysicalChannels(inputGates))
                 .whenComplete(
                         (physicalChannels, failure) -> {

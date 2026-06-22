@@ -39,16 +39,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class RecoveredInputChannelTest {
 
     @Test
-    void testConversionOnlyPossibleAfterBufferFilteringComplete() {
-        // toInputChannel() always checks bufferFilteringCompleteFuture regardless of config
-        for (boolean configEnabled : new boolean[] {true, false}) {
-            assertThatThrownBy(() -> buildChannel(configEnabled).toInputChannel(true))
-                    .isInstanceOf(IllegalStateException.class)
-                    .hasMessageContaining("buffer filtering is not complete");
-        }
-    }
-
-    @Test
     void testRequestPartitionsImpossible() {
         assertThatThrownBy(() -> buildChannel(false).requestSubpartitions())
                 .isInstanceOf(UnsupportedOperationException.class);
@@ -71,17 +61,11 @@ class RecoveredInputChannelTest {
 
     @Test
     void testToInputChannelAllowedWhenBufferFilteringCompleteAndConfigEnabled() throws IOException {
-        // When config is enabled, conversion is allowed when bufferFilteringCompleteFuture is done
+        // When config is enabled, conversion is allowed after finishReadRecoveredState()
+        // without requiring stateConsumedFuture to be done.
         TestableRecoveredInputChannel channel = buildTestableChannel(true);
 
-        // Initially, conversion should fail
-        assertThatThrownBy(() -> channel.toInputChannel(true))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("buffer filtering is not complete");
-
-        // After finishReadRecoveredState(), bufferFilteringCompleteFuture should be done
         channel.finishReadRecoveredState();
-        assertThat(channel.getBufferFilteringCompleteFuture()).isDone();
         assertThat(channel.getStateConsumedFuture()).isNotDone();
 
         // Conversion should now succeed (no exception)
@@ -91,24 +75,13 @@ class RecoveredInputChannelTest {
 
     @Test
     void testToInputChannelAllowedWhenStateConsumedAndConfigDisabled() throws IOException {
-        // This test verifies that stateConsumedFuture completes after consuming
-        // EndOfInputChannelStateEvent regardless of the config setting.
-        // When config is disabled, conversion requires both bufferFilteringCompleteFuture
-        // and stateConsumedFuture to be done
+        // When config is disabled, conversion requires stateConsumedFuture to be done.
         TestableRecoveredInputChannel channel = buildTestableChannel(false);
 
-        // Initially, conversion should fail (buffer filtering not complete)
-        assertThatThrownBy(() -> channel.toInputChannel(true))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("buffer filtering is not complete");
-
-        // After finishReadRecoveredState(), bufferFilteringCompleteFuture is done
-        // but stateConsumedFuture is not
         channel.finishReadRecoveredState();
-        assertThat(channel.getBufferFilteringCompleteFuture()).isDone();
         assertThat(channel.getStateConsumedFuture()).isNotDone();
 
-        // Conversion should still fail because stateConsumedFuture is not done
+        // Conversion should fail because stateConsumedFuture is not done
         assertThatThrownBy(() -> channel.toInputChannel(true))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("recovered state is not fully consumed");
@@ -121,17 +94,6 @@ class RecoveredInputChannelTest {
         // Now conversion should succeed
         InputChannel converted = channel.toInputChannel(true);
         assertThat(converted).isNotNull();
-    }
-
-    @Test
-    void testBufferFilteringCompleteFutureAlwaysCompletes() throws IOException {
-        // finishReadRecoveredState() unconditionally completes bufferFilteringCompleteFuture
-        for (boolean configEnabled : new boolean[] {true, false}) {
-            RecoveredInputChannel channel = buildChannel(configEnabled);
-            assertThat(channel.getBufferFilteringCompleteFuture()).isNotDone();
-            channel.finishReadRecoveredState();
-            assertThat(channel.getBufferFilteringCompleteFuture()).isDone();
-        }
     }
 
     @Test

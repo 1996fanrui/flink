@@ -269,11 +269,6 @@ class AlignedCheckpointsMassiveRandomTest {
         }
 
         @Override
-        public CompletableFuture<Void> getBufferFilteringCompleteFuture() {
-            return CompletableFuture.completedFuture(null);
-        }
-
-        @Override
         public void finishReadRecoveredState() {}
 
         @Override
