@@ -79,8 +79,9 @@ public final class FetchedChannelState implements Closeable {
      * lifecycle grant and must be closed when done.
      */
     public FetchedChannelStateReader reader() {
-        return new FetchedChannelStateReaderImpl(
-                this, FetchedChannelStateReaderImpl.Position.atStart());
+        return new FetchedChannelStateSnapshot(
+                        this, FetchedChannelStateReaderImpl.Position.atStart())
+                .reader();
     }
 
     /** Returns the ordered list of spill file paths. Read-only view. */

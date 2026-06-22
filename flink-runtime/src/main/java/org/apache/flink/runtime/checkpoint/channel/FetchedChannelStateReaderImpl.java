@@ -63,6 +63,7 @@ import static org.apache.flink.util.Preconditions.checkState;
 @Internal
 final class FetchedChannelStateReaderImpl implements FetchedChannelStateReader {
 
+    private final FetchedChannelStateSnapshot snapshot;
     private final FetchedChannelState channelState;
     private final List<Path> files;
 
@@ -84,12 +85,13 @@ final class FetchedChannelStateReaderImpl implements FetchedChannelStateReader {
     private boolean positioned;
     private boolean closed;
 
-    FetchedChannelStateReaderImpl(FetchedChannelState channelState, Position committed) {
-        this.channelState = channelState;
+    FetchedChannelStateReaderImpl(FetchedChannelStateSnapshot snapshot) {
+        this.snapshot = snapshot;
+        this.channelState = snapshot.channelState();
         this.files = channelState.files();
-        this.committed = committed;
+        // Must copy the position so that this reader's commits do not mutate the snapshot's state.
+        this.committed = snapshot.position().copy();
         this.current = committed.copy();
-        channelState.acquire();
     }
 
     @Override
@@ -166,9 +168,9 @@ final class FetchedChannelStateReaderImpl implements FetchedChannelStateReader {
     }
 
     @Override
-    public FetchedChannelStateReader snapshot() {
+    public FetchedChannelStateSnapshot snapshot() {
         checkState(!closed, "FetchedChannelStateReader is closed");
-        return new FetchedChannelStateReaderImpl(channelState, committed.copy());
+        return new FetchedChannelStateSnapshot(channelState, committed.copy());
     }
 
     @Override
@@ -180,7 +182,7 @@ final class FetchedChannelStateReaderImpl implements FetchedChannelStateReader {
         try {
             closeFileStream();
         } finally {
-            channelState.release();
+            snapshot.release();
         }
     }
 

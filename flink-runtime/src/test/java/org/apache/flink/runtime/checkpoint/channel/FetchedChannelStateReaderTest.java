@@ -170,7 +170,7 @@ class FetchedChannelStateReaderTest {
 
         try (FetchedChannelStateReader root = state.reader()) {
             // Snapshot before consuming anything
-            try (FetchedChannelStateReader snap = root.snapshot()) {
+            try (FetchedChannelStateReader snap = root.snapshot().reader()) {
                 List<InputChannelInfo> channels = new ArrayList<>();
                 Optional<SpillSegment> next;
                 while ((next = snap.nextSegment()).isPresent()) {
@@ -202,7 +202,7 @@ class FetchedChannelStateReaderTest {
             first.commit();
 
             // Snapshot must start from second segment
-            try (FetchedChannelStateReader snap = root.snapshot()) {
+            try (FetchedChannelStateReader snap = root.snapshot().reader()) {
                 List<InputChannelInfo> channels = new ArrayList<>();
                 Optional<SpillSegment> next;
                 while ((next = snap.nextSegment()).isPresent()) {
@@ -237,7 +237,7 @@ class FetchedChannelStateReaderTest {
             // (no bytes committed yet).
             body.read();
 
-            try (FetchedChannelStateReader snapBeforeCommit = root.snapshot()) {
+            try (FetchedChannelStateReader snapBeforeCommit = root.snapshot().reader()) {
                 SpillSegment snapSeg =
                         snapBeforeCommit.nextSegment().orElseThrow(AssertionError::new);
                 assertThat(snapSeg.length()).isEqualTo(fullLength);
@@ -249,7 +249,7 @@ class FetchedChannelStateReaderTest {
             seg.commit();
 
             // After commit the snapshot must be empty
-            try (FetchedChannelStateReader snapAfterCommit = root.snapshot()) {
+            try (FetchedChannelStateReader snapAfterCommit = root.snapshot().reader()) {
                 assertThat(snapAfterCommit.nextSegment()).isEmpty();
             }
         }
@@ -278,7 +278,7 @@ class FetchedChannelStateReaderTest {
             seg.commit();
 
             // Snapshot must resume mid-segment and yield exactly the remaining tail bytes.
-            try (FetchedChannelStateReader snap = root.snapshot()) {
+            try (FetchedChannelStateReader snap = root.snapshot().reader()) {
                 SpillSegment snapSeg = snap.nextSegment().orElseThrow(AssertionError::new);
                 assertThat(snapSeg.channelInfo()).isEqualTo(ch);
                 assertThat(snapSeg.length()).isEqualTo(fullLength - 3);
@@ -309,7 +309,7 @@ class FetchedChannelStateReaderTest {
             first.bodyStream().read(new byte[1]);
             first.commit();
 
-            try (FetchedChannelStateReader snap = root.snapshot()) {
+            try (FetchedChannelStateReader snap = root.snapshot().reader()) {
                 SpillSegment resumed = snap.nextSegment().orElseThrow(AssertionError::new);
                 assertThat(resumed.channelInfo()).isEqualTo(c0);
                 assertThat(readAll(resumed.bodyStream())).isEqualTo(bytes(2, 3, 4));
@@ -348,7 +348,7 @@ class FetchedChannelStateReaderTest {
             assertThat(count).isEqualTo(2);
 
             // After draining everything, a snapshot must have nothing left.
-            try (FetchedChannelStateReader snap = root.snapshot()) {
+            try (FetchedChannelStateReader snap = root.snapshot().reader()) {
                 assertThat(snap.nextSegment()).isEmpty();
             }
         }
@@ -425,7 +425,7 @@ class FetchedChannelStateReaderTest {
         Path spill = state.files().get(0);
 
         FetchedChannelStateReader root = state.reader();
-        FetchedChannelStateReader snap = root.snapshot();
+        FetchedChannelStateReader snap = root.snapshot().reader();
         // Drop the handoff grant so only the two reader grants remain outstanding.
         state.release();
 

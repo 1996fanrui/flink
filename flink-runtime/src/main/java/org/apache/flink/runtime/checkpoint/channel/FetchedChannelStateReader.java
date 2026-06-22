@@ -55,15 +55,17 @@ public interface FetchedChannelStateReader extends Closeable {
     Optional<SpillSegment> nextSegment();
 
     /**
-     * Derives an independent reader starting from the committed position. The snapshot reader owns
-     * its own {@link FetchedChannelState} lifecycle grant and reads forward independently.
+     * Derives an independent resume point starting from the committed position. The snapshot holds
+     * its own {@link FetchedChannelState} lifecycle grant; the caller must open a reader from it
+     * via {@link FetchedChannelStateSnapshot#reader()} and close that reader when done.
      *
      * <p>Must be called under the drainer lock so that the copied position reflects the latest
      * committed state.
      *
-     * @return a new independent reader; caller must {@link #close()} it when done
+     * @return a snapshot capturing the current committed position; caller must open and close a
+     *     reader from it
      */
-    FetchedChannelStateReader snapshot();
+    FetchedChannelStateSnapshot snapshot();
 
     /**
      * Returns a reader with no segments — its first {@link #nextSegment()} is empty. Each call

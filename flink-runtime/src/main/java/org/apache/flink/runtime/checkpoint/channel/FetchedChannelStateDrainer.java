@@ -191,7 +191,7 @@ public final class FetchedChannelStateDrainer implements RecoveryCheckpointTrigg
                 // snapshot. Return an empty reader so the caller's normal flow handles it.
                 return FetchedChannelStateReader.emptyReader();
             }
-            return rootReader.snapshot();
+            return rootReader.snapshot().reader();
         }
     }
 
