@@ -29,7 +29,7 @@ set -e  # 遇到错误立即退出
 
 export FLINK_VERSION="os-troubleshooting-$(git rev-parse --short HEAD)"
 
-jdk11
+# jdk11
 
 mvn versions:set -DnewVersion="$FLINK_VERSION" -DgenerateBackupPoms=false
 
