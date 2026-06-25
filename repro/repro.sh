@@ -65,7 +65,7 @@ worker() {
     classify "$log"; case $? in
       1) cp "$log" "$RES/FAIL_w${id}_${n}.log"; echo "*** FAILURE: $RES/FAIL_w${id}_${n}.log"; grep -m2 -E "expected:|but was:" "$log"; echo F >> "$RES/.fail"; touch "$STOP";;
       0) echo P >> "$RES/.pass"; rm -f "$log";;
-      *) echo I >> "$RES/.infra"; rm -f "$log";;
+      *) cp "$log" "$RES/INFRA_w${id}_${n}.log"; echo "INFRA: $RES/INFRA_w${id}_${n}.log"; echo I >> "$RES/.infra"; rm -f "$log";;
     esac
   done
 }
