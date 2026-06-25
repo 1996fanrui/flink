@@ -15,7 +15,7 @@ export PATH="$JAVA_HOME/bin:$PATH"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 TESTFILE="$ROOT/flink-tests/src/test/java/org/apache/flink/test/checkpointing/UnalignedCheckpointRescaleITCase.java"
-WORKERS="${1:-6}"; TARGET="${2:-1500}"; TIMEOUT="${3:-180}"
+WORKERS="${1:-10}"; TARGET="${2:-2000}"; TIMEOUT="${3:-180}"
 RES="$ROOT/repro/results"
 cd "$ROOT" || exit 99
 
@@ -30,6 +30,20 @@ mvn -q -o test-compile -pl flink-tests \
    -Dcheckstyle.skip -Dspotless.check.skip=true -Drat.skip=true -Denforcer.skip=true || { echo TESTCOMPILE_FAIL; exit 1; }
 
 rm -rf "$RES"; mkdir -p "$RES"; STOP="$RES/STOP"
+
+# Ctrl-C / kill: signal workers to stop (STOP file) and hard-kill every child
+# (workers + the mvn/surefire processes they fork) so nothing is left running.
+cleanup() {
+  trap - INT TERM
+  touch "$STOP" 2>/dev/null
+  echo; echo "Interrupted — stopping workers and killing child processes..."
+  pkill -9 -P $$ 2>/dev/null            # direct children (workers)
+  pkill -9 -f "surefire_w" 2>/dev/null  # forked surefire JVMs
+  kill -- -$$ 2>/dev/null               # whole process group
+  git checkout -- "$TESTFILE" 2>/dev/null
+  exit 130
+}
+trap cleanup INT TERM
 classify() { # 0 pass, 1 loss-or-dup, 2 infra/crash
   grep -qE "NUM_OUTPUTS = NUM_INPUTS|AssertionFailedError" "$1" && grep -qE "expected:|but was:" "$1" && return 1
   grep -q "Tests run: 1, Failures: 0, Errors: 0" "$1" && grep -q "BUILD SUCCESS" "$1" && return 0
