@@ -29,7 +29,7 @@ set -e  # 遇到错误立即退出
 
 export FLINK_VERSION="os-troubleshooting-$(git rev-parse --short HEAD)"
 
-jdk11
+# jdk11
 
 mvn versions:set -DnewVersion="$FLINK_VERSION" -DgenerateBackupPoms=false
 
@@ -39,4 +39,4 @@ git commit -m "tmp version change"
 
 # ./mvnw -T 20 clean install -U -Pfast -DskipTests -Dmaven.javadoc.skip=true -Drat.skip=true -Dcheckstyle.skip=true -Denforcer.skip=true -P java11-target -P java11
 
-./mvnw -T 20 clean install -U -Pfast -DskipTests -Dmaven.javadoc.skip=true -Drat.skip=true -Dcheckstyle.skip=true -Denforcer.skip=true -P java11-target -P java11
+./mvnw -T 20 clean install -U -Pfast -DskipTests -Dmaven.javadoc.skip=true -Drat.skip=true -Dcheckstyle.skip=true -Denforcer.skip=true
