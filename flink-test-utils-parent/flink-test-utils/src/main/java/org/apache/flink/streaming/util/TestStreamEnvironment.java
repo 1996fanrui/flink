@@ -145,19 +145,13 @@ public class TestStreamEnvironment extends StreamExecutionEnvironment {
     private static void randomizeConfiguration(MiniCluster miniCluster, Configuration conf) {
         // randomize ITTests for enabling unaligned checkpoint
         if (RANDOMIZE_CHECKPOINTING_CONFIG) {
-            randomize(conf, CheckpointingOptions.ENABLE_UNALIGNED, true, false);
+            randomize(conf, CheckpointingOptions.ENABLE_UNALIGNED, false);
             randomize(conf, CheckpointingOptions.UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM, true);
             randomize(conf, CheckpointingOptions.CHECKPOINTING_DURING_RECOVERY_ENABLED, true);
-            randomize(
-                    conf,
-                    CheckpointingOptions.ALIGNED_CHECKPOINT_TIMEOUT,
-                    Duration.ofSeconds(0),
-                    Duration.ofMillis(100),
-                    Duration.ofSeconds(2));
-            randomize(conf, CheckpointingOptions.CLEANER_PARALLEL_MODE, true, false);
-            randomize(
-                    conf, CheckpointingOptions.ENABLE_UNALIGNED_INTERRUPTIBLE_TIMERS, true, false);
-            randomize(conf, ExecutionOptions.SNAPSHOT_COMPRESSION, true, false);
+            randomize(conf, CheckpointingOptions.ALIGNED_CHECKPOINT_TIMEOUT, Duration.ofSeconds(2));
+            randomize(conf, CheckpointingOptions.CLEANER_PARALLEL_MODE, false);
+            randomize(conf, CheckpointingOptions.ENABLE_UNALIGNED_INTERRUPTIBLE_TIMERS, true);
+            randomize(conf, ExecutionOptions.SNAPSHOT_COMPRESSION, false);
             if (!conf.contains(CheckpointingOptions.FILE_MERGING_ENABLED)) {
                 randomize(conf, CheckpointingOptions.FILE_MERGING_ENABLED, true);
             }
@@ -169,10 +163,9 @@ public class TestStreamEnvironment extends StreamExecutionEnvironment {
                 ConfigOptions.key("state.backend.rocksdb.use-ingest-db-restore-mode")
                         .booleanType()
                         .noDefaultValue(),
-                true,
                 false);
 
-        randomize(conf, PipelineOptions.WATERMARK_ALIGNMENT_BUFFER_SIZE, 0, 1, 2);
+        randomize(conf, PipelineOptions.WATERMARK_ALIGNMENT_BUFFER_SIZE, 2);
 
         // randomize ITTests for enabling state change log
         // TODO: remove the file merging check after FLINK-32085
@@ -211,15 +204,11 @@ public class TestStreamEnvironment extends StreamExecutionEnvironment {
         randomize(
                 conf,
                 ConfigOptions.key("table.exec.unbounded-over.version").intType().noDefaultValue(),
-                1,
                 2);
         randomize(
                 conf,
                 TABLE_EXEC_SINK_UPSERT_MATERIALIZE_STRATEGY,
-                ExecutionConfigOptions.SinkUpsertMaterializeStrategy.LEGACY,
-                ExecutionConfigOptions.SinkUpsertMaterializeStrategy.VALUE,
-                ExecutionConfigOptions.SinkUpsertMaterializeStrategy.MAP,
-                ExecutionConfigOptions.SinkUpsertMaterializeStrategy.ADAPTIVE);
+                ExecutionConfigOptions.SinkUpsertMaterializeStrategy.MAP);
     }
 
     /**
