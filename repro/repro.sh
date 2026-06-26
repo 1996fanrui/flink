@@ -15,7 +15,7 @@ export PATH="$JAVA_HOME/bin:$PATH"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 TESTFILE="$ROOT/flink-tests/src/test/java/org/apache/flink/test/checkpointing/UnalignedCheckpointRescaleITCase.java"
-WORKERS="${1:-10}"; TARGET="${2:-3000}"; TIMEOUT="${3:-180}"
+WORKERS="${1:-15}"; TARGET="${2:-3000}"; TIMEOUT="${3:-180}"
 RES="$ROOT/repro/results"
 cd "$ROOT" || exit 99
 
