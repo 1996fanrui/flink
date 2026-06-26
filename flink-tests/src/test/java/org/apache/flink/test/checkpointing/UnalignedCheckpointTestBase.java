@@ -847,6 +847,7 @@ abstract class UnalignedCheckpointTestBase {
             conf.set(CheckpointingOptions.ENABLE_UNALIGNED, true);
             conf.set(CheckpointingOptions.CHECKPOINTING_DURING_RECOVERY_ENABLED, true);
             conf.set(CheckpointingOptions.UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM, true);
+            conf.set(CheckpointingOptions.FILE_MERGING_ENABLED, false);
             if (restoreCheckpoint != null) {
                 conf.set(StateRecoveryOptions.SAVEPOINT_PATH, restoreCheckpoint);
             }
