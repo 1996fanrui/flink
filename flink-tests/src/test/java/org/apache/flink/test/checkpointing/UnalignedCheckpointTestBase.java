@@ -844,6 +844,10 @@ abstract class UnalignedCheckpointTestBase {
             conf.set(TaskManagerOptions.MEMORY_SEGMENT_SIZE, MemorySize.parse("4kb"));
             conf.set(StateBackendOptions.STATE_BACKEND, "hashmap");
             conf.set(CheckpointingOptions.CHECKPOINTS_DIRECTORY, checkpointDir.toURI().toString());
+            conf.set(CheckpointingOptions.ENABLE_UNALIGNED, true);
+            conf.set(CheckpointingOptions.CHECKPOINTING_DURING_RECOVERY_ENABLED, true);
+            conf.set(CheckpointingOptions.UNALIGNED_RECOVER_OUTPUT_ON_DOWNSTREAM, true);
+            conf.set(CheckpointingOptions.FILE_MERGING_ENABLED, false);
             if (restoreCheckpoint != null) {
                 conf.set(StateRecoveryOptions.SAVEPOINT_PATH, restoreCheckpoint);
             }
