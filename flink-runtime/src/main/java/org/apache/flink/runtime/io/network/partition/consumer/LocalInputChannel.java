@@ -21,6 +21,7 @@ package org.apache.flink.runtime.io.network.partition.consumer;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.runtime.checkpoint.CheckpointException;
+import org.apache.flink.runtime.checkpoint.CheckpointFailureReason;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
 import org.apache.flink.runtime.event.TaskEvent;
 import org.apache.flink.runtime.execution.CancelTaskException;
@@ -153,9 +154,16 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
     // ------------------------------------------------------------------------
 
     public void checkpointStarted(CheckpointBarrier barrier) throws CheckpointException {
-        // Collect inflight buffers from recoveredBuffers to be persisted.
-        // These are recovered buffers that have not been consumed yet when the checkpoint
-        // barrier arrives.
+        try {
+            Thread.sleep(100);
+        } catch (Exception e) {
+            throw new CheckpointException(
+                    "Failed to start checkpoint for channel " + getChannelInfo(),
+                    CheckpointFailureReason.CHECKPOINT_DECLINED_TASK_CLOSING,
+                    e);
+        }
+        // Collect inflight buffers from toBeConsumedBuffers to be persisted.
+        // These are buffers that have not been consumed yet when the checkpoint barrier arrives.
         List<Buffer> inflightBuffers = new ArrayList<>();
         for (BufferAndBacklog bufferAndBacklog : recoveredBuffers) {
             if (bufferAndBacklog.buffer().isBuffer()) {
