@@ -8,10 +8,38 @@
 # Reproduces only under CPU contention; rate ~0.1-0.3%/run, so budget ~1000+ runs.
 # A genuine failure = "Tests run: 1, Failures: 1" with [NUM_OUTPUTS = NUM_INPUTS] and "but was" < "expected".
 set -u
-# flink-tests requires Java 17 to compile; force it regardless of the caller's shell.
-JAVA_HOME="$(/usr/libexec/java_home -v 17)" || { echo "JDK 17 not found"; exit 1; }
-export JAVA_HOME
-export PATH="$JAVA_HOME/bin:$PATH"
+# flink-tests requires Java 17 to compile; force it unless the caller's shell already runs Java 17.
+# Portable across macOS (/usr/libexec/java_home) and Linux (JAVA_HOME_<v>_X64 / /usr/lib/jvm scan).
+ensure_java() {
+  local want="$1" home="" d envvar
+  if java -version 2>&1 | grep -qE "version \"${want}[.\"]"; then
+    echo "Java $want already active; keeping current JAVA_HOME."
+    return 0
+  fi
+  if [ -x /usr/libexec/java_home ]; then                       # macOS
+    home="$(/usr/libexec/java_home -v "$want" 2>/dev/null)"
+    # java_home silently returns the nearest JDK when the exact version is absent.
+    if [ -n "$home" ] && ! "$home/bin/java" -version 2>&1 | grep -qE "version \"${want}[.\"]"; then
+      home=""
+    fi
+  fi
+  if [ -z "$home" ]; then                                      # CI (GitHub Actions etc.)
+    envvar="JAVA_HOME_${want}_X64"
+    home="${!envvar:-}"
+  fi
+  if [ -z "$home" ]; then                                      # Linux: scan common JVM dirs
+    for d in /usr/lib/jvm/*"$want"* /usr/java/*"$want"*; do
+      if [ -x "$d/bin/java" ] && "$d/bin/java" -version 2>&1 | grep -qE "version \"${want}[.\"]"; then
+        home="$d"; break
+      fi
+    done
+  fi
+  [ -n "$home" ] || { echo "JDK $want not found"; exit 1; }
+  export JAVA_HOME="$home"
+  export PATH="$JAVA_HOME/bin:$PATH"
+  echo "Using JDK $want at $JAVA_HOME"
+}
+ensure_java 17
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 TESTFILE="$ROOT/flink-tests/src/test/java/org/apache/flink/test/checkpointing/UnalignedCheckpointRescaleITCase.java"
