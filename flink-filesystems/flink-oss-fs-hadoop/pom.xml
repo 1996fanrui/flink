@@ -21,7 +21,7 @@ under the License.
 	<parent>
 		<artifactId>flink-filesystems</artifactId>
 		<groupId>org.apache.flink</groupId>
-		<version>2.3-SNAPSHOT</version>
+		<version>os-troubleshooting-3f05376f59e</version>
 	</parent>
 	<modelVersion>4.0.0</modelVersion>
 
