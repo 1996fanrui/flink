@@ -204,6 +204,56 @@ public final class ChannelStateInvariant {
                 t);
     }
 
+    /**
+     * Stable identity of a backing file/state handle so two channel-state handles that share the
+     * same physical checkpoint file are recognizable in the log. Uses {@link System#identityHashCode}
+     * (object identity) plus {@code toString()} (path / in-memory id) — two handles over the same
+     * file will print the same trailing path even if their wrapper objects differ.
+     */
+    public static String handleId(Object streamStateHandle) {
+        if (streamStateHandle == null) {
+            return "delegate=null";
+        }
+        return "delegate#"
+                + Integer.toHexString(System.identityHashCode(streamStateHandle))
+                + "{"
+                + streamStateHandle
+                + "}";
+    }
+
+    /** Free-form diagnostic note, logged at INFO like {@link #stage}. Gated by {@link #ON}. */
+    public static void note(String stage, String msg) {
+        if (!ON) {
+            return;
+        }
+        LOG.info("[CS-INV] {} {}", stage, msg);
+    }
+
+    /**
+     * Fail-fast: the input offsets map must only ever receive {@link InputChannelInfo} keys and the
+     * output offsets map only {@link ResultSubpartitionInfo} keys. A violation means an input/output
+     * channel-state offset cross-wire in the shared checkpoint-file offset namespace. Always-on (not
+     * gated by {@link #ON}) so the cross-wire is caught even with verbose logging disabled.
+     */
+    public static void assertKeyKind(String stage, boolean expectInput, Object key) {
+        boolean isInput = key instanceof InputChannelInfo;
+        boolean isOutput = key instanceof ResultSubpartitionInfo;
+        boolean ok = expectInput ? isInput : isOutput;
+        if (!ok) {
+            String msg =
+                    "[CS-INV-ASSERT] "
+                            + stage
+                            + " expected "
+                            + (expectInput ? "InputChannelInfo" : "ResultSubpartitionInfo")
+                            + " key but got "
+                            + (key == null ? "null" : key.getClass().getName())
+                            + " key="
+                            + key;
+            LOG.error(msg);
+            throw new IllegalStateException(msg);
+        }
+    }
+
     /** Fail-fast invariant: byte accounting at a handoff must be consistent. */
     public static void assertEq(String stageName, Object ctx, String what, long expected, long actual) {
         if (expected != actual) {

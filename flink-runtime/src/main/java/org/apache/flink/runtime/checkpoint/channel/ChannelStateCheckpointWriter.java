@@ -157,6 +157,7 @@ class ChannelStateCheckpointWriter {
                     info,
                     buffer,
                     !pendingResult.isAllInputsReceived(),
+                    true,
                     "ChannelStateCheckpointWriter#writeInput");
         } finally {
             buffer.recycleBuffer();
@@ -188,13 +189,17 @@ class ChannelStateCheckpointWriter {
                                 serializer.writeData(dataStream, seg.bodyStream(), seg.length());
                             }
                             long size = checkpointStream.getPos() - offset;
+                            // Spill segments are always input channel state; assert the key kind so
+                            // a cross-wire here is caught fail-fast.
+                            ChannelStateInvariant.assertKeyKind(action, true, seg.channelInfo());
                             ChannelStateInvariant.stage(
                                     "ckptWrite.SPILL@off"
                                             + offset
                                             + " segLen="
                                             + seg.length()
                                             + " size="
-                                            + size,
+                                            + size
+                                            + " map=INPUT",
                                     seg.channelInfo(),
                                     new byte[0],
                                     0,
@@ -229,6 +234,7 @@ class ChannelStateCheckpointWriter {
                     info,
                     buffer,
                     !pendingResult.isAllOutputsReceived(),
+                    false,
                     "ChannelStateCheckpointWriter#writeOutput");
         } finally {
             buffer.recycleBuffer();
@@ -240,13 +246,23 @@ class ChannelStateCheckpointWriter {
             K key,
             Buffer buffer,
             boolean precondition,
+            boolean expectInput,
             String action) {
+        // Fail-fast: the input offsets map must only ever receive InputChannelInfo keys and the
+        // output offsets map only ResultSubpartitionInfo keys. A violation is the input/output
+        // channel-state offset cross-wire in the shared checkpoint-file offset namespace.
+        ChannelStateInvariant.assertKeyKind(action, expectInput, key);
         runWithChecks(
                 () -> {
                     checkState(precondition);
                     long offset = checkpointStream.getPos();
                     ChannelStateInvariant.stage(
-                            "ckptWrite.MEM@off" + offset, key, buffer.getNioBufferReadable());
+                            "ckptWrite.MEM@off"
+                                    + offset
+                                    + " map="
+                                    + (expectInput ? "INPUT" : "OUTPUT"),
+                            key,
+                            buffer.getNioBufferReadable());
                     try (AutoCloseable ignored = NetworkActionsLogger.measureIO(action, buffer)) {
                         serializer.writeData(dataStream, buffer);
                     }

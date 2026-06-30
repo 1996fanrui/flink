@@ -56,7 +56,8 @@ class ChannelStateChunkReaderTest {
                                                 serializer.getHeaderLength(),
                                                 handler,
                                                 "channelInfo",
-                                                0);
+                                                0,
+                                                "testDelegate");
                             } finally {
                                 checkState(serializer.failed);
                                 checkState(!handler.requestedBuffers.isEmpty());
@@ -73,7 +74,13 @@ class ChannelStateChunkReaderTest {
 
         try (FSDataInputStream stream = getStream(serializer, 10)) {
             new ChannelStateChunkReader(serializer)
-                    .readChunk(stream, serializer.getHeaderLength(), handler, "channelInfo", 0);
+                    .readChunk(
+                            stream,
+                            serializer.getHeaderLength(),
+                            handler,
+                            "channelInfo",
+                            0,
+                            "testDelegate");
         } finally {
             checkState(!handler.requestedBuffers.isEmpty());
             assertThat(handler.requestedBuffers).allMatch(TestChannelStateByteBuffer::isRecycled);
@@ -87,7 +94,13 @@ class ChannelStateChunkReaderTest {
 
         try (FSDataInputStream stream = getStream(serializer, 0)) {
             new ChannelStateChunkReader(serializer)
-                    .readChunk(stream, serializer.getHeaderLength(), handler, "channelInfo", 0);
+                    .readChunk(
+                            stream,
+                            serializer.getHeaderLength(),
+                            handler,
+                            "channelInfo",
+                            0,
+                            "testDelegate");
         } finally {
             assertThat(handler.requestedBuffers).isEmpty();
         }
@@ -116,7 +129,12 @@ class ChannelStateChunkReaderTest {
 
         new ChannelStateChunkReader(new ChannelStateSerializerImpl())
                 .readChunk(
-                        stream, offset, new TestRecoveredChannelStateHandler(), "channelInfo", 0);
+                        stream,
+                        offset,
+                        new TestRecoveredChannelStateHandler(),
+                        "channelInfo",
+                        0,
+                        "testDelegate");
     }
 
     private static class TestRecoveredChannelStateHandler

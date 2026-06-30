@@ -142,6 +142,22 @@ public class SequentialChannelStateReaderImpl implements SequentialChannelStateR
             List<Handle> channelStateHandles,
             RecoveredChannelStateHandler<Info, Context> stateHandler)
             throws IOException, InterruptedException {
+        final String delegateId = ChannelStateInvariant.handleId(streamStateHandle);
+        if (ChannelStateInvariant.ON) {
+            for (Handle handle : channelStateHandles) {
+                ChannelStateInvariant.note(
+                        "readSequentially.handle",
+                        handleType(handle)
+                                + " info="
+                                + handle.getInfo()
+                                + " oldSubtask="
+                                + handle.getSubtaskIndex()
+                                + " "
+                                + ChannelStateInvariant.handleId(handle.getDelegate())
+                                + " offsets="
+                                + handle.getOffsets());
+            }
+        }
         try (FSDataInputStream is = streamStateHandle.openInputStream()) {
             serializer.readHeader(is);
             for (RescaledOffset<Info> offsetAndChannelInfo :
@@ -151,9 +167,21 @@ public class SequentialChannelStateReaderImpl implements SequentialChannelStateR
                         offsetAndChannelInfo.offset,
                         stateHandler,
                         offsetAndChannelInfo.channelInfo,
-                        offsetAndChannelInfo.oldSubtaskIndex);
+                        offsetAndChannelInfo.oldSubtaskIndex,
+                        delegateId);
             }
         }
+    }
+
+    /** Concrete handle kind (input vs output) for diagnostics. */
+    private static String handleType(Object handle) {
+        if (handle instanceof org.apache.flink.runtime.state.InputChannelStateHandle) {
+            return "InputChannelStateHandle";
+        }
+        if (handle instanceof org.apache.flink.runtime.state.ResultSubpartitionStateHandle) {
+            return "ResultSubpartitionStateHandle";
+        }
+        return handle == null ? "null" : handle.getClass().getSimpleName();
     }
 
     private Stream<OperatorSubtaskState> streamSubtaskStates() {
@@ -229,7 +257,8 @@ class ChannelStateChunkReader {
             long sourceOffset,
             RecoveredChannelStateHandler<Info, Context> stateHandler,
             Info channelInfo,
-            int oldSubtaskIndex)
+            int oldSubtaskIndex,
+            String delegateId)
             throws IOException, InterruptedException {
         if (source.getPos() != sourceOffset) {
             source.seek(sourceOffset);
@@ -254,7 +283,7 @@ class ChannelStateChunkReader {
             if (bufferWithContext.context
                     instanceof org.apache.flink.runtime.io.network.buffer.Buffer) {
                 ChannelStateInvariant.stage(
-                        "readChunk.IN@off" + sourceOffset,
+                        "readChunk.IN@off" + sourceOffset + " " + delegateId,
                         channelInfo,
                         ((org.apache.flink.runtime.io.network.buffer.Buffer)
                                         bufferWithContext.context)

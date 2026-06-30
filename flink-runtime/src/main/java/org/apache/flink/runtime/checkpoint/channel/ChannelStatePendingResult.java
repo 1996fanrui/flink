@@ -125,9 +125,28 @@ public class ChannelStatePendingResult {
             Map<I, StateContentMetaInfo> offsets,
             HandleFactory<I, H> handleFactory)
             throws IOException {
+        final boolean expectInput = handleFactory == HandleFactory.INPUT_CHANNEL;
         final Collection<H> handles = new ArrayList<>();
         for (Map.Entry<I, StateContentMetaInfo> e : offsets.entrySet()) {
-            handles.add(createHandle(handleFactory, underlying, e.getKey(), e.getValue()));
+            // Fail-fast: an input offsets map must only carry InputChannelInfo keys and an output
+            // map only ResultSubpartitionInfo keys at handle-build time.
+            ChannelStateInvariant.assertKeyKind(
+                    "ChannelStatePendingResult#complete", expectInput, e.getKey());
+            H handle = createHandle(handleFactory, underlying, e.getKey(), e.getValue());
+            if (ChannelStateInvariant.ON) {
+                ChannelStateInvariant.note(
+                        "buildHandle",
+                        (expectInput ? "InputChannelStateHandle" : "ResultSubpartitionStateHandle")
+                                + " subtask="
+                                + subtaskIndex
+                                + " info="
+                                + handle.getInfo()
+                                + " "
+                                + ChannelStateInvariant.handleId(handle.getDelegate())
+                                + " offsets="
+                                + handle.getOffsets());
+            }
+            handles.add(handle);
         }
         future.complete(handles);
         LOG.debug(
