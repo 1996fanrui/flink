@@ -19,14 +19,17 @@ package org.apache.flink.streaming.runtime.io;
 
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.common.watermark.Watermark;
+import org.apache.flink.runtime.checkpoint.channel.ChannelStateInvariant;
 import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.runtime.event.AbstractEvent;
 import org.apache.flink.runtime.event.WatermarkEvent;
 import org.apache.flink.runtime.io.network.api.EndOfData;
 import org.apache.flink.runtime.io.network.api.EndOfPartitionEvent;
 import org.apache.flink.runtime.io.network.api.serialization.RecordDeserializer;
+import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.netty.exception.RemoteTransportException;
 import org.apache.flink.runtime.io.network.partition.consumer.BufferOrEvent;
+import org.apache.flink.runtime.io.network.partition.consumer.RecoverableInputChannel;
 import org.apache.flink.runtime.io.network.partition.consumer.EndOfOutputChannelStateEvent;
 import org.apache.flink.runtime.plugable.DeserializationDelegate;
 import org.apache.flink.runtime.plugable.NonReusingDeserializationDelegate;
@@ -79,6 +82,17 @@ public abstract class AbstractStreamTaskNetworkInput<
     private final RecordAttributesCombiner recordAttributesCombiner;
     private InputChannelInfo lastChannel = null;
     private R currentRecordDeserializer = null;
+
+    /**
+     * Diagnostic-only: a duplicate of the bytes of the buffer currently feeding {@link
+     * #currentRecordDeserializer}, captured at {@link #processBuffer}. On a deserialization failure
+     * (the {@code Corrupt stream} corruption) {@link #emitNext} dumps it via {@link
+     * ChannelStateInvariant#corruptionSite}. Null between buffers.
+     */
+    private byte[] currentBufferBytes = null;
+
+    /** Diagnostic-only: records read cleanly from {@link #currentBufferBytes} so far. */
+    private int recordsOkInCurrentBuffer = 0;
     protected final Map<String, WatermarkCombiner> watermarkCombiners = new HashMap<>();
 
     protected final CanEmitBatchOfRecordsChecker canEmitBatchOfRecords;
@@ -158,14 +172,28 @@ public abstract class AbstractStreamTaskNetworkInput<
                 try {
                     result = currentRecordDeserializer.getNextRecord(deserializationDelegate);
                 } catch (IOException e) {
+                    // Always-on consumer-side corruption extractor: dump the offending buffer's
+                    // bytes (channel + shape + shift vs the nearest AB CD EA FC header) so the
+                    // exact byte where the framing broke is visible.
+                    if (currentBufferBytes != null) {
+                        ChannelStateInvariant.corruptionSite(
+                                lastChannel,
+                                recordsOkInCurrentBuffer,
+                                currentBufferBytes,
+                                0,
+                                currentBufferBytes.length,
+                                e);
+                    }
                     throw new IOException(
                             String.format("Can't get next record for channel %s", lastChannel), e);
                 }
                 if (result.isBufferConsumed()) {
                     currentRecordDeserializer = null;
+                    currentBufferBytes = null;
                 }
 
                 if (result.isFullRecord()) {
+                    recordsOkInCurrentBuffer++;
                     final boolean breakBatchEmitting =
                             processElement(deserializationDelegate.getInstance(), output);
                     if (canEmitBatchOfRecords.check() && !breakBatchEmitting) {
@@ -300,7 +328,26 @@ public abstract class AbstractStreamTaskNetworkInput<
                 currentRecordDeserializer != null,
                 "currentRecordDeserializer has already been released");
 
-        currentRecordDeserializer.setNextBuffer(bufferOrEvent.getBuffer());
+        // Diagnostic-only: snapshot the buffer's readable bytes before they are consumed, so a
+        // later deserialization failure can dump exactly the bytes that broke. Reset the per-buffer
+        // record counter for the new buffer.
+        final Buffer buffer = bufferOrEvent.getBuffer();
+        currentBufferBytes = ChannelStateInvariant.toBytes(buffer.getNioBufferReadable());
+        recordsOkInCurrentBuffer = 0;
+        // Optional per-buffer dump, opt-in via -Dflink.cs.debug.records and restricted to recovery
+        // traffic (RecoverableInputChannel) to keep steady-state volume bounded.
+        if (ChannelStateInvariant.RECORDS
+                && checkpointedInputGate.getChannel(lastChannel)
+                        instanceof RecoverableInputChannel) {
+            ChannelStateInvariant.stage(
+                    "consumer.IN ch=" + lastChannel,
+                    lastChannel,
+                    currentBufferBytes,
+                    0,
+                    currentBufferBytes.length);
+        }
+
+        currentRecordDeserializer.setNextBuffer(buffer);
     }
 
     protected R getActiveSerializer(InputChannelInfo channelInfo) {

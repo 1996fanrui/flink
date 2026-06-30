@@ -63,6 +63,12 @@ import static org.apache.flink.util.Preconditions.checkState;
 @Internal
 final class FetchedChannelStateReaderImpl implements FetchedChannelStateReader {
 
+    /**
+     * Diagnostic-only: framed-record stride of the corruption-hunt test value ({@code AB CD EA FC |
+     * VV VV VV VV} at a constant 21-byte stride). Used only by the resume-alignment assert.
+     */
+    private static final int RECORD_STRIDE = 21;
+
     private final FetchedChannelStateSnapshot snapshot;
     private final FetchedChannelState channelState;
     private final List<Path> files;
@@ -148,9 +154,70 @@ final class FetchedChannelStateReaderImpl implements FetchedChannelStateReader {
         // the remainder. alreadyDelivered is carried so commit() records the boundary from the
         // head.
         skipBody(deliveredPrefix);
+        int remainingLength = header.bufferLength - deliveredPrefix;
         currentBody =
-                new BoundedSegmentStream(header.bufferLength - deliveredPrefix, deliveredPrefix);
+                bufferedBody(remainingLength, deliveredPrefix, header, deliveredPrefix);
         return Optional.of(new Segment(header.channelInfo, currentBody));
+    }
+
+    /**
+     * Diagnostic-only: when {@link ChannelStateInvariant#ON}, eagerly read the segment's
+     * not-yet-delivered body remainder into a {@code byte[]}, emit the {@code spillRead.body} stage
+     * (the missing twin of {@code spillSeal.body}) and a resume-alignment assert, then serve the
+     * body from that buffer. The full body is read up-front (advancing {@code current.readOffset} to
+     * the segment end, which is exactly where the next header begins), but {@code commit()} still
+     * records only the bytes the consumer actually reads via {@link
+     * BoundedSegmentStream#deliveredFromSegmentHead()}, so production accounting is unchanged. When
+     * the invariant is off this falls back to the lazy {@link BoundedSegmentStream}.
+     */
+    private BoundedSegmentStream bufferedBody(
+            int remainingLength, int alreadyDelivered, SegmentHeader header, int deliveredPrefix)
+            throws IOException {
+        if (!ChannelStateInvariant.ON) {
+            return new BoundedSegmentStream(remainingLength, alreadyDelivered);
+        }
+        byte[] body = new byte[remainingLength];
+        int off = 0;
+        while (off < remainingLength) {
+            int n = readBody(body, off, remainingLength - off);
+            if (n < 0) {
+                throw new EOFException(
+                        "Unexpected EOF buffering segment body after "
+                                + off
+                                + "/"
+                                + remainingLength
+                                + " bytes");
+            }
+            off += n;
+        }
+        ChannelStateInvariant.stage(
+                "spillRead.body deliveredPrefix="
+                        + deliveredPrefix
+                        + " bufLen="
+                        + header.bufferLength
+                        + " readOff="
+                        + current.readOffset,
+                header.channelInfo,
+                body,
+                0,
+                body.length);
+        // When records resume mid-stride the first header must land at the offset that keeps the
+        // 21-byte framing aligned; if the resume skip is off by N bytes this fail-fasts here.
+        if (deliveredPrefix > 0) {
+            java.util.List<Integer> hits =
+                    ChannelStateInvariant.findHeaders(body, 0, body.length);
+            if (!hits.isEmpty()) {
+                int expectedFirstHeader =
+                        (RECORD_STRIDE - (deliveredPrefix % RECORD_STRIDE)) % RECORD_STRIDE;
+                ChannelStateInvariant.assertEq(
+                        "spillRead.resumeAlign",
+                        header.channelInfo,
+                        "firstHeaderOffset",
+                        expectedFirstHeader,
+                        hits.get(0));
+            }
+        }
+        return new BoundedSegmentStream(body, alreadyDelivered);
     }
 
     /**
@@ -163,7 +230,7 @@ final class FetchedChannelStateReaderImpl implements FetchedChannelStateReader {
             return Optional.empty();
         }
         SegmentHeader header = readHeaderAtCurrent();
-        currentBody = new BoundedSegmentStream(header.bufferLength);
+        currentBody = bufferedBody(header.bufferLength, 0, header, 0);
         return Optional.of(new Segment(header.channelInfo, currentBody));
     }
 
@@ -485,6 +552,13 @@ final class FetchedChannelStateReaderImpl implements FetchedChannelStateReader {
         private final int remainingLength;
         private int read;
 
+        /**
+         * Diagnostic-only: when non-null the body was pre-read into this array (so the
+         * {@code spillRead.body} stage could inspect it) and is served from here instead of the
+         * file stream. The file's read offset was already advanced past the whole body.
+         */
+        @Nullable private final byte[] preRead;
+
         private BoundedSegmentStream(int remainingLength) {
             this(remainingLength, 0);
         }
@@ -492,6 +566,14 @@ final class FetchedChannelStateReaderImpl implements FetchedChannelStateReader {
         private BoundedSegmentStream(int remainingLength, int alreadyDelivered) {
             this.remainingLength = remainingLength;
             this.alreadyDelivered = alreadyDelivered;
+            this.preRead = null;
+        }
+
+        /** Diagnostic-only: serve an already-buffered body remainder from {@code body}. */
+        private BoundedSegmentStream(byte[] body, int alreadyDelivered) {
+            this.remainingLength = body.length;
+            this.alreadyDelivered = alreadyDelivered;
+            this.preRead = body;
         }
 
         /** Body bytes not yet handed out (between the read position and the segment end). */
@@ -525,7 +607,15 @@ final class FetchedChannelStateReaderImpl implements FetchedChannelStateReader {
                 return -1;
             }
             int toRead = Math.min(len, remainingLength - read);
-            int n = readBody(buf, off, toRead);
+            int n;
+            if (preRead != null) {
+                // Diagnostic path: the body was already read into preRead and the file offset
+                // advanced; serve from the buffer here.
+                System.arraycopy(preRead, read, buf, off, toRead);
+                n = toRead;
+            } else {
+                n = readBody(buf, off, toRead);
+            }
             if (n < 0) {
                 throw new EOFException(
                         "Unexpected EOF in segment body after "

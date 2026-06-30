@@ -129,6 +129,10 @@ public final class FetchedChannelStateDrainer implements RecoveryCheckpointTrigg
             if (buf.getSize() == cap) {
                 // Buffer is full: deliver under lock and request a fresh one.
                 synchronized (lock) {
+                    ChannelStateInvariant.stage(
+                            "drain.OUT ch=" + ch.getChannelInfo(),
+                            ch.getChannelInfo(),
+                            buf.getNioBufferReadable());
                     ch.onRecoveredStateBuffer(buf);
                     seg.commit();
                 }
@@ -142,6 +146,10 @@ public final class FetchedChannelStateDrainer implements RecoveryCheckpointTrigg
         if (buf.getSize() > 0) {
             // Deliver the partial tail buffer.
             synchronized (lock) {
+                ChannelStateInvariant.stage(
+                        "drain.OUT ch=" + ch.getChannelInfo(),
+                        ch.getChannelInfo(),
+                        buf.getNioBufferReadable());
                 ch.onRecoveredStateBuffer(buf);
                 seg.commit();
             }
