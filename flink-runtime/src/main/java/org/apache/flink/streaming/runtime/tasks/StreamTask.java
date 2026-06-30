@@ -947,14 +947,19 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
             recoveryCheckpointTrigger = RecoveryCheckpointTrigger.NO_OP;
             return FutureUtils.completedVoidFuture();
         }
+        // The trigger is intentionally NOT swapped to NO_OP when the drain future completes:
+        // drain() only appends the end-of-recovery sentinels, while channels stay inRecovery until
+        // the consume loop polls them. Swapping here would open a window where the trigger inserts
+        // no RecoveryCheckpointBarrier yet channels still expect one, causing spurious
+        // TASK_NOT_READY declines. The swap happens in onRecoveryCheckpointingFinished(), driven by
+        // the aggregated END_OF_RECOVERY signal once every channel has actually left recovery.
         return setRecoveryCheckpointTrigger(RecoveryCheckpointTrigger.NOT_READY)
                 .thenApplyAsync(ign -> fetchChannelState(reader, inputGates), channelIOExecutor)
                 .thenCompose(
                         state ->
                                 requestPartitions(inputGates, state.isPresent())
                                         .thenApply(channels -> buildDrainer(state, channels)))
-                .thenCompose(this::drainThroughCheckpointTrigger)
-                .thenRun(() -> setRecoveryCheckpointTrigger(RecoveryCheckpointTrigger.NO_OP));
+                .thenCompose(this::drainThroughCheckpointTrigger);
     }
 
     @SuppressWarnings("OptionalUsedAsFieldOrParameterType") // intentional: simplify call-site
@@ -971,6 +976,16 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
         }
         FetchedChannelStateDrainer d = drainer.get();
         return setRecoveryCheckpointTrigger(d).thenRunAsync(() -> drain(d), channelIOExecutor);
+    }
+
+    /**
+     * Retires the recovery-checkpoint trigger once recovery is fully consumed. Invoked from the
+     * input processor on the {@code END_OF_RECOVERY} signal, which fires only after every channel
+     * has consumed its recovery data and left {@code inRecovery}. Runs on the task thread, so the
+     * trigger field — only ever read and written there — can be assigned directly.
+     */
+    public void onRecoveryCheckpointingFinished() {
+        recoveryCheckpointTrigger = RecoveryCheckpointTrigger.NO_OP;
     }
 
     private CompletableFuture<Void> setRecoveryCheckpointTrigger(
