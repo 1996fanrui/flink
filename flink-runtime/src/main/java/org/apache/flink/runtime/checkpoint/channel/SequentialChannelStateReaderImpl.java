@@ -249,10 +249,17 @@ class ChannelStateChunkReader {
                 throw e;
             }
 
-            ChannelStateInvariant.stage(
-                    "readChunk.IN@off" + sourceOffset,
-                    channelInfo,
-                    bufferWithContext.buffer.getNioBufferReadable());
+            // Diagnostic only: the readable bytes are exposed by the underlying Flink Buffer
+            // (the handler's context on the real recovery path), not by ChannelStateByteBuffer.
+            if (bufferWithContext.context
+                    instanceof org.apache.flink.runtime.io.network.buffer.Buffer) {
+                ChannelStateInvariant.stage(
+                        "readChunk.IN@off" + sourceOffset,
+                        channelInfo,
+                        ((org.apache.flink.runtime.io.network.buffer.Buffer)
+                                        bufferWithContext.context)
+                                .getNioBufferReadable());
+            }
             // Passing the ownership of buffer to inside.
             stateHandler.recover(channelInfo, oldSubtaskIndex, bufferWithContext);
         }
