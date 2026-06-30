@@ -26,7 +26,7 @@
 	<parent>
 		<artifactId>flink-end-to-end-tests</artifactId>
 		<groupId>org.apache.flink</groupId>
-		<version>2.4-SNAPSHOT</version>
+		<version>os-troubleshooting-c1c38ad5cc5</version>
 	</parent>
 
 	<artifactId>flink-end-to-end-tests-jdbc-driver</artifactId>
