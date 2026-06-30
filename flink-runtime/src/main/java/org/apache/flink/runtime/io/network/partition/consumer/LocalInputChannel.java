@@ -282,8 +282,7 @@ public class LocalInputChannel extends InputChannel
      * @throws IOException if no sentinel matching {@code checkpointId} is found (the snapshot
      *     protocol guarantees one must be present while the channel is in recovery).
      */
-    private List<Buffer> collectPreRecoveryBarrier(long checkpointId)
-            throws IOException, CheckpointException {
+    private List<Buffer> collectPreRecoveryBarrier(long checkpointId) throws IOException {
         assert Thread.holdsLock(recoveredBuffers);
         List<Buffer> retained = new ArrayList<>();
         try {
@@ -304,19 +303,11 @@ public class LocalInputChannel extends InputChannel
             throw e;
         }
         releaseRetainedBuffers(retained);
-        // The during-recovery sentinel for this checkpoint was never inserted into this channel
-        // (the recovery checkpoint trigger had already transitioned away from the drainer while
-        // this channel was still in recovery). The channel is simply not ready to snapshot
-        // recovered state for this checkpoint yet, so decline as TASK_NOT_READY: that is not
-        // counted against the tolerable-failure threshold, so the checkpoint is deferred and
-        // retried instead of failing the job. The recovered buffers remain queued and are
-        // captured by a later checkpoint, so no in-flight data is lost.
-        throw new CheckpointException(
-                "RecoveryCheckpointBarrier for checkpoint "
+        throw new IOException(
+                "Missing RecoveryCheckpointBarrier for checkpoint "
                         + checkpointId
-                        + " not yet present in channel "
-                        + getChannelInfo(),
-                CheckpointFailureReason.CHECKPOINT_DECLINED_TASK_NOT_READY);
+                        + " in recoveredBuffers for channel "
+                        + getChannelInfo());
     }
 
     private static void releaseRetainedBuffers(List<Buffer> retained) {
