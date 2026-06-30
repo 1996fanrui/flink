@@ -288,17 +288,38 @@ public class ChannelStateFilteringHandler implements Closeable {
                                     + virtualChannels.keySet());
                 }
 
+                // Snapshot the raw input bytes before the deserializer consumes the buffer, so the
+                // corruption extractor can show exactly where alignment broke.
+                byte[] dbgInput =
+                        ChannelStateInvariant.ON
+                                ? ChannelStateInvariant.toBytes(sourceBuffer.getNioBufferReadable())
+                                : null;
+                ChannelStateInvariant.stage("filter.IN", key, sourceBuffer.getNioBufferReadable());
+
                 vc.setNextBuffer(sourceBuffer);
                 sourceBufferOwnershipTransferred = true;
 
-                while (true) {
-                    DeserializationResult result = vc.getNextRecord(deserializationDelegate);
-                    if (result.isFullRecord()) {
-                        serializeElement(deserializationDelegate.getInstance(), outputSerializer);
+                int dbgRecordsOk = 0;
+                try {
+                    while (true) {
+                        DeserializationResult result = vc.getNextRecord(deserializationDelegate);
+                        if (result.isFullRecord()) {
+                            dbgRecordsOk++;
+                            serializeElement(deserializationDelegate.getInstance(), outputSerializer);
+                        }
+                        if (result.isBufferConsumed()) {
+                            break;
+                        }
                     }
-                    if (result.isBufferConsumed()) {
-                        break;
-                    }
+                } catch (Throwable corrupt) {
+                    ChannelStateInvariant.corruptionSite(
+                            key,
+                            dbgRecordsOk,
+                            dbgInput == null ? new byte[0] : dbgInput,
+                            0,
+                            dbgInput == null ? 0 : dbgInput.length,
+                            corrupt);
+                    throw corrupt;
                 }
             } catch (Throwable t) {
                 if (!sourceBufferOwnershipTransferred) {
@@ -321,6 +342,15 @@ public class ChannelStateFilteringHandler implements Closeable {
             serializer.serialize(element, outputSerializer);
             int recordLength = outputSerializer.length() - startPos - Integer.BYTES;
             outputSerializer.writeIntUnsafe(recordLength, startPos);
+            if (ChannelStateInvariant.RECORDS) {
+                ChannelStateInvariant.record(
+                        "filter.OUT",
+                        "recLen=" + recordLength,
+                        ChannelStateInvariant.slice(
+                                outputSerializer.getSharedBuffer(),
+                                startPos + Integer.BYTES,
+                                recordLength));
+            }
         }
 
         boolean hasPartialData() {

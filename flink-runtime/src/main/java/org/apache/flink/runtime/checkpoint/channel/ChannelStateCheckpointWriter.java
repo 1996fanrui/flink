@@ -188,6 +188,17 @@ class ChannelStateCheckpointWriter {
                                 serializer.writeData(dataStream, seg.bodyStream(), seg.length());
                             }
                             long size = checkpointStream.getPos() - offset;
+                            ChannelStateInvariant.stage(
+                                    "ckptWrite.SPILL@off"
+                                            + offset
+                                            + " segLen="
+                                            + seg.length()
+                                            + " size="
+                                            + size,
+                                    seg.channelInfo(),
+                                    new byte[0],
+                                    0,
+                                    0);
                             pendingResult
                                     .getInputChannelOffsets()
                                     .computeIfAbsent(
@@ -234,6 +245,8 @@ class ChannelStateCheckpointWriter {
                 () -> {
                     checkState(precondition);
                     long offset = checkpointStream.getPos();
+                    ChannelStateInvariant.stage(
+                            "ckptWrite.MEM@off" + offset, key, buffer.getNioBufferReadable());
                     try (AutoCloseable ignored = NetworkActionsLogger.measureIO(action, buffer)) {
                         serializer.writeData(dataStream, buffer);
                     }

@@ -249,6 +249,10 @@ class ChannelStateChunkReader {
                 throw e;
             }
 
+            ChannelStateInvariant.stage(
+                    "readChunk.IN@off" + sourceOffset,
+                    channelInfo,
+                    bufferWithContext.buffer.getNioBufferReadable());
             // Passing the ownership of buffer to inside.
             stateHandler.recover(channelInfo, oldSubtaskIndex, bufferWithContext);
         }

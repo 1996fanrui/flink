@@ -343,6 +343,7 @@ abstract class AbstractSpillingHandler extends AbstractInputChannelRecoveredStat
         if (currentChannel == null) {
             return;
         }
+        InputChannelInfo dbgSealed = currentChannel;
         currentChannel = null;
         int totalBytes = segmentSerializer.length();
         int bodyBytes = totalBytes - SEGMENT_HEADER_BYTES;
@@ -351,6 +352,12 @@ abstract class AbstractSpillingHandler extends AbstractInputChannelRecoveredStat
         }
         // Math.toIntExact guards against the unlikely case of a single segment > 2 GB.
         segmentSerializer.writeIntUnsafe(Math.toIntExact(bodyBytes), BUFFER_LENGTH_HEADER_OFFSET);
+        ChannelStateInvariant.stage(
+                "spillSeal.body",
+                dbgSealed,
+                segmentSerializer.getSharedBuffer(),
+                SEGMENT_HEADER_BYTES,
+                bodyBytes);
         ensureFileOpen();
         currentStream.write(segmentSerializer.getSharedBuffer(), 0, totalBytes);
     }

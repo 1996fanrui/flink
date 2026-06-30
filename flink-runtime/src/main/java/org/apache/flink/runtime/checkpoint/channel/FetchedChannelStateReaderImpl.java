@@ -230,6 +230,19 @@ final class FetchedChannelStateReaderImpl implements FetchedChannelStateReader {
         int channelIdx = h.readInt();
         int bufferLength = h.readInt();
         checkState(bufferLength >= 0, "negative segment length: %s", bufferLength);
+        ChannelStateInvariant.stage(
+                "spillRead.header gate="
+                        + gateIdx
+                        + " ch="
+                        + channelIdx
+                        + " bufLen="
+                        + bufferLength
+                        + " readOff="
+                        + current.readOffset,
+                new InputChannelInfo(gateIdx, channelIdx),
+                new byte[0],
+                0,
+                0);
         return new SegmentHeader(new InputChannelInfo(gateIdx, channelIdx), bufferLength);
     }
 
