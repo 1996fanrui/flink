@@ -80,7 +80,8 @@ public class StreamTwoInputProcessorFactory {
             InflightDataRescalingDescriptor inflightDataRescalingDescriptor,
             Function<Integer, StreamPartitioner<?>> gatePartitioners,
             TaskInfo taskInfo,
-            CanEmitBatchOfRecordsChecker canEmitBatchOfRecords) {
+            CanEmitBatchOfRecordsChecker canEmitBatchOfRecords,
+            RecoveryFinishedCallback taskRecoveryFinished) {
 
         checkNotNull(operatorChain);
 
@@ -88,6 +89,14 @@ public class StreamTwoInputProcessorFactory {
 
         boolean checkpointingDuringRecoveryEnabled =
                 CheckpointingOptions.isCheckpointingDuringRecoveryEnabled(jobConfig);
+
+        // Both inputs are network inputs, each emitting END_OF_RECOVERY once; retire the
+        // task-level trigger only after the second one finishes (sorted inputs disable
+        // checkpointing, so during-recovery checkpointing is off and the callback is a no-op).
+        RecoveryFinishedCallback recoveryFinished =
+                checkpointingDuringRecoveryEnabled
+                        ? new CountdownRecoveryFinishedCallback(2, taskRecoveryFinished)
+                        : RecoveryFinishedCallback.NO_OP;
 
         TypeSerializer<IN1> typeSerializer1 = streamConfig.getTypeSerializerIn(0, userClassloader);
         StreamTaskInput<IN1> input1 =
@@ -200,7 +209,7 @@ public class StreamTwoInputProcessorFactory {
                         numRecordsIn,
                         watermarkBypass);
         StreamOneInputProcessor<IN1> processor1 =
-                new StreamOneInputProcessor<>(input1, output1, operatorChain);
+                new StreamOneInputProcessor<>(input1, output1, operatorChain, recoveryFinished);
 
         StreamTaskNetworkOutput<IN2> output2 =
                 new StreamTaskNetworkOutput<>(
@@ -211,7 +220,7 @@ public class StreamTwoInputProcessorFactory {
                         numRecordsIn,
                         watermarkBypass);
         StreamOneInputProcessor<IN2> processor2 =
-                new StreamOneInputProcessor<>(input2, output2, operatorChain);
+                new StreamOneInputProcessor<>(input2, output2, operatorChain, recoveryFinished);
 
         return new StreamMultipleInputProcessor(
                 new MultipleInputSelectionHandler(inputSelectable, 2),
