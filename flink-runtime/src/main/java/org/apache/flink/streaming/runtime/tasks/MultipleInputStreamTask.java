@@ -180,7 +180,8 @@ public class MultipleInputStreamTask<OUT>
                         getEnvironment().getTaskStateManager().getInputRescalingDescriptor(),
                         gatePartitioners,
                         getEnvironment().getTaskInfo(),
-                        getCanEmitBatchOfRecords());
+                        getCanEmitBatchOfRecords(),
+                        this::onRecoveryCheckpointingFinished);
     }
 
     protected Optional<CheckpointBarrierHandler> getCheckpointBarrierHandler() {

@@ -985,6 +985,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
      * trigger field — only ever read and written there — can be assigned directly.
      */
     public void onRecoveryCheckpointingFinished() {
+        checkState(mailboxProcessor.isMailboxThread());
         recoveryCheckpointTrigger = RecoveryCheckpointTrigger.NO_OP;
     }
 
