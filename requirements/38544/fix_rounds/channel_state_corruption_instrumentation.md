@@ -159,3 +159,53 @@ bash repro/repro.sh 25 2000 600
 - 默认 `flink.cs.debug=ON`、`records=OFF`，足够定位；若日志过大可临时 `-Dflink.cs.debug.records` 关。
 - **回归测试盲区**：现有 spill 相关单测多用 8 字节 payload、只解码前几字节做去重，从不逐字节比对 → ±N 错位漏检。
   定位根因后补的回归测试必须**逐字节比对** entry/record 内容。
+
+---
+
+## 7. 根因结论（已 100% 证实，CONCLUSIVE）
+
+**一句话**：下游"恢复上游 output buffer"的路径，把生产者一个**合法地从 record 中间开始**的在途 `ResultSubpartitionStateHandle`，重新包装成 `InputChannelStateHandle`，再把这些字节喂进下游 input 的**逐条 record 反序列化器**；而该反序列化器假设 buffer 从 record 边界开始、且没有跨 buffer 的 spanning 前驱，于是把一个数据字节当成 length/tag 读 → 字节流错位 → `Corrupt stream` / 静默丢数据。
+
+**关键不对称（为什么是 bug）**：
+- 旧的 output 恢复路径（`ResultSubpartitionRecoveredStateHandler.recover`，`RecoveredChannelStateHandler.java:627-656`）把 buffer 原样 `addRecovered` 重新注入 ResultSubpartition，**从不逐条反序列化**，所以"从 record 中间开始"无害（下游真正的 deserializer 早已消费了该 record 的头）。
+- 新的下游路径**对同一批字节逐条反序列化**——对一个"record 头已经发给下游、从未被快照"的 subpartition 首个 buffer 来说，这是不成立的。
+
+**Fix site**：
+- `TaskStateAssignment.distributeOutputBufferToDownstream`（`flink-runtime/.../checkpoint/TaskStateAssignment.java:600-636`，handle 构造在 `:624-630`）——把 output handle 的 delegate+offsets 包装成 `InputChannelStateHandle`，未携带任何 record 边界上下文。
+- 配合 `SequentialChannelStateReaderImpl.readInputData` 的第二个 `read(...)`（`:95-99`，`getUpstreamOutputBufferState`）→ `ChannelStateFilteringHandler` 的逐条反序列化。
+
+**铁证（单一文件 + 单一 offset 列表，两条独立 channel 复现）**：
+- 同一物理文件 `5d48e233-…`、`Starting Position: 713, 115820 bytes`、offsets `[72561,73589,74317,75046]`：
+  - **写**：`buildHandle ResultSubpartitionStateHandle subPartitionIdx=3`、`ckptWrite.MEM map=OUTPUT`；
+  - **读**：`readSequentially.handle InputChannelStateHandle info=InputChannelInfo{inputChannelIdx=20} oldSubtask=3`、`readChunk.IN@off72561`。
+  - 映射对得上：`inputChannelIdx=20`=上游 subtask 20，`oldSubtask=3`=subPartitionIdx 3（正是 `TaskStateAssignment.java:621-630` 的转换）。
+- 损坏 buffer = 这 4 个 output chunk 拼接（1024+724+725+220=2693 字节、48+35+34+11=128 个 header），`recordsOkInThisBuffer=0 firstHeaderAt=18` → 首条就错位。
+- 全程 `[CS-INV-ASSERT]=0` → 写侧 input/output map 的 key 路由是干净的，input handle 持有 output offsets 是**设计使然**，不是写时记账错。
+- 本轮还同时复现了静默丢数据变体（`NUM_OUTPUTS != NUM_INPUTS`），证明这就是真正的丢数据 bug，而非无害的偶发报错。
+
+> 详细证据见 `round3_findings.md` / `round3_evidence.md`（以及 `round1_*`、`round2_*` 的逐轮收敛过程）。
+
+---
+
+## 8. 排查过程经验（逐轮收敛，可复用的方法论）
+
+整个定位用了 **3 轮**（上限 5 轮），每轮 = 加插桩 → 编译 → loop 复现 → 独立 agent 分析判定，每轮都 commit logs+docs。核心经验：
+
+1. **不要猜，让字节自己说话**。最有效的不是 CRC，而是利用测试数据的确定性特征（`AB CD EA FC` header + 21 字节 stride），在每个阶段把字节剥到 record 层验证不变式，找"最早变坏的阶段"。第一轮就靠 `shape()` 的 stride/firstHeaderAt 把范围从"整条流水线"收敛到"某个未插桩的 gap"。
+
+2. **分轮收敛，每轮只回答一个问题**。不要一次把所有日志加满：
+   - R1：全链路粗插桩 → 结论"所有已插桩阶段都是好的（stride 21）"，把 bug 框到**未插桩的 gap**（spill 读回/drain/consumer）。
+   - R2：补齐 gap 的插桩 → 抓到硬特征"buffer 起点错位、firstHeaderAt 异常、`recordsOkInThisBuffer=0`"，并发现损坏字节其实来自**写为 OUTPUT 的 offset**。
+   - R3：加 handle/文件身份 + offsets + 跨 input/output 的 key 断言 → 抓到**单一文件单一 offset 列表既被写为 output 又被读为 input**的铁证，并由独立分析确认这是 `getUpstreamOutputBufferState` 设计路径，最终锁定 fix site。
+
+3. **始终用"独立验证 agent"判定 CONCLUSIVE/INSUFFICIENT**，且判定标准要严：**日志里必须出现 healthy→corrupt 的那一步转变**，只靠"代码看着不对"不算。前两轮都诚实地判 INSUFFICIENT 并给出"下一轮要加什么"的精确清单——正是这种不放水让收敛是单调的。
+
+4. **抓硬特征能快速排除一大批假设**。`recordsOkInThisBuffer=0` + 全程 stride=21 立刻排除了"流中间多/少 1 字节""单条 record length 写错"等，直接指向"buffer 起点未对齐 + 无 spanning 前驱"。
+
+5. **插桩可以是观察式，也可以是 fail-fast 断言**。`assertKeyKind` 的"未触发"本身就是关键证据（证明写侧 key 路由干净，把锅从"写时记账错"转到"设计上 input handle 持有 output offsets"）。**断言不触发和触发一样有信息量**。
+
+6. **小心插桩改变数据路径（Heisenbug 风险）**。R2 的 `spillRead.body` 改成了 eager 读，必须显式验证"改完还能复现"——确实仍复现，结论才可信。
+
+7. **复现编排经验**：loop 跑在后台 + monitor 只在真实 trigger（FAIL / `[CS-INV-ASSERT]` / loop 结束）唤醒，不要按 pass 计数发心跳（否则反复唤醒协调者、浪费上下文）。注意 `repro.sh` 把 assert 触发的失败归类为 INFRA 且会删日志——要单独监控并在命中时立即拷贝 + `touch STOP`。
+
+8. **修复方向（供后续，不在本次范围）**：要么在 `distributeOutputBufferToDownstream` 转换时携带/对齐 record 边界（标记首 buffer 为 mid-record、建立 spanning 前驱），要么下游对"来自上游 output 的在途字节"沿用旧的 raw re-inject 语义而非逐条反序列化。补回归测试时务必**逐字节比对**，并覆盖"subpartition 首 buffer 从 record 中间开始"这一场景。
