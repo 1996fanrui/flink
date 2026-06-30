@@ -105,7 +105,8 @@ public class TwoInputStreamTask<IN1, IN2, OUT> extends AbstractTwoInputStreamTas
                         getEnvironment().getTaskStateManager().getInputRescalingDescriptor(),
                         gatePartitioners,
                         getEnvironment().getTaskInfo(),
-                        getCanEmitBatchOfRecords());
+                        getCanEmitBatchOfRecords(),
+                        this::onRecoveryCheckpointingFinished);
     }
 
     // This is needed for StreamMultipleInputProcessor#processInput to preserve the existing

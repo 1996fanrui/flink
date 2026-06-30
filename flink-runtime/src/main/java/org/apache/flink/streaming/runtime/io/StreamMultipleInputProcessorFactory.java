@@ -89,7 +89,8 @@ public class StreamMultipleInputProcessorFactory {
             InflightDataRescalingDescriptor inflightDataRescalingDescriptor,
             Function<Integer, StreamPartitioner<?>> gatePartitioners,
             TaskInfo taskInfo,
-            CanEmitBatchOfRecordsChecker canEmitBatchOfRecords) {
+            CanEmitBatchOfRecordsChecker canEmitBatchOfRecords,
+            RecoveryFinishedCallback taskRecoveryFinished) {
         checkNotNull(operatorChain);
 
         List<Input> operatorInputs = mainOperator.getInputs();
@@ -107,6 +108,21 @@ public class StreamMultipleInputProcessorFactory {
 
         boolean checkpointingDuringRecoveryEnabled =
                 CheckpointingOptions.isCheckpointingDuringRecoveryEnabled(jobConfig);
+
+        // Only network inputs emit END_OF_RECOVERY (chained source inputs never do), so the
+        // task-level trigger is retired once the last network input finishes recovery. Source
+        // inputs get NO_OP; when during-recovery checkpointing is off, all inputs get NO_OP.
+        int networkInputCount = 0;
+        for (StreamConfig.InputConfig configuredInput : configuredInputs) {
+            if (configuredInput instanceof StreamConfig.NetworkInputConfig) {
+                networkInputCount++;
+            }
+        }
+        RecoveryFinishedCallback networkRecoveryFinished =
+                checkpointingDuringRecoveryEnabled && networkInputCount > 0
+                        ? new CountdownRecoveryFinishedCallback(
+                                networkInputCount, taskRecoveryFinished)
+                        : RecoveryFinishedCallback.NO_OP;
 
         StreamTaskInput[] inputs = new StreamTaskInput[inputsCount];
         for (int i = 0; i < inputsCount; i++) {
@@ -221,7 +237,8 @@ public class StreamMultipleInputProcessorFactory {
                                 networkRecordsIn);
 
                 inputProcessors[i] =
-                        new StreamOneInputProcessor(inputs[i], dataOutput, operatorChain);
+                        new StreamOneInputProcessor(
+                                inputs[i], dataOutput, operatorChain, networkRecoveryFinished);
             } else if (configuredInput instanceof StreamConfig.SourceInputConfig) {
                 StreamConfig.SourceInputConfig sourceInput =
                         (StreamConfig.SourceInputConfig) configuredInput;

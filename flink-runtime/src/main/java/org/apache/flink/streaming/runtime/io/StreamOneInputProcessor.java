@@ -47,12 +47,28 @@ public final class StreamOneInputProcessor<IN> implements StreamInputProcessor {
 
     private final BoundedMultiInput endOfInputAware;
 
+    /**
+     * Notified once this input finishes channel-state recovery (on the aggregated {@code
+     * END_OF_RECOVERY} signal). Lets the owning task retire its recovery-checkpoint trigger only
+     * after every channel has actually left recovery.
+     */
+    private final RecoveryFinishedCallback recoveryFinishedCallback;
+
     public StreamOneInputProcessor(
             StreamTaskInput<IN> input, DataOutput<IN> output, BoundedMultiInput endOfInputAware) {
+        this(input, output, endOfInputAware, RecoveryFinishedCallback.NO_OP);
+    }
+
+    public StreamOneInputProcessor(
+            StreamTaskInput<IN> input,
+            DataOutput<IN> output,
+            BoundedMultiInput endOfInputAware,
+            RecoveryFinishedCallback recoveryFinishedCallback) {
 
         this.input = checkNotNull(input);
         this.output = checkNotNull(output);
         this.endOfInputAware = checkNotNull(endOfInputAware);
+        this.recoveryFinishedCallback = checkNotNull(recoveryFinishedCallback);
     }
 
     @Override
@@ -71,6 +87,9 @@ public final class StreamOneInputProcessor<IN> implements StreamInputProcessor {
             if (input instanceof RecoverableStreamTaskInput) {
                 input = ((RecoverableStreamTaskInput<IN>) input).finishRecovery();
             }
+            // All channels have now consumed their recovery data and left recovery; safe to retire
+            // the recovery-checkpoint trigger.
+            recoveryFinishedCallback.onRecoveryFinished();
             return DataInputStatus.MORE_AVAILABLE;
         }
 
