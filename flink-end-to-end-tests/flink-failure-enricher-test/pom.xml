@@ -24,7 +24,7 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
 	<parent>
 		<artifactId>flink-end-to-end-tests</artifactId>
 		<groupId>org.apache.flink</groupId>
-		<version>os-troubleshooting-ec0bb842a7b</version>
+		<version>os-troubleshooting-ad886fa9010</version>
 	</parent>
 
 	<modelVersion>4.0.0</modelVersion>

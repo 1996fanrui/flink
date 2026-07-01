@@ -26,7 +26,7 @@
     <parent>
         <groupId>org.apache.flink</groupId>
         <artifactId>flink-table</artifactId>
-        <version>os-troubleshooting-ec0bb842a7b</version>
+        <version>os-troubleshooting-ad886fa9010</version>
     </parent>
 
     <artifactId>flink-sql-gateway-api</artifactId>

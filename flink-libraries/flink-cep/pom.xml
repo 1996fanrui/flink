@@ -26,7 +26,7 @@ under the License.
     <parent>
         <groupId>org.apache.flink</groupId>
         <artifactId>flink-libraries</artifactId>
-        <version>os-troubleshooting-ec0bb842a7b</version>
+        <version>os-troubleshooting-ad886fa9010</version>
     </parent>
 
     <artifactId>flink-cep</artifactId>
