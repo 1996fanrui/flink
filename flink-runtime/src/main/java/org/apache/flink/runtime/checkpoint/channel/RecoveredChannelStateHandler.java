@@ -147,20 +147,34 @@ class InputChannelRecoveredStateHandler
      * channel's own input-channel-state and the upstream output-buffer-state moved onto it during
      * rescaling. {@code this} identifies the single recovery pass this handler instance was created
      * for (one instance per {@code readInputData} call).
+     *
+     * <p>Has no jobId/attempt/jobVertexID/subtaskIndex: {@code readInputData} is called with only
+     * an {@code InputGate[]}, and {@link org.apache.flink.runtime.io.network.partition.consumer
+     * .InputGate}/{@code InputChannel} expose no public accessor for any of the four. Only
+     * gateIdx/channelIdx (via {@code channelInfo}) and this recovery pass's identity are available
+     * here.
      */
     private String invariantRecoverKey(InputChannelInfo channelInfo) {
         return ChannelStateInvariant.key(
-                "recovery-" + System.identityHashCode(this), channelInfo.toString(), "RECOVER");
+                "recovery-" + System.identityHashCode(this),
+                channelInfo.toString(),
+                ChannelStateInvariant.Layer.RECOVER_READ,
+                ChannelStateInvariant.Direction.INPUT);
     }
 
     /**
      * Key for accumulating one channel's full filter-rewritten byte stream (the buffers actually
      * injected into {@link RecoveredInputChannel#onRecoveredStateBuffer}), across every {@link
-     * #recoverWithFiltering} call for that channel during this recovery pass.
+     * #recoverWithFiltering} call for that channel during this recovery pass. See {@link
+     * #invariantRecoverKey} for why the identity segment has no jobId/attempt/jobVertexID/
+     * subtaskIndex.
      */
     private String invariantRewriteKey(InputChannelInfo channelInfo) {
         return ChannelStateInvariant.key(
-                "recovery-" + System.identityHashCode(this), channelInfo.toString(), "REWRITE");
+                "recovery-" + System.identityHashCode(this),
+                channelInfo.toString(),
+                ChannelStateInvariant.Layer.RECOVER_REWRITE,
+                ChannelStateInvariant.Direction.INPUT);
     }
 
     private void recoverWithFiltering(
@@ -209,8 +223,14 @@ class InputChannelRecoveredStateHandler
                         ChannelStateInvariant.label(
                                 "recovery-" + System.identityHashCode(this),
                                 channelInfo.toString());
-                ChannelStateInvariant.flush(invariantRecoverKey(channelInfo), label, "RECOVER");
-                ChannelStateInvariant.flush(invariantRewriteKey(channelInfo), label, "REWRITE");
+                ChannelStateInvariant.flush(
+                        invariantRecoverKey(channelInfo),
+                        label,
+                        ChannelStateInvariant.Layer.RECOVER_READ);
+                ChannelStateInvariant.flush(
+                        invariantRewriteKey(channelInfo),
+                        label,
+                        ChannelStateInvariant.Layer.RECOVER_REWRITE);
             }
         }
         // note that we need to finish all RecoveredInputChannels, not just those with state

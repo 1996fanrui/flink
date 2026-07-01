@@ -35,34 +35,49 @@
 |---|---|---|
 | `isEnabled()` | `:76` | 返回 `ENABLED`，call site 先判它再干活 |
 | `append(String key, ByteBuffer buffer)` | `:86` | 把 buffer 的可读字节**拷贝**进 `key` 对应的累积器；用 `duplicate()`，**不动** reader index / refcount |
-| `flush(String key, String taskAndChannel, String layer)` | `:104` | 取出并移除 `key` 的累积字节，对**拼接后的完整字节流**跑 `shape()`，打 `[CS-INV] layer=<L>`；`!valid` 再打 `[CS-INV-ASSERT] layer=<L>` |
-| `key(String task, String channel, String layer)` | `:134` | 组 accumulator key = `task \| channel \| layer` |
+| `flush(String key, String taskAndChannel, Layer layer)` | `:104` | 取出并移除 `key` 的累积字节，对**拼接后的完整字节流**跑 `shape()`，打 `[CS-INV] layer=<L>`；`!valid` 再打 `[CS-INV-ASSERT] layer=<L>` |
+| `key(String identity, String channel, Layer layer, Direction direction)` | `:134` | 组 accumulator key = `identity \| channel \| layer \| direction` |
 | `label(String task, String channel)` | `:208` | 组人类可读标签 = `task=<..> ch=<..>` |
-| `validateSnapshot(String taskAndChannel, long barrierId, List<Buffer> buffers)` | `:225` | 快照专用：**自己 retain 一份**副本、拼接、按 `Mode.LENIENT` 跑 `shape()`，打 `[CS-INV-SNAP]`；`!valid` 时按 `logViolationIfAny` 分级打 `[CS-INV-ASSERT]`（真损坏）或 `[CS-INV-TOLERATED]`（首尾半条）；`finally` 里 recycle 自己的副本，不影响 caller 的 buffer |
+| `validateSnapshot(String taskAndChannel, long barrierId, List<Buffer> buffers)` | `:225` | 快照专用：**自己 retain 一份**副本、拼接、按 `Mode.LENIENT` 跑 `shape()`，打 `[CS-INV-SNAP] layer=SNAPSHOT`；`!valid` 时按 `logViolationIfAny` 分级打 `[CS-INV-ASSERT]`（真损坏）或 `[CS-INV-TOLERATED]`（首尾半条）；`finally` 里 recycle 自己的副本，不影响 caller 的 buffer |
 | `shape(byte[] bytes)` / `shape(byte[] bytes, Mode mode)` | `:270` / `:289` | 核心判据，见下。无 `Mode` 参数的重载等价于 `Mode.STRICT` |
 | `logViolationIfAny(Shape, String, String)` | `:182` | 按 `shape.toleratedEdgeOnly` 决定打 `[CS-INV-ASSERT]`（断言级）还是 `[CS-INV-TOLERATED]`（观测级），`flush`/`validateSnapshot` 共用 |
 
+### `Layer`（枚举，五个校验阶段的统一命名）
+
+`ChannelStateInvariant.Layer`：`SNAPSHOT`、`CHECKPOINT_WRITE`、`RECOVER_READ`、`RECOVER_REWRITE`、`CHANNEL_RECEIVE`——与 HL §6.1.5
+一一对应，取代旧版 `SNAP`/`WRITE`/`RECOVER`/`REWRITE`/`RECV` 字符串。所有 `key()`/`flush()` 调用现在都传这个枚举，日志里 `layer=` 输出的就是
+枚举名。
+
+### `Direction`（枚举，区分 input / output）
+
+`ChannelStateInvariant.Direction`：`INPUT` / `OUTPUT`。嵌入聚合 key 的第四段，避免 input-channel 数据与 output-subpartition
+数据被误聚合到一起（§6.6 要求的 input/output 维度）。`SNAPSHOT`、`RECOVER_READ`、`RECOVER_REWRITE`、`CHANNEL_RECEIVE` 全部固定
+`INPUT`（这四个阶段本就只处理 input-channel 数据）；`CHECKPOINT_WRITE` 按调用的是 `writeInput`/`completeInput`（`INPUT`）还是
+`writeOutput`/`completeOutput`（`OUTPUT`）区分。
+
 ### `Mode`（`:77`）：区分上下游/恢复链容忍度
 
-- `Mode.STRICT`：不容忍首尾悬挂半条，从第 0 字节起必须自包含。用于一切下游 / 恢复链场景：RECV、RECOVER、REWRITE、WRITE 的 input 语义。
+- `Mode.STRICT`：不容忍首尾悬挂半条，从第 0 字节起必须自包含。用于一切下游 / 恢复链场景：`CHANNEL_RECEIVE`、`RECOVER_READ`、
+  `RECOVER_REWRITE`、`CHECKPOINT_WRITE` 的 input 语义。
 - `Mode.LENIENT`：容忍开头到第一个可解析 record 之前的悬挂字节、容忍结尾不足一条完整 record 的悬挂字节，只校验中间 record 的
-  length/tag/stride 连续性。用于上游快照场景：SNAP（`validateSnapshot` 固定用 `LENIENT`）、WRITE 的 output 语义（`completeOutput` 里
-  显式传 `Mode.LENIENT`）。
+  length/tag/stride 连续性。用于上游快照场景：`SNAPSHOT`（`validateSnapshot` 固定用 `LENIENT`）、`CHECKPOINT_WRITE` 的 output 语义
+  （`completeOutput` 里显式传 `Mode.LENIENT`）。
 - **无论哪种模式，中间 record 的 STRIDE-IRREGULAR 都判真损坏**（`shape.strideIrregular` 优先于 `toleratedEdgeOnly`，见下）。
 
 ### 日志标签（当前实现）
 
 | 标签 | 出处 | 含义 |
 |---|---|---|
-| `[CS-INV]` | `flush` | 一个 key 的完整拼接数据形状（每次 flush 一行，带 `mode=` 字段） |
+| `[CS-INV]` | `flush` | 一个 key 的完整拼接数据形状（每次 flush 一行，带 `layer=`/`mode=` 字段） |
 | `[CS-INV-ASSERT]` | `logViolationIfAny`（`flush`/`validateSnapshot` 共用） | 真损坏：`STRICT` 模式下任何违规，或任意模式下命中 `STRIDE-IRREGULAR` |
 | `[CS-INV-TOLERATED]` | `logViolationIfAny` | 仅 `LENIENT` 模式下的首尾悬挂半条（观测级，不算断言） |
-| `[CS-INV-SNAP]` | `validateSnapshot` | 快照（一个 barrier 收集到的 buffer 集）的形状（固定 `Mode.LENIENT`） |
+| `[CS-INV-SNAP]` | `validateSnapshot` | 快照（一个 barrier 收集到的 buffer 集）的形状（固定 `Mode.LENIENT`，`layer=SNAPSHOT`） |
 | `[CS-INV-REC]` | `flush`（仅 `LOG_RECORDS=true`）| 逐条 record（at/len/tag） |
 
-> 已废弃：旧版 `[CS-INV-SNAP-ASSERT]` 标签不再单独存在，SNAP 违规现在也走 `logViolationIfAny`，按 STRICT/LENIENT 统一分级为
-> `[CS-INV-ASSERT]` 或 `[CS-INV-TOLERATED]`。HL 旧稿提到的 `[CS-INV-CORRUPT]`、`filter.IN/OUT`、`readChunk.IN`、`recover.INJECT`
-> 这类 per-buffer 阶段标签，**当前分支代码里并不存在**。读日志时以本表为准。
+> 已废弃：旧版 `SNAP`/`WRITE`/`RECOVER`/`REWRITE`/`RECV` 字符串 layer 名已全部替换为 `Layer` 枚举（`SNAPSHOT`/`CHECKPOINT_WRITE`/
+> `RECOVER_READ`/`RECOVER_REWRITE`/`CHANNEL_RECEIVE`）。旧版 `[CS-INV-SNAP-ASSERT]` 标签不再单独存在，SNAP 违规现在也走
+> `logViolationIfAny`，按 STRICT/LENIENT 统一分级为 `[CS-INV-ASSERT]` 或 `[CS-INV-TOLERATED]`。HL 旧稿提到的 `[CS-INV-CORRUPT]`、
+> `filter.IN/OUT`、`readChunk.IN`、`recover.INJECT` 这类 per-buffer 阶段标签，**当前分支代码里并不存在**。读日志时以本表为准。
 
 ### `shape()` 的判据（约 `:270`–`:319`）
 
@@ -88,80 +103,120 @@
 ## 2. 当前已加的校验点（读代码核实）
 
 所有 call site 都先 `ChannelStateInvariant.isEnabled()` 再动作。累积型（`append`+`flush`）和快照型（`validateSnapshot`）两类。
-`flush` 有两个重载：3 参数版固定 `Mode.STRICT`；4 参数版可显式传 `Mode`。
+`flush` 有两个重载：3 参数版固定 `Mode.STRICT`；4 参数版可显式传 `Mode`。五个阶段统一用 `ChannelStateInvariant.Layer` 枚举命名
+（不再是散落字符串），聚合 key 统一用 `key(identity, channel, layer, direction)` 组装（`Direction.INPUT`/`OUTPUT` 是新增的第四维度）。
 
-### 2.1 接收层 RECV（恢复迁入物理 channel）—— `Mode.STRICT`
+### 2.1 `CHANNEL_RECEIVE`（恢复迁入物理 channel）—— `Mode.STRICT`
 
 | 类（相对路径） | 方法 | key / label | layer / mode |
 |---|---|---|---|
-| `.../io/network/partition/consumer/LocalInputChannel.java` | 构造器里 `initialRecoveredBuffers` 迁移循环 | key=`(taskLabel, channelInfo+" kind=Local", "RECV")`；task=`stateWriter.taskLabel()` | `RECV` / `STRICT`（3 参数 `flush`） |
-| `.../io/network/partition/consumer/RemoteInputChannel.java` | 构造器里 `initialRecoveredBuffers` 迁移循环 | key=`(taskLabel, channelInfo+" kind=Remote", "RECV")` | `RECV` / `STRICT`（3 参数 `flush`） |
+| `.../io/network/partition/consumer/LocalInputChannel.java` | 构造器里 `initialRecoveredBuffers` 迁移循环 | key=`(taskLabel, channelInfo+" kind=Local", CHANNEL_RECEIVE, INPUT)`；task=`stateWriter.taskLabel()` | `CHANNEL_RECEIVE` / `STRICT`（3 参数 `flush`） |
+| `.../io/network/partition/consumer/RemoteInputChannel.java` | 构造器里 `initialRecoveredBuffers` 迁移循环 | key=`(taskLabel, channelInfo+" kind=Remote", CHANNEL_RECEIVE, INPUT)` | `CHANNEL_RECEIVE` / `STRICT`（3 参数 `flush`） |
 
 - 只对 `buffer.isBuffer()`（跳过 event）累积；用 `getNioBufferReadable()`，不动 reader index。
-- **key 按 `taskLabel`（=物理 channel 所在 task）分组**，一个物理 channel 的迁入 buffer 全部拼在一起后 flush 一次 → 这正是"物理 channel 接收侧完整数据"。
-- RECV 是恢复链的终点（重写后注入物理 channel），按 §6.3 规则全程不容忍半条，用 `STRICT`。
+- **key 按 `taskLabel`（=物理 channel 所在 task）分组**，一个物理 channel 的迁入 buffer 全部拼在一起后 flush 一次 → 这正是"物理 channel 接收侧完整数据"。生命周期分界=这一次构造器调用（每个物理 channel 实例只在构造时迁入一次，天然不跨生命周期）。
+- `CHANNEL_RECEIVE` 是恢复链的终点（重写后注入物理 channel），按 §6.3 规则全程不容忍半条，用 `STRICT`。
+- **`taskLabel`（=`jobVertexID-subtaskIndex`）没有 jobId/attempt**：`stateWriter.taskLabel()` 的实现类 `ChannelStateWriterImpl`
+  没有持有 jobId/attempt 字段，其构造器目前只接收 `jobVertexID`/`subtaskIndex`。要补上需要改 `ChannelStateWriterImpl` 的构造器
+  签名（生产 wiring 代码，被 `SubtaskCheckpointCoordinatorImpl.openChannelStateWriter` 等多处业务代码和多个测试类调用）——
+  按纪律不允许为此改业务签名，**记为待办**（见 §3）。
 
-### 2.2 快照层 SNAP（正常运行时 checkpoint 采样在途数据）—— `Mode.LENIENT`
+### 2.2 `SNAPSHOT`（正常运行时 checkpoint 采样在途数据）—— `Mode.LENIENT`
 
 | 类 | 方法 | 说明 |
 |---|---|---|
 | `LocalInputChannel.java` | `checkpointStarted(CheckpointBarrier)` | 收集 `toBeConsumedBuffers` 里的 in-flight buffer，`validateSnapshot` 在锁外直接跑（Local 无并发锁问题）|
 | `RemoteInputChannel.java` | `checkpointStarted(CheckpointBarrier)` | **锁外校验**：在 `synchronized (receivedBuffers)` 内对 `getInflightBuffersUnsafe` 结果**逐个 `retainBuffer()` 存进 `invariantSnapshot`**，出锁后再 `validateSnapshot`，跑完逐个 `recycleBuffer()`。这样校验的拷贝/日志不占锁、也不碰交给 writer 的那批 buffer 的 refcount。|
 
-- SNAP 标签是 `[CS-INV-SNAP]`，**不走 `flush`/`key`**（`validateSnapshot` 内部自建拼接、内部固定用 `Mode.LENIENT`）；其分组粒度=
-  **单个 barrier 的一次快照**（参数 `barrierId`），即"这一个 checkpoint 里这个 channel 采到的 in-flight 片段"，**不是** channel 完整数据流
-  ——这是上游 output 语义（一条 record 可能已半发往下游），按 §6.2 规则容忍首尾半条，命中时打观测级 `[CS-INV-TOLERATED]` 而非断言级。
+- `SNAPSHOT` 标签是 `[CS-INV-SNAP]`，**不走 `flush`/`key`**（`validateSnapshot` 内部自建拼接、内部固定用 `Mode.LENIENT`，日志里
+  显式打 `layer=SNAPSHOT`）；其分组粒度=**单个 barrier 的一次快照**（参数 `barrierId`），即"这一个 checkpoint 里这个 channel
+  采到的 in-flight 片段"，**不是** channel 完整数据流——这是上游 output 语义（一条 record 可能已半发往下游），按 §6.2 规则容忍
+  首尾半条，命中时打观测级 `[CS-INV-TOLERATED]` 而非断言级。生命周期分界=`barrierId`（已天然满足"单次快照"分界）。
+- 同样使用 `stateWriter.taskLabel()`，**没有 jobId/attempt**，原因与 §2.1 相同，见 §3 待办。
 
-### 2.3 checkpoint 写入层 WRITE —— input 用 `Mode.STRICT`，output 用 `Mode.LENIENT`
+### 2.3 `CHECKPOINT_WRITE` —— input 用 `Mode.STRICT`，output 用 `Mode.LENIENT`
 
 | 类 | 方法 | key / 分组 | layer / mode |
 |---|---|---|---|
-| `.../checkpoint/channel/ChannelStateCheckpointWriter.java` | `writeInput(...)` 累积；`completeInput(...)` flush | `invariantWriteKey(JobVertexID,int,InputChannelInfo)` = key(`jobVertexID-subtaskIndex-cp<checkpointId>`, `info.toString()`, `"WRITE"`) | `WRITE` / `STRICT`（3 参数 `flush`） |
-| 同上 | `writeOutput(...)` 累积；`completeOutput(...)` flush | `invariantWriteKey(JobVertexID,int,ResultSubpartitionInfo)` 重载 = key(`jobVertexID-subtaskIndex-cp<checkpointId>`, `info.toString()`, `"WRITE"`) | `WRITE` / `LENIENT`（`completeOutput` 显式传 `ChannelStateInvariant.Mode.LENIENT`） |
+| `.../checkpoint/channel/ChannelStateCheckpointWriter.java` | `writeInput(...)` 累积；`completeInput(...)` flush | `invariantWriteKey(JobVertexID,int,InputChannelInfo)` = key(`jobVertexID-subtaskIndex-cp<checkpointId>`, `info.toString()`, `CHECKPOINT_WRITE`, `INPUT`) | `CHECKPOINT_WRITE` / `STRICT`（3 参数 `flush`） |
+| 同上 | `writeOutput(...)` 累积；`completeOutput(...)` flush | `invariantWriteKey(JobVertexID,int,ResultSubpartitionInfo)` 重载 = key(`jobVertexID-subtaskIndex-cp<checkpointId>`, `info.toString()`, `CHECKPOINT_WRITE`, `OUTPUT`) | `CHECKPOINT_WRITE` / `LENIENT`（`completeOutput` 显式传 `ChannelStateInvariant.Mode.LENIENT`） |
 
-- **WRITE 层现在按 §6.4 规则区分上下游**：input（下游语义）用 `STRICT`；output（上游语义，一条 record 可能半发往下游）
-  用 `LENIENT`，命中首尾半条打观测级，不算断言。两者共用同一个 `key`/`label` 结构，仅 `Mode` 不同，通过两个重载的
+- **`CHECKPOINT_WRITE` 层现在按 §6.4 规则区分上下游**：input（下游语义）用 `STRICT`；output（上游语义，一条 record 可能半发往下游）
+  用 `LENIENT`，命中首尾半条打观测级，不算断言。两者共用同一个 `key`/`label` 结构，仅 `Mode` 和 `Direction` 不同，通过两个重载的
   `invariantWriteKey` 区分参数类型（`InputChannelInfo` vs `ResultSubpartitionInfo`）。
-- **WRITE 累积 key 仍带 `-cp<checkpointId>`** → 按**单个 checkpoint** 分片，不是 channel 完整数据流（见 §3 待修正项——这一条
-  未变更，仍是已知的粒度局限，但因为 output 侧现在已经用 LENIENT 判据，单 cp 片段的首尾半条不会再误报为断言）。
+- **key 的 identity 段仍是 `jobVertexID-subtaskIndex-cp<checkpointId>`**——`-cp<checkpointId>` 已经是"单次 checkpoint 写入"
+  这个生命周期维度，满足 §6.6 的生命周期分界要求；`info.toString()`（`InputChannelInfo`/`ResultSubpartitionInfo`）已包含
+  gateIdx/channelIdx（或 partitionIdx/subPartitionIdx）。
+- **没有 jobId/attempt**：`ChannelStateCheckpointWriter`/`writeInput`/`writeOutput`/`completeInput`/`completeOutput` 的方法
+  签名只接收裸 `JobVertexID jobVertexID, int subtaskIndex`（见 `SubtaskID`），整条 `ChannelStateWriteRequest` 请求链路都不携带
+  jobId/attempt。要补上需要改这些方法和 `ChannelStateWriteRequest` 的业务签名——按纪律不允许，**记为待办**（见 §3）。
+- **`CHECKPOINT_WRITE` 累积 key 仍带 `-cp<checkpointId>`** → 按**单个 checkpoint** 分片，不是 channel 完整数据流（见 §3 已知局限
+  ——未变更，仍是已知的粒度局限，但因为 output 侧现在已经用 LENIENT 判据，单 cp 片段的首尾半条不会再误报为断言）。
 
-### 2.4 恢复读 RECOVER / 重写 REWRITE —— `Mode.STRICT`
+### 2.4 `RECOVER_READ` / `RECOVER_REWRITE` —— `Mode.STRICT`
 
 | 类 | 方法 | key / 分组 | layer / mode |
 |---|---|---|---|
-| `.../checkpoint/channel/RecoveredChannelStateHandler.java`（内部类 `InputChannelRecoveredStateHandler`）| `recover(InputChannelInfo, int, BufferWithContext)` 累积 | `invariantRecoverKey` = key(`recovery-<identityHashCode(this)>`, `channelInfo`, `"RECOVER"`) | `RECOVER` / `STRICT`（3 参数 `flush`） |
-| 同上 | `recoverWithFiltering(...)` 累积（对 `filterAndRewrite` 返回的每个 filtered buffer）| `invariantRewriteKey` = key(`recovery-<identityHashCode(this)>`, `channelInfo`, `"REWRITE"`) | `REWRITE` / `STRICT`（3 参数 `flush`） |
-| 同上 | `close()` flush RECOVER + REWRITE | 遍历 `channelsSeenForInvariantCheck` 逐 channel flush | —— |
+| `.../checkpoint/channel/RecoveredChannelStateHandler.java`（内部类 `InputChannelRecoveredStateHandler`）| `recover(InputChannelInfo, int, BufferWithContext)` 累积 | `invariantRecoverKey` = key(`recovery-<identityHashCode(this)>`, `channelInfo`, `RECOVER_READ`, `INPUT`) | `RECOVER_READ` / `STRICT`（3 参数 `flush`） |
+| 同上 | `recoverWithFiltering(...)` 累积（对 `filterAndRewrite` 返回的每个 filtered buffer）| `invariantRewriteKey` = key(`recovery-<identityHashCode(this)>`, `channelInfo`, `RECOVER_REWRITE`, `INPUT`) | `RECOVER_REWRITE` / `STRICT`（3 参数 `flush`） |
+| 同上 | `close()` flush RECOVER_READ + RECOVER_REWRITE | 遍历 `channelsSeenForInvariantCheck` 逐 channel flush | —— |
 
-- **RECOVER/REWRITE key 用 `recovery-<identityHashCode(this)>`**，即**每个 recovery pass（一次 `readInputData` 一个 handler 实例）一组**，
-  在 `close()` 时对该 pass 见过的每个 channel 一次性 flush → 这**是** channel 完整数据流粒度（与 WRITE 的 per-cp 分片不同，注意区分）。
-- RECOVER 累积的是恢复读回的原始字节（`recover` 里注入前）；REWRITE 累积的是 `filterAndRewrite` 重写后、即将 `onRecoveredStateBuffer` 注入物理 channel 的字节。
+- **key 用 `recovery-<identityHashCode(this)>`**，即**每个 recovery pass（一次 `readInputData` 一个 handler 实例）一组**，
+  在 `close()` 时对该 pass 见过的每个 channel 一次性 flush → 这**是** channel 完整数据流粒度（与 `CHECKPOINT_WRITE` 的 per-cp
+  分片不同，注意区分）；生命周期分界=这次 handler 实例的生命周期（一次 recovery pass），已天然满足。
+- `RECOVER_READ` 累积的是恢复读回的原始字节（`recover` 里注入前）；`RECOVER_REWRITE` 累积的是 `filterAndRewrite` 重写后、即将
+  `onRecoveredStateBuffer` 注入物理 channel 的字节。
 - 按 §6.3 规则，恢复链全程不容忍半条（即使源数据来自上游 output，恢复时已重组进虚拟 channel），两者都用 `STRICT`。
+- **没有 jobId/attempt/jobVertexID/subtaskIndex**：`readInputData(InputGate[] inputGates, ...)` 只传 `InputGate[]`，
+  `InputGate`/`InputChannel`/`RecoveredInputChannel` 都没有公开访问器能拿到 jobId、attempt、jobVertexID 或 subtaskIndex
+  （`SingleInputGate` 只有 `owningTaskName`——人类可读字符串，不是结构化 jobVertexID）。这四个维度在当前代码结构下拿不到，
+  要拿到需要新增 getter 或改 `readInputData`/handler 构造器签名——按纪律不允许改业务签名，**记为待办**（见 §3）。key 里只有
+  gateIdx/channelIdx（通过 `channelInfo`）和 recovery pass 身份两个维度。
 - **output 侧恢复仍无插桩**（`RecoveredChannelStateHandler.recover(ResultSubpartitionInfo, ...)` 没有 `ChannelStateInvariant`
   调用）——这是本轮改动范围之外的既有缺口，未新增也未修正，见 §3。
 
 ### 2.5 各层 key 分组 + mode 一览（重点：分组粒度决定校验对象，mode 决定容忍度）
 
-| layer | 分组维度 | 校验对象 | 是否 = channel 完整数据流 | mode |
-|---|---|---|---|---|
-| `RECV` | `taskLabel + channel` | 物理 channel 迁入的全部 buffer | 是 | `STRICT` |
-| `SNAP` | 单个 `barrierId` | 一次 checkpoint 采到的 in-flight 片段 | **否**（单 cp 片段） | `LENIENT` |
-| `WRITE`（input） | `jobVertexID-subtask-cp<N> + channel` | 单个 checkpoint 写入的 input 字节 | **否**（单 cp 片段） | `STRICT` |
-| `WRITE`（output） | `jobVertexID-subtask-cp<N> + subpartition` | 单个 checkpoint 写入的 output 字节 | **否**（单 cp 片段） | `LENIENT` |
-| `RECOVER` | `recovery-<handler实例> + channel` | 一次 recovery pass 读回的字节 | 是 | `STRICT` |
-| `REWRITE` | `recovery-<handler实例> + channel` | 一次 recovery pass 重写后的字节 | 是 | `STRICT` |
+| layer | 分组维度（identity 段） | channel 段 | direction | 校验对象 | 是否 = channel 完整数据流 | mode |
+|---|---|---|---|---|---|---|
+| `CHANNEL_RECEIVE` | `taskLabel`（jobVertexID-subtaskIndex，**无 jobId/attempt**） | channelInfo+kind | `INPUT` | 物理 channel 迁入的全部 buffer | 是 | `STRICT` |
+| `SNAPSHOT` | `taskLabel`（**无 jobId/attempt**） + 单个 `barrierId` | channelInfo+kind | `INPUT`（隐含） | 一次 checkpoint 采到的 in-flight 片段 | **否**（单 cp 片段） | `LENIENT` |
+| `CHECKPOINT_WRITE`（input） | `jobVertexID-subtask-cp<N>`（**无 jobId/attempt**） | channelInfo | `INPUT` | 单个 checkpoint 写入的 input 字节 | **否**（单 cp 片段） | `STRICT` |
+| `CHECKPOINT_WRITE`（output） | `jobVertexID-subtask-cp<N>`（**无 jobId/attempt**） | subpartitionInfo | `OUTPUT` | 单个 checkpoint 写入的 output 字节 | **否**（单 cp 片段） | `LENIENT` |
+| `RECOVER_READ` | `recovery-<handler实例>`（**无 jobId/attempt/jobVertexID/subtaskIndex**） | channelInfo | `INPUT` | 一次 recovery pass 读回的字节 | 是 | `STRICT` |
+| `RECOVER_REWRITE` | `recovery-<handler实例>`（**无 jobId/attempt/jobVertexID/subtaskIndex**） | channelInfo | `INPUT` | 一次 recovery pass 重写后的字节 | 是 | `STRICT` |
+
+> jobId/attempt 在**所有五个阶段**都拿不到——当前分支代码里，从 `InputChannel` 构造器到 `ChannelStateWriteRequest`
+> 到 `readInputData`，没有一条路径能不改业务签名就把 jobId/attempt 传到诊断代码。`CHANNEL_RECEIVE`/`SNAPSHOT` 还差
+> jobVertexID/subtaskIndex 之外的 jobId/attempt；`RECOVER_READ`/`RECOVER_REWRITE` 连 jobVertexID/subtaskIndex 也拿不到。
+> gateIdx/channelIdx（或 output 侧等价物）、单次生命周期分界在五个阶段均已补全。
 
 ---
 
 ## 3. 当前实现的已知缺陷 / 待修正项
 
-0. **统一聚合 key 为完整唯一身份**（落实 HL §6.6）。所有校验点（RECV / SNAP / WRITE / RECOVER / REWRITE）用同一 key 结构，包含：**jobId/attempt + jobVertexID + subtaskIndex + gateIdx + channelIdx + input/output**，并按单次生命周期（单次恢复 / 单次 checkpoint 写入）分界，生命周期结束即 flush。
+0. **聚合 key 的 jobId/attempt 维度，五个阶段全部拿不到**（HL §6.6 要求的维度里，唯一仍缺失的）。已核实每个阶段能触达的
+   代码路径：
+   - `CHANNEL_RECEIVE`/`SNAPSHOT`：只能拿到 `stateWriter.taskLabel()`（`jobVertexID-subtaskIndex`）。其实现类
+     `ChannelStateWriterImpl` 没有 jobId/attempt 字段，构造器目前只接收 `jobVertexID`/`subtaskIndex`（尽管调用它的
+     `SubtaskCheckpointCoordinatorImpl.openChannelStateWriter` 手上有 `Environment`，能拿到 `getJobID()`/`getExecutionId()`）。
+   - `CHECKPOINT_WRITE`：`ChannelStateCheckpointWriter`/`writeInput`/`writeOutput`/`completeInput`/`completeOutput` 的方法
+     签名和 `ChannelStateWriteRequest` 请求链路都只携带裸 `JobVertexID`/`subtaskIndex`（见 `SubtaskID`），不携带 jobId/attempt。
+   - `RECOVER_READ`/`RECOVER_REWRITE`：连 jobVertexID/subtaskIndex 都拿不到，`readInputData(InputGate[], ...)` 只传
+     `InputGate[]`，`InputGate`/`InputChannel`/`RecoveredInputChannel` 都没有公开访问器暴露这两个维度（`SingleInputGate`
+     只有人类可读的 `owningTaskName`）。
+   **未修正**：以上每一处要拿到 jobId/attempt（或 `RECOVER_READ`/`RECOVER_REWRITE` 要拿到 jobVertexID/subtaskIndex）都需要
+   改生产构造器/方法签名（`ChannelStateWriterImpl`、`ChannelStateCheckpointWriter`、`ChannelStateWriteRequest`、
+   `readInputData`/`RecoveredChannelStateHandler` 构造器之一），按纪律不允许为诊断目的改业务签名，因此留作待办，未强行塞入。
+   gateIdx/channelIdx（或 output 侧 partitionIdx/subPartitionIdx）、input/output（`Direction`）、单次生命周期分界这三个维度
+   在五个阶段均已用统一的 `key(identity, channel, layer, direction)` 结构补全（见 §2.5）。
 
-1. **`WRITE`/`SNAP` 累积器仍按"单个 checkpoint"分片（`SNAP` 按 `barrierId`，`WRITE` 按 `-cp<N>`）**，校验的是"单个 checkpoint
-   的片段"而非"channel 完整数据流"。因为这两处现在都用 `Mode.LENIENT`（容忍首尾半条），单 cp 片段天然的首尾半条不会再误报为
-   断言级，只是仍不是理论上最完整的校验对象。**未修正**：`ChannelStateCheckpointWriter` 按 checkpoint 生命周期建实例
-   （`checkpointId` 是实例字段），结构上看不到同一个 channel 跨多个 checkpoint 的数据，要做到"聚合到 channel 完整数据流"
-   需要在更外层（跨 writer 实例）维护累积器，改动会超出这个类本身、触及调用方生命周期管理，本轮未做，留作后续单独评估。
+1. **`CHECKPOINT_WRITE`/`SNAPSHOT` 累积器仍按"单个 checkpoint"分片（`SNAPSHOT` 按 `barrierId`，`CHECKPOINT_WRITE` 按
+   `-cp<N>`）**，校验的是"单个 checkpoint 的片段"而非"channel 完整数据流"。因为这两处现在都用 `Mode.LENIENT`（容忍首尾半条），
+   单 cp 片段天然的首尾半条不会再误报为断言级，只是仍不是理论上最完整的校验对象。**未修正**：`ChannelStateCheckpointWriter`
+   按 checkpoint 生命周期建实例（`checkpointId` 是实例字段），结构上看不到同一个 channel 跨多个 checkpoint 的数据，要做到
+   "聚合到 channel 完整数据流"需要在更外层（跨 writer 实例）维护累积器，改动会超出这个类本身、触及调用方生命周期管理，本轮
+   未做，留作后续单独评估。
 2. **output 侧恢复读（`ResultSubpartitionRecoveredStateHandler.recover`）没有任何 `ChannelStateInvariant` 调用**，恢复链在
    output 方向缺一段观测。未修正：不在本轮 §6 规则修正范围内（§6 规则修正聚焦"上下游容忍度区分"和"日志分级"，不要求补齐新的
    观测点）。
@@ -178,6 +233,9 @@
 - ~~日志不分级，真损坏可能被首尾半条淹没~~ → `logViolationIfAny` 统一按 `shape.toleratedEdgeOnly` 分流：真损坏打
   `[CS-INV-ASSERT]`（`LOG.warn`），仅因 `LENIENT` 容忍的首尾半条打 `[CS-INV-TOLERATED]`（`LOG.info`）。`[CS-INV-SNAP-ASSERT]`
   标签废弃，SNAP 违规现在也走这条统一分级路径。
+- ~~五个校验阶段用散落字符串命名（`SNAP`/`WRITE`/`RECOVER`/`REWRITE`/`RECV`），且聚合 key 缺 input/output 结构化维度~~ →
+  新增 `ChannelStateInvariant.Layer` 枚举（`SNAPSHOT`/`CHECKPOINT_WRITE`/`RECOVER_READ`/`RECOVER_REWRITE`/`CHANNEL_RECEIVE`，
+  与 HL §6.1.5 一一对应）和 `Direction` 枚举（`INPUT`/`OUTPUT`），`key()`/`flush()` 全部改为接收这两个类型化参数，取代旧字符串。
 
 ---
 

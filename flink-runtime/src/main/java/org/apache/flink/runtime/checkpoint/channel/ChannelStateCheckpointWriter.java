@@ -170,22 +170,34 @@ class ChannelStateCheckpointWriter {
      * Key for accumulating this checkpoint's per-channel written bytes so that the whole
      * concatenated stream for one input channel can be validated once at {@link
      * #completeInput(JobVertexID, int)}.
+     *
+     * <p>The identity segment ({@code jobVertexID-subtaskIndex-cp<N>}) has no jobId/attempt: {@code
+     * ChannelStateCheckpointWriter} is constructed from {@link JobVertexID}/subtaskIndex pairs only
+     * (see {@link SubtaskID}), with no access to the job or attempt this vertex belongs to. The
+     * {@code -cp<N>} suffix scopes the key to this single checkpoint's write lifecycle.
      */
     private String invariantWriteKey(
             JobVertexID jobVertexID, int subtaskIndex, InputChannelInfo info) {
         return ChannelStateInvariant.key(
-                jobVertexID + "-" + subtaskIndex + "-cp" + checkpointId, info.toString(), "WRITE");
+                jobVertexID + "-" + subtaskIndex + "-cp" + checkpointId,
+                info.toString(),
+                ChannelStateInvariant.Layer.CHECKPOINT_WRITE,
+                ChannelStateInvariant.Direction.INPUT);
     }
 
     /**
      * Key for accumulating this checkpoint's per-subpartition written bytes so that the whole
      * concatenated stream for one output subpartition can be validated once at {@link
-     * #completeOutput(JobVertexID, int)}.
+     * #completeOutput(JobVertexID, int)}. See {@link #invariantWriteKey(JobVertexID, int,
+     * InputChannelInfo)} for why the identity segment has no jobId/attempt.
      */
     private String invariantWriteKey(
             JobVertexID jobVertexID, int subtaskIndex, ResultSubpartitionInfo info) {
         return ChannelStateInvariant.key(
-                jobVertexID + "-" + subtaskIndex + "-cp" + checkpointId, info.toString(), "WRITE");
+                jobVertexID + "-" + subtaskIndex + "-cp" + checkpointId,
+                info.toString(),
+                ChannelStateInvariant.Layer.CHECKPOINT_WRITE,
+                ChannelStateInvariant.Direction.OUTPUT);
     }
 
     void writeOutput(
@@ -246,7 +258,7 @@ class ChannelStateCheckpointWriter {
                 ChannelStateInvariant.flush(
                         invariantWriteKey(jobVertexID, subtaskIndex, info),
                         ChannelStateInvariant.label(taskLabel, info.toString()),
-                        "WRITE");
+                        ChannelStateInvariant.Layer.CHECKPOINT_WRITE);
             }
         }
         pendingResult.completeInput();
@@ -269,7 +281,7 @@ class ChannelStateCheckpointWriter {
                 ChannelStateInvariant.flush(
                         invariantWriteKey(jobVertexID, subtaskIndex, info),
                         ChannelStateInvariant.label(taskLabel, info.toString()),
-                        "WRITE",
+                        ChannelStateInvariant.Layer.CHECKPOINT_WRITE,
                         ChannelStateInvariant.Mode.LENIENT);
             }
         }

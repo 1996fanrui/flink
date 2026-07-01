@@ -34,11 +34,10 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p>The unit of corruption is an input channel, not a single buffer: a channel's buffers must be
  * concatenated in order to form one contiguous, fully-parseable record stream. This class
- * accumulates buffer bytes per (task, channel) key across three pipeline layers (checkpoint write,
- * recovery read, filter rewrite) and, once a channel's data for that layer is complete, validates
- * the concatenated stream against the deterministic test-data shape: every record is {@code [4-byte
- * length][record bytes]}, and each record's value carries a fixed 4-byte header {@code AB CD EA FC}
- * at a constant stride.
+ * accumulates buffer bytes per key across the five {@link Layer} points in a channel's lifecycle
+ * and, once a channel's data for that layer is complete, validates the concatenated stream against
+ * the deterministic test-data shape: every record is {@code [4-byte length][record bytes]}, and
+ * each record's value carries a fixed 4-byte header {@code AB CD EA FC} at a constant stride.
  *
  * <p>A record can legitimately be split across the upstream/downstream boundary: while a checkpoint
  * is being taken, part of a record may already have been sent downstream while the rest is still
@@ -79,6 +78,33 @@ public final class ChannelStateInvariant {
         LENIENT
     }
 
+    /**
+     * The five points in a channel's data lifecycle where the same logical byte stream is validated
+     * once each, in this order: in-flight data is collected off the wire ({@code SNAPSHOT}), handed
+     * to the checkpoint writer ({@code CHECKPOINT_WRITE}), read back on recovery ({@code
+     * RECOVER_READ}), rewritten by the recovery filter ({@code RECOVER_REWRITE}), and migrated into
+     * the physical channel that will actually serve it ({@code CHANNEL_RECEIVE}). The first layer
+     * that reports a violation brackets where the data first went bad: between it and the previous
+     * layer in this sequence.
+     */
+    public enum Layer {
+        SNAPSHOT,
+        CHECKPOINT_WRITE,
+        RECOVER_READ,
+        RECOVER_REWRITE,
+        CHANNEL_RECEIVE
+    }
+
+    /**
+     * Whether the validated stream is input-channel state or result-subpartition (output) state.
+     * Both share the same accumulator/key structure but are different physical entities and must
+     * never be aggregated together.
+     */
+    public enum Direction {
+        INPUT,
+        OUTPUT
+    }
+
     private static final Logger LOG = LoggerFactory.getLogger(ChannelStateInvariant.class);
 
     /** Enables/disables all invariant checking. On by default to catch corruption as it occurs. */
@@ -96,7 +122,7 @@ public final class ChannelStateInvariant {
     /** Maximum valid StreamElementSerializer tag (TAG_INTERNAL_WATERMARK). */
     private static final int MAX_TAG = 6;
 
-    /** Per-(task, channel) accumulators, keyed independently for each of the three layers. */
+    /** Per-key accumulators, keyed independently for each {@link Layer}. */
     private static final Map<String, Accumulator> ACCUMULATORS = new ConcurrentHashMap<>();
 
     private ChannelStateInvariant() {}
@@ -126,15 +152,14 @@ public final class ChannelStateInvariant {
      * logging the result under {@code [CS-INV]}/{@code [CS-INV-ASSERT]}, then discards the
      * accumulator.
      *
-     * <p>Every current caller of this overload (WRITE-input, RECV, RECOVER, REWRITE) is a
-     * downstream or recovery-chain layer, which must never contain a dangling partial record; see
-     * the class-level javadoc.
+     * <p>Every current caller of this overload ({@code CHECKPOINT_WRITE} input side, {@code
+     * CHANNEL_RECEIVE}, {@code RECOVER_READ}, {@code RECOVER_REWRITE}) is a downstream or
+     * recovery-chain layer, which must never contain a dangling partial record; see the class-level
+     * javadoc.
      *
      * @param taskAndChannel human-readable "task=.. ch=.." label shared across layers
-     * @param layer one of "WRITE" (checkpoint write), "RECV" (physical channel receive), "RECOVER"
-     *     (recovery read), "REWRITE" (filter rewrite)
      */
-    public static void flush(String key, String taskAndChannel, String layer) {
+    public static void flush(String key, String taskAndChannel, Layer layer) {
         flush(key, taskAndChannel, layer, Mode.STRICT);
     }
 
@@ -146,10 +171,8 @@ public final class ChannelStateInvariant {
      * [CS-INV-TOLERATED]}).
      *
      * @param taskAndChannel human-readable "task=.. ch=.." label shared across layers
-     * @param layer one of "WRITE" (checkpoint write), "RECV" (physical channel receive), "RECOVER"
-     *     (recovery read), "REWRITE" (filter rewrite)
      */
-    public static void flush(String key, String taskAndChannel, String layer, Mode mode) {
+    public static void flush(String key, String taskAndChannel, Layer layer, Mode mode) {
         if (!ENABLED) {
             return;
         }
@@ -199,12 +222,22 @@ public final class ChannelStateInvariant {
         }
     }
 
-    /** Builds an opaque accumulator key from task and channel identifiers plus the layer name. */
-    public static String key(String task, String channel, String layer) {
-        return task + "|" + channel + "|" + layer;
+    /**
+     * Builds an opaque accumulator key identifying one channel instance's data for one layer and
+     * direction during one lifecycle (one checkpoint write, one recovery pass, or one physical
+     * channel construction).
+     *
+     * <p>{@code identity} must already encode every dimension the call site can obtain: at minimum
+     * jobVertexID + subtaskIndex, plus a lifecycle discriminator (checkpoint id, recovery-pass
+     * identity, or similar) so that keys from two different lifecycles never collide. {@code
+     * channel} must encode gateIdx/channelIdx (or the output-side equivalent). See {@link Layer}
+     * for what "layer" means here, and {@link Direction} for input vs. output.
+     */
+    public static String key(String identity, String channel, Layer layer, Direction direction) {
+        return identity + "|" + channel + "|" + layer + "|" + direction;
     }
 
-    /** Builds the shared "task=.. ch=.." label used in log lines across all three layers. */
+    /** Builds the shared "task=.. ch=.." label used in log lines across all five layers. */
     public static String label(String task, String channel) {
         return "task=" + task + " ch=" + channel;
     }
@@ -246,13 +279,15 @@ public final class ChannelStateInvariant {
             }
             Shape shape = shape(concatenated, Mode.LENIENT);
             LOG.info(
-                    "[CS-INV-SNAP] {} cp={} numBuffers={} bytes={} {}",
+                    "[CS-INV-SNAP] {} layer={} cp={} numBuffers={} bytes={} {}",
                     taskAndChannel,
+                    Layer.SNAPSHOT,
                     barrierId,
                     retained.size(),
                     totalBytes,
                     shape.summary());
-            logViolationIfAny(shape, "cp=" + barrierId, taskAndChannel);
+            logViolationIfAny(
+                    shape, "layer=" + Layer.SNAPSHOT + " cp=" + barrierId, taskAndChannel);
         } finally {
             for (Buffer buffer : retained) {
                 buffer.recycleBuffer();

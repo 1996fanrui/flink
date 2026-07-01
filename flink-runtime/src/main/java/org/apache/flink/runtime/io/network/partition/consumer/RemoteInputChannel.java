@@ -124,7 +124,11 @@ public class RemoteInputChannel extends InputChannel {
 
     private final ChannelStatePersister channelStatePersister;
 
-    /** Diagnostic-only task label, used to correlate {@code [CS-INV-*]} log lines across layers. */
+    /**
+     * Diagnostic-only task label ({@code jobVertexID-subtaskIndex}), used to correlate {@code
+     * [CS-INV-*]} log lines across layers. Does not include jobId/attempt: {@link
+     * ChannelStateWriter#taskLabel} has no access to either at this call site.
+     */
     private final String invariantTaskLabel;
 
     private long totalQueueSizeInBytes;
@@ -170,7 +174,11 @@ public class RemoteInputChannel extends InputChannel {
             final int expectedCount = initialRecoveredBuffers.size();
             String invariantChannelLabel = getChannelInfo() + " kind=Remote";
             String invariantKey =
-                    ChannelStateInvariant.key(invariantTaskLabel, invariantChannelLabel, "RECV");
+                    ChannelStateInvariant.key(
+                            invariantTaskLabel,
+                            invariantChannelLabel,
+                            ChannelStateInvariant.Layer.CHANNEL_RECEIVE,
+                            ChannelStateInvariant.Direction.INPUT);
             // Sequence number starts at Integer.MIN_VALUE, consistent with RecoveredInputChannel.
             int seqNum = Integer.MIN_VALUE;
             for (Buffer buffer : initialRecoveredBuffers) {
@@ -194,7 +202,7 @@ public class RemoteInputChannel extends InputChannel {
             ChannelStateInvariant.flush(
                     invariantKey,
                     ChannelStateInvariant.label(invariantTaskLabel, invariantChannelLabel),
-                    "RECV");
+                    ChannelStateInvariant.Layer.CHANNEL_RECEIVE);
         }
     }
 

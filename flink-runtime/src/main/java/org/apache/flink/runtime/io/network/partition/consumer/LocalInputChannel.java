@@ -79,7 +79,11 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
 
     private final ChannelStatePersister channelStatePersister;
 
-    /** Diagnostic-only task label, used to correlate {@code [CS-INV-*]} log lines across layers. */
+    /**
+     * Diagnostic-only task label ({@code jobVertexID-subtaskIndex}), used to correlate {@code
+     * [CS-INV-*]} log lines across layers. Does not include jobId/attempt: {@link
+     * ChannelStateWriter#taskLabel} has no access to either at this call site.
+     */
     private final String invariantTaskLabel;
 
     private final Deque<BufferAndBacklog> toBeConsumedBuffers = new ArrayDeque<>();
@@ -126,7 +130,11 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
             final int expectedCount = initialRecoveredBuffers.size();
             String invariantChannelLabel = getChannelInfo() + " kind=Local";
             String invariantKey =
-                    ChannelStateInvariant.key(invariantTaskLabel, invariantChannelLabel, "RECV");
+                    ChannelStateInvariant.key(
+                            invariantTaskLabel,
+                            invariantChannelLabel,
+                            ChannelStateInvariant.Layer.CHANNEL_RECEIVE,
+                            ChannelStateInvariant.Direction.INPUT);
             // Sequence number starts at Integer.MIN_VALUE, consistent with RecoveredInputChannel.
             int seqNum = Integer.MIN_VALUE;
             while (!initialRecoveredBuffers.isEmpty()) {
@@ -152,7 +160,7 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
             ChannelStateInvariant.flush(
                     invariantKey,
                     ChannelStateInvariant.label(invariantTaskLabel, invariantChannelLabel),
-                    "RECV");
+                    ChannelStateInvariant.Layer.CHANNEL_RECEIVE);
         }
     }
 
