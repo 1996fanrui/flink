@@ -40,6 +40,19 @@ import java.util.concurrent.ConcurrentHashMap;
  * length][record bytes]}, and each record's value carries a fixed 4-byte header {@code AB CD EA FC}
  * at a constant stride.
  *
+ * <p>A record can legitimately be split across the upstream/downstream boundary: while a checkpoint
+ * is being taken, part of a record may already have been sent downstream while the rest is still
+ * sitting in the upstream output buffer that gets snapshotted. So the concatenated stream of an
+ * upstream output snapshot may start or end mid-record, and that is not corruption. Every other
+ * validated stream (any input-channel state, and the entire recovery chain regardless of whether
+ * the bytes originated upstream or downstream) represents data that either starts at a genuine
+ * record boundary by construction, or is reassembled into one virtual channel that must be gap-free
+ * once reassembled; a dangling partial record there is a real bug. {@link Mode} selects which of
+ * these two rulesets {@link #shape} applies. Under both rulesets, an irregular stride between two
+ * header occurrences that both fall inside the fully-framed middle of the stream is always real
+ * corruption: a genuine dangling partial record only ever affects the first/last header, never the
+ * stride between two interior ones.
+ *
  * <p>This class never throws and never alters the data path; it only logs. All accumulation buffers
  * are per-key and must be explicitly flushed by the call site once that key's data for the current
  * layer is fully collected, otherwise they leak memory.
@@ -47,9 +60,24 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>Public so that call sites outside this package (e.g. {@code LocalInputChannel}, {@code
  * RemoteInputChannel}) can accumulate and validate a channel's buffers via {@link #append}, {@link
  * #flush}, {@link #key}, and {@link #label}, or validate an already-collected buffer set directly
- * with {@link #shape(byte[])}.
+ * with {@link #shape(byte[], Mode)}.
  */
 public final class ChannelStateInvariant {
+
+    /**
+     * Selects how strictly {@link #shape} judges a stream's first/last record.
+     *
+     * <p>{@code STRICT} is for anything that must be gap-free by construction: input-channel state
+     * (at write, receive, or recovery time) and every step of the recovery chain, including the
+     * portion of it that originated as upstream output before being reorganized into a virtual
+     * channel. {@code LENIENT} is only for a genuinely in-flight upstream snapshot, where a
+     * dangling partial record at the start or end reflects a record actually being
+     * mid-transmission.
+     */
+    public enum Mode {
+        STRICT,
+        LENIENT
+    }
 
     private static final Logger LOG = LoggerFactory.getLogger(ChannelStateInvariant.class);
 
@@ -94,14 +122,34 @@ public final class ChannelStateInvariant {
     }
 
     /**
-     * Flushes and validates the accumulated bytes for {@code key}, logging the result under {@code
-     * [CS-INV]}/{@code [CS-INV-ASSERT]}, then discards the accumulator.
+     * Flushes and validates the accumulated bytes for {@code key} under {@link Mode#STRICT},
+     * logging the result under {@code [CS-INV]}/{@code [CS-INV-ASSERT]}, then discards the
+     * accumulator.
+     *
+     * <p>Every current caller of this overload (WRITE-input, RECV, RECOVER, REWRITE) is a
+     * downstream or recovery-chain layer, which must never contain a dangling partial record; see
+     * the class-level javadoc.
      *
      * @param taskAndChannel human-readable "task=.. ch=.." label shared across layers
-     * @param layer one of "WRITE" (checkpoint write), "RECOVER" (recovery read), "REWRITE" (filter
-     *     rewrite)
+     * @param layer one of "WRITE" (checkpoint write), "RECV" (physical channel receive), "RECOVER"
+     *     (recovery read), "REWRITE" (filter rewrite)
      */
     public static void flush(String key, String taskAndChannel, String layer) {
+        flush(key, taskAndChannel, layer, Mode.STRICT);
+    }
+
+    /**
+     * Flushes and validates the accumulated bytes for {@code key} under the given {@link Mode},
+     * logging the result under {@code [CS-INV]}, then discards the accumulator. A violation is
+     * logged at assertion level ({@code [CS-INV-ASSERT]}) unless it is only a dangling partial
+     * record tolerated by {@code mode}, in which case it is logged at observational level ({@code
+     * [CS-INV-TOLERATED]}).
+     *
+     * @param taskAndChannel human-readable "task=.. ch=.." label shared across layers
+     * @param layer one of "WRITE" (checkpoint write), "RECV" (physical channel receive), "RECOVER"
+     *     (recovery read), "REWRITE" (filter rewrite)
+     */
+    public static void flush(String key, String taskAndChannel, String layer, Mode mode) {
         if (!ENABLED) {
             return;
         }
@@ -109,24 +157,45 @@ public final class ChannelStateInvariant {
         if (acc == null) {
             return;
         }
-        Shape shape = shape(acc.toByteArray());
+        Shape shape = shape(acc.toByteArray(), mode);
         LOG.info(
-                "[CS-INV] {} layer={} bytes={} {}",
+                "[CS-INV] {} layer={} mode={} bytes={} {}",
                 taskAndChannel,
                 layer,
+                mode,
                 acc.size(),
                 shape.summary());
-        if (!shape.valid) {
-            LOG.warn(
-                    "[CS-INV-ASSERT] {} layer={} INVALID complete-channel-data: {}",
-                    taskAndChannel,
-                    layer,
-                    shape.summary());
-        }
+        logViolationIfAny(shape, "layer=" + layer, taskAndChannel);
         if (LOG_RECORDS) {
             for (String recordLog : shape.recordLogs) {
                 LOG.info("[CS-INV-REC] {} layer={} {}", taskAndChannel, layer, recordLog);
             }
+        }
+    }
+
+    /**
+     * Logs a {@link Shape} violation, if any, at the level matching its severity: real corruption
+     * (a mid-stream stride irregularity, or any violation under {@link Mode#STRICT}) at assertion
+     * level; a dangling partial record tolerated only under {@link Mode#LENIENT} at observational
+     * level. Emits nothing when {@code shape} is valid.
+     */
+    private static void logViolationIfAny(Shape shape, String context, String taskAndChannel) {
+        if (shape.valid) {
+            return;
+        }
+        if (shape.toleratedEdgeOnly) {
+            LOG.info(
+                    "[CS-INV-TOLERATED] {} {} dangling partial record at stream edge (upstream-only,"
+                            + " tolerated): {}",
+                    taskAndChannel,
+                    context,
+                    shape.summary());
+        } else {
+            LOG.warn(
+                    "[CS-INV-ASSERT] {} {} INVALID complete-channel-data: {}",
+                    taskAndChannel,
+                    context,
+                    shape.summary());
         }
     }
 
@@ -143,6 +212,11 @@ public final class ChannelStateInvariant {
     /**
      * Validates a checkpoint snapshot: the set of buffers a channel collected for one barrier
      * before handing them to the checkpoint writer.
+     *
+     * <p>This snapshot is genuinely in-flight upstream output, so it is validated under {@link
+     * Mode#LENIENT}: a record may legitimately be half-sent downstream and half still in this
+     * snapshot, so a dangling partial record at the start or end of the concatenated snapshot is
+     * tolerated and only logged observationally, not as an assertion.
      *
      * <p>Takes its own retained reference to each buffer and releases it before returning, so the
      * caller's own buffer references and their recycling are unaffected. Must be called outside of
@@ -170,7 +244,7 @@ public final class ChannelStateInvariant {
                 readOnly.get(concatenated, offset, readable);
                 offset += readable;
             }
-            Shape shape = shape(concatenated);
+            Shape shape = shape(concatenated, Mode.LENIENT);
             LOG.info(
                     "[CS-INV-SNAP] {} cp={} numBuffers={} bytes={} {}",
                     taskAndChannel,
@@ -178,13 +252,7 @@ public final class ChannelStateInvariant {
                     retained.size(),
                     totalBytes,
                     shape.summary());
-            if (!shape.valid) {
-                LOG.warn(
-                        "[CS-INV-SNAP-ASSERT] {} cp={} INVALID snapshot: {}",
-                        taskAndChannel,
-                        barrierId,
-                        shape.summary());
-            }
+            logViolationIfAny(shape, "cp=" + barrierId, taskAndChannel);
         } finally {
             for (Buffer buffer : retained) {
                 buffer.recycleBuffer();
@@ -194,10 +262,31 @@ public final class ChannelStateInvariant {
 
     /**
      * Scans {@code bytes} for occurrences of the fixed record-value header, computes the stride
-     * between consecutive occurrences, and attempts to walk the buffer as a sequence of
-     * length-prefixed records, stopping at the first framing violation.
+     * between consecutive occurrences, and walks the buffer as a sequence of length-prefixed
+     * records under {@link Mode#STRICT} (no leading/trailing dangling record tolerated).
+     *
+     * <p>Equivalent to {@code shape(bytes, Mode.STRICT)}.
      */
     public static Shape shape(byte[] bytes) {
+        return shape(bytes, Mode.STRICT);
+    }
+
+    /**
+     * Scans {@code bytes} for occurrences of the fixed record-value header, computes the stride
+     * between consecutive occurrences, and walks the buffer as a sequence of length-prefixed
+     * records.
+     *
+     * <p>Under {@link Mode#STRICT}, the walk must start at byte 0 and every record, including the
+     * first and last, must be fully framed. Under {@link Mode#LENIENT}, a dangling partial record
+     * is tolerated at the start (leading bytes before the first record boundary are skipped) and at
+     * the end (a truncated final record is not flagged); only a framing violation found strictly
+     * between two already-confirmed record boundaries is treated as a real violation.
+     *
+     * <p>Regardless of mode, a stride irregularity between two header occurrences that are both
+     * interior to the parsed record sequence (i.e. not the leading/trailing dangling remainder) is
+     * always a real violation: it cannot be explained by a merely-incomplete edge record.
+     */
+    public static Shape shape(byte[] bytes, Mode mode) {
         List<Integer> headerOffsets = findHeaderOffsets(bytes);
         List<Integer> strides = new ArrayList<>();
         for (int i = 1; i < headerOffsets.size(); i++) {
@@ -215,13 +304,25 @@ public final class ChannelStateInvariant {
         }
 
         Shape shape = new Shape();
+        shape.mode = mode;
         shape.headerCount = headerOffsets.size();
         shape.firstHeaderAt = headerOffsets.isEmpty() ? -1 : headerOffsets.get(0);
         shape.strides = strides;
         shape.strideIrregular = strideIrregular;
 
-        walkFraming(bytes, shape);
-        shape.valid = !strideIrregular && shape.headerCount > 0 && shape.firstCorruptRecordAt < 0;
+        walkFraming(bytes, shape, mode);
+        boolean framingOk = shape.firstCorruptRecordAt < 0;
+        boolean noHeaderAtAll = shape.headerCount == 0;
+        shape.valid = !strideIrregular && !noHeaderAtAll && framingOk;
+        // A violation is a tolerated edge effect, not real corruption, only when: mode allows it,
+        // the reliable mid-stream signal (stride irregularity) did not fire, and the only reason
+        // shape is invalid is a dangling remainder at the very start or end of the stream (no
+        // parseable record at all, or the walk stopped exactly at a tolerated trailing remainder).
+        shape.toleratedEdgeOnly =
+                !shape.valid
+                        && mode == Mode.LENIENT
+                        && !strideIrregular
+                        && (noHeaderAtAll || shape.tailTolerated);
         return shape;
     }
 
@@ -246,15 +347,30 @@ public final class ChannelStateInvariant {
 
     /**
      * Walks {@code bytes} as [4B length][payload] records, validating that the length is in range
-     * and the payload's first byte is a legal StreamElementSerializer tag. Stops and records the
-     * offset of the first violation; does not attempt to recover/resync afterwards since a single
-     * corrupt frame poisons all subsequent offsets.
+     * and the payload's first byte is a legal StreamElementSerializer tag.
+     *
+     * <p>Under {@link Mode#STRICT} the walk starts at {@code pos=0} and any framing violation,
+     * including at the very first or very last record, is reported as {@code firstCorruptRecordAt}.
+     * Under {@link Mode#LENIENT} the walk first skips forward, byte by byte, past any dangling
+     * partial record at the start (bytes before the first offset at which a well-formed record
+     * actually parses); reaching the end of {@code bytes} without being able to fully frame one
+     * more record (whether because fewer than 4 bytes remain for the length prefix, the decoded
+     * length is non-positive, or the decoded payload length runs past the end of {@code bytes}) is
+     * treated as a tolerated trailing partial record and flagged via {@code shape.tailTolerated}
+     * rather than {@code firstCorruptRecordAt}. A framing violation found while there is still
+     * enough trailing data for more complete records is reported as real corruption the same as in
+     * {@code STRICT} mode: that cannot be explained by a merely-incomplete edge record.
      */
-    private static void walkFraming(byte[] bytes, Shape shape) {
-        int pos = 0;
-        int recordIndex = 0;
+    private static void walkFraming(byte[] bytes, Shape shape, Mode mode) {
         shape.firstCorruptRecordAt = -1;
-        while (pos + 4 <= bytes.length) {
+        int pos = mode == Mode.LENIENT ? skipToFirstParseableRecord(bytes) : 0;
+        int recordIndex = 0;
+        while (pos < bytes.length) {
+            if (pos + 4 > bytes.length) {
+                // Fewer than 4 bytes left for even a length prefix.
+                shape.tailTolerated = mode == Mode.LENIENT;
+                break;
+            }
             int length =
                     ((bytes[pos] & 0xFF) << 24)
                             | ((bytes[pos + 1] & 0xFF) << 16)
@@ -266,9 +382,23 @@ public final class ChannelStateInvariant {
             boolean tagValid = lengthValid && tag >= MIN_TAG && tag <= MAX_TAG;
 
             if (!lengthValid || !tagValid) {
-                shape.firstCorruptRecordAt = pos;
-                shape.corruptRecordHexBefore = hexAround(bytes, pos, -16, 0);
-                shape.corruptRecordHexAfter = hexAround(bytes, pos, 0, 16);
+                if (mode == Mode.LENIENT && length <= 0) {
+                    // A non-positive length this close to the end of a lenient stream is
+                    // indistinguishable from a truncated tail record whose length-prefix bytes
+                    // were only partially written; tolerate it rather than flag a false
+                    // corruption for a legitimately dangling tail.
+                    shape.tailTolerated = true;
+                } else if (mode == Mode.LENIENT
+                        && length > 0
+                        && payloadStart + length > bytes.length) {
+                    // The declared payload runs past the end of bytes: a legitimately truncated
+                    // tail record (only part of its payload had been produced/sent yet).
+                    shape.tailTolerated = true;
+                } else {
+                    shape.firstCorruptRecordAt = pos;
+                    shape.corruptRecordHexBefore = hexAround(bytes, pos, -16, 0);
+                    shape.corruptRecordHexAfter = hexAround(bytes, pos, 0, 16);
+                }
                 break;
             }
 
@@ -280,6 +410,36 @@ public final class ChannelStateInvariant {
             recordIndex++;
         }
         shape.recordCount = recordIndex;
+    }
+
+    /**
+     * Finds the first offset at which a well-formed {@code [4B length][payload]} record actually
+     * parses (length in range and a legal tag), by scanning forward byte by byte from 0. Bytes
+     * before that offset are the dangling remainder of a record whose earlier half was already sent
+     * downstream before this snapshot was taken; used only in {@link Mode#LENIENT}.
+     *
+     * <p>Returns 0 if a record parses immediately at offset 0, or if no offset in {@code bytes}
+     * parses (the caller's subsequent walk then finds no complete records at all, which is reported
+     * the same as an all-dangling snapshot rather than corruption).
+     */
+    private static int skipToFirstParseableRecord(byte[] bytes) {
+        for (int pos = 0; pos + 4 <= bytes.length; pos++) {
+            int length =
+                    ((bytes[pos] & 0xFF) << 24)
+                            | ((bytes[pos + 1] & 0xFF) << 16)
+                            | ((bytes[pos + 2] & 0xFF) << 8)
+                            | (bytes[pos + 3] & 0xFF);
+            int payloadStart = pos + 4;
+            boolean lengthValid = length > 0 && payloadStart + length <= bytes.length;
+            if (!lengthValid) {
+                continue;
+            }
+            int tag = bytes[payloadStart] & 0xFF;
+            if (tag >= MIN_TAG && tag <= MAX_TAG) {
+                return pos;
+            }
+        }
+        return 0;
     }
 
     private static String hexAround(byte[] bytes, int center, int from, int to) {
@@ -294,6 +454,7 @@ public final class ChannelStateInvariant {
 
     /** Result of validating one channel's fully-concatenated byte stream. */
     public static final class Shape {
+        Mode mode;
         int headerCount;
         int firstHeaderAt;
         List<Integer> strides = new ArrayList<>();
@@ -302,6 +463,8 @@ public final class ChannelStateInvariant {
         int firstCorruptRecordAt = -1;
         String corruptRecordHexBefore = "";
         String corruptRecordHexAfter = "";
+        boolean tailTolerated;
+        boolean toleratedEdgeOnly;
         boolean valid;
         final List<String> recordLogs = new ArrayList<>();
 
@@ -333,6 +496,9 @@ public final class ChannelStateInvariant {
                         .append("] after=[")
                         .append(corruptRecordHexAfter)
                         .append("] ***");
+            }
+            if (tailTolerated) {
+                sb.append(" tail-tolerated");
             }
             return sb.toString();
         }

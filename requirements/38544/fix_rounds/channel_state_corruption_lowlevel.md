@@ -37,122 +37,145 @@
 | `append(String key, ByteBuffer buffer)` | `:86` | 把 buffer 的可读字节**拷贝**进 `key` 对应的累积器；用 `duplicate()`，**不动** reader index / refcount |
 | `flush(String key, String taskAndChannel, String layer)` | `:104` | 取出并移除 `key` 的累积字节，对**拼接后的完整字节流**跑 `shape()`，打 `[CS-INV] layer=<L>`；`!valid` 再打 `[CS-INV-ASSERT] layer=<L>` |
 | `key(String task, String channel, String layer)` | `:134` | 组 accumulator key = `task \| channel \| layer` |
-| `label(String task, String channel)` | `:139` | 组人类可读标签 = `task=<..> ch=<..>` |
-| `validateSnapshot(String taskAndChannel, long barrierId, List<Buffer> buffers)` | `:151` | 快照专用：**自己 retain 一份**副本、拼接、`shape()`，打 `[CS-INV-SNAP]`；`!valid` 打 `[CS-INV-SNAP-ASSERT]`；`finally` 里 recycle 自己的副本，不影响 caller 的 buffer |
-| `shape(byte[] bytes)` | `:200` | 核心判据，见下 |
+| `label(String task, String channel)` | `:208` | 组人类可读标签 = `task=<..> ch=<..>` |
+| `validateSnapshot(String taskAndChannel, long barrierId, List<Buffer> buffers)` | `:225` | 快照专用：**自己 retain 一份**副本、拼接、按 `Mode.LENIENT` 跑 `shape()`，打 `[CS-INV-SNAP]`；`!valid` 时按 `logViolationIfAny` 分级打 `[CS-INV-ASSERT]`（真损坏）或 `[CS-INV-TOLERATED]`（首尾半条）；`finally` 里 recycle 自己的副本，不影响 caller 的 buffer |
+| `shape(byte[] bytes)` / `shape(byte[] bytes, Mode mode)` | `:270` / `:289` | 核心判据，见下。无 `Mode` 参数的重载等价于 `Mode.STRICT` |
+| `logViolationIfAny(Shape, String, String)` | `:182` | 按 `shape.toleratedEdgeOnly` 决定打 `[CS-INV-ASSERT]`（断言级）还是 `[CS-INV-TOLERATED]`（观测级），`flush`/`validateSnapshot` 共用 |
+
+### `Mode`（`:77`）：区分上下游/恢复链容忍度
+
+- `Mode.STRICT`：不容忍首尾悬挂半条，从第 0 字节起必须自包含。用于一切下游 / 恢复链场景：RECV、RECOVER、REWRITE、WRITE 的 input 语义。
+- `Mode.LENIENT`：容忍开头到第一个可解析 record 之前的悬挂字节、容忍结尾不足一条完整 record 的悬挂字节，只校验中间 record 的
+  length/tag/stride 连续性。用于上游快照场景：SNAP（`validateSnapshot` 固定用 `LENIENT`）、WRITE 的 output 语义（`completeOutput` 里
+  显式传 `Mode.LENIENT`）。
+- **无论哪种模式，中间 record 的 STRIDE-IRREGULAR 都判真损坏**（`shape.strideIrregular` 优先于 `toleratedEdgeOnly`，见下）。
 
 ### 日志标签（当前实现）
 
 | 标签 | 出处 | 含义 |
 |---|---|---|
-| `[CS-INV]` | `flush` | 一个 key 的完整拼接数据形状（每次 flush 一行） |
-| `[CS-INV-ASSERT]` | `flush` | 该完整数据 `shape().valid==false`（被判 INVALID） |
-| `[CS-INV-SNAP]` | `validateSnapshot` | 快照（一个 barrier 收集到的 buffer 集）的形状 |
-| `[CS-INV-SNAP-ASSERT]` | `validateSnapshot` | 快照被判 INVALID |
+| `[CS-INV]` | `flush` | 一个 key 的完整拼接数据形状（每次 flush 一行，带 `mode=` 字段） |
+| `[CS-INV-ASSERT]` | `logViolationIfAny`（`flush`/`validateSnapshot` 共用） | 真损坏：`STRICT` 模式下任何违规，或任意模式下命中 `STRIDE-IRREGULAR` |
+| `[CS-INV-TOLERATED]` | `logViolationIfAny` | 仅 `LENIENT` 模式下的首尾悬挂半条（观测级，不算断言） |
+| `[CS-INV-SNAP]` | `validateSnapshot` | 快照（一个 barrier 收集到的 buffer 集）的形状（固定 `Mode.LENIENT`） |
 | `[CS-INV-REC]` | `flush`（仅 `LOG_RECORDS=true`）| 逐条 record（at/len/tag） |
 
-> 注意：HL 旧稿提到的 `[CS-INV-CORRUPT]` / `[CS-INV-REC]` 逐 buffer 抛错瞬间日志、以及 `filter.IN/OUT`、`readChunk.IN`、
-> `recover.INJECT` 这类 per-buffer 阶段标签，**当前分支代码里并不存在**。当前实现走的是"完整数据累积 + flush 校验"路线，
-> 标签只有上面这几个。读日志时以本表为准。
+> 已废弃：旧版 `[CS-INV-SNAP-ASSERT]` 标签不再单独存在，SNAP 违规现在也走 `logViolationIfAny`，按 STRICT/LENIENT 统一分级为
+> `[CS-INV-ASSERT]` 或 `[CS-INV-TOLERATED]`。HL 旧稿提到的 `[CS-INV-CORRUPT]`、`filter.IN/OUT`、`readChunk.IN`、`recover.INJECT`
+> 这类 per-buffer 阶段标签，**当前分支代码里并不存在**。读日志时以本表为准。
 
-### `shape()` 的判据（约 `:200`–`:226`）
+### `shape()` 的判据（约 `:270`–`:319`）
 
-对一段拼接好的 `byte[]`：
+对一段拼接好的 `byte[]` 及给定 `mode`：
 1. `findHeaderOffsets`：扫出所有 `AB CD EA FC` 出现的偏移。
 2. 相邻偏移差 = stride；只要有两个 stride 不相等 → `strideIrregular=true`，`summary()` 里打 `*** STRIDE-IRREGULAR ***`。
-3. `walkFraming`：从 `pos=0` 起按 `[4B big-endian length][payload]` 逐条走；每条要求 `length>0 && pos+4+length<=end` 且
-   `payload[0]` 落在 `[MIN_TAG,MAX_TAG]`；第一处违规记 `firstCorruptRecordAt` 并停（不 resync），dump 前后各 16 字节 hex。
-4. `valid = !strideIrregular && headerCount>0 && firstCorruptRecordAt<0`。
-5. `summary()`：`headerCount==0` 打 `NO-HEADER`；否则打 `headers=N firstHeaderAt=.. strides=[..]`（+ 可能的 STRIDE-IRREGULAR）
-   + `parsedRecords=..` + 可能的 `*** CORRUPT-RECORD-AT=.. before=[hex] after=[hex] ***`。
-
-**判据缺陷见 §3，务必先读再据此下结论。**
+   **这一步不区分 mode**——中间 record 的 stride 突变永远是真损坏信号。
+3. `walkFraming`（`:364`）：
+   - `STRICT`：从 `pos=0` 起硬走；任何一处 `length<=0`、`payloadStart+length>end`、或 `payload[0]` 不在 `[MIN_TAG,MAX_TAG]`
+     都记 `firstCorruptRecordAt` 并停（不 resync），dump 前后各 16 字节 hex。
+   - `LENIENT`：先用 `skipToFirstParseableRecord`（`:425`）跳过开头到第一个能真正解析出合法 record 的偏移（悬挂头部）；
+     走到末尾时，若剩余字节不足 4B、或 `length<=0`、或声明的 payload 长度超出剩余字节——这些都被判定为"结尾悬挂半条"
+     （`shape.tailTolerated=true`），不记 `firstCorruptRecordAt`；只有在**还有充足剩余字节、明显不是尾部截断**的情况下遇到的
+     违规，才当真损坏记 `firstCorruptRecordAt`。
+4. `valid = !strideIrregular && headerCount>0 && firstCorruptRecordAt<0`（两种 mode 共用同一个 valid 定义）。
+5. `toleratedEdgeOnly`：`!valid && mode==LENIENT && !strideIrregular && (headerCount==0 || tailTolerated)`——即"仅因为
+   LENIENT 允许的首尾悬挂而 invalid"时为 true，供 `logViolationIfAny` 决定打断言级还是观测级。
+6. `summary()`：`headerCount==0` 打 `NO-HEADER`；否则打 `headers=N firstHeaderAt=.. strides=[..]`（+ 可能的 STRIDE-IRREGULAR）
+   + `parsedRecords=..` + 可能的 `*** CORRUPT-RECORD-AT=.. before=[hex] after=[hex] ***` + 可能的 `tail-tolerated`。
 
 ---
 
-## 2. 当前已加的校验点（读代码核实，落在 commit d4fa328 / bfd05a8 / 1075f95）
+## 2. 当前已加的校验点（读代码核实）
 
 所有 call site 都先 `ChannelStateInvariant.isEnabled()` 再动作。累积型（`append`+`flush`）和快照型（`validateSnapshot`）两类。
+`flush` 有两个重载：3 参数版固定 `Mode.STRICT`；4 参数版可显式传 `Mode`。
 
-### 2.1 接收层 RECV（恢复迁入物理 channel）
+### 2.1 接收层 RECV（恢复迁入物理 channel）—— `Mode.STRICT`
 
-| 类（相对路径） | 方法 | 约行 | key / label | layer |
-|---|---|---|---|---|
-| `.../io/network/partition/consumer/LocalInputChannel.java` | 构造器里 `initialRecoveredBuffers` 迁移循环 | append `:135`，flush `:152`（循环 `:132`–`:156`）| key=`(taskLabel, channelInfo+" kind=Local", "RECV")`；task=`stateWriter.taskLabel()` | `RECV` |
-| `.../io/network/partition/consumer/RemoteInputChannel.java` | 构造器里 `initialRecoveredBuffers` 迁移循环 | append `:178`，flush `:194`（循环 `:169`–`:198`）| key=`(taskLabel, channelInfo+" kind=Remote", "RECV")` | `RECV` |
+| 类（相对路径） | 方法 | key / label | layer / mode |
+|---|---|---|---|
+| `.../io/network/partition/consumer/LocalInputChannel.java` | 构造器里 `initialRecoveredBuffers` 迁移循环 | key=`(taskLabel, channelInfo+" kind=Local", "RECV")`；task=`stateWriter.taskLabel()` | `RECV` / `STRICT`（3 参数 `flush`） |
+| `.../io/network/partition/consumer/RemoteInputChannel.java` | 构造器里 `initialRecoveredBuffers` 迁移循环 | key=`(taskLabel, channelInfo+" kind=Remote", "RECV")` | `RECV` / `STRICT`（3 参数 `flush`） |
 
 - 只对 `buffer.isBuffer()`（跳过 event）累积；用 `getNioBufferReadable()`，不动 reader index。
 - **key 按 `taskLabel`（=物理 channel 所在 task）分组**，一个物理 channel 的迁入 buffer 全部拼在一起后 flush 一次 → 这正是"物理 channel 接收侧完整数据"。
+- RECV 是恢复链的终点（重写后注入物理 channel），按 §6.3 规则全程不容忍半条，用 `STRICT`。
 
-### 2.2 快照层 SNAP（正常运行时 checkpoint 采样在途数据）
+### 2.2 快照层 SNAP（正常运行时 checkpoint 采样在途数据）—— `Mode.LENIENT`
 
-| 类 | 方法 | 约行 | 说明 |
+| 类 | 方法 | 说明 |
+|---|---|---|
+| `LocalInputChannel.java` | `checkpointStarted(CheckpointBarrier)` | 收集 `toBeConsumedBuffers` 里的 in-flight buffer，`validateSnapshot` 在锁外直接跑（Local 无并发锁问题）|
+| `RemoteInputChannel.java` | `checkpointStarted(CheckpointBarrier)` | **锁外校验**：在 `synchronized (receivedBuffers)` 内对 `getInflightBuffersUnsafe` 结果**逐个 `retainBuffer()` 存进 `invariantSnapshot`**，出锁后再 `validateSnapshot`，跑完逐个 `recycleBuffer()`。这样校验的拷贝/日志不占锁、也不碰交给 writer 的那批 buffer 的 refcount。|
+
+- SNAP 标签是 `[CS-INV-SNAP]`，**不走 `flush`/`key`**（`validateSnapshot` 内部自建拼接、内部固定用 `Mode.LENIENT`）；其分组粒度=
+  **单个 barrier 的一次快照**（参数 `barrierId`），即"这一个 checkpoint 里这个 channel 采到的 in-flight 片段"，**不是** channel 完整数据流
+  ——这是上游 output 语义（一条 record 可能已半发往下游），按 §6.2 规则容忍首尾半条，命中时打观测级 `[CS-INV-TOLERATED]` 而非断言级。
+
+### 2.3 checkpoint 写入层 WRITE —— input 用 `Mode.STRICT`，output 用 `Mode.LENIENT`
+
+| 类 | 方法 | key / 分组 | layer / mode |
 |---|---|---|---|
-| `LocalInputChannel.java` | `checkpointStarted(CheckpointBarrier)`（`:163`）| `validateSnapshot` 调用 `:173` | 收集 `toBeConsumedBuffers` 里的 in-flight buffer，`validateSnapshot` 在锁外直接跑（Local 无并发锁问题）|
-| `RemoteInputChannel.java` | `checkpointStarted(CheckpointBarrier)`（`:729`）| `validateSnapshot` 调用 `:761` | **锁外校验**：在 `synchronized (receivedBuffers)`（`:731`）内对 `getInflightBuffersUnsafe` 结果**逐个 `retainBuffer()` 存进 `invariantSnapshot`**（`:753`–`:756`），出锁后（`:760`）再 `validateSnapshot`，跑完 `:766`–`:768` 逐个 `recycleBuffer()`。这样校验的拷贝/日志不占锁、也不碰交给 writer 的那批 buffer 的 refcount。|
+| `.../checkpoint/channel/ChannelStateCheckpointWriter.java` | `writeInput(...)` 累积；`completeInput(...)` flush | `invariantWriteKey(JobVertexID,int,InputChannelInfo)` = key(`jobVertexID-subtaskIndex-cp<checkpointId>`, `info.toString()`, `"WRITE"`) | `WRITE` / `STRICT`（3 参数 `flush`） |
+| 同上 | `writeOutput(...)` 累积；`completeOutput(...)` flush | `invariantWriteKey(JobVertexID,int,ResultSubpartitionInfo)` 重载 = key(`jobVertexID-subtaskIndex-cp<checkpointId>`, `info.toString()`, `"WRITE"`) | `WRITE` / `LENIENT`（`completeOutput` 显式传 `ChannelStateInvariant.Mode.LENIENT`） |
 
-- SNAP 标签是 `[CS-INV-SNAP]`，**不走 `flush`/`key`**（`validateSnapshot` 内部自建拼接）；其分组粒度=**单个 barrier 的一次快照**（参数 `barrierId`），即"这一个 checkpoint 里这个 channel 采到的 in-flight 片段"，**不是** channel 完整数据流。
+- **WRITE 层现在按 §6.4 规则区分上下游**：input（下游语义）用 `STRICT`；output（上游语义，一条 record 可能半发往下游）
+  用 `LENIENT`，命中首尾半条打观测级，不算断言。两者共用同一个 `key`/`label` 结构，仅 `Mode` 不同，通过两个重载的
+  `invariantWriteKey` 区分参数类型（`InputChannelInfo` vs `ResultSubpartitionInfo`）。
+- **WRITE 累积 key 仍带 `-cp<checkpointId>`** → 按**单个 checkpoint** 分片，不是 channel 完整数据流（见 §3 待修正项——这一条
+  未变更，仍是已知的粒度局限，但因为 output 侧现在已经用 LENIENT 判据，单 cp 片段的首尾半条不会再误报为断言）。
 
-### 2.3 checkpoint 写入层 WRITE
+### 2.4 恢复读 RECOVER / 重写 REWRITE —— `Mode.STRICT`
 
-| 类 | 方法 | 约行 | key / 分组 | layer |
-|---|---|---|---|---|
-| `.../checkpoint/channel/ChannelStateCheckpointWriter.java` | `writeInput(...)`（`:145`）| append `:154`；flush 在 `completeInput(...)`（`:219`）里 `:230` | `invariantWriteKey`（`:174`）= key(`jobVertexID-subtaskIndex-cp<checkpointId>`, `info.toString()`, `"WRITE"`) | `WRITE` |
-| 同上 | `writeOutput(...)`（`:180`）| **当前无插桩** | —— | —— |
-
-- **重要事实（与 HL 旧稿不符，以代码为准）**：当前只有 **`writeInput`（input / 下游语义）有 WRITE 校验**；
-  `writeOutput`（output / 上游语义）**没有任何 `ChannelStateInvariant` 调用**。所以"WRITE 层区分上下游"目前**未落地**（见 §3 待修正项）。
-- **WRITE 累积 key 带 `-cp<checkpointId>`** → 按**单个 checkpoint** 分片：flush 出来的是"这一个 checkpoint 里这个 input channel 写了哪些字节"，
-  **不是** channel 完整数据流（这是误报源之一，见 §3）。flush 在 `completeInput` 里遍历该 pending result 的所有 input channel 逐个 flush。
-
-### 2.4 恢复读 RECOVER / 重写 REWRITE
-
-| 类 | 方法 | 约行 | key / 分组 | layer |
-|---|---|---|---|---|
-| `.../checkpoint/channel/RecoveredChannelStateHandler.java`（内部类 `InputChannelRecoveredStateHandler`）| `recover(InputChannelInfo, int, BufferWithContext)`（`:109`）| append `:122` | `invariantRecoverKey`（`:151`）= key(`recovery-<identityHashCode(this)>`, `channelInfo`, `"RECOVER"`) | `RECOVER` |
-| 同上 | `recoverWithFiltering(...)`（`:166`）| append `:185`（对 `filterAndRewrite` 返回的每个 filtered buffer）| `invariantRewriteKey`（`:161`）= key(`recovery-<identityHashCode(this)>`, `channelInfo`, `"REWRITE"`) | `REWRITE` |
-| 同上 | `close()`（`:205`）| flush `:212`（RECOVER）+ `:213`（REWRITE）| 遍历 `channelsSeenForInvariantCheck` 逐 channel flush | —— |
+| 类 | 方法 | key / 分组 | layer / mode |
+|---|---|---|---|
+| `.../checkpoint/channel/RecoveredChannelStateHandler.java`（内部类 `InputChannelRecoveredStateHandler`）| `recover(InputChannelInfo, int, BufferWithContext)` 累积 | `invariantRecoverKey` = key(`recovery-<identityHashCode(this)>`, `channelInfo`, `"RECOVER"`) | `RECOVER` / `STRICT`（3 参数 `flush`） |
+| 同上 | `recoverWithFiltering(...)` 累积（对 `filterAndRewrite` 返回的每个 filtered buffer）| `invariantRewriteKey` = key(`recovery-<identityHashCode(this)>`, `channelInfo`, `"REWRITE"`) | `REWRITE` / `STRICT`（3 参数 `flush`） |
+| 同上 | `close()` flush RECOVER + REWRITE | 遍历 `channelsSeenForInvariantCheck` 逐 channel flush | —— |
 
 - **RECOVER/REWRITE key 用 `recovery-<identityHashCode(this)>`**，即**每个 recovery pass（一次 `readInputData` 一个 handler 实例）一组**，
   在 `close()` 时对该 pass 见过的每个 channel 一次性 flush → 这**是** channel 完整数据流粒度（与 WRITE 的 per-cp 分片不同，注意区分）。
 - RECOVER 累积的是恢复读回的原始字节（`recover` 里注入前）；REWRITE 累积的是 `filterAndRewrite` 重写后、即将 `onRecoveredStateBuffer` 注入物理 channel 的字节。
-- **output 侧恢复无插桩**：同文件里 output 的 `RecoveredChannelStateHandler.recover(ResultSubpartitionInfo, ...)`（`:289`）**没有** `ChannelStateInvariant` 调用。
+- 按 §6.3 规则，恢复链全程不容忍半条（即使源数据来自上游 output，恢复时已重组进虚拟 channel），两者都用 `STRICT`。
+- **output 侧恢复仍无插桩**（`RecoveredChannelStateHandler.recover(ResultSubpartitionInfo, ...)` 没有 `ChannelStateInvariant`
+  调用）——这是本轮改动范围之外的既有缺口，未新增也未修正，见 §3。
 
-### 2.5 各层 key 分组一览（重点：分组粒度决定校验对象）
+### 2.5 各层 key 分组 + mode 一览（重点：分组粒度决定校验对象，mode 决定容忍度）
 
-| layer | 分组维度 | 校验对象 | 是否 = channel 完整数据流 |
-|---|---|---|---|
-| `RECV` | `taskLabel + channel` | 物理 channel 迁入的全部 buffer | 是 |
-| `SNAP` | 单个 `barrierId` | 一次 checkpoint 采到的 in-flight 片段 | **否**（单 cp 片段） |
-| `WRITE` | `jobVertexID-subtask-cp<N> + channel` | 单个 checkpoint 写入的 input 字节 | **否**（单 cp 片段） |
-| `RECOVER` | `recovery-<handler实例> + channel` | 一次 recovery pass 读回的字节 | 是 |
-| `REWRITE` | `recovery-<handler实例> + channel` | 一次 recovery pass 重写后的字节 | 是 |
+| layer | 分组维度 | 校验对象 | 是否 = channel 完整数据流 | mode |
+|---|---|---|---|---|
+| `RECV` | `taskLabel + channel` | 物理 channel 迁入的全部 buffer | 是 | `STRICT` |
+| `SNAP` | 单个 `barrierId` | 一次 checkpoint 采到的 in-flight 片段 | **否**（单 cp 片段） | `LENIENT` |
+| `WRITE`（input） | `jobVertexID-subtask-cp<N> + channel` | 单个 checkpoint 写入的 input 字节 | **否**（单 cp 片段） | `STRICT` |
+| `WRITE`（output） | `jobVertexID-subtask-cp<N> + subpartition` | 单个 checkpoint 写入的 output 字节 | **否**（单 cp 片段） | `LENIENT` |
+| `RECOVER` | `recovery-<handler实例> + channel` | 一次 recovery pass 读回的字节 | 是 | `STRICT` |
+| `REWRITE` | `recovery-<handler实例> + channel` | 一次 recovery pass 重写后的字节 | 是 | `STRICT` |
 
 ---
 
-## 3. 当前实现的已知缺陷（供后续修正，非已完成）
+## 3. 当前实现的已知缺陷 / 待修正项
 
-基于排查结论，当前 `ChannelStateInvariant` 与 call site 有以下缺陷，会产生大量**假阳性 ASSERT**，读日志时必须知道：
+1. **`WRITE`/`SNAP` 累积器仍按"单个 checkpoint"分片（`SNAP` 按 `barrierId`，`WRITE` 按 `-cp<N>`）**，校验的是"单个 checkpoint
+   的片段"而非"channel 完整数据流"。因为这两处现在都用 `Mode.LENIENT`（容忍首尾半条），单 cp 片段天然的首尾半条不会再误报为
+   断言级，只是仍不是理论上最完整的校验对象。**未修正**：`ChannelStateCheckpointWriter` 按 checkpoint 生命周期建实例
+   （`checkpointId` 是实例字段），结构上看不到同一个 channel 跨多个 checkpoint 的数据，要做到"聚合到 channel 完整数据流"
+   需要在更外层（跨 writer 实例）维护累积器，改动会超出这个类本身、触及调用方生命周期管理，本轮未做，留作后续单独评估。
+2. **output 侧恢复读（`ResultSubpartitionRecoveredStateHandler.recover`）没有任何 `ChannelStateInvariant` 调用**，恢复链在
+   output 方向缺一段观测。未修正：不在本轮 §6 规则修正范围内（§6 规则修正聚焦"上下游容忍度区分"和"日志分级"，不要求补齐新的
+   观测点）。
+3. **真正可靠的信号仍是 `STRIDE-IRREGULAR`**（`shape().summary()` 里的 `*** STRIDE-IRREGULAR ***`）：完整数据中间某条 record
+   的 stride 突变，不受首尾半条影响、不受 mode 影响，是当前实现里唯一在任何 mode 下都直接判真损坏的判据。读日志优先只信这个
+   + 非 tolerated 的 `CORRUPT-RECORD-AT`。
 
-1. **`shape()` 要求"从第 0 字节整段自包含"，没有区分上下游、没有容忍首尾半条。**
-   `walkFraming` 从 `pos=0` 硬走 framing、`headerCount>0` 才算 valid。对**上游 output / 快照 in-flight 片段**（业务上本就可能首尾半条），
-   会把 `NO-HEADER`、中间 record 起头（第一条不是从 record 边界开始）、尾部截断统统判成 `INVALID`。这与 HL §6.2 的通用规则冲突。
+### 本轮已修正项（不再是待办）
 
-2. **`WRITE`/`SNAP` 累积器按"单个 checkpoint"分片（`SNAP` 按 `barrierId`，`WRITE` 按 `-cp<N>`），校验的是"单个 checkpoint 的片段"而非"channel 完整数据流"。**
-   单 cp 片段天然可能首尾半条 → 又一个假阳性来源。要校验"完整数据不容忍半条"，聚合粒度必须是 channel 完整数据流（参考 `RECV`/`RECOVER`/`REWRITE` 的分组）。
-
-3. **真正可靠的信号是 `STRIDE-IRREGULAR`**（`shape().summary()` 里的 `*** STRIDE-IRREGULAR ***`）：完整数据中间某条 record 的 stride 突变，
-   不受首尾半条影响，是当前实现里唯一穿透噪声的判据。读日志优先只信这个 + 中间 record 的 `CORRUPT-RECORD-AT`。
-
-### 待修正项（按 HL §6 通用规则的正确改法，尚未落地）
-
-- **下游 / 恢复链（`RECV` / `RECOVER` / `REWRITE`，以及 WRITE 的 input 语义）**：不容忍半条，违规打断言级。
-- **上游 checkpoint-output（`writeOutput`，当前缺失）**：需补上 output 侧校验，且**容忍首尾半条**，只校验中间 record 等间距连续，
-  首尾半条打普通/观测级、不算 ASSERT。
-- **日志分级**：断言级（真损坏）与观测级（上游可容忍半条）用不同标签/级别，避免真损坏被淹没。
-- **聚合粒度**：`WRITE`/`SNAP` 改为按 channel 完整数据流聚合（而非单 cp 分片），或明确把单 cp 片段当"可首尾半条"处理。
-
-> 以上是**待修正项**，当前代码尚未实现。修复本身另起流程，不在插桩范围。
+- ~~`shape()` 没有区分上下游、没有容忍首尾半条~~ → 新增 `ChannelStateInvariant.Mode {STRICT, LENIENT}`，`shape(bytes, mode)`
+  在 `LENIENT` 下用 `skipToFirstParseableRecord` 跳过开头悬挂字节、在结尾遇到不足一条完整 record 时判定为 `tailTolerated`
+  而非 `firstCorruptRecordAt`；中间 record 的 STRIDE-IRREGULAR 在两种 mode 下都判真损坏。
+- ~~`writeOutput` 没有任何校验~~ → `ChannelStateCheckpointWriter.writeOutput`/`completeOutput` 补上累积 + `Mode.LENIENT` flush。
+- ~~日志不分级，真损坏可能被首尾半条淹没~~ → `logViolationIfAny` 统一按 `shape.toleratedEdgeOnly` 分流：真损坏打
+  `[CS-INV-ASSERT]`（`LOG.warn`），仅因 `LENIENT` 容忍的首尾半条打 `[CS-INV-TOLERATED]`（`LOG.info`）。`[CS-INV-SNAP-ASSERT]`
+  标签废弃，SNAP 违规现在也走这条统一分级路径。
 
 ---
 

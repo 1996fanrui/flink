@@ -177,6 +177,17 @@ class ChannelStateCheckpointWriter {
                 jobVertexID + "-" + subtaskIndex + "-cp" + checkpointId, info.toString(), "WRITE");
     }
 
+    /**
+     * Key for accumulating this checkpoint's per-subpartition written bytes so that the whole
+     * concatenated stream for one output subpartition can be validated once at {@link
+     * #completeOutput(JobVertexID, int)}.
+     */
+    private String invariantWriteKey(
+            JobVertexID jobVertexID, int subtaskIndex, ResultSubpartitionInfo info) {
+        return ChannelStateInvariant.key(
+                jobVertexID + "-" + subtaskIndex + "-cp" + checkpointId, info.toString(), "WRITE");
+    }
+
     void writeOutput(
             JobVertexID jobVertexID, int subtaskIndex, ResultSubpartitionInfo info, Buffer buffer) {
         try {
@@ -185,6 +196,11 @@ class ChannelStateCheckpointWriter {
             }
             ChannelStatePendingResult pendingResult =
                     getChannelStatePendingResult(jobVertexID, subtaskIndex);
+            if (ChannelStateInvariant.isEnabled() && buffer.readableBytes() > 0) {
+                ChannelStateInvariant.append(
+                        invariantWriteKey(jobVertexID, subtaskIndex, info),
+                        buffer.getNioBufferReadable());
+            }
             write(
                     pendingResult.getResultSubpartitionOffsets(),
                     info,
@@ -241,7 +257,23 @@ class ChannelStateCheckpointWriter {
         if (isDone()) {
             return;
         }
-        getChannelStatePendingResult(jobVertexID, subtaskIndex).completeOutput();
+        ChannelStatePendingResult pendingResult =
+                getChannelStatePendingResult(jobVertexID, subtaskIndex);
+        if (ChannelStateInvariant.isEnabled()) {
+            // LENIENT: the buffers written here are in-flight upstream output, so a dangling
+            // partial record at the start or end of the concatenated stream is expected, not a
+            // bug (see ChannelStateInvariant's class-level javadoc).
+            String taskLabel = jobVertexID + "-" + subtaskIndex + "-cp" + checkpointId;
+            for (ResultSubpartitionInfo info :
+                    pendingResult.getResultSubpartitionOffsets().keySet()) {
+                ChannelStateInvariant.flush(
+                        invariantWriteKey(jobVertexID, subtaskIndex, info),
+                        ChannelStateInvariant.label(taskLabel, info.toString()),
+                        "WRITE",
+                        ChannelStateInvariant.Mode.LENIENT);
+            }
+        }
+        pendingResult.completeOutput();
         tryFinishResult();
     }
 
