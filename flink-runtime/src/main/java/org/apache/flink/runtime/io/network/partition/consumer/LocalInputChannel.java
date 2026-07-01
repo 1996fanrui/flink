@@ -113,7 +113,8 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
 
         this.partitionManager = checkNotNull(partitionManager);
         this.taskEventPublisher = checkNotNull(taskEventPublisher);
-        this.channelStatePersister = new ChannelStatePersister(stateWriter, getChannelInfo());
+        this.channelStatePersister =
+                new ChannelStatePersister(stateWriter, getChannelInfo(), "Local");
 
         // Migrate recovered buffers from RecoveredInputChannel if provided.
         // These buffers have been filtered but not yet consumed by the Task.

@@ -157,7 +157,8 @@ public class RemoteInputChannel extends InputChannel {
         this.connectionId = checkNotNull(connectionId);
         this.connectionManager = checkNotNull(connectionManager);
         this.bufferManager = new BufferManager(inputGate.getMemorySegmentProvider(), this, 0);
-        this.channelStatePersister = new ChannelStatePersister(stateWriter, getChannelInfo());
+        this.channelStatePersister =
+                new ChannelStatePersister(stateWriter, getChannelInfo(), "Remote");
 
         // Migrate recovered buffers from RecoveredInputChannel if provided.
         // These buffers have been filtered but not yet consumed by the Task.

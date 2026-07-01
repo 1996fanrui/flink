@@ -27,28 +27,31 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Temporary diagnostic instrumentation for tracking channel-state data corruption
- * ("Corrupt stream, found tag: -NN").
+ * Temporary diagnostic instrumentation for tracking channel-state data corruption ("Corrupt stream,
+ * found tag: -NN").
  *
  * <p>The unit of corruption is an input channel, not a single buffer: a channel's buffers must be
  * concatenated in order to form one contiguous, fully-parseable record stream. This class
- * accumulates buffer bytes per (task, channel) key across three pipeline layers (checkpoint
- * write, recovery read, filter rewrite) and, once a channel's data for that layer is complete,
- * validates the concatenated stream against the deterministic test-data shape: every record is
- * {@code [4-byte length][record bytes]}, and each record's value carries a fixed 4-byte header
- * {@code AB CD EA FC} at a constant stride.
+ * accumulates buffer bytes per (task, channel) key across three pipeline layers (checkpoint write,
+ * recovery read, filter rewrite) and, once a channel's data for that layer is complete, validates
+ * the concatenated stream against the deterministic test-data shape: every record is {@code [4-byte
+ * length][record bytes]}, and each record's value carries a fixed 4-byte header {@code AB CD EA FC}
+ * at a constant stride.
  *
- * <p>This class never throws and never alters the data path; it only logs. All accumulation
- * buffers are per-key and must be explicitly flushed by the call site once that key's data for
- * the current layer is fully collected, otherwise they leak memory.
+ * <p>This class never throws and never alters the data path; it only logs. All accumulation buffers
+ * are per-key and must be explicitly flushed by the call site once that key's data for the current
+ * layer is fully collected, otherwise they leak memory.
+ *
+ * <p>Public so that collection-side call sites outside this package (e.g. {@code
+ * ChannelStatePersister}) can validate a channel's just-collected buffers with {@link
+ * #shape(byte[])} without accumulating/flushing state.
  */
-final class ChannelStateInvariant {
+public final class ChannelStateInvariant {
 
     private static final Logger LOG = LoggerFactory.getLogger(ChannelStateInvariant.class);
 
     /** Enables/disables all invariant checking. On by default to catch corruption as it occurs. */
-    private static final boolean ENABLED =
-            !"false".equals(System.getProperty("flink.cs.debug"));
+    private static final boolean ENABLED = !"false".equals(System.getProperty("flink.cs.debug"));
 
     /** Enables per-record logging (verbose); shape-only logging is used otherwise. */
     private static final boolean LOG_RECORDS =
@@ -67,7 +70,7 @@ final class ChannelStateInvariant {
 
     private ChannelStateInvariant() {}
 
-    static boolean isEnabled() {
+    public static boolean isEnabled() {
         return ENABLED;
     }
 
@@ -88,8 +91,8 @@ final class ChannelStateInvariant {
     }
 
     /**
-     * Flushes and validates the accumulated bytes for {@code key}, logging the result under
-     * {@code [CS-INV]}/{@code [CS-INV-ASSERT]}, then discards the accumulator.
+     * Flushes and validates the accumulated bytes for {@code key}, logging the result under {@code
+     * [CS-INV]}/{@code [CS-INV-ASSERT]}, then discards the accumulator.
      *
      * @param taskAndChannel human-readable "task=.. ch=.." label shared across layers
      * @param layer one of "WRITE" (checkpoint write), "RECOVER" (recovery read), "REWRITE" (filter
@@ -139,7 +142,7 @@ final class ChannelStateInvariant {
      * between consecutive occurrences, and attempts to walk the buffer as a sequence of
      * length-prefixed records, stopping at the first framing violation.
      */
-    static Shape shape(byte[] bytes) {
+    public static Shape shape(byte[] bytes) {
         List<Integer> headerOffsets = findHeaderOffsets(bytes);
         List<Integer> strides = new ArrayList<>();
         for (int i = 1; i < headerOffsets.size(); i++) {
@@ -235,7 +238,7 @@ final class ChannelStateInvariant {
     }
 
     /** Result of validating one channel's fully-concatenated byte stream. */
-    static final class Shape {
+    public static final class Shape {
         int headerCount;
         int firstHeaderAt;
         List<Integer> strides = new ArrayList<>();
@@ -247,7 +250,11 @@ final class ChannelStateInvariant {
         boolean valid;
         final List<String> recordLogs = new ArrayList<>();
 
-        String summary() {
+        public boolean isValid() {
+            return valid;
+        }
+
+        public String summary() {
             StringBuilder sb = new StringBuilder();
             if (headerCount == 0) {
                 sb.append("NO-HEADER");

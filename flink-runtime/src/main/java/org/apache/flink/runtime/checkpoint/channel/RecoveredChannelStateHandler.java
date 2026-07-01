@@ -142,11 +142,11 @@ class InputChannelRecoveredStateHandler
     }
 
     /**
-     * Key for accumulating one channel's full recovered byte stream across both sources merged
-     * by {@link org.apache.flink.runtime.checkpoint.channel.SequentialChannelStateReaderImpl}:
-     * the channel's own input-channel-state and the upstream output-buffer-state moved onto it
-     * during rescaling. {@code this} identifies the single recovery pass this handler instance
-     * was created for (one instance per {@code readInputData} call).
+     * Key for accumulating one channel's full recovered byte stream across both sources merged by
+     * {@link org.apache.flink.runtime.checkpoint.channel.SequentialChannelStateReaderImpl}: the
+     * channel's own input-channel-state and the upstream output-buffer-state moved onto it during
+     * rescaling. {@code this} identifies the single recovery pass this handler instance was created
+     * for (one instance per {@code readInputData} call).
      */
     private String invariantRecoverKey(InputChannelInfo channelInfo) {
         return ChannelStateInvariant.key(

@@ -149,6 +149,13 @@ public class ChannelStateWriterImpl implements ChannelStateWriter {
     }
 
     @Override
+    public String taskLabel() {
+        // Matches ChannelStateCheckpointWriter's task label so [CS-INV-COLLECT] and
+        // [CS-INV]/[CS-INV-ASSERT] lines for the same task can be correlated.
+        return jobVertexID + "-" + subtaskIndex;
+    }
+
+    @Override
     public void start(long checkpointId, CheckpointOptions checkpointOptions) {
         LOG.debug("{} starting checkpoint {} ({})", taskName, checkpointId, checkpointOptions);
         ChannelStateWriteResult result = new ChannelStateWriteResult();

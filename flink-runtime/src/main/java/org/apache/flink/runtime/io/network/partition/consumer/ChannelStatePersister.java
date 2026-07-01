@@ -19,6 +19,7 @@ package org.apache.flink.runtime.io.network.partition.consumer;
 
 import org.apache.flink.runtime.checkpoint.CheckpointException;
 import org.apache.flink.runtime.checkpoint.CheckpointFailureReason;
+import org.apache.flink.runtime.checkpoint.channel.ChannelStateInvariant;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
 import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.runtime.event.AbstractEvent;
@@ -35,6 +36,7 @@ import javax.annotation.Nullable;
 import javax.annotation.concurrent.NotThreadSafe;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.List;
 import java.util.OptionalLong;
 
@@ -46,6 +48,13 @@ public final class ChannelStatePersister {
     private static final Logger LOG = LoggerFactory.getLogger(ChannelStatePersister.class);
 
     private final InputChannelInfo channelInfo;
+
+    /**
+     * Human-readable channel implementation kind ("Local"/"Remote"), used only to label {@code
+     * [CS-INV-COLLECT]} diagnostic log lines so collected buffers can be correlated with the
+     * originating channel type.
+     */
+    private final String channelKind;
 
     private enum CheckpointStatus {
         COMPLETED,
@@ -63,14 +72,21 @@ public final class ChannelStatePersister {
      */
     private final ChannelStateWriter channelStateWriter;
 
-    ChannelStatePersister(ChannelStateWriter channelStateWriter, InputChannelInfo channelInfo) {
+    ChannelStatePersister(
+            ChannelStateWriter channelStateWriter,
+            InputChannelInfo channelInfo,
+            String channelKind) {
         this.channelStateWriter = checkNotNull(channelStateWriter);
         this.channelInfo = checkNotNull(channelInfo);
+        this.channelKind = checkNotNull(channelKind);
     }
 
     protected void startPersisting(long barrierId, List<Buffer> knownBuffers)
             throws CheckpointException {
         logEvent("startPersisting", barrierId);
+        if (ChannelStateInvariant.isEnabled()) {
+            logCollectedBuffers(barrierId, knownBuffers);
+        }
         if (checkpointStatus == CheckpointStatus.BARRIER_RECEIVED && lastSeenBarrier > barrierId) {
             throw new CheckpointException(
                     String.format(
@@ -96,6 +112,55 @@ public final class ChannelStatePersister {
                     channelInfo,
                     ChannelStateWriter.SEQUENCE_NUMBER_UNKNOWN,
                     CloseableIterator.fromList(knownBuffers, Buffer::recycleBuffer));
+        }
+    }
+
+    /**
+     * Logs the shape of the buffers handed to {@link #startPersisting} for this (channel, barrier),
+     * before they reach the checkpoint writer. Comparing this against the writer-side {@code
+     * [CS-INV-ASSERT]} for the same channel and checkpoint id narrows whether a truncation already
+     * exists at collection time or is introduced afterward.
+     *
+     * <p>Reads buffers non-destructively (duplicated {@link ByteBuffer}s), so the real reader index
+     * seen by {@link #startPersisting}'s caller is untouched.
+     */
+    private void logCollectedBuffers(long barrierId, List<Buffer> knownBuffers) {
+        int totalBytes = 0;
+        StringBuilder perBufferBytes = new StringBuilder();
+        for (int i = 0; i < knownBuffers.size(); i++) {
+            int readable = knownBuffers.get(i).readableBytes();
+            totalBytes += readable;
+            perBufferBytes.append(i == 0 ? "" : ",").append(readable);
+        }
+        byte[] concatenated = new byte[totalBytes];
+        int offset = 0;
+        for (Buffer buffer : knownBuffers) {
+            ByteBuffer readOnly = buffer.getNioBufferReadable();
+            int readable = readOnly.remaining();
+            readOnly.get(concatenated, offset, readable);
+            offset += readable;
+        }
+        ChannelStateInvariant.Shape shape = ChannelStateInvariant.shape(concatenated);
+        // task label matches ChannelStateCheckpointWriter's "<jobVertexId>-<subtaskIndex>-cp<id>"
+        // so this line can be paired with the write-side [CS-INV]/[CS-INV-ASSERT] for the same
+        // (task, channel, checkpoint).
+        String taskLabel = channelStateWriter.taskLabel() + "-cp" + barrierId;
+        LOG.info(
+                "[CS-INV-COLLECT] task={} ch={} kind={} numBuffers={} perBufferBytes=[{}] totalBytes={} {}",
+                taskLabel,
+                channelInfo,
+                channelKind,
+                knownBuffers.size(),
+                perBufferBytes,
+                totalBytes,
+                shape.summary());
+        if (!shape.isValid()) {
+            LOG.warn(
+                    "[CS-INV-COLLECT-ASSERT] task={} ch={} kind={} INVALID at collection time: {}",
+                    taskLabel,
+                    channelInfo,
+                    channelKind,
+                    shape.summary());
         }
     }
 

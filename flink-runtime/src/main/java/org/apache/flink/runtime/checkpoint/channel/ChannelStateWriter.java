@@ -190,6 +190,15 @@ public interface ChannelStateWriter extends Closeable {
     ChannelStateWriteResult getAndRemoveWriteResult(long checkpointId)
             throws IllegalArgumentException;
 
+    /**
+     * Diagnostic-only label identifying the task this writer belongs to, in the same {@code
+     * <jobVertexId>-<subtaskIndex>} form used by the checkpoint-write-side invariant logging, so
+     * collection-side and write-side log lines for the same task/channel can be correlated.
+     */
+    default String taskLabel() {
+        return toString();
+    }
+
     ChannelStateWriter NO_OP = new NoOpChannelStateWriter();
 
     /** No-op implementation of {@link ChannelStateWriter}. */

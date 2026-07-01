@@ -223,7 +223,9 @@ class ChannelStateCheckpointWriter {
         ChannelStatePendingResult pendingResult =
                 getChannelStatePendingResult(jobVertexID, subtaskIndex);
         if (ChannelStateInvariant.isEnabled()) {
-            String taskLabel = jobVertexID + "-" + subtaskIndex;
+            // Matches invariantWriteKey's task label so a [CS-INV]/[CS-INV-ASSERT] line can be
+            // correlated back to the exact checkpoint it was flushed for.
+            String taskLabel = jobVertexID + "-" + subtaskIndex + "-cp" + checkpointId;
             for (InputChannelInfo info : pendingResult.getInputChannelOffsets().keySet()) {
                 ChannelStateInvariant.flush(
                         invariantWriteKey(jobVertexID, subtaskIndex, info),
