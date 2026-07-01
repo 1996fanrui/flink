@@ -134,8 +134,7 @@ Job3 (从该 chk 恢复)  : readChunk → filter 重写 → ★抛 Corrupt strea
 ```bash
 cd flink-runtime
 ../mvnw -T 20 clean install -U -Pfast -DskipTests \
-  -Dmaven.javadoc.skip=true -Drat.skip=true -Dcheckstyle.skip=true -Denforcer.skip=true \
-  -P java11-target -P java11
+  -Dmaven.javadoc.skip=true -Drat.skip=true -Dcheckstyle.skip=true -Denforcer.skip=true
 ```
 
 > 约 5 分钟以上。`repro.sh` 假设生产模块已 install 到 `~/.m2`，它只重编 `flink-tests` 的 test-classes。
@@ -146,10 +145,10 @@ cd flink-runtime
 ## 4. 复现流程
 
 ```bash
-bash repro/repro.sh 25 2000 600
+bash repro/repro.sh 16 2000 600
 #                    │   │    └─ 每次 run 超时(秒)
 #                    │   └────── 目标总 run 数
-#                    └────────── 并发 worker 数
+#                    └────────── 并发 worker 数（上限 16，避免 CPU 争用把机器压卡）
 ```
 
 `repro.sh` 行为：
