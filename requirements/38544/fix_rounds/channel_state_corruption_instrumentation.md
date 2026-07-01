@@ -22,9 +22,9 @@
 
 一轮 = 下面 5 步，**循环执行直到定位根因**（参考上限 5 轮，每轮只回答一个问题、逐步缩小范围）：
 
-1. **决定本轮要回答的问题 + 插桩方案**（协调者决策）。第一轮：按 §2.1 加全链路粗插桩，看每个阶段 buffer 的 record framing（stride/header）是否健康，把 bug 框到"某个未插桩的 gap"。之后每轮只针对上一轮暴露的 gap 加更细的插桩。
+1. **决定本轮要回答的问题 + 插桩方案**（协调者决策）。**本轮排查主力手段是 §6 的"按 input-channel 的三层完整数据校验"**——不是逐个 buffer 看，而是把每个 input channel 恢复/写入/重写的**所有 buffer 拼接成完整数据**后整体校验 record framing，看**checkpoint 写入层 / 恢复拼接层 / 重写到内存层**这三层里**哪一层先坏**（校验失败只打结构化日志、不抛异常）。§2.1 的逐阶段插桩是辅助观察。第一轮先把三层校验挂上，把 bug 框到某一层；之后每轮针对暴露出问题的那一层加更细的插桩。
 2. **委托 sub-agent 加日志（改生产代码）**。sub-agent 在 `flink-runtime` 生产代码里加 §2.1 的插桩（新建/扩展 `ChannelStateInvariant`，在对应类方法插调用点），**然后按 §3 编译**，编译通过后**把这轮插桩代码 commit**（commit message 说明本轮加了哪些插桩、要回答什么问题）。⚠️ 插桩是临时诊断代码，但每轮都要 commit，保证"改动可追溯、可回退、下一轮基于干净状态继续"。
-3. **委托 sub-agent 跑复现**（§4 的 `repro.sh`，多 worker、后台跑，首次命中即停）。命中后按 §8 规则 1 **立即备份 `repro/results/`**。
+3. **委托 sub-agent 跑复现**（§4 的 `repro.sh`，多 worker、后台跑，首次命中即停）。命中后按 §9 规则 1 **立即备份 `repro/results/`**。
 4. **委托独立 verification sub-agent 分析命中的 FAIL 日志**（§5 的读法）。它必须判定 **CONCLUSIVE / INSUFFICIENT**：只有日志里出现 **healthy→corrupt 的那一步转变**才算 CONCLUSIVE；否则判 INSUFFICIENT，并给出"下一轮要在哪里加什么插桩"的精确清单。**把本轮 findings 摘要写进 `requirements/38544/fix_rounds/round<N>_findings.md` 并 commit**（大日志被 gitignore，只提交结论与关键行摘录）。
 5. **收敛判断**：CONCLUSIVE → 进入根因确认 + 设计修复（修复本身另起流程，不在本文档范围）；INSUFFICIENT → 回到第 1 步，按清单开下一轮。
 
@@ -184,7 +184,49 @@ bash repro/repro.sh 25 2000 600
 
 ---
 
-## 6. 注意事项
+## 6. 核心校验策略：按 input-channel 的三层完整数据校验（本轮排查主力手段）
+
+> 前提：**已确定一定有 bug**，不需要再证明"有没有 bug"。现在所有插桩/校验的唯一目的是
+> **逐层缩小范围，定位到底是哪一层先把数据搞坏的**。
+
+### 6.1 校验的正确单位 = **input channel 的完整数据**（不是单个 buffer）
+
+- 数据的**存储粒度是 task**：每个 task 对应一堆 channel-state 文件（写侧要写一堆、读侧要读一堆）。
+- 数据破坏的**本质单位是 input channel**：坏掉的永远是"某个 input channel 的数据"。
+- **一个 input channel 会有多个 buffer，buffer 只是物理传输上的切分**（一个 buffer = 传输格式里的一"块"）。
+  **把这个 channel 的所有 buffer 按顺序直接接起来，就是一份"完整数据"**——这份完整数据必须能被逐条完整解析：
+  每条 record 的 `[4B length]` 合法、tag 合法、header `AB CD EA FC` 按 stride 出现，首尾无悬挂的半条 record。
+- ⚠️ 因此**校验对象是"该 channel 累积拼接后的完整字节流"，不是逐个 buffer 单独看**。
+  §2 的逐 buffer `shape()` 只是弱化的观察版；本策略要求**累积到 channel 边界，再对整份完整数据做一次连续性/完整性校验**。
+  （这正是"下游要恢复 2 个 buffer + 上游挪过来 3 个 = 共 5 个，这 5 个连起来必须是一条条完整 record"的场景。）
+
+### 6.2 要校验的**三层**（同一份 channel 数据，在三个位置各校验一次，用来定位"哪一层先坏"）
+
+| 层 | 数据是什么 | 校验挂在哪（当前分支） |
+|---|---|---|
+| ① checkpoint 写入层 | 写进 checkpoint 文件的、属于该 channel 的完整数据 | `ChannelStateCheckpointWriter.writeInput`/`writeOutput`（§2.1 #4/#5）——按 channel 累积该次写入的全部字节后校验 |
+| ② 恢复拼接层 | 从 checkpoint 恢复、拼给该 input channel 的完整数据：**它自己的 input-channel-state（第一个 `read`）＋ 上游挪过来、被当作本 channel input 的 output buffer（第二个 `read`，§2.1 #3b）**，多个 buffer 接起来的完整序列 | `SequentialChannelStateReaderImpl.readInputData`（`:63-95`）／`ChannelStateFilteringHandler.filterAndRewrite` 反序列化入口——按 (task, InputChannelInfo) 累积该 channel 恢复到的全部 buffer 后，对拼接结果整体校验 |
+| ③ 重写到内存层 | filter 重写后、重新注入内存的该 channel 的完整数据 | `RecoveredChannelStateHandler.recoverWithFiltering` 注入点（§2.1 #6）——按 channel 累积重写出的全部 buffer 后校验 |
+
+> **定位逻辑**：三层各自打出该 channel 完整数据的校验结果。**第一个报"完整数据不合法"的层，就是数据第一次被搞坏的层**，
+> bug 落在它和上一层之间。特别关注第 ② 层：上游的数据现在也是从下游恢复，"自己的 input-state ＋ 上游挪来的 output"
+> 这两截接起来能不能组成连续、完整、可解析的 record，是本次的重点怀疑对象。
+
+### 6.3 校验行为（明确约定）
+
+- **只打结构化日志，不抛异常。** 校验失败时不打断数据路径、不改变执行，只输出结构化诊断日志（标签沿用 `[CS-INV-ASSERT]`），
+  保留完整现场到最后一起看。**目的是缩小范围，不是在这里 fail-fast。**
+- 每条校验日志必须带：`task`（或 subtask 标识）、`ch=`（`InputChannelInfo`）、`layer=①/②/③`、
+  拼接后完整数据的 shape（`headers/firstHeaderAt/strides`）、第一条坏掉的 record 的位置与前后 hex。
+- 三层日志用**同一份 channel 标识**串起来，便于按 `ch=` 过滤、跨层对比"从哪一层开始 shape 变坏"。
+
+> 实现提示（给落地 agent）：需要一个**按 (task, channel) 聚合 buffer 字节**的累积器（channel 的多个 buffer 依次 append），
+> 在该 channel 数据边界（该次写入/该次恢复/该次重写注入结束）触发一次整份校验。校验逻辑复用 `ChannelStateInvariant.shape()`
+> 的 record-framing 扫描，但输入从"单个 buffer"换成"该 channel 拼接后的完整字节流"。
+
+---
+
+## 7. 注意事项
 
 - 插桩为**临时诊断代码**，根因定位后必须删除 `ChannelStateInvariant` 及全部调用点。
 - 默认 `flink.cs.debug=ON`、`records=OFF`；若日志过大可临时关 records。
@@ -194,7 +236,7 @@ bash repro/repro.sh 25 2000 600
 
 ---
 
-## 7. 排查过程经验（逐轮收敛，可复用的方法论）
+## 8. 排查过程经验（逐轮收敛，可复用的方法论）
 
 1. **不要猜，让字节自己说话**。利用测试数据的确定性特征（`AB CD EA FC` header + 恒定 stride），在每个阶段把字节剥到 record 层验证不变式，找"最早变坏的阶段"。先用 `shape()` 的 stride/firstHeaderAt 把范围从"整条流水线"收敛到"某个未插桩的 gap"。
 
@@ -214,7 +256,7 @@ bash repro/repro.sh 25 2000 600
 
 ---
 
-## 8. 复现纪律 & 兜底检查（规则）
+## 9. 复现纪律 & 兜底检查（规则）
 
 **规则 1 — 每次复现命中后，必须备份整个运行目录（尤其 FAIL 日志）。**
 `repro/repro.sh` 每次启动会 `rm -rf "$RES"`（即 `repro/results/`），**下一次复现会覆盖上一次的现场**。所以每命中一次，就把整个 `repro/results/` 备份到 `repro/` 下一个持久目录：
