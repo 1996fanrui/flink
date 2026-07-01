@@ -29,6 +29,7 @@ import org.apache.flink.runtime.io.network.partition.CheckpointedResultPartition
 import org.apache.flink.runtime.io.network.partition.consumer.InputChannel;
 import org.apache.flink.runtime.io.network.partition.consumer.InputGate;
 import org.apache.flink.runtime.io.network.partition.consumer.RecoveredInputChannel;
+import org.apache.flink.runtime.io.network.partition.consumer.SingleInputGate;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
@@ -142,21 +143,32 @@ class InputChannelRecoveredStateHandler
     }
 
     /**
+     * Task/subtask/attempt identity for the gate owning {@code channelInfo}, used as the identity
+     * segment of the {@code RECOVER_READ}/{@code RECOVER_REWRITE} invariant keys so concurrent
+     * recovery of different subtasks can be told apart and correlated with the {@code
+     * CHECKPOINT_WRITE}/{@code CHANNEL_RECEIVE} layers.
+     *
+     * <p>{@code readInputData} is called with only an {@code InputGate[]}, statically typed as the
+     * abstract {@link InputGate}, which exposes no owning-task accessor. The owning task name is
+     * only available on the concrete {@link SingleInputGate}; falls back to {@code toString()} for
+     * any other gate implementation.
+     */
+    private String invariantIdentity(InputChannelInfo channelInfo) {
+        InputGate gate = inputGates[channelInfo.getGateIdx()];
+        return gate instanceof SingleInputGate
+                ? ((SingleInputGate) gate).getOwningTaskName()
+                : gate.toString();
+    }
+
+    /**
      * Key for accumulating one channel's full recovered byte stream across both sources merged by
      * {@link org.apache.flink.runtime.checkpoint.channel.SequentialChannelStateReaderImpl}: the
      * channel's own input-channel-state and the upstream output-buffer-state moved onto it during
-     * rescaling. {@code this} identifies the single recovery pass this handler instance was created
-     * for (one instance per {@code readInputData} call).
-     *
-     * <p>Has no jobId/attempt/jobVertexID/subtaskIndex: {@code readInputData} is called with only
-     * an {@code InputGate[]}, and {@link org.apache.flink.runtime.io.network.partition.consumer
-     * .InputGate}/{@code InputChannel} expose no public accessor for any of the four. Only
-     * gateIdx/channelIdx (via {@code channelInfo}) and this recovery pass's identity are available
-     * here.
+     * rescaling.
      */
     private String invariantRecoverKey(InputChannelInfo channelInfo) {
         return ChannelStateInvariant.key(
-                "recovery-" + System.identityHashCode(this),
+                invariantIdentity(channelInfo),
                 channelInfo.toString(),
                 ChannelStateInvariant.Layer.RECOVER_READ,
                 ChannelStateInvariant.Direction.INPUT);
@@ -165,13 +177,11 @@ class InputChannelRecoveredStateHandler
     /**
      * Key for accumulating one channel's full filter-rewritten byte stream (the buffers actually
      * injected into {@link RecoveredInputChannel#onRecoveredStateBuffer}), across every {@link
-     * #recoverWithFiltering} call for that channel during this recovery pass. See {@link
-     * #invariantRecoverKey} for why the identity segment has no jobId/attempt/jobVertexID/
-     * subtaskIndex.
+     * #recoverWithFiltering} call for that channel during this recovery pass.
      */
     private String invariantRewriteKey(InputChannelInfo channelInfo) {
         return ChannelStateInvariant.key(
-                "recovery-" + System.identityHashCode(this),
+                invariantIdentity(channelInfo),
                 channelInfo.toString(),
                 ChannelStateInvariant.Layer.RECOVER_REWRITE,
                 ChannelStateInvariant.Direction.INPUT);
@@ -221,8 +231,7 @@ class InputChannelRecoveredStateHandler
             for (InputChannelInfo channelInfo : channelsSeenForInvariantCheck) {
                 String label =
                         ChannelStateInvariant.label(
-                                "recovery-" + System.identityHashCode(this),
-                                channelInfo.toString());
+                                invariantIdentity(channelInfo), channelInfo.toString());
                 ChannelStateInvariant.flush(
                         invariantRecoverKey(channelInfo),
                         label,

@@ -158,21 +158,25 @@
 
 | 类 | 方法 | key / 分组 | layer / mode |
 |---|---|---|---|
-| `.../checkpoint/channel/RecoveredChannelStateHandler.java`（内部类 `InputChannelRecoveredStateHandler`）| `recover(InputChannelInfo, int, BufferWithContext)` 累积 | `invariantRecoverKey` = key(`recovery-<identityHashCode(this)>`, `channelInfo`, `RECOVER_READ`, `INPUT`) | `RECOVER_READ` / `STRICT`（3 参数 `flush`） |
-| 同上 | `recoverWithFiltering(...)` 累积（对 `filterAndRewrite` 返回的每个 filtered buffer）| `invariantRewriteKey` = key(`recovery-<identityHashCode(this)>`, `channelInfo`, `RECOVER_REWRITE`, `INPUT`) | `RECOVER_REWRITE` / `STRICT`（3 参数 `flush`） |
+| `.../checkpoint/channel/RecoveredChannelStateHandler.java`（内部类 `InputChannelRecoveredStateHandler`）| `recover(InputChannelInfo, int, BufferWithContext)` 累积 | `invariantRecoverKey` = key(`invariantIdentity(channelInfo)`, `channelInfo`, `RECOVER_READ`, `INPUT`) | `RECOVER_READ` / `STRICT`（3 参数 `flush`） |
+| 同上 | `recoverWithFiltering(...)` 累积（对 `filterAndRewrite` 返回的每个 filtered buffer）| `invariantRewriteKey` = key(`invariantIdentity(channelInfo)`, `channelInfo`, `RECOVER_REWRITE`, `INPUT`) | `RECOVER_REWRITE` / `STRICT`（3 参数 `flush`） |
 | 同上 | `close()` flush RECOVER_READ + RECOVER_REWRITE | 遍历 `channelsSeenForInvariantCheck` 逐 channel flush | —— |
 
-- **key 用 `recovery-<identityHashCode(this)>`**，即**每个 recovery pass（一次 `readInputData` 一个 handler 实例）一组**，
-  在 `close()` 时对该 pass 见过的每个 channel 一次性 flush → 这**是** channel 完整数据流粒度（与 `CHECKPOINT_WRITE` 的 per-cp
-  分片不同，注意区分）；生命周期分界=这次 handler 实例的生命周期（一次 recovery pass），已天然满足。
+- **key 用 `invariantIdentity(channelInfo)`**：取 `channelInfo.getGateIdx()` 对应的 `inputGates[gateIdx]`，若其为
+  `SingleInputGate` 则用 `getOwningTaskName()`（形如 `"failing-map (10/21)#1"`，含算子名/subtask/attempt），否则退化为
+  `gate.toString()`。同一个 handler 实例（一次 recovery pass）内该值恒定，因为一次 pass 只对应一个 task，故与旧版
+  `recovery-<identityHashCode(this)>` 分组粒度等价——仍是**每个 recovery pass 一组**，在 `close()` 时对该 pass 见过的每个
+  channel 一次性 flush → 这**是** channel 完整数据流粒度（与 `CHECKPOINT_WRITE` 的 per-cp 分片不同，注意区分）；生命周期
+  分界=这次 handler 实例的生命周期（一次 recovery pass），已天然满足。
 - `RECOVER_READ` 累积的是恢复读回的原始字节（`recover` 里注入前）；`RECOVER_REWRITE` 累积的是 `filterAndRewrite` 重写后、即将
   `onRecoveredStateBuffer` 注入物理 channel 的字节。
 - 按 §6.3 规则，恢复链全程不容忍半条（即使源数据来自上游 output，恢复时已重组进虚拟 channel），两者都用 `STRICT`。
-- **没有 jobId/attempt/jobVertexID/subtaskIndex**：`readInputData(InputGate[] inputGates, ...)` 只传 `InputGate[]`，
-  `InputGate`/`InputChannel`/`RecoveredInputChannel` 都没有公开访问器能拿到 jobId、attempt、jobVertexID 或 subtaskIndex
-  （`SingleInputGate` 只有 `owningTaskName`——人类可读字符串，不是结构化 jobVertexID）。这四个维度在当前代码结构下拿不到，
-  要拿到需要新增 getter 或改 `readInputData`/handler 构造器签名——按纪律不允许改业务签名，**记为待办**（见 §3）。key 里只有
-  gateIdx/channelIdx（通过 `channelInfo`）和 recovery pass 身份两个维度。
+- **task/subtask/attempt 身份已补上，仍没有结构化 jobVertexID/jobId**：`readInputData(InputGate[] inputGates, ...)` 只传
+  `InputGate[]`，静态类型是抽象 `InputGate`，其上没有 owning-task 访问器；`getOwningTaskName()` 只在具体类
+  `SingleInputGate` 上，通过 `channelInfo.getGateIdx()` 定位到具体 gate 后 `instanceof` 判断即可拿到，不需要改
+  `readInputData`/handler 构造器签名。`owningTaskName` 是人类可读字符串（算子名 + `(subtask/parallelism)` + `#attempt`），
+  含 subtask 和 attempt 两个维度，但不含结构化 `jobVertexID`（`JobVertexID` 对象）或 `jobId`——这两个维度仍拿不到，
+  **记为待办**（见 §3）。
 - **output 侧恢复仍无插桩**（`RecoveredChannelStateHandler.recover(ResultSubpartitionInfo, ...)` 没有 `ChannelStateInvariant`
   调用）——这是本轮改动范围之外的既有缺口，未新增也未修正，见 §3。
 
@@ -184,31 +188,35 @@
 | `SNAPSHOT` | `taskLabel`（**无 jobId/attempt**） + 单个 `barrierId` | channelInfo+kind | `INPUT`（隐含） | 一次 checkpoint 采到的 in-flight 片段 | **否**（单 cp 片段） | `LENIENT` |
 | `CHECKPOINT_WRITE`（input） | `jobVertexID-subtask-cp<N>`（**无 jobId/attempt**） | channelInfo | `INPUT` | 单个 checkpoint 写入的 input 字节 | **否**（单 cp 片段） | `STRICT` |
 | `CHECKPOINT_WRITE`（output） | `jobVertexID-subtask-cp<N>`（**无 jobId/attempt**） | subpartitionInfo | `OUTPUT` | 单个 checkpoint 写入的 output 字节 | **否**（单 cp 片段） | `LENIENT` |
-| `RECOVER_READ` | `recovery-<handler实例>`（**无 jobId/attempt/jobVertexID/subtaskIndex**） | channelInfo | `INPUT` | 一次 recovery pass 读回的字节 | 是 | `STRICT` |
-| `RECOVER_REWRITE` | `recovery-<handler实例>`（**无 jobId/attempt/jobVertexID/subtaskIndex**） | channelInfo | `INPUT` | 一次 recovery pass 重写后的字节 | 是 | `STRICT` |
+| `RECOVER_READ` | `owningTaskName`（gate 所属 task，**含 subtask/attempt，无 jobId/结构化 jobVertexID**） | channelInfo | `INPUT` | 一次 recovery pass 读回的字节 | 是 | `STRICT` |
+| `RECOVER_REWRITE` | `owningTaskName`（同上） | channelInfo | `INPUT` | 一次 recovery pass 重写后的字节 | 是 | `STRICT` |
 
-> jobId/attempt 在**所有五个阶段**都拿不到——当前分支代码里，从 `InputChannel` 构造器到 `ChannelStateWriteRequest`
-> 到 `readInputData`，没有一条路径能不改业务签名就把 jobId/attempt 传到诊断代码。`CHANNEL_RECEIVE`/`SNAPSHOT` 还差
-> jobVertexID/subtaskIndex 之外的 jobId/attempt；`RECOVER_READ`/`RECOVER_REWRITE` 连 jobVertexID/subtaskIndex 也拿不到。
-> gateIdx/channelIdx（或 output 侧等价物）、单次生命周期分界在五个阶段均已补全。
+> jobId 在**所有五个阶段**都拿不到——当前分支代码里，从 `InputChannel` 构造器到 `ChannelStateWriteRequest` 到
+> `readInputData`，没有一条路径能不改业务签值就把 jobId 传到诊断代码。`CHANNEL_RECEIVE`/`SNAPSHOT`/`CHECKPOINT_WRITE` 三阶段
+> 还差结构化 `jobVertexID`/`attempt`（`taskLabel`=`jobVertexID-subtaskIndex` 的 `jobVertexID` 是 `toString()` 打平的字符串，
+> 不携带 attempt）；`RECOVER_READ`/`RECOVER_REWRITE` 通过 `owningTaskName` 已经拿到 subtask 和 attempt，但 `owningTaskName`
+> 是人类可读字符串而非结构化 `jobVertexID` 对象，也不含 jobId。gateIdx/channelIdx（或 output 侧等价物）、单次生命周期
+> 分界在五个阶段均已补全。
 
 ---
 
 ## 3. 当前实现的已知缺陷 / 待修正项
 
-0. **聚合 key 的 jobId/attempt 维度，五个阶段全部拿不到**（HL §6.6 要求的维度里，唯一仍缺失的）。已核实每个阶段能触达的
-   代码路径：
-   - `CHANNEL_RECEIVE`/`SNAPSHOT`：只能拿到 `stateWriter.taskLabel()`（`jobVertexID-subtaskIndex`）。其实现类
-     `ChannelStateWriterImpl` 没有 jobId/attempt 字段，构造器目前只接收 `jobVertexID`/`subtaskIndex`（尽管调用它的
-     `SubtaskCheckpointCoordinatorImpl.openChannelStateWriter` 手上有 `Environment`，能拿到 `getJobID()`/`getExecutionId()`）。
+0. **聚合 key 的 jobId 维度，五个阶段全部拿不到；结构化 jobVertexID/attempt 在 `CHANNEL_RECEIVE`/`SNAPSHOT`/
+   `CHECKPOINT_WRITE` 三阶段也拿不到**（HL §6.6 要求的维度里仍缺失的部分）。已核实每个阶段能触达的代码路径：
+   - `CHANNEL_RECEIVE`/`SNAPSHOT`：只能拿到 `stateWriter.taskLabel()`（`jobVertexID-subtaskIndex`，`jobVertexID` 是
+     `toString()` 打平的字符串）。其实现类 `ChannelStateWriterImpl` 没有 jobId/attempt 字段，构造器目前只接收
+     `jobVertexID`/`subtaskIndex`（尽管调用它的 `SubtaskCheckpointCoordinatorImpl.openChannelStateWriter` 手上有
+     `Environment`，能拿到 `getJobID()`/`getExecutionId()`）。
    - `CHECKPOINT_WRITE`：`ChannelStateCheckpointWriter`/`writeInput`/`writeOutput`/`completeInput`/`completeOutput` 的方法
      签名和 `ChannelStateWriteRequest` 请求链路都只携带裸 `JobVertexID`/`subtaskIndex`（见 `SubtaskID`），不携带 jobId/attempt。
-   - `RECOVER_READ`/`RECOVER_REWRITE`：连 jobVertexID/subtaskIndex 都拿不到，`readInputData(InputGate[], ...)` 只传
-     `InputGate[]`，`InputGate`/`InputChannel`/`RecoveredInputChannel` 都没有公开访问器暴露这两个维度（`SingleInputGate`
-     只有人类可读的 `owningTaskName`）。
-   **未修正**：以上每一处要拿到 jobId/attempt（或 `RECOVER_READ`/`RECOVER_REWRITE` 要拿到 jobVertexID/subtaskIndex）都需要
-   改生产构造器/方法签名（`ChannelStateWriterImpl`、`ChannelStateCheckpointWriter`、`ChannelStateWriteRequest`、
-   `readInputData`/`RecoveredChannelStateHandler` 构造器之一），按纪律不允许为诊断目的改业务签名，因此留作待办，未强行塞入。
+   - `RECOVER_READ`/`RECOVER_REWRITE`：通过 `channelInfo.getGateIdx()` 定位到所属 `InputGate`，`instanceof
+     SingleInputGate` 后调 `getOwningTaskName()`，已拿到 subtask 和 attempt（`owningTaskName` 形如
+     `"failing-map (10/21)#1"`）；但这是人类可读字符串，不含 jobId，也不是结构化 `jobVertexID` 对象——`InputGate`/
+     `InputChannel`/`RecoveredInputChannel` 都没有公开访问器暴露 jobId 或结构化 `jobVertexID`。
+   **未修正**：以上每一处要拿到 jobId（或结构化 jobVertexID/attempt）都需要改生产构造器/方法签名
+   （`ChannelStateWriterImpl`、`ChannelStateCheckpointWriter`、`ChannelStateWriteRequest`、`readInputData`/
+   `RecoveredChannelStateHandler` 构造器之一），按纪律不允许为诊断目的改业务签名，因此留作待办，未强行塞入。
    gateIdx/channelIdx（或 output 侧 partitionIdx/subPartitionIdx）、input/output（`Direction`）、单次生命周期分界这三个维度
    在五个阶段均已用统一的 `key(identity, channel, layer, direction)` 结构补全（见 §2.5）。
    key 缺 jobId/attempt 的直接后果——同名 `jobVertexID-subtaskIndex-channel` 的累积器会跨轮 job 复用同一个 map slot，
