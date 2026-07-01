@@ -359,10 +359,10 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
                                 seq++));
             }
 
-            return getBufferAndAvailability(toBeConsumedBuffers.removeFirst());
+            return getBufferAndAvailability(toBeConsumedBuffers.removeFirst(), true);
         }
 
-        return getBufferAndAvailability(next);
+        return getBufferAndAvailability(next, true);
     }
 
     /**
@@ -401,7 +401,8 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
                             next.buffer(),
                             next.buffersInBacklog(),
                             expectedNextDataType,
-                            next.getSequenceNumber()));
+                            next.getSequenceNumber()),
+                    true);
         }
 
         BufferAndBacklog next = toBeConsumedBuffers.removeFirst();
@@ -424,11 +425,17 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
                                 next.getSequenceNumber());
             }
         }
-        return getBufferAndAvailability(next);
+        return getBufferAndAvailability(next, false);
     }
 
-    private Optional<BufferAndAvailability> getBufferAndAvailability(BufferAndBacklog next)
-            throws IOException {
+    /**
+     * @param fromUpstream whether {@code next} was pulled from the upstream {@link
+     *     ResultSubpartitionView}. Only upstream data participates in channel-state persisting:
+     *     recovered buffers were already fully spilled by {@link #checkpointStarted} and must not be
+     *     persisted again.
+     */
+    private Optional<BufferAndAvailability> getBufferAndAvailability(
+            BufferAndBacklog next, boolean fromUpstream) throws IOException {
         Buffer buffer = next.buffer();
         if (buffer instanceof FileRegionBuffer) {
             buffer = ((FileRegionBuffer) buffer).readInto(inputGate.getUnpooledSegment());
@@ -441,7 +448,9 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
         numBytesIn.inc(buffer.readableBytes());
         numBuffersIn.inc();
         channelStatePersister.checkForBarrier(buffer);
-        channelStatePersister.maybePersist(buffer);
+        if (fromUpstream) {
+            channelStatePersister.maybePersist(buffer);
+        }
         NetworkActionsLogger.traceInput(
                 "LocalInputChannel#getNextBuffer",
                 buffer,
