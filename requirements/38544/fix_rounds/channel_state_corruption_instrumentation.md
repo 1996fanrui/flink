@@ -208,6 +208,30 @@ bash repro/repro.sh 16 2000 600
 - **真正穿透噪声的信号**：无论上下游，"完整数据中间某条 record 的 stride 突然偏离固定周期"都是真损坏——这个信号不受首尾半条影响，
   是最可靠的判据。
 
+### 6.6 聚合单位的唯一身份 key（关键规则，聚合错了则一切结论作废）
+
+"把一个 channel 的所有 buffer 拼起来校验"——**前提是这些 buffer 必须真的属于同一个 channel 实例**。聚合 key 若不能唯一标识一个
+channel 实例，就会把**本不该拼在一起的数据**（不同轮次、不同 gate、input 与 output）错误拼接，凭空制造出 stride 突变等"假损坏"。
+**聚合 key 错误产生的假信号，和真损坏在日志里长得一模一样，会把排查带向完全错误的范围。**
+
+一个 channel 实例的**唯一身份**必须同时包含以下所有维度，缺一不可：
+
+| 维度 | 为什么不能少 |
+|---|---|
+| **jobId / attempt** | 测试会多轮 restart，每轮是不同的 job/attempt。不含它，则**跨轮的同名 channel 数据会被拼进同一累积器** |
+| **jobVertexID（operator/task）** | 区分是哪个算子/任务 |
+| **subtaskIndex** | 区分同一算子的哪个并行子任务 |
+| **gateIdx** | 一个 subtask 有多个 InputGate，不同 gate 是不同 channel 集合 |
+| **channelIdx** | gate 内的第几个 channel |
+| **input / output** | input channel 与 result partition（output）是完全不同的东西，**绝不能混聚合**（即使其它维度相同） |
+
+以及一个**时间/生命周期维度**：聚合必须按"单次生命周期"分界（如某一次 checkpoint 的一次写入、某一次恢复），**不能跨轮持续累积**到同一 key 上。
+
+**规则**：
+1. 所有校验点（接收 / 快照 / 写入 / 恢复读 / 重写）**必须使用统一结构的 key**，且都包含上表全部维度 + 生命周期维度。
+2. 用对象 `identityHashCode`、只用 `jobVertexID-subtask`、只用 `channelInfo` 之类**缺维度的 key 一律禁止**——它们无法跨环节对照同一 channel，也挡不住跨轮/跨 gate 的错误拼接。
+3. 得出任何"某 channel 数据损坏"的结论前，**必须先确认聚合 key 是完整唯一的**；否则该结论作废，先修 key 再看。
+
 ---
 
 ## 7. 注意事项

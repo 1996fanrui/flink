@@ -155,6 +155,13 @@
 
 ## 3. 当前实现的已知缺陷 / 待修正项
 
+0. **【最严重】聚合 key 不是完整唯一身份 → 跨轮/跨维度错误拼接，制造假 STRIDE-IRREGULAR**（违反 HL §6.6）。当前各层 key 的实际组成、及缺失维度：
+   - RECV（`LocalInputChannel`/`RemoteInputChannel`）：key = `stateWriter.taskLabel()`（=`jobVertexID-subtaskIndex`，**不含 jobId/attempt**）+ `channelInfo(gateIdx,channelIdx)+kind` + `"RECV"`，且**不含任何生命周期分界**（跨多轮 restart 持续 append 到同一 key）。
+   - WRITE（`ChannelStateCheckpointWriter`）：key = `jobVertexID-subtaskIndex-cp<checkpointId>` + `channelInfo` + `"WRITE"`，**不含 jobId/attempt**（有 cp 分片）。
+   - RECOVER/REWRITE（`RecoveredChannelStateHandler`）：key = `recovery-<identityHashCode(this)>` + `channelInfo` + layer，**不含稳定的 jobId/jobVertexID/subtask 身份**，跨恢复无法对照。
+   - **后果**：测试多轮 restart（不同 jobId/attempt），RECV/WRITE 的同名 `jobVertexID-subtask+channel` 被**跨轮拼进同一累积器**——曾观测到同一 key 下 `kind` 一会 Local 一会 Remote，即证据。这种错误拼接**会凭空产生 stride 突变**，与真损坏在日志里无法区分。
+   - **待修正**：按 HL §6.6，统一所有校验点为同一 key 结构，必须含：**jobId/attempt + jobVertexID + subtaskIndex + gateIdx + channelIdx + input/output**，并按单次生命周期（单次恢复 / 单次 checkpoint 写入）分界。**在此修正前，任何基于 RECV/WRITE STRIDE-IRREGULAR 的"channel 损坏"结论都不可信，须先修 key 再重跑。**
+
 1. **`WRITE`/`SNAP` 累积器仍按"单个 checkpoint"分片（`SNAP` 按 `barrierId`，`WRITE` 按 `-cp<N>`）**，校验的是"单个 checkpoint
    的片段"而非"channel 完整数据流"。因为这两处现在都用 `Mode.LENIENT`（容忍首尾半条），单 cp 片段天然的首尾半条不会再误报为
    断言级，只是仍不是理论上最完整的校验对象。**未修正**：`ChannelStateCheckpointWriter` 按 checkpoint 生命周期建实例
