@@ -150,6 +150,11 @@ class ChannelStateCheckpointWriter {
             }
             ChannelStatePendingResult pendingResult =
                     getChannelStatePendingResult(jobVertexID, subtaskIndex);
+            if (ChannelStateInvariant.isEnabled() && buffer.readableBytes() > 0) {
+                ChannelStateInvariant.append(
+                        invariantWriteKey(jobVertexID, subtaskIndex, info),
+                        buffer.getNioBufferReadable());
+            }
             write(
                     pendingResult.getInputChannelOffsets(),
                     info,
@@ -159,6 +164,17 @@ class ChannelStateCheckpointWriter {
         } finally {
             buffer.recycleBuffer();
         }
+    }
+
+    /**
+     * Key for accumulating this checkpoint's per-channel written bytes so that the whole
+     * concatenated stream for one input channel can be validated once at {@link
+     * #completeInput(JobVertexID, int)}.
+     */
+    private String invariantWriteKey(
+            JobVertexID jobVertexID, int subtaskIndex, InputChannelInfo info) {
+        return ChannelStateInvariant.key(
+                jobVertexID + "-" + subtaskIndex + "-cp" + checkpointId, info.toString(), "WRITE");
     }
 
     void writeOutput(
@@ -204,7 +220,18 @@ class ChannelStateCheckpointWriter {
         if (isDone()) {
             return;
         }
-        getChannelStatePendingResult(jobVertexID, subtaskIndex).completeInput();
+        ChannelStatePendingResult pendingResult =
+                getChannelStatePendingResult(jobVertexID, subtaskIndex);
+        if (ChannelStateInvariant.isEnabled()) {
+            String taskLabel = jobVertexID + "-" + subtaskIndex;
+            for (InputChannelInfo info : pendingResult.getInputChannelOffsets().keySet()) {
+                ChannelStateInvariant.flush(
+                        invariantWriteKey(jobVertexID, subtaskIndex, info),
+                        ChannelStateInvariant.label(taskLabel, info.toString()),
+                        "WRITE");
+            }
+        }
+        pendingResult.completeInput();
         tryFinishResult();
     }
 

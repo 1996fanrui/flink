@@ -35,8 +35,10 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.apache.flink.runtime.checkpoint.channel.ChannelStateByteBuffer.wrap;
 import static org.apache.flink.util.Preconditions.checkState;
@@ -76,6 +78,9 @@ class InputChannelRecoveredStateHandler
     private final Map<InputChannelInfo, RecoveredInputChannel> rescaledChannels = new HashMap<>();
     private final Map<Integer, RescaleMappings> oldToNewMappings = new HashMap<>();
 
+    /** Channels that received at least one recovered buffer, for the final invariant flush. */
+    private final Set<InputChannelInfo> channelsSeenForInvariantCheck = new HashSet<>();
+
     /**
      * Optional filtering handler for filtering recovered buffers. When non-null, filtering is
      * performed during recovery in the channel-state-unspilling thread.
@@ -111,6 +116,14 @@ class InputChannelRecoveredStateHandler
             if (buffer.readableBytes() > 0) {
                 RecoveredInputChannel channel = getMappedChannels(channelInfo);
 
+                if (ChannelStateInvariant.isEnabled()) {
+                    // getNioBufferReadable() does not touch the reader index, so this does not
+                    // consume bytes that are about to be handed to the channel below.
+                    ChannelStateInvariant.append(
+                            invariantRecoverKey(channelInfo), buffer.getNioBufferReadable());
+                    channelsSeenForInvariantCheck.add(channelInfo);
+                }
+
                 if (filteringHandler != null) {
                     recoverWithFiltering(
                             channel, channelInfo, oldSubtaskIndex, buffer.retainBuffer());
@@ -128,6 +141,28 @@ class InputChannelRecoveredStateHandler
         }
     }
 
+    /**
+     * Key for accumulating one channel's full recovered byte stream across both sources merged
+     * by {@link org.apache.flink.runtime.checkpoint.channel.SequentialChannelStateReaderImpl}:
+     * the channel's own input-channel-state and the upstream output-buffer-state moved onto it
+     * during rescaling. {@code this} identifies the single recovery pass this handler instance
+     * was created for (one instance per {@code readInputData} call).
+     */
+    private String invariantRecoverKey(InputChannelInfo channelInfo) {
+        return ChannelStateInvariant.key(
+                "recovery-" + System.identityHashCode(this), channelInfo.toString(), "RECOVER");
+    }
+
+    /**
+     * Key for accumulating one channel's full filter-rewritten byte stream (the buffers actually
+     * injected into {@link RecoveredInputChannel#onRecoveredStateBuffer}), across every {@link
+     * #recoverWithFiltering} call for that channel during this recovery pass.
+     */
+    private String invariantRewriteKey(InputChannelInfo channelInfo) {
+        return ChannelStateInvariant.key(
+                "recovery-" + System.identityHashCode(this), channelInfo.toString(), "REWRITE");
+    }
+
     private void recoverWithFiltering(
             RecoveredInputChannel channel,
             InputChannelInfo channelInfo,
@@ -142,6 +177,16 @@ class InputChannelRecoveredStateHandler
                         channelInfo.getInputChannelIdx(),
                         retainedBuffer,
                         channel::requestBufferBlocking);
+
+        if (ChannelStateInvariant.isEnabled()) {
+            for (Buffer filtered : filteredBuffers) {
+                // getNioBufferReadable() does not touch the reader index, so this does not
+                // consume bytes that are about to be handed to the channel below.
+                ChannelStateInvariant.append(
+                        invariantRewriteKey(channelInfo), filtered.getNioBufferReadable());
+            }
+            channelsSeenForInvariantCheck.add(channelInfo);
+        }
 
         int i = 0;
         try {
@@ -158,6 +203,16 @@ class InputChannelRecoveredStateHandler
 
     @Override
     public void close() throws IOException {
+        if (ChannelStateInvariant.isEnabled()) {
+            for (InputChannelInfo channelInfo : channelsSeenForInvariantCheck) {
+                String label =
+                        ChannelStateInvariant.label(
+                                "recovery-" + System.identityHashCode(this),
+                                channelInfo.toString());
+                ChannelStateInvariant.flush(invariantRecoverKey(channelInfo), label, "RECOVER");
+                ChannelStateInvariant.flush(invariantRewriteKey(channelInfo), label, "REWRITE");
+            }
+        }
         // note that we need to finish all RecoveredInputChannels, not just those with state
         for (final InputGate inputGate : inputGates) {
             inputGate.finishReadRecoveredState();
