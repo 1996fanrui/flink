@@ -184,13 +184,18 @@ bash repro/repro.sh 25 2000 600
 - 全程 `[CS-INV-ASSERT]=0` → 写侧 input/output map 的 key 路由是干净的，input handle 持有 output offsets 是**设计使然**，不是写时记账错。
 - 本轮还同时复现了静默丢数据变体（`NUM_OUTPUTS != NUM_INPUTS`），证明这就是真正的丢数据 bug，而非无害的偶发报错。
 
-> 详细证据见 `round3_findings.md` / `round3_evidence.md`（以及 `round1_*`、`round2_*` 的逐轮收敛过程）。
+**最终判定（Round 5，回答"这是边界对不齐还是不该拼"）：`unsound-splice`——不是可通过对齐修的字节 off-by-N。**
+- Round 5 的 `[CS-INV-SEAM]` 显示：段 A `prevTrailingPartial=0`（**干净收尾、无残留**），而段 B `curFirstHeaderAt=2`（**从 record 中间开始**、开头约 11 字节是一条 record 的尾巴、其头不在 A 里）。既然 A 没留残留、B 却从半条开始，B 就**不可能是 A 的 splice 续接**；B 开头那截是"头已随已发送的 output buffer 发给下游并被消费、从未快照"的孤儿尾巴。
+- record 计数器 `CCCC` 在单个 channel 内**本就非单调**（keyBy/rebalance 打散，健康 channel 也是 LAST<FIRST），故**不能**用计数器判连续性；只有 framing 接缝（partial/header）才是有效信号。
+- 与 Round 4 统一：R4 里 A 恰好 mid-record 收尾、R5 里 A 干净收尾，两者都崩——共同不变式是「**B 从 record 中间开始，且其 head 不可靠地存在于 A / 反序列化器中**」，这是"拼了不该拼的两段"的签名，不是 off-by-N。
+
+> 详细证据见 `round3_findings.md`/`round3_evidence.md`、`round4_verify_headsplice.md`、`round5_findings.md`/`round5_evidence.md`（以及 `round1_*`、`round2_*` 的逐轮收敛过程）。
 
 ---
 
 ## 8. 排查过程经验（逐轮收敛，可复用的方法论）
 
-整个定位用了 **3 轮收敛 + 1 轮复核订正（共 4 轮，上限 5 轮）**，每轮 = 加插桩 → 编译 → loop 复现 → 独立 agent 分析判定，每轮都 commit logs+docs。核心经验：
+整个定位用了 **3 轮收敛 + 1 轮复核订正 + 1 轮设计判定（共 5 轮，上限 5 轮）**，每轮 = 加插桩 → 编译 → loop 复现 → 独立 agent 分析判定，每轮都 commit logs+docs。核心经验：
 
 1. **不要猜，让字节自己说话**。最有效的不是 CRC，而是利用测试数据的确定性特征（`AB CD EA FC` header + 21 字节 stride），在每个阶段把字节剥到 record 层验证不变式，找"最早变坏的阶段"。第一轮就靠 `shape()` 的 stride/firstHeaderAt 把范围从"整条流水线"收敛到"某个未插桩的 gap"。
 
@@ -198,7 +203,8 @@ bash repro/repro.sh 25 2000 600
    - R1：全链路粗插桩 → 结论"所有已插桩阶段都是好的（stride 21）"，把 bug 框到**未插桩的 gap**（spill 读回/drain/consumer）。
    - R2：补齐 gap 的插桩 → 抓到硬特征"buffer 起点错位、firstHeaderAt 异常、`recordsOkInThisBuffer=0`"，并发现损坏字节其实来自**写为 OUTPUT 的 offset**。
    - R3：加 handle/文件身份 + offsets + 跨 input/output 的 key 断言 → 抓到**单一文件单一 offset 列表既被写为 output 又被读为 input**的铁证，并由独立分析确认这是 `getUpstreamOutputBufferState` 设计路径。
-   - R4（复核订正）：应 reviewer 质疑"共用反序列化器不该拼错"，重建该通道**完整有序**的 buffer 序列，发现损坏 buffer **并非**该反序列化器的第一个 buffer——段 A（input-state）先到、结尾留半条残留，段 B（重打包的 output）后到、开头也是半条；订正 R3 的机制为 **Class B：两段本不连续的在途流被复用到同一反序列化器，A 尾残被非法粘到 B**。教训：**结论要经得起独立复核；reviewer 的直觉常常指向机制的真正细节。**
+   - R4（复核订正）：应 reviewer 质疑"共用反序列化器不该拼错"，重建该通道**完整有序**的 buffer 序列，发现损坏 buffer **并非**该反序列化器的第一个 buffer——段 A（input-state）先到、结尾留半条残留，段 B（重打包的 output）后到、开头也是半条；订正 R3 的机制为 **Class B：两段本不连续的在途流被复用到同一反序列化器**。教训：**结论要经得起独立复核；reviewer 的直觉常常指向机制的真正细节。**
+   - R5（设计判定）：为区分"边界 off-by-N（B 本应续接 A）"vs"不该拼（B 非续接）"，加计数器解码 + 接缝 dump。结果 `prevTrailingPartial=0` + `curFirstHeaderAt=2` 直接**证否 off-by-N**（A 干净收尾却要接 B 的半条），判定 **unsound-splice**；且发现计数器非单调、不能用作连续性判据（差点被带偏——健康 channel 一比对就排除了）。教训：**先验证你的判据本身成不成立（计数器），别拿错误的信号下结论。**
 
 3. **始终用"独立验证 agent"判定 CONCLUSIVE/INSUFFICIENT**，且判定标准要严：**日志里必须出现 healthy→corrupt 的那一步转变**，只靠"代码看着不对"不算。前两轮都诚实地判 INSUFFICIENT 并给出"下一轮要加什么"的精确清单——正是这种不放水让收敛是单调的。
 
@@ -210,7 +216,7 @@ bash repro/repro.sh 25 2000 600
 
 7. **复现编排经验**：loop 跑在后台 + monitor 只在真实 trigger（FAIL / `[CS-INV-ASSERT]` / loop 结束）唤醒，不要按 pass 计数发心跳（否则反复唤醒协调者、浪费上下文）。注意 `repro.sh` 把 assert 触发的失败归类为 INFRA 且会删日志——要单独监控并在命中时立即拷贝 + `touch STOP`。
 
-8. **修复方向（供后续，不在本次范围）**：核心是**不要把两段本不连续的在途流接进同一个 spanning 反序列化器**。可选：(a) 下游对"来自上游 output 的重打包字节"沿用旧的 raw re-inject 语义、不逐条反序列化（回到 FLINK-38542 前的 output-recovery 不变式）；(b) 若必须共用一个 channel，则给 output 段一个**独立的反序列化器身份**，并携带"从 record 中间开始 / 丢弃前导半条"的标记，让它不与 A 的尾残拼接。补回归测试务必**逐字节比对**，并覆盖"input-state 尾部半条 + 重打包 output 首 buffer 半条"这一拼接场景。
+8. **修复方向（供后续，不在本次范围；R5 已判定 unsound-splice）**：核心是**不要把两段本不连续的在途流接进同一个 spanning 反序列化器**。首选修法（已确认）：在 `SequentialChannelStateReaderImpl.readInputData`（`:88-100`）里，把第二个针对 `getUpstreamOutputBufferState` 的 `read(...)` 从"逐条反序列化"的 input 恢复管线中拿掉，改为把重打包的上游 output buffer 当作**原始在途 `Buffer`** 直接 re-inject（回到 FLINK-38542 前 output-recovery 的不变式），使 head-less 的 output 流永不与 input-channel-state 的 spanning 反序列化器共用。次选：若必须共用一个 channel，给 output 段**独立的反序列化器身份** + 携带"从 record 中间开始 / 丢弃前导半条"的标记。补回归测试务必**逐字节比对**，并覆盖"input-state 干净收尾 + 重打包 output 首 buffer 从 record 中间开始"这一拼接场景（R5 现场）。
 
 ---
 
