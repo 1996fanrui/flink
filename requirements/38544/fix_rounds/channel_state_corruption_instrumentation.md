@@ -171,6 +171,22 @@ bash repro/repro.sh 16 2000 600
   的"完整数据"。**校验必须对这份拼接后的完整数据做，绝不能逐个 buffer 单独校验**（单个 buffer 天然可能从半条 record 开始/结尾）。
 - 完整数据的正确形态：一条条 record 严丝合缝，每条 `[4B length]` 合法、tag 合法、header 按固定 stride 周期出现。
 
+### 6.1.5 数据流经的五个校验阶段（同一份 channel 数据，在生命周期的五个点各校验一次）
+
+一份 channel 数据从"运行时在途"→"进 checkpoint"→"从 checkpoint 恢复"→"重写"→"落回物理 channel"，中间流经五个点。
+每个点校验一次，**第一个报损坏的点就是数据第一次变坏的地方**，bug 落在它与上一个点之间。
+
+| 阶段名 | 数据处于什么时刻 | 校验的是什么 | 上/下游语义 |
+|---|---|---|---|
+| **SNAPSHOT** | 正常运行时 barrier 到达，在 **InputChannel 侧**采集在途 in-flight buffer | 刚被采集出来、尚未写盘的在途数据 | 上游语义（在途数据可能半条已发往下游）→ 容忍首尾半条 |
+| **CHECKPOINT_WRITE** | 上面这批数据被交给 writer 线程、**真正写进 checkpoint 文件**时 | 落盘的那份数据（与 SNAPSHOT 是同一批数据、在另一处再校验一次，用来夹出"采集→跨线程→落盘"这段有没有搞坏）| input state 用下游语义（不容忍）；output state 用上游语义（容忍首尾半条） |
+| **RECOVER_READ** | 从 checkpoint **读回**字节，filter/重写**之前** | 恢复读出来的原始数据（虚拟 channel）| 恢复链 → 不容忍半条 |
+| **RECOVER_REWRITE** | 恢复数据经 filter/重写成新格式**之后** | 重写完、即将注入物理 channel 的数据（用来夹出"重写这一步"有没有搞坏）| 恢复链 → 不容忍半条 |
+| **CHANNEL_RECEIVE** | 重写后的数据**迁入真正的物理 channel**（`LocalInputChannel`/`RemoteInputChannel` 构造）| 物理 channel 接收到的完整数据 | 恢复链 → 不容忍半条 |
+
+> SNAPSHOT 与 CHECKPOINT_WRITE 是**同一批快照数据在两处各校一次**；RECOVER_READ 与 RECOVER_REWRITE 是恢复过程**相邻的前后两步**
+> （读回 vs 重写后），分开是为了定位 filter/重写这一步有没有引入损坏。
+
 ### 6.2 上游 vs 下游：**校验的容忍度不同**（关键规则）
 
 同样是"完整数据校验"，对上游和下游要用**不同判据、打不同日志**：
@@ -181,8 +197,7 @@ bash repro/repro.sh 16 2000 600
   快照上游 output 时，采到的数据**从半条 record 中间开始是业务上真实、正常的现象**。所以上游校验必须**容忍开头/结尾的悬挂半条**，
   只校验中间部分 record 是否等间距连续；**上游出现半条 → 打成"正常/可容忍"级别的日志，不算 ASSERT**。
 
-> **为什么要区分**：下游出现半条 = 一定是 bug；上游出现半条 = 业务上真的可能发生、可容忍。用同一套判据会把上游的正常半条误报成损坏
-> （这正是早期几轮产生成千上万条假 ASSERT 的根因）。
+> **为什么要区分**：下游出现半条 = 一定是 bug；上游出现半条 = 业务上真的可能发生、可容忍。用同一套判据会把上游的正常半条误报成损坏。
 
 ### 6.3 恢复阶段是例外：**全程不容忍半条**（即使数据来自上游）
 
@@ -191,14 +206,15 @@ bash repro/repro.sh 16 2000 600
 - 恢复时，同一个通道的数据会被组织进一个**虚拟 channel**——**上游的数据也会挪到下游、按这个虚拟 channel 一起恢复**。
 - 既然是"同一个虚拟 channel 内的、本就该连续的完整数据"，那么**把它所有 buffer 连起来校验，就不该出现任何半条**。
   虚拟 channel 会**重写**数据，重写后交给真正的**物理 channel**，物理 channel 侧同样是完整数据、同样不容忍半条。
-- 所以恢复链上的每一环（恢复读回的虚拟 channel 数据、重写后注入物理 channel 的数据、以及物理 channel 接收到的数据）
+- 所以恢复链上的每一环（`RECOVER_READ` 恢复读回、`RECOVER_REWRITE` 重写后、`CHANNEL_RECEIVE` 迁入物理 channel）
   **都按"完整数据 + 不容忍半条"校验**，一旦出现半条就是真损坏。
 
-### 6.4 结论：只有 **checkpoint 写入**这一环需要区分上下游
+### 6.4 结论：只有 **CHECKPOINT_WRITE** 这一环需要区分上下游
 
-- **checkpoint 写入阶段**：同时写 input channel state（下游语义，不容忍）和 upstream output state（上游语义，容忍首尾半条）
+- **`CHECKPOINT_WRITE`**：同时写 input channel state（下游语义，不容忍）和 upstream output state（上游语义，容忍首尾半条）
   → **这一环必须区分上下游，用不同判据、打不同日志**。
-- **恢复链所有环节**（恢复读虚拟 channel → 重写 → 物理 channel 接收）：**一律按完整数据、不容忍半条**，不区分来源。
+- **`SNAPSHOT`**：上游在途数据语义 → 容忍首尾半条。
+- **恢复链三环**（`RECOVER_READ` → `RECOVER_REWRITE` → `CHANNEL_RECEIVE`）：**一律完整数据、不容忍半条**，不区分来源。
 
 ### 6.5 校验行为（通用约定）
 
@@ -208,29 +224,23 @@ bash repro/repro.sh 16 2000 600
 - **真正穿透噪声的信号**：无论上下游，"完整数据中间某条 record 的 stride 突然偏离固定周期"都是真损坏——这个信号不受首尾半条影响，
   是最可靠的判据。
 
-### 6.6 聚合单位的唯一身份 key（关键规则，聚合错了则一切结论作废）
+### 6.6 聚合单位的唯一身份 key
 
-"把一个 channel 的所有 buffer 拼起来校验"——**前提是这些 buffer 必须真的属于同一个 channel 实例**。聚合 key 若不能唯一标识一个
-channel 实例，就会把**本不该拼在一起的数据**（不同轮次、不同 gate、input 与 output）错误拼接，凭空制造出 stride 突变等"假损坏"。
-**聚合 key 错误产生的假信号，和真损坏在日志里长得一模一样，会把排查带向完全错误的范围。**
+把一个 channel 的所有 buffer 拼起来校验，前提是这些 buffer 必须属于**同一个 channel 实例**。聚合 key 必须唯一标识一个 channel 实例，
+同时包含以下所有维度，缺一不可：
 
-一个 channel 实例的**唯一身份**必须同时包含以下所有维度，缺一不可：
-
-| 维度 | 为什么不能少 |
+| 维度 | 含义 |
 |---|---|
-| **jobId / attempt** | 测试会多轮 restart，每轮是不同的 job/attempt。不含它，则**跨轮的同名 channel 数据会被拼进同一累积器** |
-| **jobVertexID（operator/task）** | 区分是哪个算子/任务 |
-| **subtaskIndex** | 区分同一算子的哪个并行子任务 |
-| **gateIdx** | 一个 subtask 有多个 InputGate，不同 gate 是不同 channel 集合 |
-| **channelIdx** | gate 内的第几个 channel |
-| **input / output** | input channel 与 result partition（output）是完全不同的东西，**绝不能混聚合**（即使其它维度相同） |
+| **jobId / attempt** | 区分每一轮 restart 的 job/attempt |
+| **jobVertexID（operator/task）** | 哪个算子/任务 |
+| **subtaskIndex** | 哪个并行子任务 |
+| **gateIdx** | 一个 subtask 有多个 InputGate，区分哪个 gate |
+| **channelIdx** | gate 内第几个 channel |
+| **input / output** | input channel 与 result partition（output）是不同的东西，分别聚合 |
 
-以及一个**时间/生命周期维度**：聚合必须按"单次生命周期"分界（如某一次 checkpoint 的一次写入、某一次恢复），**不能跨轮持续累积**到同一 key 上。
+以及一个**生命周期维度**：聚合按"单次生命周期"分界（一次 checkpoint 写入、一次恢复），一个生命周期结束即 flush，不跨生命周期持续累积。
 
-**规则**：
-1. 所有校验点（接收 / 快照 / 写入 / 恢复读 / 重写）**必须使用统一结构的 key**，且都包含上表全部维度 + 生命周期维度。
-2. 用对象 `identityHashCode`、只用 `jobVertexID-subtask`、只用 `channelInfo` 之类**缺维度的 key 一律禁止**——它们无法跨环节对照同一 channel，也挡不住跨轮/跨 gate 的错误拼接。
-3. 得出任何"某 channel 数据损坏"的结论前，**必须先确认聚合 key 是完整唯一的**；否则该结论作废，先修 key 再看。
+**规则**：所有校验点（接收 / 快照 / 写入 / 恢复读 / 重写）使用**统一结构的 key**，都包含上表全部维度 + 生命周期维度。
 
 ---
 
