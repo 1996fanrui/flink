@@ -34,6 +34,7 @@
 | 方法 | 约行 | 作用 |
 |---|---|---|
 | `isEnabled()` | `:76` | 返回 `ENABLED`，call site 先判它再干活 |
+| `clearAll()` | 约 `:134`（新增，紧邻 `isEnabled()`） | 无条件 `ACCUMULATORS.clear()`，不受 `ENABLED` gate；供测试在每个 job 启动前调用，清掉上一轮 job 未 `flush` 的残留累积器 |
 | `append(String key, ByteBuffer buffer)` | `:86` | 把 buffer 的可读字节**拷贝**进 `key` 对应的累积器；用 `duplicate()`，**不动** reader index / refcount |
 | `flush(String key, String taskAndChannel, Layer layer)` | `:104` | 取出并移除 `key` 的累积字节，对**拼接后的完整字节流**跑 `shape()`，打 `[CS-INV] layer=<L>`；`!valid` 再打 `[CS-INV-ASSERT] layer=<L>` |
 | `key(String identity, String channel, Layer layer, Direction direction)` | `:134` | 组 accumulator key = `identity \| channel \| layer \| direction` |
@@ -210,6 +211,12 @@
    `readInputData`/`RecoveredChannelStateHandler` 构造器之一），按纪律不允许为诊断目的改业务签名，因此留作待办，未强行塞入。
    gateIdx/channelIdx（或 output 侧 partitionIdx/subPartitionIdx）、input/output（`Direction`）、单次生命周期分界这三个维度
    在五个阶段均已用统一的 `key(identity, channel, layer, direction)` 结构补全（见 §2.5）。
+   key 缺 jobId/attempt 的直接后果——同名 `jobVertexID-subtaskIndex-channel` 的累积器会跨轮 job 复用同一个 map slot，
+   若某轮 job 某 key 只 `append` 未 `flush`（异常退出/取消）就会残留，被下一轮同名 key 的 `append` 接上产生假损坏——
+   已用 `ChannelStateInvariant.clearAll()` 规避：`UnalignedCheckpointTestBase.execute(...)` 方法体最开头调用它，
+   三个 rescale 子 job（prescale/phase2/phase3，`UnalignedCheckpointRescaleITCase` 里的 `super.execute(...)` 调用点）
+   各自启动前都会清空一次，跨轮残留不会污染下一轮的 accumulator。这只解决"残留污染"，不解决"key 本身无法区分 job/attempt"
+   这个根本缺陷，故仍保留为待办。
 
 1. **`CHECKPOINT_WRITE`/`SNAPSHOT` 累积器仍按"单个 checkpoint"分片（`SNAPSHOT` 按 `barrierId`，`CHECKPOINT_WRITE` 按
    `-cp<N>`）**，校验的是"单个 checkpoint 的片段"而非"channel 完整数据流"。因为这两处现在都用 `Mode.LENIENT`（容忍首尾半条），

@@ -132,6 +132,20 @@ public final class ChannelStateInvariant {
     }
 
     /**
+     * Discards every accumulator regardless of key, without validating them.
+     *
+     * <p>Accumulator keys do not encode a job/attempt discriminator, so a key that was appended to
+     * but never {@link #flush}ed (e.g. the job it belonged to crashed or was cancelled mid-write)
+     * leaves residual bytes in {@link #ACCUMULATORS}. A later job reusing the same jobVertexID +
+     * subtask + channel would then have its own {@code append} calls silently concatenated onto
+     * that stale residue, producing a false shape violation. Callers that run multiple independent
+     * job lifecycles against this process must call this before starting each one.
+     */
+    public static void clearAll() {
+        ACCUMULATORS.clear();
+    }
+
+    /**
      * Appends the readable bytes of {@code buffer} to the accumulator for {@code key}, without
      * consuming/moving the buffer's reader index.
      *

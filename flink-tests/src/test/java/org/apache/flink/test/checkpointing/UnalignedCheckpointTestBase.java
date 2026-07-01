@@ -54,6 +54,7 @@ import org.apache.flink.configuration.StateRecoveryOptions;
 import org.apache.flink.configuration.TaskManagerOptions;
 import org.apache.flink.core.io.InputStatus;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
+import org.apache.flink.runtime.checkpoint.channel.ChannelStateInvariant;
 import org.apache.flink.runtime.messages.FlinkJobNotFoundException;
 import org.apache.flink.runtime.shuffle.ShuffleServiceOptions;
 import org.apache.flink.runtime.state.FunctionInitializationContext;
@@ -155,6 +156,11 @@ abstract class UnalignedCheckpointTestBase {
 
     @Nullable
     protected String execute(UnalignedSettings settings, TestInfo testInfo) throws Exception {
+        // Diagnostic accumulator keys don't carry a job/attempt discriminator, so residue from a
+        // job that crashed before flushing a key would otherwise be picked up by the next job's
+        // append calls for the same jobVertexID + subtask + channel and misreported as corruption.
+        ChannelStateInvariant.clearAll();
+
         final File checkpointDir = TempDirUtils.newFolder(temp);
         Configuration conf = settings.getConfiguration(checkpointDir);
 
