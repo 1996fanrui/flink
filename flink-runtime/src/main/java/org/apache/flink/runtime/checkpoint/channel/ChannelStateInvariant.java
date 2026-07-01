@@ -136,6 +136,95 @@ public final class ChannelStateInvariant {
         return sb.toString();
     }
 
+    /**
+     * Offset (relative to {@code from}) of the first {@code AB CD EA FC} header in {@code [from,
+     * from+len)}, or {@code -1} if none is present.
+     */
+    public static int firstHeaderAt(byte[] b, int from, int len) {
+        List<Integer> h = findHeaders(b, from, Math.min(from + len, b.length));
+        return h.isEmpty() ? -1 : h.get(0) - from;
+    }
+
+    /**
+     * Decodes the per-record counter sequence framed in {@code [from, from+len)}. Each test record
+     * value is an 8-byte big-endian long {@code AB CD EA FC | CCCC} where the low 4 bytes are a
+     * monotonically increasing counter. This finds every {@code AB CD EA FC} header (handling
+     * buffers that start mid-record, i.e. the first header not at offset 0) and reads the 4 bytes
+     * immediately after each header as a big-endian unsigned int. Returns a compact summary of the
+     * total count and the first/last few counters, e.g.
+     * {@code values=[first: 1001,1002,1003 ... last: 2098,2099,2100] n=52}.
+     *
+     * <p>Comparing the counter range of two byte regions tells us whether one is the logical
+     * continuation of the other (consecutive counters, gap ~1) or an unrelated stream (large gap).
+     */
+    public static String values(byte[] b, int from, int len) {
+        int to = Math.min(from + len, b.length);
+        List<Integer> h = findHeaders(b, from, to);
+        List<Long> counters = new ArrayList<>();
+        for (int off : h) {
+            int c = off + HEADER.length;
+            if (c + 4 <= to) {
+                long v =
+                        ((long) (b[c] & 0xff) << 24)
+                                | ((long) (b[c + 1] & 0xff) << 16)
+                                | ((long) (b[c + 2] & 0xff) << 8)
+                                | (b[c + 3] & 0xffL);
+                counters.add(v);
+            }
+        }
+        int n = counters.size();
+        if (n == 0) {
+            return "values=[] n=0";
+        }
+        StringBuilder sb = new StringBuilder("values=[first: ");
+        int firstShown = Math.min(3, n);
+        for (int i = 0; i < firstShown; i++) {
+            if (i > 0) {
+                sb.append(',');
+            }
+            sb.append(counters.get(i));
+        }
+        if (n > firstShown) {
+            sb.append(" ... last: ");
+            int lastFrom = Math.max(firstShown, n - 3);
+            for (int i = lastFrom; i < n; i++) {
+                if (i > lastFrom) {
+                    sb.append(',');
+                }
+                sb.append(counters.get(i));
+            }
+        }
+        sb.append("] n=").append(n);
+        return sb.toString();
+    }
+
+    /**
+     * Bytes after the last complete framed record in {@code [from, from+len)}. Each framed record is
+     * {@code [4B length][record]}; the trailing partial is whatever remains after the last record
+     * whose declared length still fits inside the region. Returns {@code len} if no complete record
+     * boundary could be established. Used at the seam to show how many bytes of a record spilled from
+     * one buffer into the next.
+     */
+    public static int trailingPartialBytes(byte[] b, int from, int len) {
+        int to = Math.min(from + len, b.length);
+        int pos = Math.max(0, from);
+        int lastComplete = pos;
+        while (pos + 4 <= to) {
+            int recLen =
+                    ((b[pos] & 0xff) << 24)
+                            | ((b[pos + 1] & 0xff) << 16)
+                            | ((b[pos + 2] & 0xff) << 8)
+                            | (b[pos + 3] & 0xff);
+            if (recLen < 0 || pos + 4 + recLen > to) {
+                // This record does not fully fit: everything from pos to end is the trailing partial.
+                break;
+            }
+            pos += 4 + recLen;
+            lastComplete = pos;
+        }
+        return to - lastComplete;
+    }
+
     /** Hex dump of up to MAX_DUMP bytes from {@code from}. */
     public static String hex(byte[] b, int from, int len) {
         int n = Math.min(Math.min(len, MAX_DUMP), Math.max(0, b.length - from));
@@ -174,6 +263,24 @@ public final class ChannelStateInvariant {
         stage(stageName, ctx, b, 0, b.length);
     }
 
+    /**
+     * Like {@link #stage(String, Object, ByteBuffer)} but also decodes and prints the per-record
+     * counter sequence ({@link #values}) of the buffer, so a stage's counter range is captured
+     * directly in the log line.
+     */
+    public static void stageWithValues(String stageName, Object ctx, ByteBuffer bb) {
+        if (!ON) {
+            return;
+        }
+        byte[] b = toBytes(bb);
+        LOG.info(
+                "[CS-INV] {} ch={} {} {}",
+                stageName,
+                ctx,
+                shape(b, 0, b.length),
+                values(b, 0, b.length));
+    }
+
     /** Per-record trace (very chatty). */
     public static void record(String stageName, Object ctx, byte[] recordBytes) {
         if (!RECORDS) {
@@ -202,6 +309,43 @@ public final class ChannelStateInvariant {
                 shape(b, from, len),
                 hex(b, from, len),
                 t);
+    }
+
+    /**
+     * Always-on seam dump for the corruption moment: shows, at the exact failing A&rarr;B boundary,
+     * whether the current (corrupt) buffer's first counters logically continue the previous buffer's
+     * last counters. If they do (gap ~1) the two buffers are contiguous and the bug is a byte-level
+     * misalignment at the seam; if there is a large gap they are separate streams that should not be
+     * spliced. {@code prev} is the previous recovery buffer's bytes for this channel (may be null),
+     * {@code cur} the current (corrupt) buffer's bytes. Runs only from the corruption throw path.
+     */
+    public static void seam(Object ctx, byte[] prev, byte[] cur) {
+        String prevTail;
+        String prevLastValues;
+        int prevTrailingPartial;
+        if (prev != null) {
+            int tailFrom = Math.max(0, prev.length - 24);
+            prevTail = hex(prev, tailFrom, prev.length - tailFrom).replace('\n', ' ');
+            prevLastValues = values(prev, 0, prev.length);
+            prevTrailingPartial = trailingPartialBytes(prev, 0, prev.length);
+        } else {
+            prevTail = "<none>";
+            prevLastValues = "<none>";
+            prevTrailingPartial = -1;
+        }
+        String curHead = cur == null ? "<none>" : hex(cur, 0, Math.min(24, cur.length)).replace('\n', ' ');
+        String curFirstValues = cur == null ? "<none>" : values(cur, 0, cur.length);
+        int curFirstHeaderAt = cur == null ? -1 : firstHeaderAt(cur, 0, cur.length);
+        LOG.error(
+                "[CS-INV-SEAM] ch={} prevTrailingPartial={} prevTail={} prevLastValues=[{}] "
+                        + "curFirstHeaderAt={} curHead={} curFirstValues=[{}]",
+                ctx,
+                prevTrailingPartial,
+                prevTail,
+                prevLastValues,
+                curFirstHeaderAt,
+                curHead,
+                curFirstValues);
     }
 
     /**

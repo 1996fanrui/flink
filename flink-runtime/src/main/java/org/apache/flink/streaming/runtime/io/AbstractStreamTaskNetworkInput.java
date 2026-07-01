@@ -93,6 +93,23 @@ public abstract class AbstractStreamTaskNetworkInput<
 
     /** Diagnostic-only: records read cleanly from {@link #currentBufferBytes} so far. */
     private int recordsOkInCurrentBuffer = 0;
+
+    /**
+     * Diagnostic-only: the most recent recovery buffer's bytes seen per channel. Populated only for
+     * recovery buffers of {@link RecoverableInputChannel} (same gating as the {@code consumer.IN}
+     * dump) so steady-state overhead stays ~zero. Keyed per channel because buffers of different
+     * channels interleave, so the "previous buffer of the same channel" must be tracked
+     * per-channel rather than off the single {@link #currentBufferBytes} field.
+     */
+    private final Map<InputChannelInfo, byte[]> lastRecoveryBufferBytes = new HashMap<>();
+
+    /**
+     * Diagnostic-only: the previous recovery buffer's bytes for the channel of the buffer currently
+     * feeding {@link #currentRecordDeserializer}. On a corruption throw {@link #emitNext} uses it,
+     * together with {@link #currentBufferBytes}, to dump the A&rarr;B seam via {@link
+     * ChannelStateInvariant#seam}. Null when the current buffer is the first on its channel.
+     */
+    private byte[] prevBufferBytes = null;
     protected final Map<String, WatermarkCombiner> watermarkCombiners = new HashMap<>();
 
     protected final CanEmitBatchOfRecordsChecker canEmitBatchOfRecords;
@@ -183,6 +200,11 @@ public abstract class AbstractStreamTaskNetworkInput<
                                 0,
                                 currentBufferBytes.length,
                                 e);
+                        // Always-on seam dump: show whether the current (corrupt) buffer's first
+                        // counters logically continue the previous buffer's last counters, i.e.
+                        // whether the A->B boundary is a byte-level misalignment (contiguous
+                        // counters) or a splice of separate streams (large counter gap).
+                        ChannelStateInvariant.seam(lastChannel, prevBufferBytes, currentBufferBytes);
                     }
                     throw new IOException(
                             String.format("Can't get next record for channel %s", lastChannel), e);
@@ -332,13 +354,23 @@ public abstract class AbstractStreamTaskNetworkInput<
         // later deserialization failure can dump exactly the bytes that broke. Reset the per-buffer
         // record counter for the new buffer.
         final Buffer buffer = bufferOrEvent.getBuffer();
+        final boolean recoveryBuffer =
+                checkpointedInputGate.getChannel(lastChannel) instanceof RecoverableInputChannel;
         currentBufferBytes = ChannelStateInvariant.toBytes(buffer.getNioBufferReadable());
         recordsOkInCurrentBuffer = 0;
+        // Retain the previous recovery buffer's bytes for THIS channel so the corruption path can
+        // dump the A->B seam. Because buffers of different channels interleave, "previous" is
+        // tracked per channel. Gated to recovery buffers of RecoverableInputChannel (same gate as
+        // the consumer.IN dump) so steady-state overhead stays ~zero.
+        if (recoveryBuffer) {
+            prevBufferBytes = lastRecoveryBufferBytes.get(lastChannel);
+            lastRecoveryBufferBytes.put(lastChannel, currentBufferBytes);
+        } else {
+            prevBufferBytes = null;
+        }
         // Optional per-buffer dump, opt-in via -Dflink.cs.debug.records and restricted to recovery
         // traffic (RecoverableInputChannel) to keep steady-state volume bounded.
-        if (ChannelStateInvariant.RECORDS
-                && checkpointedInputGate.getChannel(lastChannel)
-                        instanceof RecoverableInputChannel) {
+        if (ChannelStateInvariant.RECORDS && recoveryBuffer) {
             ChannelStateInvariant.stage(
                     "consumer.IN ch=" + lastChannel,
                     lastChannel,
