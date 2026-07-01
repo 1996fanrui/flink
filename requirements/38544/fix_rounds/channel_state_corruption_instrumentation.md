@@ -164,11 +164,12 @@ bash repro/repro.sh 25 2000 600
 
 ## 7. 根因结论（已 100% 证实，CONCLUSIVE）
 
-**一句话**：下游"恢复上游 output buffer"的路径，把生产者一个**合法地从 record 中间开始**的在途 `ResultSubpartitionStateHandle`，重新包装成 `InputChannelStateHandle`，再把这些字节喂进下游 input 的**逐条 record 反序列化器**；而该反序列化器假设 buffer 从 record 边界开始、且没有跨 buffer 的 spanning 前驱，于是把一个数据字节当成 length/tag 读 → 字节流错位 → `Corrupt stream` / 静默丢数据。
+**一句话（Round 4 订正）**：下游某个 input channel 的恢复，把**两段本不连续的在途数据**喂进**同一个**按通道复用的 spanning 反序列化器——先是它自己的 input-channel-state（段 A，结尾是半条 record），紧接着是被 FLINK-38542 重新当成本 channel input 的、上游未发送的 output buffer（段 B，开头也是半条 record，其头早已发给下游、从未快照）。反序列化器把 A 尾部的半条残留接到 B 的 head-less 开头，可这两截**不是同一条 record 的两半** → 拼接错位 → 把数据字节当 length/tag 读 → `Corrupt stream` / 静默丢数据。错误最终抛在**下游 consumer 反序列化器**（`AbstractStreamTaskNetworkInput`），也可能提前抛在 rescale filter 里。
 
-**关键不对称（为什么是 bug）**：
-- 旧的 output 恢复路径（`ResultSubpartitionRecoveredStateHandler.recover`，`RecoveredChannelStateHandler.java:627-656`）把 buffer 原样 `addRecovered` 重新注入 ResultSubpartition，**从不逐条反序列化**，所以"从 record 中间开始"无害（下游真正的 deserializer 早已消费了该 record 的头）。
-- 新的下游路径**对同一批字节逐条反序列化**——对一个"record 头已经发给下游、从未被快照"的 subpartition 首个 buffer 来说，这是不成立的。
+**关键点（为什么是 bug）**：
+- A（收到但未消费）和 B（从未发送）在原始流里**并不相邻**——中间隔着"已被下游消费、没进快照"的那段。所以 A 尾部的半条 record 与 B 开头的半条 record 属于**两条不同的 record**，本就不该被 splice 到一起。
+- 旧的 output 恢复路径把 buffer 原样 `addRecovered` 重新注入（`RecoveredChannelStateHandler.java:627-656`），**从不逐条反序列化**，所以"从 record 中间开始"无害；新路径把同一批 output 字节**接到下游 input 的 spanning 反序列化器上逐条解析**，A 的尾部残留于是被非法地粘到 B —— 这才是根因。
+- 注意：plumbing 层面 A、B 确实落到同一个 `SubtaskConnectionDescriptor(3,20)` / `InputChannelInfo{20}` 反序列化器（共用、会 splice）——bug 不是"没接上"，而是"把本不该连的两段接上了"（**Class B**：两条在途流被复用到同一个反序列化器）。
 
 **Fix site**：
 - `TaskStateAssignment.distributeOutputBufferToDownstream`（`flink-runtime/.../checkpoint/TaskStateAssignment.java:600-636`，handle 构造在 `:624-630`）——把 output handle 的 delegate+offsets 包装成 `InputChannelStateHandle`，未携带任何 record 边界上下文。
@@ -179,7 +180,7 @@ bash repro/repro.sh 25 2000 600
   - **写**：`buildHandle ResultSubpartitionStateHandle subPartitionIdx=3`、`ckptWrite.MEM map=OUTPUT`；
   - **读**：`readSequentially.handle InputChannelStateHandle info=InputChannelInfo{inputChannelIdx=20} oldSubtask=3`、`readChunk.IN@off72561`。
   - 映射对得上：`inputChannelIdx=20`=上游 subtask 20，`oldSubtask=3`=subPartitionIdx 3（正是 `TaskStateAssignment.java:621-630` 的转换）。
-- 损坏 buffer = 这 4 个 output chunk 拼接（1024+724+725+220=2693 字节、48+35+34+11=128 个 header），`recordsOkInThisBuffer=0 firstHeaderAt=18` → 首条就错位。
+- 交付顺序：段 A（input-state，len=2142，firstHeaderAt=13，正常）**先**，段 B（output subpart-3 重打包，4 个 chunk 拼成 len=2693、128 header、firstHeaderAt=18）**后**；反序列化器带着 A 尾部约 18 字节的残留去接 B，`recordsOkInThisBuffer=0` → 拼接处首条就崩。
 - 全程 `[CS-INV-ASSERT]=0` → 写侧 input/output map 的 key 路由是干净的，input handle 持有 output offsets 是**设计使然**，不是写时记账错。
 - 本轮还同时复现了静默丢数据变体（`NUM_OUTPUTS != NUM_INPUTS`），证明这就是真正的丢数据 bug，而非无害的偶发报错。
 
@@ -189,14 +190,15 @@ bash repro/repro.sh 25 2000 600
 
 ## 8. 排查过程经验（逐轮收敛，可复用的方法论）
 
-整个定位用了 **3 轮**（上限 5 轮），每轮 = 加插桩 → 编译 → loop 复现 → 独立 agent 分析判定，每轮都 commit logs+docs。核心经验：
+整个定位用了 **3 轮收敛 + 1 轮复核订正（共 4 轮，上限 5 轮）**，每轮 = 加插桩 → 编译 → loop 复现 → 独立 agent 分析判定，每轮都 commit logs+docs。核心经验：
 
 1. **不要猜，让字节自己说话**。最有效的不是 CRC，而是利用测试数据的确定性特征（`AB CD EA FC` header + 21 字节 stride），在每个阶段把字节剥到 record 层验证不变式，找"最早变坏的阶段"。第一轮就靠 `shape()` 的 stride/firstHeaderAt 把范围从"整条流水线"收敛到"某个未插桩的 gap"。
 
 2. **分轮收敛，每轮只回答一个问题**。不要一次把所有日志加满：
    - R1：全链路粗插桩 → 结论"所有已插桩阶段都是好的（stride 21）"，把 bug 框到**未插桩的 gap**（spill 读回/drain/consumer）。
    - R2：补齐 gap 的插桩 → 抓到硬特征"buffer 起点错位、firstHeaderAt 异常、`recordsOkInThisBuffer=0`"，并发现损坏字节其实来自**写为 OUTPUT 的 offset**。
-   - R3：加 handle/文件身份 + offsets + 跨 input/output 的 key 断言 → 抓到**单一文件单一 offset 列表既被写为 output 又被读为 input**的铁证，并由独立分析确认这是 `getUpstreamOutputBufferState` 设计路径，最终锁定 fix site。
+   - R3：加 handle/文件身份 + offsets + 跨 input/output 的 key 断言 → 抓到**单一文件单一 offset 列表既被写为 output 又被读为 input**的铁证，并由独立分析确认这是 `getUpstreamOutputBufferState` 设计路径。
+   - R4（复核订正）：应 reviewer 质疑"共用反序列化器不该拼错"，重建该通道**完整有序**的 buffer 序列，发现损坏 buffer **并非**该反序列化器的第一个 buffer——段 A（input-state）先到、结尾留半条残留，段 B（重打包的 output）后到、开头也是半条；订正 R3 的机制为 **Class B：两段本不连续的在途流被复用到同一反序列化器，A 尾残被非法粘到 B**。教训：**结论要经得起独立复核；reviewer 的直觉常常指向机制的真正细节。**
 
 3. **始终用"独立验证 agent"判定 CONCLUSIVE/INSUFFICIENT**，且判定标准要严：**日志里必须出现 healthy→corrupt 的那一步转变**，只靠"代码看着不对"不算。前两轮都诚实地判 INSUFFICIENT 并给出"下一轮要加什么"的精确清单——正是这种不放水让收敛是单调的。
 
@@ -208,4 +210,21 @@ bash repro/repro.sh 25 2000 600
 
 7. **复现编排经验**：loop 跑在后台 + monitor 只在真实 trigger（FAIL / `[CS-INV-ASSERT]` / loop 结束）唤醒，不要按 pass 计数发心跳（否则反复唤醒协调者、浪费上下文）。注意 `repro.sh` 把 assert 触发的失败归类为 INFRA 且会删日志——要单独监控并在命中时立即拷贝 + `touch STOP`。
 
-8. **修复方向（供后续，不在本次范围）**：要么在 `distributeOutputBufferToDownstream` 转换时携带/对齐 record 边界（标记首 buffer 为 mid-record、建立 spanning 前驱），要么下游对"来自上游 output 的在途字节"沿用旧的 raw re-inject 语义而非逐条反序列化。补回归测试时务必**逐字节比对**，并覆盖"subpartition 首 buffer 从 record 中间开始"这一场景。
+8. **修复方向（供后续，不在本次范围）**：核心是**不要把两段本不连续的在途流接进同一个 spanning 反序列化器**。可选：(a) 下游对"来自上游 output 的重打包字节"沿用旧的 raw re-inject 语义、不逐条反序列化（回到 FLINK-38542 前的 output-recovery 不变式）；(b) 若必须共用一个 channel，则给 output 段一个**独立的反序列化器身份**，并携带"从 record 中间开始 / 丢弃前导半条"的标记，让它不与 A 的尾残拼接。补回归测试务必**逐字节比对**，并覆盖"input-state 尾部半条 + 重打包 output 首 buffer 半条"这一拼接场景。
+
+---
+
+## 9. 复现纪律 & 兜底检查（规则）
+
+**规则 1 — 每次复现命中后，必须备份整个运行目录（尤其 FAIL 日志）。**
+`repro/repro.sh` 每次启动会 `rm -rf "$RES"`（即 `repro/results/`），**下一次复现会覆盖上一次的现场**。所以每命中一次，就把整个 `repro/results/` 备份到 `repro/` 下一个持久目录，命名沿用现有约定（参考 `repro/` 里已有的 `results-6`…`results-13`、`results_backup_corrupt*` 等）：
+
+```bash
+# 命中后、开始下一轮复现前：
+cp -a repro/results "repro/results-$(date +%Y%m%d_%H%M%S)"   # 或 results-<递增编号>
+```
+
+至少要保住 `FAIL_w*_*.log` / `CORRUPT_*.log` / `DATALOSS_*.log` 与 `prime.log`。本次排查已按此保留了 `round1_FAIL.log`…`round3_FAIL.log` 等到 `requirements/38544/fix_rounds/`（`*.log` 被 gitignore，故大日志留在工作目录、结论与关键行摘录进 `round*_findings.md` / `round*_evidence.md` 提交）。
+
+**规则 2 — 拼接层按"前置规则"校验所有物理数据（不是查有没有数据）。**
+在拼接上游/下游、以及同侧多个恢复 buffer 的那一层（`ChannelStateFilteringHandler` / 每通道的 spanning 反序列化器），除了已有的事后 `hasPartialData()` 断言，应对**所有恢复出来的物理数据**做 record-framing 前置校验：每条 record 是否符合既定 framing（长度前缀合法、tag 合法、header 按 stride 出现），以及拼接边界处 A 的尾残 + B 的开头是否真能组成一条合法 record。校验失败即**当场显式失败**（loud early-fail），把静默错位/丢数据变成可定位的报错。注意：**校验是"早暴露"手段，不是根因修复**——根因仍需按 §8 处理。（`ChannelStateInvariant.shape()` 就是这种校验的诊断版，可作为正式前置断言的蓝本。）
