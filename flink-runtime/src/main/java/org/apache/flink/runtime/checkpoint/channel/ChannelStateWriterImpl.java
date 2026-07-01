@@ -150,8 +150,8 @@ public class ChannelStateWriterImpl implements ChannelStateWriter {
 
     @Override
     public String taskLabel() {
-        // Matches ChannelStateCheckpointWriter's task label so [CS-INV-COLLECT] and
-        // [CS-INV]/[CS-INV-ASSERT] lines for the same task can be correlated.
+        // Matches ChannelStateCheckpointWriter's task label so [CS-INV]/[CS-INV-ASSERT],
+        // [CS-INV-RECV], and [CS-INV-SNAP] lines for the same task can be correlated.
         return jobVertexID + "-" + subtaskIndex;
     }
 

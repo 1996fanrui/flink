@@ -24,6 +24,7 @@ import org.apache.flink.core.memory.MemorySegmentFactory;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.runtime.checkpoint.CheckpointException;
 import org.apache.flink.runtime.checkpoint.CheckpointFailureReason;
+import org.apache.flink.runtime.checkpoint.channel.ChannelStateInvariant;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
 import org.apache.flink.runtime.event.AbstractEvent;
 import org.apache.flink.runtime.event.TaskEvent;
@@ -123,6 +124,9 @@ public class RemoteInputChannel extends InputChannel {
 
     private final ChannelStatePersister channelStatePersister;
 
+    /** Diagnostic-only task label, used to correlate {@code [CS-INV-*]} log lines across layers. */
+    private final String invariantTaskLabel;
+
     private long totalQueueSizeInBytes;
 
     public RemoteInputChannel(
@@ -157,16 +161,22 @@ public class RemoteInputChannel extends InputChannel {
         this.connectionId = checkNotNull(connectionId);
         this.connectionManager = checkNotNull(connectionManager);
         this.bufferManager = new BufferManager(inputGate.getMemorySegmentProvider(), this, 0);
-        this.channelStatePersister =
-                new ChannelStatePersister(stateWriter, getChannelInfo(), "Remote");
+        this.channelStatePersister = new ChannelStatePersister(stateWriter, getChannelInfo());
+        this.invariantTaskLabel = stateWriter.taskLabel();
 
         // Migrate recovered buffers from RecoveredInputChannel if provided.
         // These buffers have been filtered but not yet consumed by the Task.
         if (!initialRecoveredBuffers.isEmpty()) {
             final int expectedCount = initialRecoveredBuffers.size();
+            String invariantChannelLabel = getChannelInfo() + " kind=Remote";
+            String invariantKey =
+                    ChannelStateInvariant.key(invariantTaskLabel, invariantChannelLabel, "RECV");
             // Sequence number starts at Integer.MIN_VALUE, consistent with RecoveredInputChannel.
             int seqNum = Integer.MIN_VALUE;
             for (Buffer buffer : initialRecoveredBuffers) {
+                if (ChannelStateInvariant.isEnabled() && buffer.isBuffer()) {
+                    ChannelStateInvariant.append(invariantKey, buffer.getNioBufferReadable());
+                }
                 // subpartitionId is set to 0 for recovered buffers. This is correct because:
                 // 1) For single-subpartition channels, the only valid subpartition is 0.
                 // 2) For multi-subpartition channels (consumedSubpartitionIndexSet.size() > 1),
@@ -181,6 +191,10 @@ public class RemoteInputChannel extends InputChannel {
                     "Buffer migration failed: expected %s buffers but got %s",
                     expectedCount,
                     receivedBuffers.size());
+            ChannelStateInvariant.flush(
+                    invariantKey,
+                    ChannelStateInvariant.label(invariantTaskLabel, invariantChannelLabel),
+                    "RECV");
         }
     }
 
@@ -713,6 +727,7 @@ public class RemoteInputChannel extends InputChannel {
      * reordered), spill only the overtaken buffers.
      */
     public void checkpointStarted(CheckpointBarrier barrier) throws CheckpointException {
+        List<Buffer> invariantSnapshot = null;
         synchronized (receivedBuffers) {
             if (barrier.getId() < lastBarrierId) {
                 throw new CheckpointException(
@@ -730,8 +745,27 @@ public class RemoteInputChannel extends InputChannel {
                 resetLastBarrier();
             }
 
-            channelStatePersister.startPersisting(
-                    barrier.getId(), getInflightBuffersUnsafe(barrier.getId()));
+            List<Buffer> inflightBuffers = getInflightBuffersUnsafe(barrier.getId());
+            if (ChannelStateInvariant.isEnabled()) {
+                // Take our own retained copy so the shape validation below can run after this
+                // synchronized block returns, without touching the reader index or refcount of the
+                // buffers handed to the checkpoint writer.
+                invariantSnapshot = new ArrayList<>(inflightBuffers.size());
+                for (Buffer buffer : inflightBuffers) {
+                    invariantSnapshot.add(buffer.retainBuffer());
+                }
+            }
+            channelStatePersister.startPersisting(barrier.getId(), inflightBuffers);
+        }
+        if (invariantSnapshot != null) {
+            ChannelStateInvariant.validateSnapshot(
+                    ChannelStateInvariant.label(
+                            invariantTaskLabel, getChannelInfo() + " kind=Remote"),
+                    barrier.getId(),
+                    invariantSnapshot);
+            for (Buffer buffer : invariantSnapshot) {
+                buffer.recycleBuffer();
+            }
         }
     }
 

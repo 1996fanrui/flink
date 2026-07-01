@@ -17,6 +17,8 @@
 
 package org.apache.flink.runtime.checkpoint.channel;
 
+import org.apache.flink.runtime.io.network.buffer.Buffer;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -42,9 +44,10 @@ import java.util.concurrent.ConcurrentHashMap;
  * are per-key and must be explicitly flushed by the call site once that key's data for the current
  * layer is fully collected, otherwise they leak memory.
  *
- * <p>Public so that collection-side call sites outside this package (e.g. {@code
- * ChannelStatePersister}) can validate a channel's just-collected buffers with {@link
- * #shape(byte[])} without accumulating/flushing state.
+ * <p>Public so that call sites outside this package (e.g. {@code LocalInputChannel}, {@code
+ * RemoteInputChannel}) can accumulate and validate a channel's buffers via {@link #append}, {@link
+ * #flush}, {@link #key}, and {@link #label}, or validate an already-collected buffer set directly
+ * with {@link #shape(byte[])}.
  */
 public final class ChannelStateInvariant {
 
@@ -80,7 +83,7 @@ public final class ChannelStateInvariant {
      *
      * @param key opaque identifier combining task + channel + layer, see {@link #key}
      */
-    static void append(String key, ByteBuffer buffer) {
+    public static void append(String key, ByteBuffer buffer) {
         if (!ENABLED) {
             return;
         }
@@ -98,7 +101,7 @@ public final class ChannelStateInvariant {
      * @param layer one of "WRITE" (checkpoint write), "RECOVER" (recovery read), "REWRITE" (filter
      *     rewrite)
      */
-    static void flush(String key, String taskAndChannel, String layer) {
+    public static void flush(String key, String taskAndChannel, String layer) {
         if (!ENABLED) {
             return;
         }
@@ -128,13 +131,65 @@ public final class ChannelStateInvariant {
     }
 
     /** Builds an opaque accumulator key from task and channel identifiers plus the layer name. */
-    static String key(String task, String channel, String layer) {
+    public static String key(String task, String channel, String layer) {
         return task + "|" + channel + "|" + layer;
     }
 
     /** Builds the shared "task=.. ch=.." label used in log lines across all three layers. */
-    static String label(String task, String channel) {
+    public static String label(String task, String channel) {
         return "task=" + task + " ch=" + channel;
+    }
+
+    /**
+     * Validates a checkpoint snapshot: the set of buffers a channel collected for one barrier
+     * before handing them to the checkpoint writer.
+     *
+     * <p>Takes its own retained reference to each buffer and releases it before returning, so the
+     * caller's own buffer references and their recycling are unaffected. Must be called outside of
+     * any lock the caller holds while collecting the snapshot, since it copies bytes and logs.
+     */
+    public static void validateSnapshot(
+            String taskAndChannel, long barrierId, List<Buffer> buffers) {
+        if (!ENABLED) {
+            return;
+        }
+        int totalBytes = 0;
+        List<Buffer> retained = new ArrayList<>(buffers.size());
+        for (Buffer buffer : buffers) {
+            retained.add(buffer.retainBuffer());
+        }
+        try {
+            for (Buffer buffer : retained) {
+                totalBytes += buffer.readableBytes();
+            }
+            byte[] concatenated = new byte[totalBytes];
+            int offset = 0;
+            for (Buffer buffer : retained) {
+                ByteBuffer readOnly = buffer.getNioBufferReadable();
+                int readable = readOnly.remaining();
+                readOnly.get(concatenated, offset, readable);
+                offset += readable;
+            }
+            Shape shape = shape(concatenated);
+            LOG.info(
+                    "[CS-INV-SNAP] {} cp={} numBuffers={} bytes={} {}",
+                    taskAndChannel,
+                    barrierId,
+                    retained.size(),
+                    totalBytes,
+                    shape.summary());
+            if (!shape.valid) {
+                LOG.warn(
+                        "[CS-INV-SNAP-ASSERT] {} cp={} INVALID snapshot: {}",
+                        taskAndChannel,
+                        barrierId,
+                        shape.summary());
+            }
+        } finally {
+            for (Buffer buffer : retained) {
+                buffer.recycleBuffer();
+            }
+        }
     }
 
     /**

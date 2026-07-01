@@ -46,7 +46,7 @@ class ChannelStatePersisterTest {
         RecordingChannelStateWriter channelStateWriter = new RecordingChannelStateWriter();
         InputChannelInfo channelInfo = new InputChannelInfo(0, 0);
         ChannelStatePersister persister =
-                new ChannelStatePersister(channelStateWriter, channelInfo, "Local");
+                new ChannelStatePersister(channelStateWriter, channelInfo);
 
         long checkpointId = 1L;
         channelStateWriter.start(
@@ -73,8 +73,7 @@ class ChannelStatePersisterTest {
     @Test
     void testNewBarrierNotOverwrittenByCheckForBarrier() throws Exception {
         ChannelStatePersister persister =
-                new ChannelStatePersister(
-                        ChannelStateWriter.NO_OP, new InputChannelInfo(0, 0), "Local");
+                new ChannelStatePersister(ChannelStateWriter.NO_OP, new InputChannelInfo(0, 0));
 
         persister.startPersisting(1L, Collections.emptyList());
         persister.startPersisting(2L, Collections.emptyList());
@@ -106,7 +105,7 @@ class ChannelStatePersisterTest {
         InputChannelInfo channelInfo = new InputChannelInfo(0, 0);
 
         ChannelStatePersister persister =
-                new ChannelStatePersister(channelStateWriter, channelInfo, "Local");
+                new ChannelStatePersister(channelStateWriter, channelInfo);
 
         long lateCheckpointId = 1L;
         long checkpointId = 2L;
@@ -131,8 +130,7 @@ class ChannelStatePersisterTest {
     @Test
     void testLateBarrierTriggeringCheckpoint() throws Exception {
         ChannelStatePersister persister =
-                new ChannelStatePersister(
-                        ChannelStateWriter.NO_OP, new InputChannelInfo(0, 0), "Local");
+                new ChannelStatePersister(ChannelStateWriter.NO_OP, new InputChannelInfo(0, 0));
 
         long lateCheckpointId = 1L;
         long checkpointId = 2L;

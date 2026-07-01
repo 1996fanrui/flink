@@ -21,6 +21,7 @@ package org.apache.flink.runtime.io.network.partition.consumer;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.runtime.checkpoint.CheckpointException;
+import org.apache.flink.runtime.checkpoint.channel.ChannelStateInvariant;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
 import org.apache.flink.runtime.event.TaskEvent;
 import org.apache.flink.runtime.execution.CancelTaskException;
@@ -78,6 +79,9 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
 
     private final ChannelStatePersister channelStatePersister;
 
+    /** Diagnostic-only task label, used to correlate {@code [CS-INV-*]} log lines across layers. */
+    private final String invariantTaskLabel;
+
     private final Deque<BufferAndBacklog> toBeConsumedBuffers = new ArrayDeque<>();
 
     /**
@@ -113,17 +117,23 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
 
         this.partitionManager = checkNotNull(partitionManager);
         this.taskEventPublisher = checkNotNull(taskEventPublisher);
-        this.channelStatePersister =
-                new ChannelStatePersister(stateWriter, getChannelInfo(), "Local");
+        this.channelStatePersister = new ChannelStatePersister(stateWriter, getChannelInfo());
+        this.invariantTaskLabel = stateWriter.taskLabel();
 
         // Migrate recovered buffers from RecoveredInputChannel if provided.
         // These buffers have been filtered but not yet consumed by the Task.
         if (!initialRecoveredBuffers.isEmpty()) {
             final int expectedCount = initialRecoveredBuffers.size();
+            String invariantChannelLabel = getChannelInfo() + " kind=Local";
+            String invariantKey =
+                    ChannelStateInvariant.key(invariantTaskLabel, invariantChannelLabel, "RECV");
             // Sequence number starts at Integer.MIN_VALUE, consistent with RecoveredInputChannel.
             int seqNum = Integer.MIN_VALUE;
             while (!initialRecoveredBuffers.isEmpty()) {
                 Buffer buffer = initialRecoveredBuffers.poll();
+                if (ChannelStateInvariant.isEnabled() && buffer.isBuffer()) {
+                    ChannelStateInvariant.append(invariantKey, buffer.getNioBufferReadable());
+                }
                 // Determine next data type based on the next buffer in the queue
                 Buffer.DataType nextDataType =
                         initialRecoveredBuffers.isEmpty()
@@ -139,6 +149,10 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
                     "Buffer migration failed: expected %s buffers but got %s",
                     expectedCount,
                     toBeConsumedBuffers.size());
+            ChannelStateInvariant.flush(
+                    invariantKey,
+                    ChannelStateInvariant.label(invariantTaskLabel, invariantChannelLabel),
+                    "RECV");
         }
     }
 
@@ -154,6 +168,13 @@ public class LocalInputChannel extends InputChannel implements BufferAvailabilit
             if (bufferAndBacklog.buffer().isBuffer()) {
                 inflightBuffers.add(bufferAndBacklog.buffer().retainBuffer());
             }
+        }
+        if (ChannelStateInvariant.isEnabled()) {
+            ChannelStateInvariant.validateSnapshot(
+                    ChannelStateInvariant.label(
+                            invariantTaskLabel, getChannelInfo() + " kind=Local"),
+                    barrier.getId(),
+                    inflightBuffers);
         }
         channelStatePersister.startPersisting(barrier.getId(), inflightBuffers);
     }
