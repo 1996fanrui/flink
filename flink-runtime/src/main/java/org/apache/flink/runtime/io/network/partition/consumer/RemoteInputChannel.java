@@ -901,13 +901,6 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
                     toPersist = getInflightBuffersUnsafe(barrier.getId());
                 }
                 channelStatePersister.startPersisting(barrier.getId(), toPersist);
-                if (inRecovery) {
-                    // Recovered inflight buffers are collected in one shot and the upstream sends
-                    // no
-                    // data during recovery, so close the persist window immediately to keep the
-                    // persister from carrying a pending state into later checkpoints.
-                    channelStatePersister.stopPersisting(barrier.getId());
-                }
             }
         } catch (IOException e) {
             throw new CheckpointException(
