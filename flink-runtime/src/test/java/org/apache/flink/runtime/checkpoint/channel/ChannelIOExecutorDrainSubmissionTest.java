@@ -115,6 +115,11 @@ class ChannelIOExecutorDrainSubmissionTest {
 
                     @Override
                     public void onRecoveredStateConsumed() {}
+
+                    @Override
+                    public CompletableFuture<Void> getStateConsumedFuture() {
+                        return CompletableFuture.completedFuture(null);
+                    }
                 };
 
         List<RecoverableInputChannel> all = new ArrayList<>();
@@ -198,5 +203,10 @@ class ChannelIOExecutorDrainSubmissionTest {
 
         @Override
         public void onRecoveredStateConsumed() {}
+
+        @Override
+        public CompletableFuture<Void> getStateConsumedFuture() {
+            return CompletableFuture.completedFuture(null);
+        }
     }
 }

@@ -37,6 +37,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -470,5 +471,10 @@ class FetchedChannelStateDrainerTest {
 
         @Override
         public void onRecoveredStateConsumed() {}
+
+        @Override
+        public CompletableFuture<Void> getStateConsumedFuture() {
+            return CompletableFuture.completedFuture(null);
+        }
     }
 }

@@ -109,6 +109,8 @@ public class LocalInputChannel extends InputChannel
     @GuardedBy("recoveredBuffers")
     private boolean inRecovery;
 
+    private final CompletableFuture<Void> stateConsumedFuture = new CompletableFuture<>();
+
     /**
      * Sequence number assigned to recovered buffers, starting at {@link Integer#MIN_VALUE},
      * consistent with {@link RecoveredInputChannel}.
@@ -166,6 +168,9 @@ public class LocalInputChannel extends InputChannel
                         : null;
         this.networkBuffersPerChannel = networkBuffersPerChannel;
         this.needsRecovery = needsRecovery;
+        if (!needsRecovery) {
+            stateConsumedFuture.complete(null);
+        }
     }
 
     @Override
@@ -253,6 +258,12 @@ public class LocalInputChannel extends InputChannel
             inRecovery = false;
         }
         notifyChannelNonEmpty();
+        stateConsumedFuture.complete(null);
+    }
+
+    @Override
+    public CompletableFuture<Void> getStateConsumedFuture() {
+        return stateConsumedFuture;
     }
 
     /**
@@ -762,6 +773,9 @@ public class LocalInputChannel extends InputChannel
             isReleased = true;
 
             upstreamReady.completeExceptionally(new CancelTaskException("Channel released."));
+
+            // Recovery will never be consumed on a released channel; unblock anyone gating on it.
+            stateConsumedFuture.complete(null);
 
             ResultSubpartitionView view = subpartitionView;
             if (view != null) {

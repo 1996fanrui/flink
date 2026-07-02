@@ -155,6 +155,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 import static org.apache.flink.configuration.TaskManagerOptions.BUFFER_DEBLOAT_PERIOD;
 import static org.apache.flink.runtime.metrics.MetricNames.GATE_RESTORE_DURATION;
@@ -954,6 +955,12 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                                 requestPartitions(inputGates, state.isPresent())
                                         .thenApply(channels -> buildDrainer(state, channels)))
                 .thenCompose(this::drainThroughCheckpointTrigger)
+                .thenCompose(
+                        ign ->
+                                completeAll(
+                                        Arrays.stream(inputGates)
+                                                .map(InputGate::getStateConsumedFuture)
+                                                .collect(Collectors.toList())))
                 .thenRun(() -> setRecoveryCheckpointTrigger(RecoveryCheckpointTrigger.NO_OP));
     }
 

@@ -324,6 +324,8 @@ public class SingleInputGate extends IndexedInputGate {
             for (InputChannel inputChannel : inputChannels()) {
                 if (inputChannel instanceof RecoveredInputChannel) {
                     futures.add(((RecoveredInputChannel) inputChannel).getStateConsumedFuture());
+                } else if (inputChannel instanceof RecoverableInputChannel) {
+                    futures.add(((RecoverableInputChannel) inputChannel).getStateConsumedFuture());
                 }
             }
             return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));

@@ -293,6 +293,11 @@ public class TestInputChannel extends InputChannel implements RecoverableInputCh
         // No-op in this test stub.
     }
 
+    @Override
+    public CompletableFuture<Void> getStateConsumedFuture() {
+        return CompletableFuture.completedFuture(null);
+    }
+
     public Deque<Buffer> getRecoveredBuffersSpy() {
         return recoveredBuffersSpy;
     }

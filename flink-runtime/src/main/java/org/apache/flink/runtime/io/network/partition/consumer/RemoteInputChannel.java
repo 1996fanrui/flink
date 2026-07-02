@@ -63,6 +63,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -139,6 +140,8 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
     @GuardedBy("receivedBuffers")
     private boolean inRecovery;
 
+    private final CompletableFuture<Void> stateConsumedFuture = new CompletableFuture<>();
+
     /**
      * Sequence number assigned to recovered buffers, starting at {@link Integer#MIN_VALUE},
      * consistent with {@link RecoveredInputChannel}.
@@ -204,6 +207,9 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
         this.channelStatePersister =
                 new ChannelStatePersister(checkNotNull(stateWriter), getChannelInfo());
         this.inRecovery = needsRecovery;
+        if (!needsRecovery) {
+            stateConsumedFuture.complete(null);
+        }
     }
 
     @VisibleForTesting
@@ -291,6 +297,12 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
         notifyChannelNonEmpty();
         // Credit notifications are suppressed while recovery borrows the exclusive buffers.
         bufferManager.enableNotify();
+        stateConsumedFuture.complete(null);
+    }
+
+    @Override
+    public CompletableFuture<Void> getStateConsumedFuture() {
+        return stateConsumedFuture;
     }
 
     @Override
@@ -481,6 +493,9 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
             // Unblock any thread awaiting upstreamReady (drain still in flight) so it falls
             // through and observes the released state instead of deadlocking.
             upstreamReady.countDown();
+
+            // Recovery will never be consumed on a released channel; unblock anyone gating on it.
+            stateConsumedFuture.complete(null);
 
             final ArrayDeque<Buffer> releasedBuffers;
             synchronized (receivedBuffers) {
