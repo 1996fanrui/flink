@@ -7,8 +7,8 @@
 > 与参考分支的落地差异、已知缺陷、编译与复现命令。
 > 所有行号以当前分支代码为准；行号会随插桩演进漂移，以方法名为准重新定位。
 >
-> ⚠️ **现状**：当前分支**尚未加任何插桩**——`ChannelStateInvariant` 类和全部 call site 都还不存在。
-> 本文档是首轮插桩的落地映射（哪五个点、怎么挂、key 怎么组），实施后应回填为"已核实的现状记录"。
+> ⚠️ **现状**：当前分支**已经落地首轮插桩**——`ChannelStateInvariant` 与五个阶段的主要 call site 已存在。
+> 本文档必须以当前代码事实为准维护：当实现继续演进时，只回填/修正文档中的代码事实，不改 HL 的通用规则。
 
 ## 文档范畴（更新前必读，勿越界）
 
@@ -68,18 +68,14 @@ input handle（`InputChannelInfo(gateIdx, oldUpstreamSubtaskIndex)`），由 `re
 
 ---
 
-## 1. 辅助类 `ChannelStateInvariant`（从参考分支原样迁入）
+## 1. 辅助类 `ChannelStateInvariant`（当前分支已落地）
 
 目标路径：`flink-runtime/src/main/java/org/apache/flink/runtime/checkpoint/channel/ChannelStateInvariant.java`
 （`final`、纯静态、临时诊断代码，定位根因后整类删除）
 
-该类是纯字节校验器（header/stride/framing 走查），不依赖任何分支特有代码，**整类原样迁入、不改一行**：
+该类是纯字节校验器（header/stride/framing 走查），当前已位于：
 
-```bash
-git -C ~/code/github/flink show \
-  FLINK-40016/cdr-without-spilling-data-loss-repro:flink-runtime/src/main/java/org/apache/flink/runtime/checkpoint/channel/ChannelStateInvariant.java \
-  > flink-runtime/src/main/java/org/apache/flink/runtime/checkpoint/channel/ChannelStateInvariant.java
-```
+`flink-runtime/src/main/java/org/apache/flink/runtime/checkpoint/channel/ChannelStateInvariant.java`
 
 开关、常量、方法、`Layer`/`Direction`/`Mode` 枚举、`shape()` 判据、日志标签（`[CS-INV]` / `[CS-INV-ASSERT]` /
 `[CS-INV-TOLERATED]` / `[CS-INV-SNAP]` / `[CS-INV-REC]`）与参考分支完全一致，语义见参考分支 low-level 文档 §1；
