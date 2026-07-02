@@ -36,6 +36,7 @@ import org.apache.flink.runtime.io.network.partition.CheckpointedResultPartition
 import org.apache.flink.runtime.io.network.partition.consumer.InputChannel;
 import org.apache.flink.runtime.io.network.partition.consumer.InputGate;
 import org.apache.flink.runtime.io.network.partition.consumer.RecoveredInputChannel;
+import org.apache.flink.runtime.io.network.partition.consumer.SingleInputGate;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
@@ -43,11 +44,13 @@ import javax.annotation.Nullable;
 import java.io.BufferedOutputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -100,10 +103,100 @@ abstract class AbstractInputChannelRecoveredStateHandler
     final Map<InputChannelInfo, RecoveredInputChannel> rescaledChannels = new HashMap<>();
     final Map<Integer, RescaleMappings> oldToNewMappings = new HashMap<>();
 
+    /**
+     * RECOVER_READ / RECOVER_REWRITE accumulator keys appended during this recovery pass, mapped to
+     * their human-readable labels; flushed once at {@link #close()}. The recovery loop and close()
+     * run on the single channel-IO thread, so plain maps suffice.
+     */
+    private final Map<String, String> invariantReadKeys = new LinkedHashMap<>();
+
+    private final Map<String, String> invariantRewriteKeys = new LinkedHashMap<>();
+
     AbstractInputChannelRecoveredStateHandler(
             InputGate[] inputGates, InflightDataRescalingDescriptor channelMapping) {
         this.inputGates = inputGates;
         this.channelMapping = channelMapping;
+    }
+
+    /**
+     * Identity segment for RECOVER_READ/RECOVER_REWRITE keys: the owning task of the gate this
+     * channel belongs to ({@code "op-name (subtask/parallelism)#attempt"}), constant within one
+     * recovery pass and unique per subtask — the subtask-isolation dimension of the key.
+     */
+    String invariantIdentity(InputChannelInfo channelInfo) {
+        InputGate gate = inputGates[channelInfo.getGateIdx()];
+        return gate instanceof SingleInputGate
+                ? ((SingleInputGate) gate).getOwningTaskName()
+                : gate.toString();
+    }
+
+    /**
+     * Accumulates raw recovered bytes (before any filter/rewrite) for the RECOVER_READ layer. Keyed
+     * by the OLD channel identity plus oldSubtaskIndex: with rescaling, several old subtasks'
+     * same-named channels are recovered through one gate and must not be aggregated together. Both
+     * read passes of {@code readInputData} (own input handles first, then the redistributed
+     * upstream-output handles) share the same key per logical old channel, so the concatenated
+     * stream — including the input/output seam — is validated as one.
+     */
+    void invariantAppendRead(InputChannelInfo oldChannelInfo, int oldSubtaskIndex, Buffer buffer) {
+        if (!ChannelStateInvariant.isEnabled() || buffer.readableBytes() == 0) {
+            return;
+        }
+        String identity = invariantIdentity(oldChannelInfo);
+        String channel = "old=" + oldChannelInfo + " oldSubtask=" + oldSubtaskIndex;
+        String key =
+                ChannelStateInvariant.key(
+                        identity,
+                        channel,
+                        ChannelStateInvariant.Layer.RECOVER_READ,
+                        ChannelStateInvariant.Direction.INPUT);
+        invariantReadKeys.putIfAbsent(key, ChannelStateInvariant.label(identity, channel));
+        ChannelStateInvariant.append(key, buffer.getNioBufferReadable());
+    }
+
+    /**
+     * Accumulates rewritten bytes (what actually lands in the spill segment body, or the
+     * pass-through equivalent) for the RECOVER_REWRITE layer. Keyed by the MAPPED (new/physical)
+     * channel, matching how spill segments are organized: several old channels may merge into one
+     * mapped channel.
+     */
+    void invariantAppendRewrite(
+            InputChannelInfo oldChannelInfo,
+            InputChannelInfo mappedChannelInfo,
+            byte[] bytes,
+            int offset,
+            int length) {
+        if (!ChannelStateInvariant.isEnabled() || length <= 0) {
+            return;
+        }
+        String identity = invariantIdentity(oldChannelInfo);
+        String channel = "mapped=" + mappedChannelInfo;
+        String key =
+                ChannelStateInvariant.key(
+                        identity,
+                        channel,
+                        ChannelStateInvariant.Layer.RECOVER_REWRITE,
+                        ChannelStateInvariant.Direction.INPUT);
+        invariantRewriteKeys.putIfAbsent(key, ChannelStateInvariant.label(identity, channel));
+        ChannelStateInvariant.append(key, ByteBuffer.wrap(bytes, offset, length));
+    }
+
+    /** Buffer-based variant of {@link #invariantAppendRewrite} for the pass-through path. */
+    void invariantAppendRewrite(
+            InputChannelInfo oldChannelInfo, InputChannelInfo mappedChannelInfo, Buffer buffer) {
+        if (!ChannelStateInvariant.isEnabled() || buffer.readableBytes() == 0) {
+            return;
+        }
+        String identity = invariantIdentity(oldChannelInfo);
+        String channel = "mapped=" + mappedChannelInfo;
+        String key =
+                ChannelStateInvariant.key(
+                        identity,
+                        channel,
+                        ChannelStateInvariant.Layer.RECOVER_REWRITE,
+                        ChannelStateInvariant.Direction.INPUT);
+        invariantRewriteKeys.putIfAbsent(key, ChannelStateInvariant.label(identity, channel));
+        ChannelStateInvariant.append(key, buffer.getNioBufferReadable());
     }
 
     /**
@@ -158,6 +251,25 @@ abstract class AbstractInputChannelRecoveredStateHandler
 
     @Override
     public void close() throws IOException {
+        if (ChannelStateInvariant.isEnabled()) {
+            // One recovery pass is complete: validate each old channel's full concatenated
+            // recovered stream (RECOVER_READ) and each mapped channel's full rewritten stream
+            // (RECOVER_REWRITE). Recovery chain tolerates no partial record -> STRICT.
+            for (Map.Entry<String, String> entry : invariantReadKeys.entrySet()) {
+                ChannelStateInvariant.flush(
+                        entry.getKey(),
+                        entry.getValue(),
+                        ChannelStateInvariant.Layer.RECOVER_READ);
+            }
+            for (Map.Entry<String, String> entry : invariantRewriteKeys.entrySet()) {
+                ChannelStateInvariant.flush(
+                        entry.getKey(),
+                        entry.getValue(),
+                        ChannelStateInvariant.Layer.RECOVER_REWRITE);
+            }
+            invariantReadKeys.clear();
+            invariantRewriteKeys.clear();
+        }
         closeInternal();
     }
 
@@ -210,6 +322,7 @@ class NoSpillingHandler extends AbstractInputChannelRecoveredStateHandler {
         Buffer buffer = bufferWithContext.context;
         try {
             if (buffer.readableBytes() > 0) {
+                invariantAppendRead(channelInfo, oldSubtaskIndex, buffer);
                 RecoveredInputChannel channel = getMappedChannels(channelInfo);
                 channel.onRecoveredStateBuffer(
                         EventSerializer.toBuffer(
@@ -435,7 +548,12 @@ class SpillingNoFilteringHandler extends AbstractSpillingHandler {
         Buffer buffer = bufferWithContext.context;
         try {
             if (buffer.readableBytes() > 0) {
-                recoverPassThroughToSpill(getMappedChannels(channelInfo).getChannelInfo(), buffer);
+                invariantAppendRead(channelInfo, oldSubtaskIndex, buffer);
+                InputChannelInfo mappedChannelInfo = getMappedChannels(channelInfo).getChannelInfo();
+                recoverPassThroughToSpill(mappedChannelInfo, buffer);
+                // Pass-through mode: the rewritten bytes are identical to the source bytes (no
+                // re-framing), so the REWRITE stream is the same buffer keyed by mapped channel.
+                invariantAppendRewrite(channelInfo, mappedChannelInfo, buffer);
             }
         } finally {
             buffer.recycleBuffer();
@@ -541,12 +659,26 @@ class SpillingWithFilteringHandler extends AbstractSpillingHandler {
         Buffer buffer = bufferWithContext.context;
         try {
             if (buffer.readableBytes() > 0) {
+                invariantAppendRead(channelInfo, oldSubtaskIndex, buffer);
+                InputChannelInfo mappedChannelInfo = getMappedChannels(channelInfo).getChannelInfo();
+                // Baseline must be taken AFTER segmentSerializerFor returns: that call may seal
+                // the previous channel's segment and reset the serializer.
+                DataOutputSerializer segmentSerializer = segmentSerializerFor(mappedChannelInfo);
+                int lengthBefore = segmentSerializer.length();
                 filteringHandler.filterAndRewrite(
                         channelInfo.getGateIdx(),
                         oldSubtaskIndex,
                         channelInfo.getInputChannelIdx(),
                         buffer.retainBuffer(),
-                        segmentSerializerFor(getMappedChannels(channelInfo).getChannelInfo()));
+                        segmentSerializer);
+                // The [lengthBefore, lengthAfter) delta is exactly what this call appended to the
+                // spill segment body: the REWRITE stream for the mapped channel.
+                invariantAppendRewrite(
+                        channelInfo,
+                        mappedChannelInfo,
+                        segmentSerializer.getSharedBuffer(),
+                        lengthBefore,
+                        segmentSerializer.length() - lengthBefore);
             }
         } finally {
             buffer.recycleBuffer();

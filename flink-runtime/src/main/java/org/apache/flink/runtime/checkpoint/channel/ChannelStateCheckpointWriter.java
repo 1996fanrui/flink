@@ -38,6 +38,8 @@ import javax.annotation.concurrent.NotThreadSafe;
 
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -152,6 +154,11 @@ class ChannelStateCheckpointWriter {
             }
             ChannelStatePendingResult pendingResult =
                     getChannelStatePendingResult(jobVertexID, subtaskIndex);
+            if (ChannelStateInvariant.isEnabled() && buffer.readableBytes() > 0) {
+                ChannelStateInvariant.append(
+                        invariantWriteKey(jobVertexID, subtaskIndex, info),
+                        buffer.getNioBufferReadable());
+            }
             write(
                     pendingResult.getInputChannelOffsets(),
                     info,
@@ -160,6 +167,76 @@ class ChannelStateCheckpointWriter {
                     "ChannelStateCheckpointWriter#writeInput");
         } finally {
             buffer.recycleBuffer();
+        }
+    }
+
+    /**
+     * Key for accumulating this checkpoint's per-channel written bytes so that the whole
+     * concatenated stream for one input channel can be validated once at {@link
+     * #completeInput(JobVertexID, int)}. All three input write paths for one channel ((a)
+     * startPersisting's known buffers via {@link #writeInput}, (b) the spill remainder via {@link
+     * #writeInputFromSpill}, (c) maybePersist'd live buffers via {@link #writeInput}) land in this
+     * one accumulator in write order, which equals restore-read order.
+     *
+     * <p>The identity segment ({@code jobVertexID-subtaskIndex-cp<N>}) has no jobId/attempt: {@code
+     * ChannelStateCheckpointWriter} is constructed from {@link JobVertexID}/subtaskIndex pairs only
+     * (see {@link SubtaskID}), with no access to the job or attempt this vertex belongs to. The
+     * {@code -cp<N>} suffix scopes the key to this single checkpoint's write lifecycle.
+     */
+    private String invariantWriteKey(
+            JobVertexID jobVertexID, int subtaskIndex, InputChannelInfo info) {
+        return ChannelStateInvariant.key(
+                jobVertexID + "-" + subtaskIndex + "-cp" + checkpointId,
+                info.toString(),
+                ChannelStateInvariant.Layer.CHECKPOINT_WRITE,
+                ChannelStateInvariant.Direction.INPUT);
+    }
+
+    /**
+     * Key for accumulating this checkpoint's per-subpartition written bytes so that the whole
+     * concatenated stream for one output subpartition can be validated once at {@link
+     * #completeOutput(JobVertexID, int)}. See {@link #invariantWriteKey(JobVertexID, int,
+     * InputChannelInfo)} for why the identity segment has no jobId/attempt.
+     */
+    private String invariantWriteKey(
+            JobVertexID jobVertexID, int subtaskIndex, ResultSubpartitionInfo info) {
+        return ChannelStateInvariant.key(
+                jobVertexID + "-" + subtaskIndex + "-cp" + checkpointId,
+                info.toString(),
+                ChannelStateInvariant.Layer.CHECKPOINT_WRITE,
+                ChannelStateInvariant.Direction.OUTPUT);
+    }
+
+    /**
+     * Tees every byte actually read from a spill segment body into the invariant accumulator for
+     * that channel's {@code CHECKPOINT_WRITE} key, without changing read timing or read sizes (no
+     * pre-reading, plain pass-through of every {@code read} call).
+     */
+    private static final class InvariantTeeInputStream extends InputStream {
+        private final InputStream delegate;
+        private final String key;
+
+        InvariantTeeInputStream(InputStream delegate, String key) {
+            this.delegate = delegate;
+            this.key = key;
+        }
+
+        @Override
+        public int read() throws IOException {
+            int b = delegate.read();
+            if (b >= 0) {
+                ChannelStateInvariant.append(key, ByteBuffer.wrap(new byte[] {(byte) b}));
+            }
+            return b;
+        }
+
+        @Override
+        public int read(byte[] buf, int off, int len) throws IOException {
+            int n = delegate.read(buf, off, len);
+            if (n > 0) {
+                ChannelStateInvariant.append(key, ByteBuffer.wrap(buf, off, n));
+            }
+            return n;
         }
     }
 
@@ -183,9 +260,22 @@ class ChannelStateCheckpointWriter {
                         while ((next = reader.nextSegment()).isPresent()) {
                             SpillSegment seg = next.get();
                             long offset = checkpointStream.getPos();
+                            InputStream body = seg.bodyStream();
+                            if (ChannelStateInvariant.isEnabled()) {
+                                // The spill remainder is the middle piece ((b)) of this channel's
+                                // input bytes for this checkpoint; tee it into the same
+                                // CHECKPOINT_WRITE accumulator as writeInput's (a)/(c) pieces.
+                                body =
+                                        new InvariantTeeInputStream(
+                                                body,
+                                                invariantWriteKey(
+                                                        jobVertexID,
+                                                        subtaskIndex,
+                                                        seg.channelInfo()));
+                            }
                             try (AutoCloseable ignored =
                                     NetworkActionsLogger.measureIO(action, seg.channelInfo())) {
-                                serializer.writeData(dataStream, seg.bodyStream(), seg.length());
+                                serializer.writeData(dataStream, body, seg.length());
                             }
                             long size = checkpointStream.getPos() - offset;
                             pendingResult
@@ -213,6 +303,11 @@ class ChannelStateCheckpointWriter {
             }
             ChannelStatePendingResult pendingResult =
                     getChannelStatePendingResult(jobVertexID, subtaskIndex);
+            if (ChannelStateInvariant.isEnabled() && buffer.readableBytes() > 0) {
+                ChannelStateInvariant.append(
+                        invariantWriteKey(jobVertexID, subtaskIndex, info),
+                        buffer.getNioBufferReadable());
+            }
             write(
                     pendingResult.getResultSubpartitionOffsets(),
                     info,
@@ -248,7 +343,20 @@ class ChannelStateCheckpointWriter {
         if (isDone()) {
             return;
         }
-        getChannelStatePendingResult(jobVertexID, subtaskIndex).completeInput();
+        ChannelStatePendingResult pendingResult =
+                getChannelStatePendingResult(jobVertexID, subtaskIndex);
+        if (ChannelStateInvariant.isEnabled()) {
+            // Matches invariantWriteKey's task label so a [CS-INV]/[CS-INV-ASSERT] line can be
+            // correlated back to the exact checkpoint it was flushed for.
+            String taskLabel = jobVertexID + "-" + subtaskIndex + "-cp" + checkpointId;
+            for (InputChannelInfo info : pendingResult.getInputChannelOffsets().keySet()) {
+                ChannelStateInvariant.flush(
+                        invariantWriteKey(jobVertexID, subtaskIndex, info),
+                        ChannelStateInvariant.label(taskLabel, info.toString()),
+                        ChannelStateInvariant.Layer.CHECKPOINT_WRITE);
+            }
+        }
+        pendingResult.completeInput();
         tryFinishResult();
     }
 
@@ -256,7 +364,23 @@ class ChannelStateCheckpointWriter {
         if (isDone()) {
             return;
         }
-        getChannelStatePendingResult(jobVertexID, subtaskIndex).completeOutput();
+        ChannelStatePendingResult pendingResult =
+                getChannelStatePendingResult(jobVertexID, subtaskIndex);
+        if (ChannelStateInvariant.isEnabled()) {
+            // LENIENT: the buffers written here are in-flight upstream output, so a dangling
+            // partial record at the start or end of the concatenated stream is expected, not a
+            // bug (see ChannelStateInvariant's class-level javadoc).
+            String taskLabel = jobVertexID + "-" + subtaskIndex + "-cp" + checkpointId;
+            for (ResultSubpartitionInfo info :
+                    pendingResult.getResultSubpartitionOffsets().keySet()) {
+                ChannelStateInvariant.flush(
+                        invariantWriteKey(jobVertexID, subtaskIndex, info),
+                        ChannelStateInvariant.label(taskLabel, info.toString()),
+                        ChannelStateInvariant.Layer.CHECKPOINT_WRITE,
+                        ChannelStateInvariant.Mode.LENIENT);
+            }
+        }
+        pendingResult.completeOutput();
         tryFinishResult();
     }
 

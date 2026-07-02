@@ -24,6 +24,7 @@ import org.apache.flink.core.memory.MemorySegmentFactory;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.runtime.checkpoint.CheckpointException;
 import org.apache.flink.runtime.checkpoint.CheckpointFailureReason;
+import org.apache.flink.runtime.checkpoint.channel.ChannelStateInvariant;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
 import org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointBarrier;
 import org.apache.flink.runtime.event.AbstractEvent;
@@ -245,6 +246,14 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
             // filtered but not yet consumed by the Task. They are appended to receivedBuffers so
             // the consume path stays identical to the non-recovery case.
             wasEmpty = appendRecoveredBuffer(buffer);
+            if (ChannelStateInvariant.isEnabled() && buffer.isBuffer()) {
+                // Skip events (RecoveryCheckpointBarrier / EndOfFetchedChannelStateEvent
+                // sentinels); only recovered data bytes belong to the channel's stream. Append
+                // inside the lock: once queued, the task thread may poll and recycle the buffer
+                // concurrently.
+                ChannelStateInvariant.append(
+                        invariantReceiveKey(), buffer.getNioBufferReadable());
+            }
         }
         if (wasEmpty) {
             notifyChannelNonEmpty();
@@ -273,6 +282,28 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
         if (wasEmpty) {
             notifyChannelNonEmpty();
         }
+        if (ChannelStateInvariant.isEnabled()) {
+            // All recovered data for this channel has been delivered: validate the complete
+            // concatenated stream the physical channel received (recovery chain end, STRICT).
+            ChannelStateInvariant.flush(
+                    invariantReceiveKey(),
+                    ChannelStateInvariant.label(
+                            inputGate.getOwningTaskName(), channelInfo + " kind=Remote"),
+                    ChannelStateInvariant.Layer.CHANNEL_RECEIVE);
+        }
+    }
+
+    /**
+     * Accumulator key for the {@code CHANNEL_RECEIVE} layer: everything the drain pushes into this
+     * physical channel via {@link #onRecoveredStateBuffer}. {@code getOwningTaskName()} carries
+     * task name + subtask + attempt, isolating this channel's stream from every other subtask's.
+     */
+    private String invariantReceiveKey() {
+        return ChannelStateInvariant.key(
+                inputGate.getOwningTaskName(),
+                channelInfo + " kind=Remote",
+                ChannelStateInvariant.Layer.CHANNEL_RECEIVE,
+                ChannelStateInvariant.Direction.INPUT);
     }
 
     /**
@@ -879,6 +910,10 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
      * remote-channel barrier sequence tracking and persists overtaken live buffers.
      */
     public void checkpointStarted(CheckpointBarrier barrier) throws CheckpointException {
+        // SNAPSHOT stage instrumentation: the whole collection body below runs under the
+        // receivedBuffers lock, so retain copies inside the lock and validate them outside it
+        // (in the finally), keeping copy/log work off the lock and the writer's buffers untouched.
+        List<Buffer> invariantSnapshot = null;
         try {
             List<Buffer> toPersist;
             synchronized (receivedBuffers) {
@@ -900,6 +935,12 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
                     }
                     toPersist = getInflightBuffersUnsafe(barrier.getId());
                 }
+                if (ChannelStateInvariant.isEnabled() && !toPersist.isEmpty()) {
+                    invariantSnapshot = new ArrayList<>(toPersist.size());
+                    for (Buffer buffer : toPersist) {
+                        invariantSnapshot.add(buffer.retainBuffer());
+                    }
+                }
                 channelStatePersister.startPersisting(barrier.getId(), toPersist);
                 if (inRecovery) {
                     // Recovered inflight buffers are collected in one shot and the upstream sends
@@ -914,6 +955,20 @@ public class RemoteInputChannel extends InputChannel implements RecoverableInput
                     "Failed to extract recovered buffers for checkpoint " + barrier.getId(),
                     CheckpointFailureReason.CHECKPOINT_DECLINED,
                     e);
+        } finally {
+            if (invariantSnapshot != null) {
+                try {
+                    ChannelStateInvariant.validateSnapshot(
+                            ChannelStateInvariant.label(
+                                    inputGate.getOwningTaskName(), channelInfo + " kind=Remote"),
+                            barrier.getId(),
+                            invariantSnapshot);
+                } finally {
+                    for (Buffer buffer : invariantSnapshot) {
+                        buffer.recycleBuffer();
+                    }
+                }
+            }
         }
     }
 

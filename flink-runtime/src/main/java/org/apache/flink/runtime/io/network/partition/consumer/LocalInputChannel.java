@@ -22,6 +22,7 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.runtime.checkpoint.CheckpointException;
 import org.apache.flink.runtime.checkpoint.CheckpointFailureReason;
+import org.apache.flink.runtime.checkpoint.channel.ChannelStateInvariant;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
 import org.apache.flink.runtime.checkpoint.channel.RecoveryCheckpointBarrier;
 import org.apache.flink.runtime.event.AbstractEvent;
@@ -190,6 +191,14 @@ public class LocalInputChannel extends InputChannel
             // Migrate recovered buffers from RecoveredInputChannel. These buffers have been
             // filtered but not yet consumed by the Task.
             wasEmpty = offerRecoveredBuffer(buffer);
+            if (ChannelStateInvariant.isEnabled() && buffer.isBuffer()) {
+                // Skip events (RecoveryCheckpointBarrier / EndOfFetchedChannelStateEvent
+                // sentinels); only recovered data bytes belong to the channel's stream. Append
+                // inside the lock: once offered, the task thread may poll and recycle the buffer
+                // concurrently.
+                ChannelStateInvariant.append(
+                        invariantReceiveKey(), buffer.getNioBufferReadable());
+            }
         }
         if (wasEmpty) {
             notifyChannelNonEmpty();
@@ -213,6 +222,28 @@ public class LocalInputChannel extends InputChannel
         if (wasEmpty) {
             notifyChannelNonEmpty();
         }
+        if (ChannelStateInvariant.isEnabled()) {
+            // All recovered data for this channel has been delivered: validate the complete
+            // concatenated stream the physical channel received (recovery chain end, STRICT).
+            ChannelStateInvariant.flush(
+                    invariantReceiveKey(),
+                    ChannelStateInvariant.label(
+                            inputGate.getOwningTaskName(), channelInfo + " kind=Local"),
+                    ChannelStateInvariant.Layer.CHANNEL_RECEIVE);
+        }
+    }
+
+    /**
+     * Accumulator key for the {@code CHANNEL_RECEIVE} layer: everything the drain pushes into this
+     * physical channel via {@link #onRecoveredStateBuffer}. {@code getOwningTaskName()} carries
+     * task name + subtask + attempt, isolating this channel's stream from every other subtask's.
+     */
+    private String invariantReceiveKey() {
+        return ChannelStateInvariant.key(
+                inputGate.getOwningTaskName(),
+                channelInfo + " kind=Local",
+                ChannelStateInvariant.Layer.CHANNEL_RECEIVE,
+                ChannelStateInvariant.Direction.INPUT);
     }
 
     @Override
@@ -345,6 +376,16 @@ public class LocalInputChannel extends InputChannel
                 } else {
                     toPersist = Collections.emptyList();
                 }
+            }
+            if (ChannelStateInvariant.isEnabled() && !toPersist.isEmpty()) {
+                // SNAPSHOT stage: validate the collected (a) batch outside the lock, before it is
+                // handed to the writer. validateSnapshot retains its own copies, so the buffers
+                // passed on to startPersisting are unaffected.
+                ChannelStateInvariant.validateSnapshot(
+                        ChannelStateInvariant.label(
+                                inputGate.getOwningTaskName(), channelInfo + " kind=Local"),
+                        barrier.getId(),
+                        toPersist);
             }
             channelStatePersister.startPersisting(barrier.getId(), toPersist);
         } catch (IOException e) {
