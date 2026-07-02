@@ -271,7 +271,8 @@ bash repro/repro.sh 6 2000 180
 #                   └────────── 并发 worker 数
 ```
 
-- 当前分支实测命中率约 **0.1–0.3%/run**（远低于参考分支的 ~5%），需要 CPU 争用，预算 ~1000+ runs（见 `repro/repro.sh` 头注）。
+- 当前分支实测命中率约 **5–10%/run**，复现率很高（round 1 插桩版实测 18 run 命中 2 次；`repro/repro.sh` 头注里写的
+  0.1–0.3% 是过时数据）。仍建议多 worker 并发制造 CPU 争用，但预算几十 run 内即可命中。
 - 失败判定（`classify`）与产物（`repro/results/FAIL_w*_*.log`）同参考分支；**命中后立即整目录备份**（HL §9 规则 1）：
   `cp -a repro/results "repro/results-$(date +%Y%m%d_%H%M%S)"`。
 - 已有历史现场：`repro/results/FAIL_w10_2.log`、`FAIL_w18_2.log`、`FAIL_w22_2.log`（`Corrupt stream, found tag: -22`，
