@@ -243,7 +243,6 @@ public class SingleInputGate extends IndexedInputGate {
      */
     private final int[] endOfPartitions;
 
-
     public SingleInputGate(
             String owningTaskName,
             int gateIndex,
