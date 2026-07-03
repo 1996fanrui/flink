@@ -2426,7 +2426,7 @@ class RemoteInputChannelTest {
     }
 
     @Test
-    void testCheckpointStartedDeclinesAsNotReadyWhenRecoveryBarrierIsMissing() throws Exception {
+    void testCheckpointStartedDeclinesWhenRecoveryBarrierIsMissing() throws Exception {
         SingleInputGate inputGate = createSingleInputGate(1);
         RecordingChannelStateWriter stateWriter = new RecordingChannelStateWriter();
         RemoteInputChannel channel =
@@ -2442,20 +2442,18 @@ class RemoteInputChannelTest {
 
         stateWriter.start(1L, UNALIGNED);
 
-        // A missing RecoveryCheckpointBarrier means the channel is not yet ready to snapshot
-        // recovered state for this checkpoint, so it declines as TASK_NOT_READY (not a fatal
-        // CHECKPOINT_DECLINED): the checkpoint is deferred/retried and the recovered buffer is
-        // neither dropped nor persisted.
+        // The snapshot protocol guarantees a RecoveryCheckpointBarrier sentinel is present while
+        // the channel is in recovery, so a missing sentinel is a protocol violation: the checkpoint
+        // is declined and the recovered buffer is neither dropped nor persisted.
         assertThatThrownBy(
                         () -> channel.checkpointStarted(new CheckpointBarrier(1L, 0L, UNALIGNED)))
                 .isInstanceOfSatisfying(
                         CheckpointException.class,
                         e ->
                                 assertThat(e.getCheckpointFailureReason())
-                                        .isEqualTo(
-                                                CheckpointFailureReason
-                                                        .CHECKPOINT_DECLINED_TASK_NOT_READY))
-                .hasMessageContaining("not yet present in channel");
+                                        .isEqualTo(CheckpointFailureReason.CHECKPOINT_DECLINED))
+                .cause()
+                .hasMessageContaining("Missing RecoveryCheckpointBarrier");
         assertThat(b1.refCnt()).isEqualTo(refCntBefore);
         assertThat(stateWriter.getAddedInput().get(channel.getChannelInfo())).isEmpty();
     }
