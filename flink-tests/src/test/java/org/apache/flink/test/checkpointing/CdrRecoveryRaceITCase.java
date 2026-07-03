@@ -48,7 +48,7 @@ import org.junit.jupiter.api.extension.RegisterExtension;
  * future iteration should make it deterministic (e.g. a test-only hook to widen the window, or an
  * unaligned-checkpoint restore that carries in-flight channel state) before relying on it.
  */
-// TODO(FLINK-38544): make this deterministically reproduce the non-source recovery race.
+// TODO FLINK-38544: make this deterministically reproduce the non-source recovery race.
 class CdrRecoveryRaceITCase {
 
     private static final int PARALLELISM = 8;
