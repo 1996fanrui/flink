@@ -35,7 +35,6 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -175,11 +174,6 @@ class FetchedChannelStateDrainerConcurrencyTest {
 
         @Override
         public synchronized void onRecoveredStateConsumed() {}
-
-        @Override
-        public CompletableFuture<Void> getStateConsumedFuture() {
-            return CompletableFuture.completedFuture(null);
-        }
 
         synchronized int barrierCount() {
             return barriers.size();

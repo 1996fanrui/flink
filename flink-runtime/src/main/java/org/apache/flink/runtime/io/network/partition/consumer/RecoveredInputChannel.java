@@ -54,7 +54,7 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     private static final Logger LOG = LoggerFactory.getLogger(RecoveredInputChannel.class);
 
     private final ArrayDeque<Buffer> receivedBuffers = new ArrayDeque<>();
-    private final CompletableFuture<?> stateConsumedFuture = new CompletableFuture<>();
+    private final CompletableFuture<Void> stateConsumedFuture = new CompletableFuture<>();
     protected final BufferManager bufferManager;
 
     @GuardedBy("receivedBuffers")
@@ -127,7 +127,8 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     protected abstract InputChannel toInputChannelInternal(boolean needsRecovery)
             throws IOException;
 
-    CompletableFuture<?> getStateConsumedFuture() {
+    @Override
+    public CompletableFuture<Void> getStateConsumedFuture() {
         return stateConsumedFuture;
     }
 

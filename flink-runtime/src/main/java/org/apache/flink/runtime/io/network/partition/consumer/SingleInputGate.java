@@ -321,11 +321,7 @@ public class SingleInputGate extends IndexedInputGate {
         synchronized (requestLock) {
             List<CompletableFuture<?>> futures = new ArrayList<>(numberOfInputChannels);
             for (InputChannel inputChannel : inputChannels()) {
-                if (inputChannel instanceof RecoveredInputChannel) {
-                    futures.add(((RecoveredInputChannel) inputChannel).getStateConsumedFuture());
-                } else if (inputChannel instanceof RecoverableInputChannel) {
-                    futures.add(((RecoverableInputChannel) inputChannel).getStateConsumedFuture());
-                }
+                futures.add(inputChannel.getStateConsumedFuture());
             }
             return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
         }
@@ -948,7 +944,7 @@ public class SingleInputGate extends IndexedInputGate {
         // Firstly, read the buffers from the recovered channel
         if (inputChannel instanceof RecoveredInputChannel && !inputChannel.isReleased()) {
             Optional<Buffer> buffer = readBufferFromInputChannel(inputChannel);
-            if (!((RecoveredInputChannel) inputChannel).getStateConsumedFuture().isDone()) {
+            if (!inputChannel.getStateConsumedFuture().isDone()) {
                 return buffer;
             }
         }

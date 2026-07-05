@@ -22,7 +22,6 @@ import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 
 import java.io.IOException;
-import java.util.concurrent.CompletableFuture;
 
 /** Physical input channel that can receive recovered buffers pushed by the spill drain. */
 @Internal
@@ -61,10 +60,4 @@ public interface RecoverableInputChannel {
      * live data may flow again.
      */
     void onRecoveredStateConsumed() throws IOException;
-
-    /**
-     * Completes once this channel has left recovery: it never needed recovery, {@link
-     * #onRecoveredStateConsumed()} ran, or the channel was released.
-     */
-    CompletableFuture<Void> getStateConsumedFuture();
 }
