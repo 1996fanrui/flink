@@ -25,7 +25,7 @@ under the License.
 	<parent>
 		<groupId>org.apache.flink</groupId>
 		<artifactId>flink-metrics</artifactId>
-		<version>2.4-SNAPSHOT</version>
+		<version>os-troubleshooting-b5c7c0ccc97</version>
 	</parent>
 
 	<artifactId>flink-metrics-influxdb</artifactId>

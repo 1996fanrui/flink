@@ -25,7 +25,7 @@ under the License.
     <parent>
         <artifactId>flink-end-to-end-tests</artifactId>
         <groupId>org.apache.flink</groupId>
-        <version>2.4-SNAPSHOT</version>
+        <version>os-troubleshooting-b5c7c0ccc97</version>
     </parent>
 
     <packaging>pom</packaging>
