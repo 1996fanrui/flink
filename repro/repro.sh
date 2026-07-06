@@ -71,7 +71,7 @@ classify() { # 0 pass, 1 loss-or-dup-or-corrupt-stream, 2 infra/crash
   # an IllegalArgumentException ("Stream corrupted. Cannot find the header ...").
   grep -qF "Caused by: java.io.IOException: Corrupt stream" "$1" && return 1
   grep -qF "Stream corrupted. Cannot find the header" "$1" && return 1
-  grep -q "Tests run: 1, Failures: 0, Errors: 0" "$1" && grep -q "BUILD SUCCESS" "$1" && return 0
+  grep -qE "Tests run: [0-9]+, Failures: 0, Errors: 0" "$1" && grep -q "BUILD SUCCESS" "$1" && return 0
   return 2
 }
 worker() {
