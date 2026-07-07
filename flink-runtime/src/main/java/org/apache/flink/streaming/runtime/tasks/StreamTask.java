@@ -316,7 +316,9 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
             RecoveryCheckpointTrigger.NOT_READY;
 
     /**
-     * Completes when channel recovery has finished; set by {@link #restoreStateAndGates}. Used to
+     * Completes when the restore phase may end; set by {@link #restoreStateAndGates}. With
+     * checkpointing during recovery this is the point where the recovery checkpoint trigger is
+     * installed, while draining and consuming the fetched state continue in the background. Used to
      * defer the lifecycle finish of a task that reaches {@code END_OF_INPUT} during recovery (e.g.
      * a bounded operator whose input is already fully available) so that it does not suspend the
      * restore mailbox loop before recovery completes. Accessed only on the mailbox/task thread.
@@ -954,30 +956,44 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
                         state ->
                                 requestPartitions(inputGates, state.isPresent())
                                         .thenApply(channels -> buildDrainer(state, channels)))
-                .thenCompose(this::drainThroughCheckpointTrigger)
                 .thenCompose(
-                        ign ->
-                                completeAll(
-                                        Arrays.stream(inputGates)
-                                                .map(InputGate::getStateConsumedFuture)
-                                                .collect(Collectors.toList())))
-                .thenRun(() -> setRecoveryCheckpointTrigger(RecoveryCheckpointTrigger.NO_OP));
+                        drainerOpt -> {
+                            if (drainerOpt.isEmpty()) {
+                                return setRecoveryCheckpointTrigger(
+                                        RecoveryCheckpointTrigger.NO_OP);
+                            }
+                            FetchedChannelStateDrainer drainer = drainerOpt.get();
+                            CompletableFuture<Void> triggerInstalled =
+                                    setRecoveryCheckpointTrigger(drainer);
+                            triggerInstalled
+                                    .thenRunAsync(() -> drain(drainer), channelIOExecutor)
+                                    .thenCompose(
+                                            ign ->
+                                                    completeAll(
+                                                            Arrays.stream(inputGates)
+                                                                    .map(
+                                                                            InputGate
+                                                                                    ::getStateConsumedFuture)
+                                                                    .collect(Collectors.toList())))
+                                    .thenCompose(
+                                            ign ->
+                                                    setRecoveryCheckpointTrigger(
+                                                            RecoveryCheckpointTrigger.NO_OP))
+                                    .exceptionally(
+                                            t -> {
+                                                asyncExceptionHandler.handleAsyncException(
+                                                        "Unable to finalize recovered channel state consumption",
+                                                        t);
+                                                return null;
+                                            });
+                            return triggerInstalled;
+                        });
     }
 
     @SuppressWarnings("OptionalUsedAsFieldOrParameterType") // intentional: simplify call-site
     private Optional<FetchedChannelStateDrainer> buildDrainer(
             Optional<FetchedChannelState> state, List<RecoverableInputChannel> channels) {
         return state.map(s -> new FetchedChannelStateDrainer(s, channels));
-    }
-
-    @SuppressWarnings("OptionalUsedAsFieldOrParameterType") // intentional: simplify call-site
-    private CompletableFuture<Void> drainThroughCheckpointTrigger(
-            Optional<FetchedChannelStateDrainer> drainer) {
-        if (drainer.isEmpty()) {
-            return FutureUtils.completedVoidFuture();
-        }
-        FetchedChannelStateDrainer d = drainer.get();
-        return setRecoveryCheckpointTrigger(d).thenRunAsync(() -> drain(d), channelIOExecutor);
     }
 
     private CompletableFuture<Void> setRecoveryCheckpointTrigger(
