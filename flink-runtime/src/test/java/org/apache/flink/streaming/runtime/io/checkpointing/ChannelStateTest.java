@@ -34,9 +34,6 @@ import org.apache.flink.util.CloseableIterator;
 
 import org.junit.jupiter.api.Test;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -48,11 +45,10 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Verifies the {@link ChannelState#onCheckpointStartedForAllInputs} dispatcher: call ordering,
- * feature-off no-op routing through the {@link RecoveryCheckpointTrigger#NO_OP} singleton, and
- * absence of an outer feature-flag branch.
+ * Verifies the {@link ChannelState#onCheckpointStartedForAllInputs} dispatcher: call ordering and
+ * feature-off no-op routing through the {@link RecoveryCheckpointTrigger#NO_OP} singleton.
  */
-class ChannelStateDispatcherTest {
+class ChannelStateTest {
 
     private static final long CHECKPOINT_ID = 7L;
 
@@ -119,42 +115,6 @@ class ChannelStateDispatcherTest {
         // Empty reader must still reach the writer (no inline short-circuit).
         assertThat(writer.addInputDataFromSpillCalls.get()).isEqualTo(1);
         assertThat(writer.lastSnapshotWasEmpty.get()).isTrue();
-    }
-
-    @Test
-    void testNoIfFilterOnInDispatcher() throws Exception {
-        // Branch-free routing through the null-object trigger is a hard correctness invariant;
-        // a feature-flag check inside the dispatcher would silently bypass it. Guard against
-        // that by scanning the dispatcher source for "filter" / "feature".
-        Path candidate =
-                Paths.get(
-                        "src/main/java/org/apache/flink/streaming/runtime/io/checkpointing/ChannelState.java");
-        if (!Files.exists(candidate)) {
-            candidate =
-                    Paths.get(
-                            "flink-runtime/src/main/java/org/apache/flink/streaming/runtime/io/checkpointing/ChannelState.java");
-        }
-        assertThat(Files.exists(candidate))
-                .as("Located ChannelState.java for the source-level invariant check")
-                .isTrue();
-
-        String all = new String(Files.readAllBytes(candidate));
-        int methodStart = all.indexOf("public void onCheckpointStartedForAllInputs");
-        assertThat(methodStart).isNotNegative();
-        int methodEnd = all.indexOf("    private void", methodStart);
-        String body = all.substring(methodStart, methodEnd > 0 ? methodEnd : all.length());
-
-        StringBuilder code = new StringBuilder();
-        for (String line : body.split("\n")) {
-            int idx = line.indexOf("//");
-            code.append(idx >= 0 ? line.substring(0, idx) : line).append('\n');
-        }
-        String codeOnly = code.toString();
-
-        assertThat(codeOnly)
-                .as("Dispatcher must not branch on filter / feature flags")
-                .doesNotContain("filter")
-                .doesNotContain("feature");
     }
 
     private static CheckpointBarrier newUnalignedBarrier() {

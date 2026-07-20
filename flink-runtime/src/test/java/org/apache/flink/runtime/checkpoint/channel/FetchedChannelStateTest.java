@@ -29,7 +29,11 @@ import java.util.Collections;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Tests for {@link FetchedChannelState} lifecycle and file list management. */
+/**
+ * Tests for {@link FetchedChannelState} lifecycle and file list management: reference counting
+ * (acquire/release pairing, zero-triggered file deletion, release-past-zero no-op), forced {@link
+ * FetchedChannelState#close()} cleanup, and the unmodifiable ordered file list.
+ */
 class FetchedChannelStateTest {
 
     @TempDir Path tempDir;
@@ -114,5 +118,72 @@ class FetchedChannelStateTest {
         // close() after last release must be a no-op (no double-delete attempt).
         state.close();
         assertThat(state.isClosed()).isTrue();
+    }
+
+    @Test
+    void testReleaseAfterZeroIsNoOp() throws IOException {
+        FetchedChannelState state = newStateWithData();
+        // Release the single handoff grant the produced state already holds.
+        state.release();
+        assertFilesDeleted(state);
+
+        // Extra releases past zero must be a no-op.
+        state.release();
+        state.release();
+        assertFilesDeleted(state);
+    }
+
+    @Test
+    void testBalancedAcquireReleaseDeletesOnlyOnLastRelease() throws IOException {
+        FetchedChannelState state = newStateWithData();
+
+        // The produced state already holds one handoff grant.
+        state.acquire();
+        state.acquire();
+
+        state.release();
+        state.release();
+        assertFilesExist(state);
+
+        state.release();
+        assertFilesDeleted(state);
+    }
+
+    @Test
+    void testForceCloseCleansFilesAndToleratesLateRelease() throws IOException {
+        FetchedChannelState state = newStateWithData();
+        // The produced state already holds one handoff grant.
+        state.acquire();
+        assertFilesExist(state);
+
+        state.close();
+        assertFilesDeleted(state);
+
+        // Double close must be a no-op.
+        state.close();
+
+        // Late release after close must not re-delete or throw.
+        state.release();
+        assertFilesDeleted(state);
+    }
+
+    private FetchedChannelState newStateWithData() throws IOException {
+        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
+            writer.writeRecord(new InputChannelInfo(0, 0), new byte[] {1, 2, 3}, 3);
+            writer.writeRecord(new InputChannelInfo(0, 1), new byte[] {4, 5}, 2);
+            return writer.getChannelState();
+        }
+    }
+
+    private static void assertFilesExist(FetchedChannelState state) {
+        for (Path file : state.files()) {
+            assertThat(file.toFile()).exists();
+        }
+    }
+
+    private static void assertFilesDeleted(FetchedChannelState state) {
+        for (Path file : state.files()) {
+            assertThat(file.toFile()).doesNotExist();
+        }
     }
 }

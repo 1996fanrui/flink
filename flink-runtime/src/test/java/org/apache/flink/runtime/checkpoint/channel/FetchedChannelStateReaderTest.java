@@ -380,8 +380,7 @@ class FetchedChannelStateReaderTest {
         try (FetchedChannelStateReader reader = state.reader()) {
             SpillSegment seg = reader.nextSegment().orElseThrow(AssertionError::new);
             // bufferLength from header says > 0 bytes, but file has nothing after the header.
-            assertThatThrownBy(() -> readAll(seg.bodyStream()))
-                    .isInstanceOfAny(EOFException.class, IOException.class);
+            assertThatThrownBy(() -> readAll(seg.bodyStream())).isInstanceOf(EOFException.class);
         }
     }
 

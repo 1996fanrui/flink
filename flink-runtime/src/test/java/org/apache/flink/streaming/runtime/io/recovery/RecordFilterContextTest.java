@@ -24,6 +24,9 @@ import org.apache.flink.runtime.memory.MemoryManager;
 import org.apache.flink.streaming.runtime.partitioner.ForwardPartitioner;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.nio.file.Path;
 
 import static org.apache.flink.runtime.checkpoint.InflightDataRescalingDescriptorUtil.mappings;
 import static org.apache.flink.runtime.checkpoint.InflightDataRescalingDescriptorUtil.rescalingDescriptor;
@@ -34,12 +37,18 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /** Tests for {@link RecordFilterContext}. */
 class RecordFilterContextTest {
 
+    @TempDir private Path tempDir;
+
+    private String[] tmpDirs() {
+        return new String[] {tempDir.toString()};
+    }
+
     @Test
     void testDisabledContextHasNoGates() {
-        RecordFilterContext disabled = RecordFilterContext.disabled(new String[] {"/tmp"});
+        RecordFilterContext disabled = RecordFilterContext.disabled(tmpDirs());
         assertThat(disabled.getNumberOfGates()).isEqualTo(0);
         assertThat(disabled.isCheckpointingDuringRecoveryEnabled()).isFalse();
-        assertThat(disabled.getTmpDirectories()).containsExactly("/tmp");
+        assertThat(disabled.getTmpDirectories()).containsExactly(tempDir.toString());
     }
 
     @Test
@@ -54,7 +63,7 @@ class RecordFilterContextTest {
                         InflightDataRescalingDescriptor.NO_RESCALE,
                         0,
                         128,
-                        new String[] {"/tmp"},
+                        tmpDirs(),
                         true,
                         MemoryManager.DEFAULT_PAGE_SIZE);
 
@@ -73,7 +82,7 @@ class RecordFilterContextTest {
                         InflightDataRescalingDescriptor.NO_RESCALE,
                         0,
                         128,
-                        new String[] {"/tmp"},
+                        tmpDirs(),
                         false,
                         MemoryManager.DEFAULT_PAGE_SIZE);
 
@@ -152,7 +161,7 @@ class RecordFilterContextTest {
                         descriptor,
                         0,
                         128,
-                        new String[] {"/tmp"},
+                        tmpDirs(),
                         false,
                         MemoryManager.DEFAULT_PAGE_SIZE);
 
@@ -173,7 +182,7 @@ class RecordFilterContextTest {
                         descriptor,
                         0,
                         128,
-                        new String[] {"/tmp"},
+                        tmpDirs(),
                         true,
                         MemoryManager.DEFAULT_PAGE_SIZE);
 
@@ -193,7 +202,7 @@ class RecordFilterContextTest {
                         descriptor,
                         0,
                         128,
-                        new String[] {"/tmp"},
+                        tmpDirs(),
                         true,
                         MemoryManager.DEFAULT_PAGE_SIZE);
 
@@ -211,7 +220,7 @@ class RecordFilterContextTest {
                         InflightDataRescalingDescriptor.NO_RESCALE,
                         0,
                         128,
-                        new String[] {"/tmp"},
+                        tmpDirs(),
                         false,
                         MemoryManager.DEFAULT_PAGE_SIZE * 2);
 
@@ -225,7 +234,7 @@ class RecordFilterContextTest {
                                         InflightDataRescalingDescriptor.NO_RESCALE,
                                         0,
                                         128,
-                                        new String[] {"/tmp"},
+                                        tmpDirs(),
                                         false,
                                         0))
                 .isInstanceOf(IllegalArgumentException.class);
@@ -236,7 +245,7 @@ class RecordFilterContextTest {
                                         InflightDataRescalingDescriptor.NO_RESCALE,
                                         0,
                                         128,
-                                        new String[] {"/tmp"},
+                                        tmpDirs(),
                                         false,
                                         -1))
                 .isInstanceOf(IllegalArgumentException.class);
@@ -268,7 +277,7 @@ class RecordFilterContextTest {
                         InflightDataRescalingDescriptor.NO_RESCALE,
                         1,
                         256,
-                        new String[] {"/tmp"},
+                        tmpDirs(),
                         false,
                         MemoryManager.DEFAULT_PAGE_SIZE);
 

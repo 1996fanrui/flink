@@ -37,6 +37,12 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -332,6 +338,106 @@ class FetchedChannelStateDrainerTest {
         snap.close();
     }
 
+    @Test
+    void testDrainOnExecutorThreadDeliversAndFinishes() throws Exception {
+        InputChannelInfo cInfo = new InputChannelInfo(0, 0);
+        FetchedChannelState state = writeRecords(cInfo, payload(1));
+
+        CapturingChannel chan = new CapturingChannel(cInfo);
+        FetchedChannelStateDrainer drainer = newDrainer(state, cInfo, chan);
+
+        ExecutorService channelIOExecutor = Executors.newSingleThreadExecutor();
+        try {
+            CompletableFuture<Void> done = new CompletableFuture<>();
+            channelIOExecutor.execute(
+                    () -> {
+                        try {
+                            drainer.drain();
+                            done.complete(null);
+                        } catch (Throwable t) {
+                            done.completeExceptionally(t);
+                        } finally {
+                            try {
+                                drainer.close();
+                            } catch (IOException ignore) {
+                            }
+                        }
+                    });
+
+            done.get(5, TimeUnit.SECONDS);
+            assertThat(chan.dataDeliveries).isGreaterThan(0);
+            assertThat(chan.finishCalled).isTrue();
+        } finally {
+            channelIOExecutor.shutdownNow();
+            assertThat(channelIOExecutor.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
+        }
+    }
+
+    @Test
+    void testDrainOnExecutorThreadBubblesDeliveryException() throws Exception {
+        InputChannelInfo cInfo = new InputChannelInfo(0, 0);
+        FetchedChannelState state = writeRecords(cInfo, payload(1));
+
+        RecoverableInputChannel chan =
+                new RecoverableInputChannel() {
+                    @Override
+                    public InputChannelInfo getChannelInfo() {
+                        return cInfo;
+                    }
+
+                    @Override
+                    public void onRecoveredStateBuffer(Buffer buffer) {
+                        throw new RuntimeException("boom");
+                    }
+
+                    @Override
+                    public void finishRecoveredBufferDelivery() {}
+
+                    @Override
+                    public void insertRecoveryCheckpointBarrierIfInRecovery(long checkpointId) {
+                        throw new RuntimeException("boom");
+                    }
+
+                    @Override
+                    public Buffer requestRecoveryBufferBlocking() {
+                        MemorySegment seg = MemorySegmentFactory.allocateUnpooledSegment(64);
+                        return new NetworkBuffer(seg, FreeingBufferRecycler.INSTANCE);
+                    }
+
+                    @Override
+                    public void onRecoveredStateConsumed() {}
+                };
+
+        FetchedChannelStateDrainer drainer = newDrainer(state, cInfo, chan);
+
+        CountDownLatch handlerCalled = new CountDownLatch(1);
+        AtomicReference<Throwable> captured = new AtomicReference<>();
+        ExecutorService channelIOExecutor = Executors.newSingleThreadExecutor();
+        try {
+            channelIOExecutor.execute(
+                    () -> {
+                        try {
+                            drainer.drain();
+                        } catch (Throwable t) {
+                            captured.set(t);
+                            handlerCalled.countDown();
+                        } finally {
+                            try {
+                                drainer.close();
+                            } catch (IOException ignore) {
+                            }
+                        }
+                    });
+
+            assertThat(handlerCalled.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(captured.get()).isInstanceOf(RuntimeException.class);
+            assertThat(captured.get().getMessage()).isEqualTo("boom");
+        } finally {
+            channelIOExecutor.shutdownNow();
+            assertThat(channelIOExecutor.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
+        }
+    }
+
     // -------------------------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------------------------
@@ -465,6 +571,46 @@ class FetchedChannelStateDrainerTest {
         @Override
         public Buffer requestRecoveryBufferBlocking() {
             MemorySegment seg = MemorySegmentFactory.allocateUnpooledSegment(bufferCapacity);
+            return new NetworkBuffer(seg, FreeingBufferRecycler.INSTANCE);
+        }
+
+        @Override
+        public void onRecoveredStateConsumed() {}
+    }
+
+    /** Counts data deliveries and finish for the executor-thread drain tests. */
+    private static final class CapturingChannel implements RecoverableInputChannel {
+        private final InputChannelInfo channelInfo;
+        int dataDeliveries = 0;
+        boolean finishCalled = false;
+
+        CapturingChannel(InputChannelInfo channelInfo) {
+            this.channelInfo = channelInfo;
+        }
+
+        @Override
+        public InputChannelInfo getChannelInfo() {
+            return channelInfo;
+        }
+
+        @Override
+        public void onRecoveredStateBuffer(Buffer buffer) {
+            if (buffer.isBuffer()) {
+                dataDeliveries++;
+            }
+        }
+
+        @Override
+        public void finishRecoveredBufferDelivery() {
+            finishCalled = true;
+        }
+
+        @Override
+        public void insertRecoveryCheckpointBarrierIfInRecovery(long checkpointId) {}
+
+        @Override
+        public Buffer requestRecoveryBufferBlocking() {
+            MemorySegment seg = MemorySegmentFactory.allocateUnpooledSegment(64);
             return new NetworkBuffer(seg, FreeingBufferRecycler.INSTANCE);
         }
 
