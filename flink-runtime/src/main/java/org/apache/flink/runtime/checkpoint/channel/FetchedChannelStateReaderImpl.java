@@ -129,7 +129,9 @@ final class FetchedChannelStateReaderImpl implements FetchedChannelStateReader {
         openFileAndSeek();
         currentSegment =
                 new Segment(
-                        this, current.channel, new BoundedSegmentStream(this, current.remaining));
+                        this,
+                        current.channel,
+                        new BoundedSegmentStream(currentFileStream, current, current.remaining));
         return Optional.of(currentSegment);
     }
 
@@ -140,11 +142,14 @@ final class FetchedChannelStateReaderImpl implements FetchedChannelStateReader {
         }
         SegmentHeader header = readHeaderAtCurrent();
         current.startSegment(header.channelInfo, header.bufferLength);
+        if (currentSegment != null) {
+            currentSegment.body.invalidate();
+        }
         currentSegment =
                 new Segment(
                         this,
                         header.channelInfo,
-                        new BoundedSegmentStream(this, header.bufferLength));
+                        new BoundedSegmentStream(currentFileStream, current, header.bufferLength));
         return Optional.of(currentSegment);
     }
 
@@ -244,18 +249,6 @@ final class FetchedChannelStateReaderImpl implements FetchedChannelStateReader {
     private void readFully(byte[] buf) throws IOException {
         IOUtils.readFully(currentFileStream, buf, 0, buf.length);
         current.advanceReadOffset(buf.length);
-    }
-
-    /**
-     * Reads up to {@code len} body bytes from the current file; called only by the body view. The
-     * only place body progress moves, so {@code readOffset} and {@code remaining} cannot drift.
-     */
-    private int readBody(byte[] buf, int off, int len) throws IOException {
-        int n = currentFileStream.read(buf, off, len);
-        if (n > 0) {
-            current.advanceBody(n);
-        }
-        return n;
     }
 
     private void closeFileStream() throws IOException {
@@ -392,12 +385,21 @@ final class FetchedChannelStateReaderImpl implements FetchedChannelStateReader {
      * file; the reader owns it.
      */
     private static final class BoundedSegmentStream extends InputStream {
-        private final FetchedChannelStateReaderImpl reader;
+        private final InputStream fileStream;
+        private final Position current;
         private final int length;
 
-        private BoundedSegmentStream(FetchedChannelStateReaderImpl reader, int length) {
-            this.reader = reader;
+        /** Set when the reader hands out the next segment; this view must not be read after. */
+        private boolean stale;
+
+        private BoundedSegmentStream(InputStream fileStream, Position current, int length) {
+            this.fileStream = fileStream;
+            this.current = current;
             this.length = length;
+        }
+
+        private void invalidate() {
+            stale = true;
         }
 
         /** Number of body bytes this view will hand out. */
@@ -414,18 +416,19 @@ final class FetchedChannelStateReaderImpl implements FetchedChannelStateReader {
 
         @Override
         public int read(byte[] buf, int off, int len) throws IOException {
-            checkState(
-                    reader.currentSegment != null && reader.currentSegment.body == this,
-                    "Reading a segment that is no longer the current one");
-            if (reader.current.remaining == 0) {
+            checkState(!stale, "Reading a segment that is no longer the current one");
+            if (current.remaining == 0) {
                 return -1;
             }
-            int toRead = Math.min(len, reader.current.remaining);
-            int n = reader.readBody(buf, off, toRead);
+            int toRead = Math.min(len, current.remaining);
+            int n = fileStream.read(buf, off, toRead);
+            if (n > 0) {
+                current.advanceBody(n);
+            }
             if (n < 0) {
                 throw new EOFException(
                         "Unexpected EOF in segment body after "
-                                + (length - reader.current.remaining)
+                                + (length - current.remaining)
                                 + "/"
                                 + length
                                 + " bytes");
