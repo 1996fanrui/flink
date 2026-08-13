@@ -167,6 +167,10 @@
   .modal-card dd{margin:0;color:var(--ink-2);line-height:1.6}
   .modal-card dd a{color:var(--work);text-decoration:none;border-bottom:1px solid var(--rule)}
   .modal-card dd a:hover{border-bottom-color:var(--work)}
+  .modal-card dd ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:7px}
+  .modal-card dd li{position:relative;padding-left:14px}
+  .modal-card dd li::before{content:"";position:absolute;left:2px;top:9px;width:4px;height:4px;border-radius:50%;background:var(--ink-3)}
+  .modal-card dd li b{color:var(--ink);font-weight:600}
   .modal-card dd code{font-family:var(--data);font-size:11.5px}
   .modal-close{
     position:absolute;top:14px;right:14px;width:28px;height:28px;
@@ -441,91 +445,120 @@
     var PR = "https://github.com/apache/flink/pull/";
     var JR = "https://issues.apache.org/jira/browse/";
     var D = {
-      /* ---- chart 1: effort bars ---- */
+      /* ---- chart 1: effort ---- */
       e1:{t:"Phase 1 — recover output buffers on the downstream side",
-        a:"2025-10-21", b:"2025-11-02", d:"12 days · 2.5 weeks effort · estimated 2w",
+        a:"2025-10-21", b:"2025-11-02", d:"12 days · 2.5 weeks · estimated 2 w",
         j:["FLINK-38542"], p:["27182"],
-        n:"Upstream ResultSubpartition output buffers are recovered directly on the downstream task. Dev ran from the JIRA being opened to the PR going up; the 2.5w also covers the test runs and troubleshooting done during review in Nov–Dec."},
+        n:["Upstream output buffers are recovered directly on the downstream task.",
+           "Dev ran from the JIRA opening to the PR going up.",
+           "The 2.5 w also covers test runs and troubleshooting during review."]},
       e2:{t:"Phase 2 — CDR without spilling",
-        a:"2026-01-14", b:"2026-03-12", d:"57-day span − 4 d on-call = 53 d · 7.6 weeks · estimated 6w",
+        a:"2026-01-14", b:"2026-03-12", d:"57 d span − 4 d on-call = 53 d · 7.6 weeks · estimated 6 w",
         j:["FLINK-38541","FLINK-38930","FLINK-39018","FLINK-38543","FLINK-39140"],
         p:["27639","27688","27782","27783","27861","27862"],
-        n:"Submitted as ONE big PR #27639 (\"FLIP-547: Support checkpoint during recovery\") on 02-20, then carved into four PRs over six weeks. Development ended 03-12: last code authored, last force-push of the WIP PR, and the 03-10 retro records \"Finished the development for V1\". Splitting started 03-18 — you cannot split work that is not finished. On-call and offsite deducted: 2026-01-21→01-23 and 2026-02-11 (4 days)."},
-      e3a:{t:"Phase 3a — spilling, first attempt (discarded)",
-        a:"2026-03-13", b:"2026-05-04", d:"52-day span − 7 d leave − 5 d on-call − 2 d public holiday = 38 d · 5.4 weeks",
+        n:["Submitted as ONE big PR (#27639) on 02-20, then carved into four PRs.",
+           "Dev ended 03-12: last code commit, last force-push, and the 03-10 retro says \"development finished\".",
+           "Splitting started 03-18 — you cannot split work that is not finished.",
+           "<b>In parallel all window: rolling out Phase 1 (FLINK-38542), plus reviews and day-to-day work — none of it deducted, so 7.6 w overstates the time actually available.</b>",
+           "One 18-day window (01-30 → 02-17) has no commits and no established cause."]},
+      e3a:{t:"Phase 3a — spilling, first attempt (all discarded)",
+        a:"2026-03-13", b:"2026-05-04", d:"52 d span − 7 d leave − 5 d on-call − 2 d holiday = 38 d · 5.4 weeks",
         j:["FLINK-38544","FLINK-39519"], p:["27905","28073","28107"],
-        n:"Reached 6,643 lines across 46 files. Review concluded on 05-19 that it needed a low-level re-design; all of it was written off. Deducted from the span: 7 d PTO (03-18→03-25), 5 d on-call (04-05→04-08, 04-22) and 2 NRW public holidays (Karfreitag 04-03, Tag der Arbeit 05-01)."},
+        n:["Reached 6,643 lines across 46 files before review saw it.",
+           "Two design revisions in flight before it ever reached Apache.",
+           "<b>05-19: review called for a low-level re-design. All of it written off.</b>",
+           "Root cause: spilling was estimated at 2 w with no design behind the number."]},
       e3r:{t:"Phase 3 — redesign, discussion, alignment",
-        a:"2026-05-05", b:"2026-05-20", d:"15-day span − 1 d public holiday = 14 d · 2.0 weeks",
+        a:"2026-05-05", b:"2026-05-20", d:"15 d span − 1 d holiday = 14 d · 2.0 weeks",
         j:["FLINK-38544"], p:[],
-        n:"The first spilling design document is dated 2026-05-20 — nine weeks after coding on spilling began. Christi Himmelfahrt (05-14) is deducted from the span."},
+        n:["Commits literally named \"redesign\" and \"move discussions\", plus five design documents.",
+           "<b>The first spilling design document is dated 05-20 — nine weeks after coding on spilling began.</b>"]},
       e3b:{t:"Phase 3b — spilling v2",
-        a:"2026-05-21", b:"2026-07-06", d:"46-day span − 5 d offsite − 6 d on-call − 1 d public holiday − 8 d defect hunt = 26 d · 3.8 weeks",
+        a:"2026-05-21", b:"2026-07-06", d:"46 d span − 5 d offsite − 6 d on-call − 1 d holiday − 8 d defect hunt = 26 d · 3.8 weeks",
         j:["FLINK-39520","FLINK-39521","FLINK-39522","FLINK-39523","FLINK-39524","FLINK-40080","FLINK-40081"],
         p:["28517","28651","28652","28659","28660","28661","28662","28663"],
-        n:"+8,031/−1,055 across 98 files, split on 07-06 into 7 stacked PRs. Includes a 2-week pre-PR review round on the branch and ~1.5 weeks hunting FLINK-40016. On-call and offsite deducted: offsite week 06-08→06-12 (5 d), on-call 05-25, 06-14→06-17, 06-26 (6 d), Fronleichnam 06-04 (1 d), and the 8-day FLINK-40016 hunt, counted on its own row."},
+        n:["Rebuilt against the new design: +8,031/−1,055 across 98 files.",
+           "Split on 07-06 into 7 stacked PRs so it could be reviewed at all.",
+           "Includes a 2-week pre-PR review round on the branch, before #28517 existed."]},
+      e40016:{t:"FLINK-40016 — hunt & fix a defect introduced in Phase 2",
+        a:"2026-06-23", b:"2026-07-02", d:"9 d window − 1 d on-call = 8 d · 1.1 weeks · not estimated",
+        j:["FLINK-40016","FLINK-39018"], p:["28605","28607"],
+        n:["Not spilling work, and not a new bug.",
+           "<b>Recovered buffers persisted twice in LocalInputChannel — introduced by FLINK-39018 in Phase 2, in master since 04-07.</b>",
+           "Surfaced only when Phase 3b's tests exercised it; fixed in one day once identified.",
+           "Lifted out of Phase 3b and counted once here, so the days are never charged twice."]},
 
       /* ---- chart 2: calendar ---- */
       c1dev:{t:"Phase 1 — development",
-        a:"2025-10-21", b:"2025-11-02", d:"12 days · 1.7 calendar weeks",
+        a:"2025-10-21", b:"2025-11-02", d:"12 days · 2.5 weeks",
         j:["FLINK-38542"], p:["27182"],
-        n:"Adds ResultSubpartitionDistributor and one-buffer-to-one-channel distribution."},
+        n:["Adds ResultSubpartitionDistributor and one-buffer-to-one-channel distribution."]},
       c1rev:{t:"Phase 1 — async review",
         a:"2025-11-02", b:"2025-12-12", d:"40 days · 5.7 calendar weeks",
         j:["FLINK-38542"], p:["27182"],
-        n:"Reviewer: pnowojski. First review 2025-11-13, 11 days after the PR opened. 9 review comments over 5 submissions."},
+        n:["Reviewer: pnowojski. First review 11-13, 11 days after the PR opened.",
+           "9 review comments over 5 submissions."]},
       c1leave:{t:"Leave",
         a:"2025-12-12", b:"2026-01-09", d:"28 days · 4 weeks",
         j:[], p:[],
-        n:"Zero commits on any branch across this window — confirmed leave, not review latency."},
+        n:["Zero commits on any branch — confirmed leave, not review latency."]},
       c1rev2:{t:"Phase 1 — final review and merge",
         a:"2026-01-09", b:"2026-01-13", d:"4 days",
         j:["FLINK-38542"], p:["27182"],
-        n:"PR #27182 merged 2026-01-13 after 72 days open."},
-
+        n:["PR #27182 merged 2026-01-13, after 72 days open."]},
       c2dev:{t:"Phase 2 — development",
-        a:"2026-01-14", b:"2026-03-12", d:"57-day span − 4 d on-call = 53 d · 7.6 weeks · estimated 6w",
+        a:"2026-01-14", b:"2026-03-12", d:"57 d span − 4 d on-call = 53 d · 7.6 weeks · estimated 6 w",
         j:["FLINK-38541","FLINK-38930","FLINK-39018","FLINK-38543","FLINK-39140"], p:["27688"],
-        n:"Opens with commits named \"整理 FLIP-547 的需求\" and \"梳理设计和 task 拆分\"; the bulk carries author date 2026-02-18. Ends 03-12 — last code commit, last force-push of the WIP big PR, and the 03-10 retro records \"Finished the development for V1\". One 18-day window inside (01-30 → 02-17) has no commits and no established cause; it sits between the start and end of development, so it counts either way. On-call and offsite deducted: 2026-01-21→01-23 and 2026-02-11 (4 days)."},
+        n:["Opens with requirement and task-breakdown commits; the bulk carries author date 02-18.",
+           "Ends 03-12 — last code commit and last force-push of the WIP big PR.",
+           "<b>In parallel all window: rolling out Phase 1 (FLINK-38542), plus reviews and day-to-day work — none of it deducted, so 7.6 w overstates the time actually available.</b>",
+           "On-call deducted: 01-21 → 01-23 and 02-11 (4 days)."]},
       c2split:{t:"Phase 2 — splitting into 4 PRs, then async review",
         a:"2026-03-12", b:"2026-04-13", d:"32 days · 4.6 calendar weeks — NOT development",
         j:["FLINK-38541","FLINK-38930","FLINK-39018","FLINK-38543"],
         p:["27639","27782","27783","27861","27862"],
-        n:"25 force-pushes on #27639. 03-18: #27782 and #27783 carved out. 03-31: #27861 and #27862 carved out — their code was authored 02-18, six weeks earlier. #27639 finally merges at +23/−8, just the docs commit."},
-
+        n:["25 force-pushes on #27639, one per carve-out.",
+           "03-18: #27782 and #27783 split out. 03-31: #27861 and #27862 split out.",
+           "<b>The code in #27861 and #27862 was authored 02-18 — six weeks before those PRs existed.</b>",
+           "#27639 finally merges at +23/−8: just the docs commit."]},
       c3adev:{t:"Phase 3a — spilling v1 development (all discarded)",
-        a:"2026-03-13", b:"2026-05-04", d:"52-day span − 1w leave = 6.4 weeks of development",
+        a:"2026-03-13", b:"2026-05-04", d:"52 d span − 7 d leave − 5 d on-call − 2 d holiday = 38 d · 5.4 weeks",
         j:["FLINK-38544","FLINK-39519"], p:["27905","28073","28107"],
-        n:"Starts the day after Phase-2 development ends, on branch 38544-spilling/20260313-poc. Contains one week of leave (03-18 → 03-25, zero commits, INIT-12544 03/24: \"currently on PTO\") which is excluded. On-call and offsite deducted: 2026-04-05→04-08 and 2026-04-22 (5 days); the 03-18 shift falls inside the PTO week and is not double-counted. NRW public holidays deducted: Karfreitag 04-03 and Tag der Arbeit 05-01 (Ostermontag 04-06 fell inside an on-call block). Two in-flight design revisions before it ever reached Apache; #28073 [WIP] +6,469/−753 was never reviewed; #28107 +6,643/−796 across 46 files was the finished article. All of it was written off on 05-19."},
+        n:["Starts the day after Phase-2 development ends.",
+           "#28073 [WIP] +6,469/−753 was never reviewed; #28107 +6,643/−796 was the finished article.",
+           "Deducted: 7 d PTO (03-18 → 03-25), 5 d on-call, and Karfreitag 04-03 + Tag der Arbeit 05-01."]},
       c3arej:{t:"Phase 3a — review, then rejected",
         a:"2026-05-04", b:"2026-05-19", d:"15 days · 2.1 weeks",
         j:["FLINK-38544"], p:["28107"],
-        n:"rkhachatryan reviewed from 05-06. On 05-19 INIT-12544 records: \"requires 2-3 additional week after the team's code review resulted in a request for low level re-design.\" All Phase-3a work written off."},
-
+        n:["rkhachatryan reviewed from 05-06.",
+           "<b>05-19, INIT-12544: \"the team's code review resulted in a request for low level re-design\".</b>",
+           "All Phase-3a work written off."]},
       c3r:{t:"Phase 3 — redesign, discussion, alignment",
-        a:"2026-05-05", b:"2026-05-20", d:"15 days · 2.1 weeks",
+        a:"2026-05-05", b:"2026-05-20", d:"15 d span − 1 d holiday = 14 d · 2.0 weeks",
         j:["FLINK-38544"], p:[],
-        n:"Commits literally named \"redesign\" and \"move discussions\", plus five design documents. Christi Himmelfahrt (05-14) is deducted. Branch namespace switches from 38544-spilling/* to 38544-spilling-v2/*."},
-
+        n:["Five design documents; branch namespace switches to 38544-spilling-v2/*.",
+           "Christi Himmelfahrt (05-14) deducted."]},
       c3bdev:{t:"Phase 3b — spilling v2 development",
-        a:"2026-05-21", b:"2026-07-06", d:"46-day span − 5 d offsite − 6 d on-call − 8 d defect hunt = 27 d · 3.9 weeks",
-        j:["FLINK-39520","FLINK-39521","FLINK-39522","FLINK-39523","FLINK-39524","FLINK-40016"],
-        p:["28517","28605","28607","28613","28614"],
-        n:"Rebuilt against the new design: segmented on-disk format, forward-only reader with snapshot/resume, push-based input-channel contract. Two things sit inside this span: a 2-week pre-PR review round on the branch (06-08 → 06-22, before #28517 existed — INIT-12544 06/16 \"review of the re-achitectured spilling logic in progress\"), and ~1.5 weeks hunting the data loss that turned out to be FLINK-40016. Ends 07-06 when the change was split into 7 stacked PRs. On-call and offsite deducted: the team offsite week 2026-06-08→06-12 (5 days, plus 2 days leave — fully unavailable), and on-call on 05-25, 06-14→06-17 and 06-26 (6 days). The offsite explains most of the June commit gap. Fronleichnam (06-04) is also deducted; Pfingstmontag (05-25) fell on an on-call day already counted. The 8 days spent hunting FLINK-40016 (06-23 → 07-02) are also lifted out and shown on their own row — they were not spilling work."},
+        a:"2026-05-21", b:"2026-07-06", d:"46 d span − 5 d offsite − 6 d on-call − 1 d holiday − 8 d defect hunt = 26 d · 3.8 weeks",
+        j:["FLINK-39520","FLINK-39521","FLINK-39522","FLINK-39523","FLINK-39524"],
+        p:["28517","28613","28614"],
+        n:["Segmented on-disk format, forward-only reader with snapshot/resume, push-based channels.",
+           "Includes a 2-week pre-PR review round on the branch (06-08 → 06-22).",
+           "Deducted: offsite week 06-08 → 06-12, on-call 05-25 / 06-14 → 06-17 / 06-26, Fronleichnam 06-04.",
+           "The 8-day FLINK-40016 hunt is counted on its own row, not here."]},
       c3brev:{t:"Phase 3b — async review of the 7-PR stack",
         a:"2026-07-06", b:"2026-08-13", d:"38 days · 5.4 weeks",
         j:["FLINK-39520","FLINK-39521","FLINK-39522","FLINK-39523","FLINK-39524","FLINK-40080","FLINK-40081"],
         p:["28651","28652","28659","28660","28661","28662","28663"],
-        n:"#28651 merged in 3 days, #28652 in 4. #28660 took 23 days; #28661 took 35 days with 97 review comments; #28662 waited 37 days for its first review because it sat behind #28661. FLINK-40080 merged 08-13."},
-
-      e40016:{t:"FLINK-40016 — hunt & fix a defect introduced in Phase 2",
-        a:"2026-06-23", b:"2026-07-02", d:"9-day window − 1 d on-call = 8 d · 1.1 weeks · not estimated",
-        j:["FLINK-40016","FLINK-39018"], p:["28605","28607"],
-        n:"Not spilling work, and not a new bug: recovered buffers were persisted twice in LocalInputChannel, introduced by FLINK-39018 in Phase 2 and merged to master on 2026-04-07. It surfaced only when Phase 3b's tests exercised it. Lifted out of Phase 3b (which is 3.8w without it) and counted once here, so the same days are never charged twice. The project total is unchanged."},
+        n:["#28651 merged in 3 days, #28652 in 4 — the split worked.",
+           "<b>#28661 took 35 days and 97 review comments; #28662 waited 37 days for its first review, stuck behind it.</b>",
+           "FLINK-40080 merged 08-13. One 164-line test PR remains."]},
       c40016:{t:"FLINK-40016 — defect introduced in Phase 2, found in Phase 3b",
-        a:"2026-06-23", b:"2026-07-02", d:"9-day window − 1 d on-call = 8 d · 1.1 weeks",
+        a:"2026-06-23", b:"2026-07-02", d:"9 d window − 1 d on-call = 8 d · 1.1 weeks",
         j:["FLINK-40016","FLINK-39018"], p:["28605","28607"],
-        n:"Recovered buffers were persisted twice in LocalInputChannel. git log -S traces the cause to FLINK-39018 (Phase 2), merged into master 2026-04-07. Roman reproduced it on plain master on 07-01. Fixed in one day once identified."}
+        n:["<b>Recovered buffers persisted twice in LocalInputChannel — traced by git log -S to FLINK-39018 (Phase 2).</b>",
+           "In master since 04-07; Roman reproduced it on plain master on 07-01.",
+           "Fixed in one day once identified."]}
     };
 
     var modal = document.getElementById("modal");
@@ -547,7 +580,7 @@
         return '<a href="'+JR+x+'" target="_blank" rel="noopener">'+x+'</a>';}).join(" &middot; ") + "</dd>";
       if(v.p.length) rows += "<dt>PRs</dt><dd>" + v.p.map(function(x){
         return '<a href="'+PR+x+'" target="_blank" rel="noopener">#'+x+'</a>';}).join(" &middot; ") + "</dd>";
-      if(v.n) rows += "<dt>What</dt><dd>" + esc(v.n) + "</dd>";
+      if(v.n && v.n.length) rows += "<dt>What</dt><dd><ul>" + v.n.map(function(x){return "<li>"+x+"</li>";}).join("") + "</ul></dd>";
       mBody.innerHTML = rows;
       modal.classList.add("show");
       mClose.focus();
