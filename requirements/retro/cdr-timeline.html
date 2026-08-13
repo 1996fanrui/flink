@@ -1,0 +1,572 @@
+<title>FLIP-547 Retro Timeline</title>
+<style>
+  :root{
+    --ground:#F4F5F6; --panel:#FFFFFF;
+    --ink:#171A1F; --ink-2:#4A525C; --ink-3:#7C8792;
+    --rule:#DFE3E7; --rule-2:#EDEFF1;
+    --work:#2E5C8A; --wait:#B4BEC8; --wait-soft:#DCE2E7;
+    --leave:#8B96A1; --leave-fill:#F0F2F4;
+    --lost:#A8452F; --lost-soft:#E2B5A9;
+    --onwork:#FFFFFF; --onlost:#FFFFFF; --defect:#B07D2B;
+    --shadow:0 1px 2px rgba(23,26,31,.06), 0 8px 24px -12px rgba(23,26,31,.18);
+    --display:"Iowan Old Style","Charter","Bitstream Charter",Georgia,"Times New Roman",serif;
+    --body:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+    --data:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --ground:#101317; --panel:#171B21;
+      --ink:#E8EBEE; --ink-2:#A8B2BC; --ink-3:#77828D;
+      --rule:#2A3038; --rule-2:#20252B;
+      --work:#5B9BD5; --wait:#4E5862; --wait-soft:#2B323A;
+      --leave:#79838D; --leave-fill:#1C2128;
+      --lost:#D4644A; --lost-soft:#6E3427;
+      --onwork:#0E1114; --onlost:#0E1114; --defect:#D9A441;
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+    }
+  }
+  :root[data-theme="dark"]{
+    --ground:#101317; --panel:#171B21;
+    --ink:#E8EBEE; --ink-2:#A8B2BC; --ink-3:#77828D;
+    --rule:#2A3038; --rule-2:#20252B;
+    --work:#5B9BD5; --wait:#4E5862; --wait-soft:#2B323A;
+    --leave:#79838D; --leave-fill:#1C2128;
+    --lost:#D4644A; --lost-soft:#6E3427;
+    --onwork:#0E1114; --onlost:#0E1114; --defect:#D9A441;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+  }
+
+  *{box-sizing:border-box}
+  body{
+    background:var(--ground); color:var(--ink); font-family:var(--body);
+    font-size:15px; line-height:1.55; margin:0;
+    padding:clamp(20px,4vw,56px) clamp(16px,4vw,40px) 72px;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1120px;margin:0 auto;display:flex;flex-direction:column;gap:38px}
+
+  header{display:flex;flex-direction:column;gap:14px}
+  .eyebrow{font-family:var(--data);font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3)}
+  h1{font-family:var(--display);font-weight:600;font-size:clamp(30px,4.4vw,46px);line-height:1.08;letter-spacing:-.015em;margin:0;text-wrap:balance}
+  .thesis{font-size:clamp(16px,1.9vw,19px);line-height:1.5;color:var(--ink-2);max-width:62ch;margin:0;text-wrap:pretty}
+  .thesis b{color:var(--ink);font-weight:600}
+
+  .figures{display:grid;gap:1px;background:var(--rule);grid-template-columns:repeat(auto-fit,minmax(190px,1fr));border:1px solid var(--rule);border-radius:3px;overflow:hidden}
+  .fig{background:var(--panel);padding:18px 20px;display:flex;flex-direction:column;gap:3px}
+  .fig .n{font-family:var(--data);font-size:30px;font-weight:600;letter-spacing:-.02em;font-variant-numeric:tabular-nums;line-height:1.1}
+  .fig .n small{font-size:15px;font-weight:500;color:var(--ink-3);margin-left:2px}
+  .fig .k{font-size:12.5px;color:var(--ink-3);line-height:1.35}
+  .fig.bad .n{color:var(--lost)}
+
+  section{background:var(--panel);border:1px solid var(--rule);border-radius:3px;padding:clamp(18px,2.6vw,28px);box-shadow:var(--shadow)}
+  h2{font-family:var(--display);font-weight:600;font-size:21px;letter-spacing:-.01em;margin:0 0 5px}
+  .sub{font-size:13.5px;color:var(--ink-3);margin:0 0 24px;max-width:74ch;line-height:1.5}
+  .sub b{color:var(--ink-2);font-weight:600}
+
+  /* ================= CHART 1 — effort per phase ================= */
+  .effort{display:flex;flex-direction:column;gap:26px}
+  .erow{display:grid;grid-template-columns:196px 1fr;gap:20px;align-items:center}
+  @media (max-width:680px){.erow{grid-template-columns:1fr;gap:8px}}
+  .ename{display:flex;flex-direction:column;gap:2px}
+  .ename .t{font-size:14.5px;font-weight:600;line-height:1.25}
+  .ename .d{font-family:var(--data);font-size:11px;color:var(--ink-3);font-variant-numeric:tabular-nums}
+  .etrack{position:relative;padding:22px 0 4px}
+  .ebar{display:flex;height:34px;border-radius:3px;overflow:hidden}
+  .eseg{display:flex;align-items:center;justify-content:center;font-family:var(--data);font-size:11.5px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden}
+  .eseg.work{background:var(--work);color:var(--onwork)}
+  .eseg.lost{background:var(--lost);color:var(--onlost)}
+  .eseg.redo{background:var(--lost-soft);color:var(--ink)}
+  .eseg.defectbar{background:var(--defect);color:var(--onwork)}
+  :root[data-theme="dark"] .eseg.redo{color:var(--ink)}
+  .etotal{font-family:var(--data);font-size:12.5px;font-weight:600;margin-left:10px;white-space:nowrap;font-variant-numeric:tabular-nums;align-self:center}
+  .ewrap{display:flex;align-items:center}
+  .emark{position:absolute;top:6px;bottom:4px;border-left:2px dashed var(--ink-3)}
+  .emark span{position:absolute;top:-2px;left:6px;font-family:var(--data);font-size:10.5px;color:var(--ink-3);white-space:nowrap;font-variant-numeric:tabular-nums}
+  .eover{font-family:var(--data);font-size:12.5px;font-weight:600;color:var(--lost);margin-left:8px;align-self:center}
+
+  /* ================= CHART 2 — calendar timeline ================= */
+  .scroller{overflow-x:auto;padding-bottom:6px}
+  .chart{min-width:820px;--gut:192px}
+  @media (max-width:640px){.chart{--gut:140px}}
+  .ruler{position:relative;height:34px;margin-left:var(--gut);border-bottom:1px solid var(--rule)}
+  .tick{position:absolute;top:0;bottom:0;border-left:1px solid var(--rule-2)}
+  .tick b{position:absolute;top:1px;left:5px;font-family:var(--data);font-size:10.5px;font-weight:600;color:var(--ink-2);font-variant-numeric:tabular-nums}
+  .tick i{position:absolute;top:16px;left:5px;font-family:var(--data);font-size:9.5px;font-style:normal;color:var(--ink-3);white-space:nowrap}
+
+  .row{display:flex;align-items:stretch;border-bottom:1px solid var(--rule-2)}
+  .row:last-of-type{border-bottom:0}
+  .rowlab{width:var(--gut);flex:0 0 var(--gut);padding:14px 16px 14px 0;display:flex;flex-direction:column;gap:2px}
+  .rowlab .nm{font-size:13.5px;font-weight:600;line-height:1.3}
+  .rowlab .est{font-family:var(--data);font-size:10.5px;color:var(--ink-3);font-variant-numeric:tabular-nums}
+  .rowlab.lost .nm{color:var(--lost)}
+
+  .track{position:relative;flex:1;padding:14px 0}
+  .grid{position:absolute;inset:0;pointer-events:none}
+  .grid i{position:absolute;top:0;bottom:0;border-left:1px solid var(--rule-2)}
+  .seg{position:absolute;height:24px;top:50%;transform:translateY(-50%);border-radius:2px;display:flex;align-items:center;justify-content:center;overflow:hidden}
+  .seg.work{background:var(--work)}
+  .seg.lost{background:var(--lost)}
+  .seg.wait{background:repeating-linear-gradient(135deg,var(--wait) 0 2px,var(--wait-soft) 2px 6px);border:1px solid var(--wait)}
+  .seg.lostwait{background:repeating-linear-gradient(135deg,var(--lost-soft) 0 2px,transparent 2px 6px);border:1px solid var(--lost-soft)}
+  .seg.leave{background:var(--leave-fill);border:1.5px dashed var(--leave)}
+  .seg.defect{background:var(--defect)}
+  .seg.defect span{color:var(--onwork)}
+  .latent{position:absolute;top:50%;height:0;border-top:1.5px dashed var(--defect);display:flex;align-items:center;justify-content:center}
+  .latent span{position:absolute;top:-16px;font-family:var(--data);font-size:10px;color:var(--defect);font-weight:600;white-space:nowrap}
+  .origin{position:absolute;top:50%;transform:translate(-50%,-50%);width:9px;height:9px;border-radius:50%;background:var(--defect)}
+  .seg span{font-family:var(--data);font-size:10px;font-weight:600;letter-spacing:.01em;white-space:nowrap;font-variant-numeric:tabular-nums}
+  .seg.work span{color:var(--onwork)}
+  .seg.lost span{color:var(--onlost)}
+  .seg.wait span,.seg.leave span,.seg.lostwait span{color:var(--ink-2)}
+
+  .marks{position:relative;margin-left:var(--gut);height:14px;margin-top:2px}
+  .mk{position:absolute;top:0;width:1px;height:12px;background:var(--ink-3)}
+  .mklist{margin-left:var(--gut);display:grid;gap:8px 26px;margin-top:14px;grid-template-columns:repeat(auto-fit,minmax(250px,1fr))}
+  .mklist div{display:flex;gap:10px;align-items:baseline;font-size:12.5px;color:var(--ink-2)}
+  .mklist b{font-family:var(--data);font-size:10.5px;color:var(--ink-3);font-weight:600;font-variant-numeric:tabular-nums;flex:0 0 auto;min-width:88px}
+  .mklist em{font-style:normal;color:var(--lost);font-weight:600}
+
+  .legend{display:flex;flex-wrap:wrap;gap:9px 22px;margin:0 0 20px;padding-bottom:18px;border-bottom:1px solid var(--rule-2)}
+  .legend div{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ink-2)}
+  .sw{width:24px;height:12px;border-radius:2px;flex:0 0 auto}
+
+  /* ================= split bar ================= */
+  .split{display:flex;height:38px;border-radius:3px;overflow:hidden;border:1px solid var(--rule)}
+  .split div{display:flex;align-items:center;justify-content:center;font-family:var(--data);font-size:11.5px;font-weight:600;font-variant-numeric:tabular-nums;text-align:center;padding:0 4px}
+  .split .s1{background:var(--work);color:var(--onwork)}
+  .split .s2{background:repeating-linear-gradient(135deg,var(--wait) 0 2px,var(--wait-soft) 2px 6px);color:var(--ink)}
+  .split .s3{background:var(--leave-fill);border-left:1.5px dashed var(--leave);color:var(--ink-2)}
+
+  /* ================= click-through detail ================= */
+  .seg[data-k],.eseg[data-k]{cursor:pointer}
+  .seg[data-k]:hover,.eseg[data-k]:hover{filter:brightness(1.08);outline:1px solid var(--ink-2)}
+  .seg[data-k]:focus-visible,.eseg[data-k]:focus-visible{outline:2px solid var(--ink);outline-offset:1px}
+  .seg[data-k].on,.eseg[data-k].on{outline:2px solid var(--ink);outline-offset:1px}
+  .modal{
+    position:fixed;inset:0;z-index:50;display:none;
+    align-items:center;justify-content:center;padding:20px;
+    background:rgba(10,13,17,.55);backdrop-filter:blur(2px);
+  }
+  .modal.show{display:flex}
+  .modal-card{
+    background:var(--panel);border:1px solid var(--rule);border-radius:4px;
+    box-shadow:0 24px 64px -16px rgba(0,0,0,.45);
+    max-width:600px;width:100%;max-height:85vh;overflow-y:auto;
+    padding:24px 26px 26px;position:relative;
+  }
+  .modal-card h4{margin:0 30px 4px 0;font-family:var(--display);font-size:19px;font-weight:600;line-height:1.25;letter-spacing:-.01em}
+  .modal-card .when{
+    font-family:var(--data);font-size:12px;color:var(--ink-3);
+    font-variant-numeric:tabular-nums;margin-bottom:18px;
+    padding-bottom:14px;border-bottom:1px solid var(--rule-2);line-height:1.5;
+  }
+  .modal-card .when b{color:var(--ink);font-weight:600}
+  .modal-card dl{margin:0;display:grid;grid-template-columns:76px 1fr;gap:11px 16px;font-size:13px}
+  @media (max-width:560px){.modal-card dl{grid-template-columns:1fr;gap:3px 0}}
+  .modal-card dt{font-family:var(--data);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);padding-top:3px}
+  .modal-card dd{margin:0;color:var(--ink-2);line-height:1.6}
+  .modal-card dd a{color:var(--work);text-decoration:none;border-bottom:1px solid var(--rule)}
+  .modal-card dd a:hover{border-bottom-color:var(--work)}
+  .modal-card dd code{font-family:var(--data);font-size:11.5px}
+  .modal-close{
+    position:absolute;top:14px;right:14px;width:28px;height:28px;
+    border:1px solid var(--rule);border-radius:3px;background:var(--ground);
+    color:var(--ink-2);font-size:16px;line-height:1;cursor:pointer;
+    display:flex;align-items:center;justify-content:center;padding:0;
+  }
+  .modal-close:hover{color:var(--ink);border-color:var(--ink-3)}
+  .modal-close:focus-visible{outline:2px solid var(--ink);outline-offset:1px}
+  @media (prefers-reduced-motion:no-preference){
+    .modal.show .modal-card{animation:pop .14s ease-out}
+    @keyframes pop{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  }
+  .hint{font-family:var(--data);font-size:10.5px;color:var(--ink-3);margin-top:14px;letter-spacing:.02em}
+
+</style>
+
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">FLIP-547 · Checkpointing During Recovery · Retro 2026-08-14</div>
+    <h1>Ten weeks estimated. Twenty-two weeks worked.</h1>
+    <p class="thesis">Phases 1 and 2 came in close to estimate. <b>All of the overrun is Phase 3.</b></p>
+  </header>
+
+  <div class="figures">
+    <div class="fig"><div class="n">22<small>w</small></div><div class="k">Actual effort, all phases</div></div>
+    <div class="fig"><div class="n">10<small>w</small></div><div class="k">Estimated effort (NGN-987, Oct 2025)</div></div>
+    <div class="fig bad"><div class="n">11.2<small>w</small></div><div class="k">Phase 3 alone, against a 2-week estimate</div></div>
+    <div class="fig bad"><div class="n">5.4<small>w</small></div><div class="k">Work discarded after review</div></div>
+  </div>
+
+  <!-- ============ CHART 1 ============ -->
+  <section>
+    <h2>How long each phase took</h2>
+    <p class="sub"><b>Effort only</b> — leave, on-call, the offsite, public holidays and async review
+    all excluded. Dashed line = estimate.</p>
+
+    <div class="effort">
+
+      <div class="erow">
+        <div class="ename">
+          <div class="t">Phase 1 — output buffers on downstream</div>
+          <div class="d">dev 2025-10-21 → 2025-11-02</div>
+        </div>
+        <div class="etrack">
+          <div class="ewrap">
+            <div class="ebar" style="width:20.8%"><div class="eseg work" data-k="e1" tabindex="0" style="width:100%">2.5w</div></div>
+            <div class="etotal">2.5 weeks</div>
+          </div>
+          <div class="emark" style="left:16.7%"><span>estimated 2w</span></div>
+        </div>
+      </div>
+
+      <div class="erow">
+        <div class="ename">
+          <div class="t">Phase 2 — CDR without spilling</div>
+          <div class="d">dev 2026-01-14 → 2026-03-12</div>
+        </div>
+        <div class="etrack">
+          <div class="ewrap">
+            <div class="ebar" style="width:63.3%"><div class="eseg work" data-k="e2" tabindex="0" style="width:100%">7.6w</div></div>
+            <div class="etotal">7.6 weeks</div>
+          </div>
+          <div class="emark" style="left:50.0%"><span>estimated 6w</span></div>
+        </div>
+      </div>
+
+      <div class="erow">
+        <div class="ename">
+          <div class="t">Phase 3 — spilling</div>
+          <div class="d">dev 2026-03-13 → 2026-07-06</div>
+        </div>
+        <div class="etrack">
+          <div class="ewrap">
+            <div class="ebar" style="width:93.3%">
+              <div class="eseg lost" data-k="e3a" tabindex="0" style="width:48.2%">5.4w discarded</div>
+              <div class="eseg redo" data-k="e3r" tabindex="0" style="width:17.9%">2.0w redesign</div>
+              <div class="eseg work" data-k="e3b" tabindex="0" style="width:33.9%">3.8w rebuilt</div>
+            </div>
+            <div class="etotal">11.2 weeks<span class="eover">5.6×</span></div>
+          </div>
+          <div class="emark" style="left:16.7%"><span>estimated 2w</span></div>
+        </div>
+      </div>
+
+      <div class="erow">
+        <div class="ename">
+          <div class="t">FLINK-40016 — hunt &amp; fix a Phase-2 defect</div>
+          <div class="d">2026-06-23 → 2026-07-02</div>
+        </div>
+        <div class="etrack">
+          <div class="ewrap">
+            <div class="ebar" style="width:9.2%"><div class="eseg defectbar" data-k="e40016" tabindex="0" style="width:100%">1.1w</div></div>
+            <div class="etotal">1.1 weeks<span class="eover">not estimated</span></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+    <div class="hint">Click any bar for its dates, JIRAs and PRs.</div>
+  </section>
+
+  <!-- ============ CHART 2 ============ -->
+  <section>
+    <h2>The same phases on the calendar</h2>
+    <p class="sub"><b>Calendar weeks</b> — leave and async review included. That is why this runs
+    to 42 weeks and the effort above totals 22.</p>
+
+    <div class="legend">
+      <div><span class="sw" style="background:var(--work)"></span>Development</div>
+      <div><span class="sw" style="background:var(--lost)"></span>Discarded</div>
+      <div><span class="sw" style="background:repeating-linear-gradient(135deg,var(--wait) 0 2px,var(--wait-soft) 2px 6px);border:1px solid var(--wait)"></span>Async review</div>
+      <div><span class="sw" style="background:var(--leave-fill);border:1.5px dashed var(--leave)"></span>Leave</div>
+      <div><span class="sw" style="background:var(--defect)"></span>Defect introduced earlier, found later</div>
+    </div>
+
+    <div class="scroller">
+      <div class="chart">
+
+        <div class="ruler" id="ruler"></div>
+
+        <div class="row">
+          <div class="rowlab">
+            <div class="nm">Phase 1 — output buffers</div>
+            <div class="est">FLINK-38542 · 2.5w</div>
+          </div>
+          <div class="track">
+            <div class="grid"></div>
+            <div class="seg work" data-k="c1dev" tabindex="0" style="left:0%;width:4.0%"><span>dev 2.5w</span></div>
+            <div class="seg wait" data-k="c1rev" tabindex="0" style="left:4.0%;width:13.5%"><span>async review 5.7w</span></div>
+            <div class="seg leave" data-k="c1leave" tabindex="0" style="left:17.5%;width:9.5%"><span>leave 4w</span></div>
+            <div class="seg wait" data-k="c1rev2" tabindex="0" style="left:27.0%;width:1.4%"></div>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="rowlab">
+            <div class="nm">Phase 2 — CDR without spilling</div>
+            <div class="est">38541/38543/38930/39018 · 7.6w</div>
+          </div>
+          <div class="track">
+            <div class="grid"></div>
+            <div class="seg work" data-k="c2dev" tabindex="0" style="left:28.7%;width:19.2%"><span>dev 7.6w</span></div>
+            <div class="seg wait" data-k="c2split" tabindex="0" style="left:47.9%;width:10.9%"><span>split into 4 PRs + review 4.6w</span></div>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="rowlab lost">
+            <div class="nm">Phase 3a — spilling, 1st attempt</div>
+            <div class="est">discarded · 5.4w lost</div>
+          </div>
+          <div class="track">
+            <div class="grid"></div>
+            <div class="seg lost" data-k="c3adev" tabindex="0" style="left:48.2%;width:17.7%"><span>dev 5.4w — discarded</span></div>
+            <div class="seg lostwait" data-k="c3arej" tabindex="0" style="left:66.0%;width:5.0%"><span>rejected</span></div>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="rowlab">
+            <div class="nm">Phase 3 — redesign &amp; alignment</div>
+            <div class="est">new design doc · 2.0w</div>
+          </div>
+          <div class="track">
+            <div class="grid"></div>
+            <div class="seg work" data-k="c3r" tabindex="0" style="left:66.2%;width:5.0%"><span>2.0w</span></div>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="rowlab">
+            <div class="nm">Phase 3b — spilling v2</div>
+            <div class="est">39520–39524, 40080/40081 · 3.8w</div>
+          </div>
+          <div class="track">
+            <div class="grid"></div>
+            <div class="seg work" data-k="c3bdev" tabindex="0" style="left:71.6%;width:15.6%"><span>dev 3.8w</span></div>
+            <div class="seg wait" data-k="c3brev" tabindex="0" style="left:87.2%;width:12.8%"><span>async review 5.4w — 7-PR stack</span></div>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="rowlab">
+            <div class="nm">FLINK-40016 — defect from Phase 2</div>
+            <div class="est">Phase-2 defect · 1.1w</div>
+          </div>
+          <div class="track">
+            <div class="grid"></div>
+            <div class="origin" style="left:56.7%"></div>
+            <div class="latent" style="left:56.7%;width:26.0%"></div>
+            <div class="seg defect" data-k="c40016" tabindex="0" style="left:82.7%;width:3.1%"></div>
+            <div class="seg" style="left:86.5%;width:13%;background:none"><span style="color:var(--defect)">1.1w to find &amp; fix</span></div>
+          </div>
+        </div>
+
+        <div class="marks" id="marks"></div>
+        <div class="hint">Click any box for its dates, JIRAs and PRs.</div>
+
+        <div class="mklist">
+          <div><b>W12.0 · 13 Jan</b><span>Phase 1 merged</span></div>
+          <div><b>W24.9 · 13 Apr</b><span>Phase 2 merged — feature usable</span></div>
+          <div><b>W27.9 · 04 May</b><span>Spilling v1 submitted, 6,643 lines</span></div>
+          <div><b>W30.0 · 19 May</b><span><em>Review verdict: re-design</em></span></div>
+          <div><b>W30.1 · 20 May</b><span>First spilling design doc written</span></div>
+          <div><b>W36.9 · 06 Jul</b><span>Split into 7 stacked PRs</span></div>
+          <div><b>W42.3 · 13 Aug</b><span>Feature complete</span></div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ split ============ -->
+  <section>
+    <h2>42 calendar weeks, by kind of time</h2>
+    <p class="sub">Leave confirmed by zero commits: 4w from 12 Dec, 1w from 18 Mar.</p>
+    <div class="split">
+      <div class="s1" style="width:52%">22w working</div>
+      <div class="s2" style="width:26%">11w async review</div>
+      <div class="s3" style="width:9%">3.5w on-call, offsite &amp; holidays</div>
+      <div class="s3" style="width:13%">5w leave</div>
+    </div>
+  </section>
+
+  <!-- ============ cards ============ -->
+</div>
+
+<div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+  <div class="modal-card">
+    <button class="modal-close" id="modal-close" aria-label="Close">&times;</button>
+    <h4 id="modal-title"></h4>
+    <div class="when" id="modal-when"></div>
+    <dl id="modal-body"></dl>
+  </div>
+</div>
+
+<script>
+  (function(){
+    var TOTAL = 42.3, START = new Date(Date.UTC(2025,9,21));
+    var MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    function label(w){
+      var d = new Date(START.getTime() + w*7*864e5);
+      return String(d.getUTCDate()).padStart(2,"0") + " " + MON[d.getUTCMonth()];
+    }
+    var ruler = document.getElementById("ruler");
+    var marks = document.getElementById("marks");
+    var grids = document.querySelectorAll(".grid");
+    for (var w = 0; w <= 42; w += 4){
+      var pct = (w / TOTAL * 100) + "%";
+      var t = document.createElement("div");
+      t.className = "tick";
+      t.style.left = pct;
+      var b = document.createElement("b"); b.textContent = "W" + w;
+      var i = document.createElement("i"); i.textContent = label(w);
+      t.appendChild(b); t.appendChild(i);
+      ruler.appendChild(t);
+      grids.forEach(function(g){
+        var l = document.createElement("i");
+        l.style.left = pct;
+        g.appendChild(l);
+      });
+    }
+    [1.7,12.0,24.9,27.9,30.0,30.1,36.9,42.3].forEach(function(w){
+      var m = document.createElement("div");
+      m.className = "mk";
+      m.style.left = (w / TOTAL * 100) + "%";
+      marks.appendChild(m);
+    });
+
+    var PR = "https://github.com/apache/flink/pull/";
+    var JR = "https://issues.apache.org/jira/browse/";
+    var D = {
+      /* ---- chart 1: effort bars ---- */
+      e1:{t:"Phase 1 — recover output buffers on the downstream side",
+        a:"2025-10-21", b:"2025-11-02", d:"12 days · 2.5 weeks effort · estimated 2w",
+        j:["FLINK-38542"], p:["27182"],
+        n:"Upstream ResultSubpartition output buffers are recovered directly on the downstream task. Dev ran from the JIRA being opened to the PR going up; the 2.5w also covers the test runs and troubleshooting done during review in Nov–Dec."},
+      e2:{t:"Phase 2 — CDR without spilling",
+        a:"2026-01-14", b:"2026-03-12", d:"57-day span − 4 d on-call = 53 d · 7.6 weeks · estimated 6w",
+        j:["FLINK-38541","FLINK-38930","FLINK-39018","FLINK-38543","FLINK-39140"],
+        p:["27639","27688","27782","27783","27861","27862"],
+        n:"Submitted as ONE big PR #27639 (\"FLIP-547: Support checkpoint during recovery\") on 02-20, then carved into four PRs over six weeks. Development ended 03-12: last code authored, last force-push of the WIP PR, and the 03-10 retro records \"Finished the development for V1\". Splitting started 03-18 — you cannot split work that is not finished. On-call and offsite deducted: 2026-01-21→01-23 and 2026-02-11 (4 days)."},
+      e3a:{t:"Phase 3a — spilling, first attempt (discarded)",
+        a:"2026-03-13", b:"2026-05-04", d:"52-day span − 7 d leave − 5 d on-call − 2 d public holiday = 38 d · 5.4 weeks",
+        j:["FLINK-38544","FLINK-39519"], p:["27905","28073","28107"],
+        n:"Reached 6,643 lines across 46 files. Review concluded on 05-19 that it needed a low-level re-design; all of it was written off. Deducted from the span: 7 d PTO (03-18→03-25), 5 d on-call (04-05→04-08, 04-22) and 2 NRW public holidays (Karfreitag 04-03, Tag der Arbeit 05-01)."},
+      e3r:{t:"Phase 3 — redesign, discussion, alignment",
+        a:"2026-05-05", b:"2026-05-20", d:"15-day span − 1 d public holiday = 14 d · 2.0 weeks",
+        j:["FLINK-38544"], p:[],
+        n:"The first spilling design document is dated 2026-05-20 — nine weeks after coding on spilling began. Christi Himmelfahrt (05-14) is deducted from the span."},
+      e3b:{t:"Phase 3b — spilling v2",
+        a:"2026-05-21", b:"2026-07-06", d:"46-day span − 5 d offsite − 6 d on-call − 1 d public holiday − 8 d defect hunt = 26 d · 3.8 weeks",
+        j:["FLINK-39520","FLINK-39521","FLINK-39522","FLINK-39523","FLINK-39524","FLINK-40080","FLINK-40081"],
+        p:["28517","28651","28652","28659","28660","28661","28662","28663"],
+        n:"+8,031/−1,055 across 98 files, split on 07-06 into 7 stacked PRs. Includes a 2-week pre-PR review round on the branch and ~1.5 weeks hunting FLINK-40016. On-call and offsite deducted: offsite week 06-08→06-12 (5 d), on-call 05-25, 06-14→06-17, 06-26 (6 d), Fronleichnam 06-04 (1 d), and the 8-day FLINK-40016 hunt, counted on its own row."},
+
+      /* ---- chart 2: calendar ---- */
+      c1dev:{t:"Phase 1 — development",
+        a:"2025-10-21", b:"2025-11-02", d:"12 days · 1.7 calendar weeks",
+        j:["FLINK-38542"], p:["27182"],
+        n:"Adds ResultSubpartitionDistributor and one-buffer-to-one-channel distribution."},
+      c1rev:{t:"Phase 1 — async review",
+        a:"2025-11-02", b:"2025-12-12", d:"40 days · 5.7 calendar weeks",
+        j:["FLINK-38542"], p:["27182"],
+        n:"Reviewer: pnowojski. First review 2025-11-13, 11 days after the PR opened. 9 review comments over 5 submissions."},
+      c1leave:{t:"Leave",
+        a:"2025-12-12", b:"2026-01-09", d:"28 days · 4 weeks",
+        j:[], p:[],
+        n:"Zero commits on any branch across this window — confirmed leave, not review latency."},
+      c1rev2:{t:"Phase 1 — final review and merge",
+        a:"2026-01-09", b:"2026-01-13", d:"4 days",
+        j:["FLINK-38542"], p:["27182"],
+        n:"PR #27182 merged 2026-01-13 after 72 days open."},
+
+      c2dev:{t:"Phase 2 — development",
+        a:"2026-01-14", b:"2026-03-12", d:"57-day span − 4 d on-call = 53 d · 7.6 weeks · estimated 6w",
+        j:["FLINK-38541","FLINK-38930","FLINK-39018","FLINK-38543","FLINK-39140"], p:["27688"],
+        n:"Opens with commits named \"整理 FLIP-547 的需求\" and \"梳理设计和 task 拆分\"; the bulk carries author date 2026-02-18. Ends 03-12 — last code commit, last force-push of the WIP big PR, and the 03-10 retro records \"Finished the development for V1\". One 18-day window inside (01-30 → 02-17) has no commits and no established cause; it sits between the start and end of development, so it counts either way. On-call and offsite deducted: 2026-01-21→01-23 and 2026-02-11 (4 days)."},
+      c2split:{t:"Phase 2 — splitting into 4 PRs, then async review",
+        a:"2026-03-12", b:"2026-04-13", d:"32 days · 4.6 calendar weeks — NOT development",
+        j:["FLINK-38541","FLINK-38930","FLINK-39018","FLINK-38543"],
+        p:["27639","27782","27783","27861","27862"],
+        n:"25 force-pushes on #27639. 03-18: #27782 and #27783 carved out. 03-31: #27861 and #27862 carved out — their code was authored 02-18, six weeks earlier. #27639 finally merges at +23/−8, just the docs commit."},
+
+      c3adev:{t:"Phase 3a — spilling v1 development (all discarded)",
+        a:"2026-03-13", b:"2026-05-04", d:"52-day span − 1w leave = 6.4 weeks of development",
+        j:["FLINK-38544","FLINK-39519"], p:["27905","28073","28107"],
+        n:"Starts the day after Phase-2 development ends, on branch 38544-spilling/20260313-poc. Contains one week of leave (03-18 → 03-25, zero commits, INIT-12544 03/24: \"currently on PTO\") which is excluded. On-call and offsite deducted: 2026-04-05→04-08 and 2026-04-22 (5 days); the 03-18 shift falls inside the PTO week and is not double-counted. NRW public holidays deducted: Karfreitag 04-03 and Tag der Arbeit 05-01 (Ostermontag 04-06 fell inside an on-call block). Two in-flight design revisions before it ever reached Apache; #28073 [WIP] +6,469/−753 was never reviewed; #28107 +6,643/−796 across 46 files was the finished article. All of it was written off on 05-19."},
+      c3arej:{t:"Phase 3a — review, then rejected",
+        a:"2026-05-04", b:"2026-05-19", d:"15 days · 2.1 weeks",
+        j:["FLINK-38544"], p:["28107"],
+        n:"rkhachatryan reviewed from 05-06. On 05-19 INIT-12544 records: \"requires 2-3 additional week after the team's code review resulted in a request for low level re-design.\" All Phase-3a work written off."},
+
+      c3r:{t:"Phase 3 — redesign, discussion, alignment",
+        a:"2026-05-05", b:"2026-05-20", d:"15 days · 2.1 weeks",
+        j:["FLINK-38544"], p:[],
+        n:"Commits literally named \"redesign\" and \"move discussions\", plus five design documents. Christi Himmelfahrt (05-14) is deducted. Branch namespace switches from 38544-spilling/* to 38544-spilling-v2/*."},
+
+      c3bdev:{t:"Phase 3b — spilling v2 development",
+        a:"2026-05-21", b:"2026-07-06", d:"46-day span − 5 d offsite − 6 d on-call − 8 d defect hunt = 27 d · 3.9 weeks",
+        j:["FLINK-39520","FLINK-39521","FLINK-39522","FLINK-39523","FLINK-39524","FLINK-40016"],
+        p:["28517","28605","28607","28613","28614"],
+        n:"Rebuilt against the new design: segmented on-disk format, forward-only reader with snapshot/resume, push-based input-channel contract. Two things sit inside this span: a 2-week pre-PR review round on the branch (06-08 → 06-22, before #28517 existed — INIT-12544 06/16 \"review of the re-achitectured spilling logic in progress\"), and ~1.5 weeks hunting the data loss that turned out to be FLINK-40016. Ends 07-06 when the change was split into 7 stacked PRs. On-call and offsite deducted: the team offsite week 2026-06-08→06-12 (5 days, plus 2 days leave — fully unavailable), and on-call on 05-25, 06-14→06-17 and 06-26 (6 days). The offsite explains most of the June commit gap. Fronleichnam (06-04) is also deducted; Pfingstmontag (05-25) fell on an on-call day already counted. The 8 days spent hunting FLINK-40016 (06-23 → 07-02) are also lifted out and shown on their own row — they were not spilling work."},
+      c3brev:{t:"Phase 3b — async review of the 7-PR stack",
+        a:"2026-07-06", b:"2026-08-13", d:"38 days · 5.4 weeks",
+        j:["FLINK-39520","FLINK-39521","FLINK-39522","FLINK-39523","FLINK-39524","FLINK-40080","FLINK-40081"],
+        p:["28651","28652","28659","28660","28661","28662","28663"],
+        n:"#28651 merged in 3 days, #28652 in 4. #28660 took 23 days; #28661 took 35 days with 97 review comments; #28662 waited 37 days for its first review because it sat behind #28661. FLINK-40080 merged 08-13."},
+
+      e40016:{t:"FLINK-40016 — hunt & fix a defect introduced in Phase 2",
+        a:"2026-06-23", b:"2026-07-02", d:"9-day window − 1 d on-call = 8 d · 1.1 weeks · not estimated",
+        j:["FLINK-40016","FLINK-39018"], p:["28605","28607"],
+        n:"Not spilling work, and not a new bug: recovered buffers were persisted twice in LocalInputChannel, introduced by FLINK-39018 in Phase 2 and merged to master on 2026-04-07. It surfaced only when Phase 3b's tests exercised it. Lifted out of Phase 3b (which is 3.8w without it) and counted once here, so the same days are never charged twice. The project total is unchanged."},
+      c40016:{t:"FLINK-40016 — defect introduced in Phase 2, found in Phase 3b",
+        a:"2026-06-23", b:"2026-07-02", d:"9-day window − 1 d on-call = 8 d · 1.1 weeks",
+        j:["FLINK-40016","FLINK-39018"], p:["28605","28607"],
+        n:"Recovered buffers were persisted twice in LocalInputChannel. git log -S traces the cause to FLINK-39018 (Phase 2), merged into master 2026-04-07. Roman reproduced it on plain master on 07-01. Fixed in one day once identified."}
+    };
+
+    var modal = document.getElementById("modal");
+    var mTitle = document.getElementById("modal-title");
+    var mWhen = document.getElementById("modal-when");
+    var mBody = document.getElementById("modal-body");
+    var mClose = document.getElementById("modal-close");
+    var lastFocus = null;
+
+    function esc(s){return String(s).replace(/[&<>]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;"}[c];});}
+
+    function open(el, k){
+      var v = D[k]; if(!v) return;
+      lastFocus = el;
+      mTitle.textContent = v.t;
+      mWhen.innerHTML = "<b>"+v.a+"</b> &rarr; <b>"+v.b+"</b><br>"+esc(v.d);
+      var rows = "";
+      if(v.j.length) rows += "<dt>JIRA</dt><dd>" + v.j.map(function(x){
+        return '<a href="'+JR+x+'" target="_blank" rel="noopener">'+x+'</a>';}).join(" &middot; ") + "</dd>";
+      if(v.p.length) rows += "<dt>PRs</dt><dd>" + v.p.map(function(x){
+        return '<a href="'+PR+x+'" target="_blank" rel="noopener">#'+x+'</a>';}).join(" &middot; ") + "</dd>";
+      if(v.n) rows += "<dt>What</dt><dd>" + esc(v.n) + "</dd>";
+      mBody.innerHTML = rows;
+      modal.classList.add("show");
+      mClose.focus();
+    }
+    function close(){
+      modal.classList.remove("show");
+      if(lastFocus){ lastFocus.focus(); lastFocus = null; }
+    }
+    mClose.addEventListener("click", close);
+    modal.addEventListener("click", function(e){ if(e.target === modal) close(); });
+    document.addEventListener("keydown", function(e){
+      if(e.key === "Escape" && modal.classList.contains("show")) close();
+    });
+    document.querySelectorAll("[data-k]").forEach(function(el){
+      el.setAttribute("role","button");
+      el.addEventListener("click", function(){ open(el, el.dataset.k); });
+      el.addEventListener("keydown", function(e){
+        if(e.key === "Enter" || e.key === " "){ e.preventDefault(); open(el, el.dataset.k); }
+      });
+    });
+  })();
+</script>
