@@ -30,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
@@ -122,43 +123,61 @@ public final class FetchedChannelStateDrainer implements RecoveryCheckpointTrigg
     private void drainSegment(SpillSegment seg, RecoverableInputChannel ch)
             throws IOException, InterruptedException {
         InputStream in = seg.bodyStream();
+        int remaining = seg.length();
         Buffer buf = ch.requestRecoveryBufferBlocking();
-        int cap = buf.getMaxCapacity();
+        try {
+            int cap = buf.getMaxCapacity();
 
-        while (fill(buf, in, cap - buf.getSize()) > 0) {
-            if (buf.getSize() == cap) {
-                // Buffer is full: deliver under lock and request a fresh one.
+            while (fill(buf, in, cap - buf.getSize()) > 0) {
+                if (buf.getSize() == cap) {
+                    // Buffer is full: deliver under lock and request a fresh one.
+                    remaining -= cap;
+                    Buffer full = buf;
+                    buf = null;
+                    synchronized (lock) {
+                        ch.onRecoveredStateBuffer(full);
+                        seg.commit();
+                    }
+                    if (remaining == 0) {
+                        // The segment ends on this buffer boundary: no point in requesting a
+                        // buffer that the EOF below would immediately recycle.
+                        return;
+                    }
+                    buf = ch.requestRecoveryBufferBlocking();
+                    cap = buf.getMaxCapacity();
+                }
+                // If buf is not full yet, the fill returned > 0 bytes but segment is not exhausted;
+                // loop and keep filling the same buffer.
+            }
+
+            if (buf.getSize() > 0) {
+                // Deliver the partial tail buffer.
+                Buffer tail = buf;
+                buf = null;
                 synchronized (lock) {
-                    ch.onRecoveredStateBuffer(buf);
+                    ch.onRecoveredStateBuffer(tail);
                     seg.commit();
                 }
-                buf = ch.requestRecoveryBufferBlocking();
-                cap = buf.getMaxCapacity();
+            } else {
+                buf.recycleBuffer();
+                buf = null;
             }
-            // If buf is not full yet, the fill returned > 0 bytes but segment is not exhausted;
-            // loop and keep filling the same buffer.
-        }
-
-        if (buf.getSize() > 0) {
-            // Deliver the partial tail buffer.
-            synchronized (lock) {
-                ch.onRecoveredStateBuffer(buf);
-                seg.commit();
+        } catch (Throwable t) {
+            if (buf != null) {
+                buf.recycleBuffer();
             }
-        } else {
-            buf.recycleBuffer();
+            throw t;
         }
     }
 
     /**
-     * Fills up to {@code remaining} bytes from {@code in} into {@code buf}. Returns the number of
-     * bytes actually written; returns 0 if the stream is at EOF. Does not close or recycle {@code
-     * buf}; ownership stays with the caller.
+     * Fills up to {@code remaining} bytes from {@code in} into {@code buf}, where {@code remaining}
+     * is the writable space left in {@code buf}. Returns the number of bytes actually written, or a
+     * non-positive value if the stream is at EOF. Does not close or recycle {@code buf}; ownership
+     * stays with the caller.
      */
     private static int fill(Buffer buf, InputStream in, int remaining) throws IOException {
-        if (remaining == 0) {
-            return 0;
-        }
+        checkArgument(remaining > 0);
         // Do not use try-with-resources: ChannelStateByteBuffer.close() recycles the buffer,
         // but the buffer is still owned by the caller here.
         ChannelStateByteBuffer view = ChannelStateByteBuffer.wrap(buf);

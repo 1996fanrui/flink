@@ -31,9 +31,12 @@ import org.apache.flink.runtime.io.network.partition.consumer.RecoverableInputCh
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.channels.FileChannel;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -45,6 +48,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for {@link FetchedChannelStateDrainer}: drain demux, finish ordering, snapshot start
@@ -111,8 +115,8 @@ class FetchedChannelStateDrainerTest {
     void testDrainSegmentExactMultipleOfBufferHasNoPartialTail() throws Exception {
         InputChannelInfo cInfo = new InputChannelInfo(0, 0);
 
-        // Body length is an exact multiple of the buffer capacity: the final read hits EOF on a
-        // freshly requested buffer, which must be recycled rather than delivered empty.
+        // Body length is an exact multiple of the buffer capacity: the segment ends on a buffer
+        // boundary, so no extra buffer is requested and no empty buffer is delivered.
         int bufferCapacity = 16;
         byte[] body = sequentialBytes(bufferCapacity * 3);
 
@@ -135,6 +139,37 @@ class FetchedChannelStateDrainerTest {
         }
         assertThat(concat(rec.recovered)).isEqualTo(body);
         assertThat(rec.finishCalls).isEqualTo(1);
+    }
+
+    @Test
+    void testDrainRecyclesInFlightBufferWhenBodyReadFails() throws Exception {
+        InputChannelInfo cInfo = new InputChannelInfo(0, 0);
+
+        int bufferCapacity = 16;
+        byte[] body = sequentialBytes(bufferCapacity * 4);
+
+        FetchedChannelState state;
+        try (TestSpillWriter writer = new TestSpillWriter(tempDir)) {
+            writer.writePassThrough(cInfo, body, 0, body.length);
+            state = writer.getChannelState();
+        }
+
+        // Cut the file short so the body read fails while the drainer still owns a partially
+        // filled buffer: 40 of the 64 body bytes survive => 2 buffers delivered, the third one
+        // holds 8 bytes when the EOF hits and must be recycled rather than leaked.
+        try (FileChannel file = FileChannel.open(state.files().get(0), StandardOpenOption.WRITE)) {
+            file.truncate(file.size() - 24);
+        }
+
+        RecordingChannel rec = new RecordingChannel(cInfo, bufferCapacity);
+        FetchedChannelStateDrainer drainer = newDrainer(state, cInfo, rec);
+
+        assertThatThrownBy(drainer::drain).isInstanceOf(EOFException.class);
+        drainer.close();
+
+        assertThat(rec.recovered).hasSize(2);
+        assertThat(rec.requested).isEqualTo(3);
+        assertThat(rec.recycled).isEqualTo(1);
     }
 
     @Test
@@ -515,6 +550,8 @@ class FetchedChannelStateDrainerTest {
         int finishCalls = 0;
         private final int[] sequence;
         private final int bufferCapacity;
+        int requested = 0;
+        int recycled = 0;
         int maxDataSeq = Integer.MIN_VALUE;
         int finishSeq = -1;
         boolean inRecovery = true;
@@ -570,8 +607,14 @@ class FetchedChannelStateDrainerTest {
 
         @Override
         public Buffer requestRecoveryBufferBlocking() {
+            requested++;
             MemorySegment seg = MemorySegmentFactory.allocateUnpooledSegment(bufferCapacity);
-            return new NetworkBuffer(seg, FreeingBufferRecycler.INSTANCE);
+            return new NetworkBuffer(
+                    seg,
+                    memorySegment -> {
+                        recycled++;
+                        FreeingBufferRecycler.INSTANCE.recycle(memorySegment);
+                    });
         }
 
         @Override
