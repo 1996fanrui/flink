@@ -168,7 +168,11 @@ class ChannelStateCheckpointWriter {
         if (isDone()) {
             try {
                 reader.close();
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                LOG.info(
+                        "Failed to close the fetched channel state reader of checkpoint {}",
+                        checkpointId,
+                        e);
             }
             return;
         }
