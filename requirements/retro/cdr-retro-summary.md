@@ -229,9 +229,8 @@ its first review purely because it was behind #28661.
    not a number. The 2-week spilling estimate is the single largest source of the slip.
 2. **Design sign-off before implementation above ~1,000 lines.** A one-page design reviewed in
    March would have cost days instead of 4 weeks of discarded code plus 2 weeks of rework.
-3. **Re-baseline, don't re-promise.** A review that requests a re-design invalidates the
-   estimate. After 05-19 the status log said "2-3 weeks" → "2 weeks" → "1 week" → "last
-   reviews" → yellow → "preparing rollout": six near-completion calls over 12 weeks.
+3. **Re-estimate after a re-design.** A review that requests a re-design invalidates the
+   estimate; the new number should come from the new design, not from extending the old one.
 4. **Budget reviewer capacity for stacked PRs up front,** or split along axes that allow
    parallel review. 21 of the last 41 calendar days were spent blocked, not building.
 
