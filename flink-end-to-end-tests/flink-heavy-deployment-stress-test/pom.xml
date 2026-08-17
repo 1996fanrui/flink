@@ -25,7 +25,7 @@ under the License.
 	<parent>
 		<groupId>org.apache.flink</groupId>
 		<artifactId>flink-end-to-end-tests</artifactId>
-		<version>2.4-SNAPSHOT</version>
+		<version>os-troubleshooting-696e6b2c63e</version>
 	</parent>
 
 	<artifactId>flink-heavy-deployment-stress-test</artifactId>
