@@ -25,7 +25,7 @@ under the License.
 	<parent>
 		<groupId>org.apache.flink</groupId>
 		<artifactId>flink-formats</artifactId>
-		<version>2.4-SNAPSHOT</version>
+		<version>os-troubleshooting-3c9cc3d7fe0</version>
 	</parent>
 
 	<artifactId>flink-sql-json</artifactId>

@@ -26,7 +26,7 @@
 	<parent>
 		<artifactId>flink-table</artifactId>
 		<groupId>org.apache.flink</groupId>
-		<version>2.4-SNAPSHOT</version>
+		<version>os-troubleshooting-3c9cc3d7fe0</version>
 	</parent>
 
 	<artifactId>flink-sql-jdbc-driver</artifactId>
