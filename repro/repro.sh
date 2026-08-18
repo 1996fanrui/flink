@@ -82,7 +82,7 @@ worker() {
     n=$((n+1)); local log="$RES/w${id}_${n}.log"
     mvn -o surefire:test -pl flink-tests -DtempDir="surefire_w${id}" \
       -Dsurefire.reportsDirectory="$RES/reports_w${id}" \
-      -Dtest='UnalignedCheckpointRescaleITCase#shouldRescaleUnalignedCheckpoint' -DfailIfNoTests=false > "$log" 2>&1 &
+      -Dtest='UnalignedCheckpointITCase,UnalignedCheckpointRescaleITCase,UnalignedCheckpointRescaleSameUpstreamITCase,UnalignedCheckpointRescaleWithMixedExchangesITCase,UnalignedCheckpointFailureHandlingITCase,UnalignedCheckpointCompatibilityITCase,UnalignedCheckpointStressITCase' -DfailIfNoTests=false > "$log" 2>&1 &
     local mpid=$! waited=0
     while kill -0 "$mpid" 2>/dev/null; do sleep 5; waited=$((waited+5));
       [ "$waited" -ge "$TIMEOUT" ] && { pkill -9 -f "surefire_w${id}"; kill -9 "$mpid" 2>/dev/null; break; }; done
