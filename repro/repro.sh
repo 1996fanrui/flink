@@ -71,7 +71,7 @@ classify() { # 0 pass, 1 loss-or-dup-or-corrupt-stream, 2 infra/crash
   # an IllegalArgumentException ("Stream corrupted. Cannot find the header ...").
   grep -qF "Caused by: java.io.IOException: Corrupt stream" "$1" && return 1
   grep -qF "Stream corrupted. Cannot find the header" "$1" && return 1
-  grep -q "Tests run: 1, Failures: 0, Errors: 0" "$1" && grep -q "BUILD SUCCESS" "$1" && return 0
+  grep -qE "Tests run: [0-9]+, Failures: 0, Errors: 0" "$1" && grep -q "BUILD SUCCESS" "$1" && return 0
   return 2
 }
 worker() {
@@ -82,7 +82,7 @@ worker() {
     n=$((n+1)); local log="$RES/w${id}_${n}.log"
     mvn -o surefire:test -pl flink-tests -DtempDir="surefire_w${id}" \
       -Dsurefire.reportsDirectory="$RES/reports_w${id}" \
-      -Dtest='UnalignedCheckpointRescaleITCase#shouldRescaleUnalignedCheckpoint' -DfailIfNoTests=false > "$log" 2>&1 &
+      -Dtest='UnalignedCheckpointITCase,UnalignedCheckpointRescaleITCase,UnalignedCheckpointRescaleSameUpstreamITCase,UnalignedCheckpointRescaleWithMixedExchangesITCase,UnalignedCheckpointFailureHandlingITCase,UnalignedCheckpointCompatibilityITCase,UnalignedCheckpointStressITCase' -DfailIfNoTests=false > "$log" 2>&1 &
     local mpid=$! waited=0
     while kill -0 "$mpid" 2>/dev/null; do sleep 5; waited=$((waited+5));
       [ "$waited" -ge "$TIMEOUT" ] && { pkill -9 -f "surefire_w${id}"; kill -9 "$mpid" 2>/dev/null; break; }; done
