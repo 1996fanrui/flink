@@ -1080,8 +1080,8 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
     private Optional<FetchedChannelState> fetchChannelState(
             SequentialChannelStateReader reader, IndexedInputGate[] inputGates) {
         try {
-            // readInputData registers the spill files with cancelables, so an abort before drain()
-            // still deletes them.
+            // readInputData registers a spill-directory delete hook on cancelables, so an abort
+            // before drain() still removes the spilled files.
             Optional<FetchedChannelState> state =
                     reader.readInputData(inputGates, createRecordFilterContext(), cancelables);
             if (state.isPresent()) {

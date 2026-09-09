@@ -75,8 +75,8 @@ public class SequentialChannelStateReaderImpl implements SequentialChannelStateR
                         : null;
 
         // Manual close ordering so the produced spill file can be published after
-        // stateHandler.close() flushes the filter writer. The handler registers its spill files on
-        // cancelables, so an abort on any path here still deletes them.
+        // stateHandler.close() flushes the filter writer. The handler registers a spill-directory
+        // delete hook on cancelables, so an abort on any path here still removes the spilled files.
         AbstractInputChannelRecoveredStateHandler stateHandler =
                 AbstractInputChannelRecoveredStateHandler.create(
                         inputGates,

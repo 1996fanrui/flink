@@ -35,8 +35,8 @@ public interface SequentialChannelStateReader extends AutoCloseable {
      *
      * @param inputGates The input gates to recover state for.
      * @param filterContext The filter context containing input configs and rescaling info.
-     * @param cancelables Registry the spilling handler registers its spill files with, so they are
-     *     deleted on an abort before {@code drain()}.
+     * @param cancelables Registry the spilling handler registers a spill-directory delete hook on,
+     *     so the spilled files are removed on an abort before {@code drain()}.
      */
     Optional<FetchedChannelState> readInputData(
             InputGate[] inputGates,
